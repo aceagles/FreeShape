@@ -961,6 +961,8 @@ class MainWindow(QMainWindow):
         self.dialog.planePicked.connect(self._sketch_plane_picked)
         self.dialog.show_cons.toggled.connect(self._sketch_display_toggles)
         self.dialog.show_regions.toggled.connect(self._sketch_display_toggles)
+        self.dialog.see_through.toggled.connect(self._sketch_see_through_toggled)
+        self.viewport.sketch_see_through = self.dialog.see_through.isChecked()
         self.viewport.pick_handler = self.dialog.handle_pick
         if has_plane:
             self._enter_sketcher(animate=is_new)
@@ -1027,6 +1029,11 @@ class MainWindow(QMainWindow):
             self.sketcher.show_constraints = self.dialog.show_cons.isChecked()
             self.sketcher.show_regions = self.dialog.show_regions.isChecked()
             self.viewport.update()
+
+    def _sketch_see_through_toggled(self, on):
+        self.settings.setValue("sketch_see_through", "true" if on else "false")
+        self.viewport.sketch_see_through = bool(on)
+        self.viewport.update()
 
     def _sketch_changed(self, final):
         ctx = self.sk_ctx

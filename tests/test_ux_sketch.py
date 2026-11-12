@@ -108,3 +108,32 @@ def test_toggling_sketch_visibility_refreshes_open_feature_preview():
     w.doc.toggle_feature_hidden(sid)
     assert calls, "showing/hiding a sketch while a feature dialog is open must refresh its preview"
     w.cancel_dialog()
+
+
+def test_sketch_view_policy():
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from freeshape.ui.viewport import Viewport
+    v = Viewport()
+    assert v.sketch_view_policy() == (1.0, True, 1.0, False)
+    v.sketcher = object()
+    assert v.sketch_see_through
+    fa, depth, ea, top = v.sketch_view_policy()
+    assert fa == 0.35 and depth is False and 0 < ea < 1 and top
+    v.sketch_see_through = False
+    assert v.sketch_view_policy() == (1.0, True, 1.0, True)
+
+
+def test_sketch_dialog_see_through_checkbox_persists():
+    w = _window()
+    w.start_sketch()
+    assert w.dialog.see_through.isChecked() and w.viewport.sketch_see_through
+    w.dialog.see_through.setChecked(False)
+    assert w.viewport.sketch_see_through is False
+    assert w.settings["sketch_see_through"] == "false"
+    w.cancel_sketch()
+    w.start_sketch()
+    assert not w.dialog.see_through.isChecked() and w.viewport.sketch_see_through is False
+    w.dialog.see_through.setChecked(True)
+    assert w.settings["sketch_see_through"] == "true" and w.viewport.sketch_see_through
+    w.cancel_sketch()

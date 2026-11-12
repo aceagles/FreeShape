@@ -117,6 +117,7 @@ class Viewport(QOpenGLWidget):
         self.planes = []         # list of (key_tuple, Plane, label, half_size)
         self.sketches = []       # list of (fid, SketchResult, region_meshes)
         self.hidden_sketch_regions = False
+        self.sketch_see_through = True   # while sketching, draw solids translucent (setting `sketch_see_through`)
         self.preview_tool = None  # mesh of a translucent tool body
         self.overlays = []        # [((field_key, index), ("mesh", Mesh) | ("poly", ndarray))] dialog selections
         self.face_colors = {}     # part id -> {face index: (r, g, b)}
@@ -662,7 +663,19 @@ class Viewport(QOpenGLWidget):
             return theme.HOVER
         return None
 
+    SEE_THROUGH_FACE_ALPHA = 0.35
+    SEE_THROUGH_EDGE_ALPHA = 0.45
+
+    def sketch_view_policy(self):
+        """How _draw_scene draws solids: (face_alpha, face_depth_write, edge_alpha, sketch_on_top).
+        The active sketch is always on top; solids go translucent only when see-through is on."""
+        sketching = bool(self.sketcher)
+        if sketching and self.sketch_see_through:
+            return (self.SEE_THROUGH_FACE_ALPHA, False, self.SEE_THROUGH_EDGE_ALPHA, True)
+        return (1.0, True, 1.0, sketching)
+
     def _draw_scene(self):
+        face_alpha, face_depth, edge_alpha, sketch_on_top = self.sketch_view_policy()
         GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glDepthFunc(GL.GL_LEQUAL)
         GL.glEnable(GL.GL_MULTISAMPLE)
@@ -688,6 +701,13 @@ class Viewport(QOpenGLWidget):
         GL.glEnable(GL.GL_POLYGON_OFFSET_FILL)
         GL.glPolygonOffset(1.0, 1.0)
         b = self._batch
+        if face_alpha < 1.0:
+            # constant-alpha blend works with the shader and the colour array alike
+            GL.glBlendColor(0.0, 0.0, 0.0, face_alpha)
+            GL.glBlendFuncSeparate(GL.GL_CONSTANT_ALPHA, GL.GL_ONE_MINUS_CONSTANT_ALPHA,
+                                   GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+        if not face_depth:
+            GL.glDepthMask(GL.GL_FALSE)
         if b is not None and b["ntri"]:
             self._use_shiny(True)
             self._bind_batch(colors=True)
@@ -719,10 +739,14 @@ class Viewport(QOpenGLWidget):
             self._use_shiny(False)
         GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
         GL.glDisable(GL.GL_LIGHTING)
+        if not face_depth:
+            GL.glDepthMask(GL.GL_TRUE)
+        if face_alpha < 1.0:
+            GL.glBlendFuncSeparate(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA, GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
 
         # ---- edges (one draw call), then highlighted ones
         GL.glLineWidth(1.4)
-        GL.glColor3f(*theme.EDGE)
+        GL.glColor4f(*theme.EDGE, edge_alpha)
         if b is not None and b["nedge"]:
             self._draw_edge_batch()
         hl = [pk for pk in list(self.selection) + ([self.hover] if self.hover is not None else []) if pk.kind == "edge"]
@@ -982,7 +1006,14 @@ class Viewport(QOpenGLWidget):
 
         # ---- active sketch
         if self.sketcher:
-            self.sketcher.draw_gl(self)
+            # never occluded by solids: depth test off and no depth writes, state restored afterwards
+            GL.glDisable(GL.GL_DEPTH_TEST)
+            GL.glDepthMask(GL.GL_FALSE)
+            try:
+                self.sketcher.draw_gl(self)
+            finally:
+                GL.glDepthMask(GL.GL_TRUE)
+                GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glLineWidth(1)
 
     # ------------------------------------------------------------------ view cube (see viewcube.py)

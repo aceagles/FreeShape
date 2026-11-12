@@ -182,12 +182,70 @@ def is_valid(shape) -> bool:
         return False
 
 
+def _count(shape, kind) -> int:
+    m = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, kind, m)
+    return m.Size()
+
+
+def _topology(shape):
+    """(faces, edges) — enough to tell whether a unify merged anything."""
+    return _count(shape, TopAbs_FACE), _count(shape, TopAbs_EDGE)
+
+
+def _unify(shape, pins=()):
+    """ShapeUpgrade_UnifySameDomain (faces, edges, concatenated b-splines). A pinned edge forbids merging the
+    faces either side of it; a pinned vertex forbids merging the edges that meet there."""
+    u = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
+    for p in pins:
+        u.KeepShape(p)
+    u.Build()
+    return u
+
+
+def _invalid_faces(shape):
+    an = BRepCheck_Analyzer(shape)
+    if an.IsValid():
+        return []
+    return [f for f in faces(shape) if not an.IsValid(f)]
+
+
+def _unify_pins(u, shape, bad):
+    """Every edge and vertex of the input faces that unify turned into one of the `bad` output faces."""
+    pins = []
+    for f in faces(shape):
+        if any(any(m.IsSame(b) for b in bad) for m in u.History().Modified(f)):
+            pins += edges(f)
+            pins += [_as_vertex(v) for v in _explore(f, TopAbs_VERTEX)]
+    return pins
+
+
+def _explore(shape, kind):
+    exp = TopExp_Explorer(shape, kind)
+    while exp.More():
+        yield exp.Current()
+        exp.Next()
+
+
 def clean(shape):
-    """Merge coplanar faces / collinear edges left behind by booleans."""
+    """Merge coplanar faces / collinear edges left behind by booleans.
+
+    UnifySameDomain rebuilds the wires of every face it touches from vertex connectivity. A face whose hole wire
+    shares a vertex with its outer wire (a hole tangent to a cylinder's seam, as in FreeCAD's cylinder7_V2 and
+    cylinderSeam3 refine tests) comes back as a single figure-of-eight wire and BRepCheck calls the face
+    unorientable, so the merge is checked whenever it changed the topology. Faces that broke are redone with
+    their source faces pinned (nothing else changes); if that still fails the un-merged input is returned. A
+    valid input never comes out invalid, and a result that is valid today is returned as before."""
     try:
-        u = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
-        u.Build()
-        return u.Shape()
+        u = _unify(shape)
+        out = u.Shape()
+        if _topology(out) == _topology(shape):
+            return out                     # nothing merged, so no face was rebuilt
+        bad = _invalid_faces(out)
+        if not bad or not is_valid(shape):
+            return out                     # valid, or no worse than what came in
+        out = _unify(shape, _unify_pins(u, shape, bad)).Shape()
+        return out if is_valid(out) else shape
     except Exception:
         return shape
 

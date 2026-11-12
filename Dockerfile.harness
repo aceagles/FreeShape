@@ -1,0 +1,230 @@
+# The image nightshift builds for Runs targeting this repo. Its staleness hash
+# covers this file plus every COPY source. This file COPYs nothing from the
+# repo: the dependency pins are written inline below, so editing a pin here is
+# what rebuilds the image.
+#
+# Sandcastle bind-mounts the Run's worktree over /home/agent/workspace, so
+# nothing baked under that path survives. Everything the gates need lives
+# under /opt and /usr/local/bin. There is no Docker and no network at gate
+# time, so both OCP environments are baked in as venvs.
+FROM node:22-bookworm-slim
+
+# git: the worker edits a real worktree and the harness commits in here.
+# curl/ca-certificates: the Claude Code install below.
+# The rest is what PySide6 (offscreen platform), OCP and vtk load at import:
+# GL/EGL/GLU, fontconfig, dbus, xkbcommon, glib. fonts-dejavu-core gives Qt a
+# real font so text metrics in the UI tests are stable.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git \
+      curl \
+      ca-certificates \
+      fonts-dejavu-core \
+      libdbus-1-3 \
+      libegl1 \
+      libfontconfig1 \
+      libgl1 \
+      libglib2.0-0 \
+      libglu1-mesa \
+      libxkbcommon0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned to the version nightshift's own image uses.
+ARG CLAUDE_CODE_VERSION=2.1.220
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+# Sandcastle runs the container as the daemon's uid:gid, not this image's USER,
+# so the agent user must carry them or the first `git config --global` fails on
+# an unwritable HOME. The daemon passes its real ids as build args
+# (nightshift src/image/build.ts). node:22 ships a uid-1000 `node` user; rename
+# and remap it rather than add a second one.
+ARG AGENT_UID=1001
+ARG AGENT_GID=1001
+RUN groupmod -n agent node \
+    && usermod -l agent -d /home/agent -m node \
+    && groupmod -g "${AGENT_GID}" agent \
+    && usermod -u "${AGENT_UID}" -g "${AGENT_GID}" agent \
+    && mkdir -p /home/agent/workspace \
+    && chown -R agent:agent /home/agent
+
+# uv and CPython at the versions the host test venvs were made with
+# (uv 0.8.17, CPython 3.12.11). A --from copy reads another image, not the
+# build context, so it is not a repo COPY source.
+COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /usr/local/bin/uv
+
+# Two venvs, one per supported OCP kernel, named as the docs and acceptance
+# criteria name them. Every pin is the exact version found in the host venvs
+# /home/ncr/freeshape/test-venvs/{ocp7.9.3.1.1,ocp8.0.1.1.0} on 2026-11-12;
+# the two differ only in cadquery-ocp and its proxy. vtk and matplotlib are
+# not imported by FreeShape but cadquery-ocp requires vtk, which requires
+# matplotlib, so they cannot be left out.
+#
+# Both venvs are installed in one RUN with uv hardlinking out of one cache on
+# the same filesystem. Identical files (PySide6, vtk, numpy: about 1.6 GB) are
+# then stored once in this layer instead of twice. The venvs are root-owned
+# and read-only to the agent, so the shared inodes cannot be edited through
+# one venv. Bytecode is compiled here because the agent cannot write it later.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+RUN set -eu; \
+    export UV_CACHE_DIR=/opt/uv-cache UV_LINK_MODE=hardlink; \
+    uv python install 3.12.11; \
+    printf '%s\n' \
+      'contourpy==1.4.0' \
+      'cycler==0.12.1' \
+      'ezdxf==1.4.5' \
+      'fonttools==4.68.0' \
+      'iniconfig==2.3.1' \
+      'kiwisolver==1.5.1' \
+      'matplotlib==3.11.2' \
+      'numpy==2.5.4' \
+      'packaging==26.3' \
+      'pillow==13.0.0' \
+      'pluggy==1.7.0' \
+      'pygments==2.21.0' \
+      'pyopengl==3.1.10' \
+      'pyparsing==3.3.3' \
+      'pyside6==6.12.0' \
+      'pyside6-addons==6.12.0' \
+      'pyside6-essentials==6.12.0' \
+      'pyside6-pdf==6.12.0.140' \
+      'pyside6-webengine==6.12.0.140' \
+      'pytest==9.2.0' \
+      'python-dateutil==4.0.0' \
+      'shiboken6==6.12.0' \
+      'typing-extensions==4.16.0' \
+      'tzdata==2026.6' \
+      'vtk==9.6.2' \
+      > /opt/requirements-common.txt; \
+    for ocp in 7.9.3.1.1 8.0.1.1.0; do \
+      venv="/opt/venvs/ocp${ocp}"; \
+      uv venv --python 3.12.11 "${venv}"; \
+      uv pip install --python "${venv}/bin/python" --compile-bytecode \
+        -r /opt/requirements-common.txt \
+        "cadquery-ocp==${ocp}" "cadquery-ocp-proxy==${ocp}"; \
+    done; \
+    rm -rf /opt/uv-cache; \
+    chmod -R a+rX /opt/uv-python /opt/venvs
+
+# The three commands the plan's acceptance criteria are written in, e.g.
+# `both fs_pytest tests` or `both fs_py scripts/smoke/s0_headless.py`. On the
+# host they are Docker-based shell functions; here they are real executables so
+# the same strings work for the worker and for the gates in harness.jsonc.
+#
+#   both <cmd...>      run <cmd> once per venv under /opt/venvs, in name order,
+#                      with OCP exported to the venv name; stop at the first
+#                      failure and return its exit code.
+#   fs_py <args...>    /opt/venvs/$OCP/bin/python <args> in the current
+#                      directory with QT_QPA_PLATFORM=offscreen.
+#   fs_pytest <args..> fs_py -m pytest -q -p no:cacheprovider <args>.
+RUN set -eu; \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '# both <cmd...>: run <cmd> once per venv in /opt/venvs with OCP set; stop at the first failure.' \
+      'if [ "$#" -eq 0 ]; then echo "usage: both <cmd...>" >&2; exit 2; fi' \
+      'found=0' \
+      'for dir in /opt/venvs/*/; do' \
+      '  [ -x "${dir}bin/python" ] || continue' \
+      '  found=1' \
+      '  OCP=$(basename "$dir")' \
+      '  export OCP' \
+      '  echo "== ${OCP}: $*" >&2' \
+      '  "$@"' \
+      '  rc=$?' \
+      '  if [ "$rc" -ne 0 ]; then echo "== ${OCP}: exit ${rc}" >&2; exit "$rc"; fi' \
+      'done' \
+      'if [ "$found" -eq 0 ]; then echo "both: no venvs under /opt/venvs" >&2; exit 2; fi' \
+      > /usr/local/bin/both; \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '# fs_py <args...>: the python of the venv named by $OCP, headless.' \
+      'if [ -z "${OCP:-}" ]; then' \
+      '  echo "fs_py: OCP is not set. Run it as \"both fs_py ...\" or set OCP to one of: $(ls /opt/venvs | tr "\n" " ")" >&2' \
+      '  exit 2' \
+      'fi' \
+      'py="/opt/venvs/${OCP}/bin/python"' \
+      'if [ ! -x "$py" ]; then' \
+      '  echo "fs_py: no venv for OCP=${OCP}. Available: $(ls /opt/venvs | tr "\n" " ")" >&2' \
+      '  exit 2' \
+      'fi' \
+      'export QT_QPA_PLATFORM=offscreen' \
+      'exec "$py" "$@"' \
+      > /usr/local/bin/fs_py; \
+    printf '%s\n' \
+      '#!/bin/sh' \
+      '# fs_pytest <args...>: pytest in the venv named by $OCP, without a cache directory in the worktree.' \
+      'exec fs_py -m pytest -q -p no:cacheprovider "$@"' \
+      > /usr/local/bin/fs_pytest; \
+    chmod 0755 /usr/local/bin/both /usr/local/bin/fs_py /usr/local/bin/fs_pytest
+
+# FreeCAD reference source, for workers to read offline: the element-map
+# (topological naming) code and the Assembly workbench. Pinned by release tag
+# and by commit; the build fails if the tag stops resolving to that commit.
+# A sparse, blobless, depth-1 clone fetches only the listed paths (about
+# 4.4 MB, 194 files), and .git is removed afterwards. Root-owned, so the agent
+# can read it and cannot change it. Nothing from it goes into the FreeShape
+# repo; /opt/freecad-src/README.md states the licence terms.
+ARG FREECAD_TAG=1.0.2
+ARG FREECAD_COMMIT=256fc7eff3379911ab5daf88e10182c509aa8052
+RUN set -eu; \
+    git clone --quiet --depth 1 --branch "${FREECAD_TAG}" --filter=blob:none --no-checkout \
+      https://github.com/FreeCAD/FreeCAD.git /opt/freecad-src; \
+    cd /opt/freecad-src; \
+    got="$(git rev-parse HEAD)"; \
+    if [ "${got}" != "${FREECAD_COMMIT}" ]; then \
+      echo "FreeCAD tag ${FREECAD_TAG} resolved to ${got}, expected ${FREECAD_COMMIT}" >&2; exit 1; \
+    fi; \
+    git sparse-checkout set --no-cone \
+      '/LICENSE' \
+      '/src/App/ElementMap*' \
+      '/src/App/MappedName*' \
+      '/src/App/MappedElement*' \
+      '/src/App/StringHasher*' \
+      '/src/App/ComplexGeoData*' \
+      '/src/Mod/Part/App/TopoShape*' \
+      '/src/Mod/Part/parttests/' \
+      '/src/Mod/Assembly/' \
+      '/src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py'; \
+    git checkout --quiet "${FREECAD_TAG}"; \
+    rm -rf .git; \
+    test -f src/Mod/Part/App/TopoShapeExpansion.cpp; \
+    test -f src/Mod/Part/App/TopoShapeOpCode.h; \
+    test -f src/App/ElementMap.cpp; \
+    test -f LICENSE; \
+    printf '%s\n' \
+      '# FreeCAD reference source (partial)' \
+      '' \
+      "Tag: ${FREECAD_TAG}" \
+      "Commit: ${FREECAD_COMMIT}" \
+      'Upstream: https://github.com/FreeCAD/FreeCAD' \
+      '' \
+      'A read-only subset of the FreeCAD source tree, baked into the FreeShape harness image by' \
+      'Dockerfile.harness so it can be read with no network. It is not a buildable checkout.' \
+      '' \
+      '## Included' \
+      '' \
+      '- `LICENSE` (the upstream licence file)' \
+      '- `src/App/ElementMap*`, `MappedName*`, `MappedElement*`, `StringHasher*`, `ComplexGeoData*`' \
+      '- `src/Mod/Part/App/TopoShape*` (including `TopoShapeExpansion.cpp`, `TopoShapeMapper*`, `TopoShapeOpCode.h`)' \
+      '- `src/Mod/Part/parttests/`' \
+      '- `src/Mod/Assembly/` (Python and App, whole directory)' \
+      '- `src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py`' \
+      '' \
+      '## Licence' \
+      '' \
+      'This is reference material. FreeCAD is licensed under LGPL-2.1-or-later (see the SPDX line or licence' \
+      'header at the top of each file; the upstream `LICENSE` file carries the GNU Library GPL version 2 text).' \
+      'Read it to understand the algorithms and behaviour. Do not copy it verbatim into FreeShape without' \
+      'first checking that doing so is compatible with the licence of FreeShape itself (GPL-3.0-or-later, see the' \
+      'LICENSE and THIRD-PARTY-NOTICES.txt files in the FreeShape repo) and recording the attribution there.' \
+      'Nothing from this directory is part of the FreeShape repository.' \
+      > README.md; \
+    chown -R root:root /opt/freecad-src; \
+    chmod -R a+rX,go-w /opt/freecad-src
+
+USER agent
+WORKDIR /home/agent/workspace
+
+# Claude Code's bash sandbox cannot nest inside this container.
+RUN mkdir -p /home/agent/.claude \
+    && printf '%s\n' '{ "sandbox": { "enabled": false } }' > /home/agent/.claude/settings.json
+
+CMD ["sleep", "infinity"]

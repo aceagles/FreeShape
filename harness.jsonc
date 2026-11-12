@@ -1,0 +1,57 @@
+// What nightshift may gate a Run on. The harness runs these with `sh -c` in
+// the Run's worktree root, as the agent user, after the worker finishes.
+// There is no Docker and no network in there. Everything the commands need is
+// baked into the image by Dockerfile.harness: two venvs under /opt/venvs
+// (ocp7.9.3.1.1 and ocp8.0.1.1.0) and three helpers on PATH:
+//   both <cmd...>       run <cmd> once per venv with OCP set; stop at the first failure
+//   fs_py <args...>     /opt/venvs/$OCP/bin/python <args>, QT_QPA_PLATFORM=offscreen
+//   fs_pytest <args...> fs_py -m pytest -q -p no:cacheprovider <args>
+// Every step runs on both OCP versions and fails if either fails. Steps are
+// independent: none relies on another having run first, and none installs
+// anything. A dependency the image does not have cannot be added during a Run;
+// change the pins in Dockerfile.harness instead.
+//
+// `serve` is omitted: FreeShape is a desktop app with nothing to serve. A
+// capability a manifest names but this file omits is recorded as skipped,
+// never as a pass.
+{
+  "capabilities": {
+    // Import every module of the package, headless, on both venvs. This is
+    // the cheapest check that the tree is loadable: a syntax error, a missing
+    // import or an OCP name that only exists in one kernel version fails it.
+    // There is no compile or packaging step to run; FreeShape runs from
+    // source. `freeshape.__main__` is skipped because importing it starts the
+    // app. About 3 s per venv.
+    "build": {
+      "command": "both fs_py -c \"import importlib, pkgutil, freeshape; names = [m.name for m in pkgutil.walk_packages(freeshape.__path__, 'freeshape.') if not m.name.endswith('__main__')]; [importlib.import_module(n) for n in names]; print('imported', len(names), 'modules')\"",
+      "timeoutMs": 300000,
+    },
+    // The full pytest suite on both venvs, slow tests included. Exactly the
+    // command the plan's acceptance criteria use. One pytest process at a
+    // time (no xdist), so peak memory is one interpreter with OCP and Qt
+    // loaded. Measured in the image on 2026-11-12: 610 passed, 6 xfailed per
+    // venv; the timeout is about four times the wall time for both.
+    "test": {
+      "command": "both fs_pytest tests",
+      "timeoutMs": 900000,
+    },
+    // The repo has no linter configured (pyproject.toml carries none), and
+    // this file does not introduce one. This is a deterministic syntax check
+    // only: byte-compile every source file on both venvs. PYTHONPYCACHEPREFIX
+    // sends the bytecode to a fresh temp directory so the check always
+    // compiles from source and leaves nothing in the worktree.
+    "lint": {
+      "command": "export PYTHONPYCACHEPREFIX=\"$(mktemp -d)\" && both fs_py -m compileall -q freeshape tests examples scripts start.py",
+      "timeoutMs": 180000,
+    },
+    // The cumulative smoke gate, under the schema's fixed name e2e. Runs
+    // every scripts/smoke/s*.py in name order on both venvs; fails if any
+    // exits non-zero or if there are none. Slices add a script to that
+    // directory and this command picks it up unchanged. Invoked through `sh`
+    // so it does not depend on the file's executable bit.
+    "e2e": {
+      "command": "sh scripts/smoke/run_all.sh",
+      "timeoutMs": 600000,
+    },
+  },
+}

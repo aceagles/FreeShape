@@ -40,6 +40,7 @@ from OCP.BRepGProp import BRepGProp
 from OCP.Bnd import Bnd_Box
 from OCP.BRepBndLib import BRepBndLib
 from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+from OCP.BRepTools import BRepTools_History
 from OCP.STEPControl import STEPControl_Writer, STEPControl_Reader, STEPControl_AsIs
 from OCP.StlAPI import StlAPI_Writer
 from OCP.IFSelect import IFSelect_RetDone
@@ -227,7 +228,80 @@ def _explore(shape, kind):
         exp.Next()
 
 
-def clean(shape):
+# --------------------------------------------------------------------------- operation history
+#
+# Element names are built from the history of the operation that made the shape, so the helpers
+# below can hand that history back next to their result (docs/reference/element-naming.md § 3).
+# It is always an OCCT BRepTools_History and consecutive steps are chained with that class's own
+# Merge(): composing histories by hand is where the split and merge cases go wrong.
+
+_HISTORY_KINDS = (TopAbs_SOLID, TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX)
+
+
+def _sub_shapes(shape, kind):
+    m = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, kind, m)
+    return [m.FindKey(i) for i in range(1, m.Size() + 1)]
+
+
+def _maker_images(hist, maker, s, caps):
+    """What `maker` did to the one sub-shape `s`, recorded in `hist`."""
+    try:
+        if maker.IsDeleted(s):
+            hist.Remove(s)
+            return
+        for g in maker.Generated(s):
+            hist.AddGenerated(s, g)
+        for m in maker.Modified(s):
+            hist.AddModified(s, m)
+        if caps:
+            for cap in (maker.FirstShape(s), maker.LastShape(s)):
+                if not cap.IsNull() and not cap.IsSame(s):
+                    hist.AddGenerated(s, cap)
+    except Exception:
+        pass            # an OCCT history failure degrades the names; it never fails the operation
+
+
+def _maker_history(maker, inputs, caps=False) -> BRepTools_History:
+    """One operation's history, as OCCT's own class.
+
+    A maker that keeps a BRepTools_History of its own (the boolean builders, UnifySameDomain, a
+    ReShape) is asked for it. The others answer per sub-shape only, so their history is filled from
+    Generated(), Modified() and IsDeleted() over every sub-shape of the `inputs` — the same two
+    queries FreeCAD's MapperMaker reads, with MapperHistory's class as the carrier. caps=True also
+    records a sweep's start and end shapes (FirstShape/LastShape), without which an extrusion's top
+    face and top edges would come from nothing.
+    """
+    own = getattr(maker, "History", None)
+    if own is not None:
+        try:
+            h = own()
+            if h is not None:
+                return h
+        except Exception:
+            pass
+    hist = BRepTools_History()
+    for src in inputs:
+        for kind in _HISTORY_KINDS:
+            for s in _sub_shapes(src, kind):
+                _maker_images(hist, maker, s, caps)
+    return hist
+
+
+def _chain(*histories) -> BRepTools_History:
+    """The given histories composed in order: each one maps the shapes the step before it made.
+
+    Merging a history into an empty one copies it, and a step that knows nothing about a shape
+    leaves it alone, so this also unions histories of independent steps (one per extruded profile).
+    """
+    out = BRepTools_History()
+    for h in histories:
+        if h is not None:
+            out.Merge(h)
+    return out
+
+
+def clean(shape, with_history=False):
     """Merge coplanar faces / collinear edges left behind by booleans.
 
     UnifySameDomain rebuilds the wires of every face it touches from vertex connectivity. A face whose hole wire
@@ -235,19 +309,27 @@ def clean(shape):
     cylinderSeam3 refine tests) comes back as a single figure-of-eight wire and BRepCheck calls the face
     unorientable, so the merge is checked whenever it changed the topology. Faces that broke are redone with
     their source faces pinned (nothing else changes); if that still fails the un-merged input is returned. A
-    valid input never comes out invalid, and a result that is valid today is returned as before."""
+    valid input never comes out invalid, and a result that is valid today is returned as before.
+
+    with_history=True also returns the unify step's history (empty when the input is returned
+    un-merged, which is the identity)."""
+    def done(out, u):
+        if not with_history:
+            return out
+        return out, (_maker_history(u, [shape]) if u is not None else BRepTools_History())
     try:
         u = _unify(shape)
         out = u.Shape()
         if _topology(out) == _topology(shape):
-            return out                     # nothing merged, so no face was rebuilt
+            return done(out, u)            # nothing merged, so no face was rebuilt
         bad = _invalid_faces(out)
         if not bad or not is_valid(shape):
-            return out                     # valid, or no worse than what came in
-        out = _unify(shape, _unify_pins(u, shape, bad)).Shape()
-        return out if is_valid(out) else shape
+            return done(out, u)            # valid, or no worse than what came in
+        u = _unify(shape, _unify_pins(u, shape, bad))
+        out = u.Shape()
+        return done(out, u) if is_valid(out) else done(shape, None)
     except Exception:
-        return shape
+        return done(shape, None)
 
 
 # --------------------------------------------------------------------------- measurements / signatures
@@ -515,22 +597,38 @@ def _vertices_np(shape):
 
 # --------------------------------------------------------------------------- solid features
 
-def extrude(profile_faces, direction: np.ndarray, depth: float, symmetric=False, depth2: float = 0.0):
+def _swept(sweeps, with_history):
+    """The fused sweeps, one per profile, and (with_history) their history, starting at the profile
+    faces the caller passed in: the placement that moved a profile, then its sweep, then fuse_all.
+
+    `sweeps` is one (maker, swept shape, profile face, placement maker or None) per profile."""
+    results = [mk.Shape() for mk, _, _, _ in sweeps]
+    if not with_history:
+        return fuse_all(results)
+    per_profile = [_chain(None if place is None else _maker_history(place, [f]),
+                          _maker_history(mk, [start], caps=True))
+                   for mk, start, f, place in sweeps]
+    shape, fused = fuse_all(results, with_history=True)
+    return shape, _chain(_chain(*per_profile), fused)
+
+
+def extrude(profile_faces, direction: np.ndarray, depth: float, symmetric=False, depth2: float = 0.0,
+            with_history=False):
     if not profile_faces:
         raise KernelError("Select sketch regions or a planar face to extrude")
     if abs(depth) < 1e-9 and abs(depth2) < 1e-9:
         raise KernelError("Depth must be non-zero")
     d = np.asarray(direction, float)
     d = d / np.linalg.norm(d)
-    results = []
+    sweeps = []
     for f in profile_faces:
-        start = f
+        start, place = f, None
         if symmetric:
             total = depth
-            start = translate(f, -d * total / 2)
+            start, place = _placed(f, _trsf_translate(-d * total / 2))
             vec = d * total
         elif depth2:
-            start = translate(f, -d * depth2)
+            start, place = _placed(f, _trsf_translate(-d * depth2))
             vec = d * (depth + depth2)
         else:
             vec = d * depth
@@ -538,20 +636,20 @@ def extrude(profile_faces, direction: np.ndarray, depth: float, symmetric=False,
         mk.Build()
         if not mk.IsDone():
             raise KernelError("Extrude failed")
-        results.append(mk.Shape())
-    return fuse_all(results)
+        sweeps.append((mk, start, f, place))
+    return _swept(sweeps, with_history)
 
 
-def revolve(profile_faces, axis_p, axis_d, angle_deg: float, symmetric=False):
+def revolve(profile_faces, axis_p, axis_d, angle_deg: float, symmetric=False, with_history=False):
     if not profile_faces:
         raise KernelError("Select sketch regions to revolve")
     ax = gp_Ax1(_pnt(axis_p), _dir(axis_d))
-    out = []
+    sweeps = []
     ang = math.radians(angle_deg)
     for f in profile_faces:
-        start = f
+        start, place = f, None
         if symmetric and angle_deg < 360:
-            start = rotate(f, axis_p, axis_d, -angle_deg / 2)
+            start, place = _placed(f, _trsf_rotate(axis_p, axis_d, -angle_deg / 2))
         if abs(angle_deg) >= 360 - 1e-9:
             mk = BRepPrimAPI_MakeRevol(start, ax)
         else:
@@ -559,26 +657,41 @@ def revolve(profile_faces, axis_p, axis_d, angle_deg: float, symmetric=False):
         mk.Build()
         if not mk.IsDone():
             raise KernelError("Revolve failed (does the profile cross the axis?)")
-        out.append(mk.Shape())
-    return fuse_all(out)
+        sweeps.append((mk, start, f, place))
+    return _swept(sweeps, with_history)
+
+
+def _placed(shape, t: gp_Trsf):
+    """The moved shape and the maker that moved it (a rigid move still has a history: every
+    sub-shape is modified into its image, so a name survives the move)."""
+    mk = BRepBuilderAPI_Transform(shape, t, True)
+    return mk.Shape(), mk
+
+
+def _trsf_translate(v) -> gp_Trsf:
+    t = gp_Trsf()
+    t.SetTranslation(_vec(v))
+    return t
+
+
+def _trsf_rotate(p, d, angle_deg) -> gp_Trsf:
+    t = gp_Trsf()
+    t.SetRotation(gp_Ax1(_pnt(p), _dir(d)), math.radians(angle_deg))
+    return t
 
 
 def translate(shape, v):
-    t = gp_Trsf()
-    t.SetTranslation(_vec(v))
-    return BRepBuilderAPI_Transform(shape, t, True).Shape()
+    return _placed(shape, _trsf_translate(v))[0]
 
 
 def rotate(shape, p, d, angle_deg):
-    t = gp_Trsf()
-    t.SetRotation(gp_Ax1(_pnt(p), _dir(d)), math.radians(angle_deg))
-    return BRepBuilderAPI_Transform(shape, t, True).Shape()
+    return _placed(shape, _trsf_rotate(p, d, angle_deg))[0]
 
 
 def mirror(shape, plane: Plane):
     t = gp_Trsf()
     t.SetMirror(gp_Ax2(_pnt(plane.origin), _dir(plane.normal)))
-    return BRepBuilderAPI_Transform(shape, t, True).Shape()
+    return _placed(shape, t)[0]
 
 
 def _solid_volume(shape):
@@ -605,8 +718,9 @@ def _plausible(cls, a, b, res):
     return vr <= min(va, vb) + tol
 
 
-def _repair(shape):
-    """OpenCascade's shape healer; returns the fixed shape only if it is now valid."""
+def _repair(shape, with_history=False):
+    """OpenCascade's shape healer; returns the fixed shape only if it is now valid. with_history=True
+    returns (shape, history of the healer's ReShape) instead, still None when the fix did not take."""
     from OCP.ShapeFix import ShapeFix_Shape
     try:
         fx = ShapeFix_Shape(shape)
@@ -614,12 +728,15 @@ def _repair(shape):
         fx.SetMaxTolerance(1e-4)
         fx.Perform()
         out = fx.Shape()
-        return out if is_valid(out) else None
+        if not is_valid(out):
+            return None
+        return (out, _maker_history(fx.Context(), [shape])) if with_history else out
     except Exception:
         return None
 
 
 def _run_boolean(cls, a, b, fuzzy, preset):
+    """(result, builder) — the builder too, because it carries the operation's history."""
     if preset:                     # settings applied before the operation runs
         op = cls()
         op.SetArguments(_list([a]))
@@ -630,57 +747,72 @@ def _run_boolean(cls, a, b, fuzzy, preset):
         op = cls(a, b)
         op.SetFuzzyValue(fuzzy)
         op.Build()
-    return op.Shape() if op.IsDone() else None
+    return (op.Shape() if op.IsDone() else None), op
 
 
-def _boolean(cls, a, b, check=False, single=False, volume_check=False):
+def _boolean(cls, a, b, check=False, single=False, volume_check=False, with_history=False):
     """check=True: careful mode for delicate geometry such as threads — the result must be a valid
     shape (OpenCascade's healer is tried on tolerance blemishes) and not empty, and exact tolerances
     are tried first. single=True: the result must be one solid (the pieces were meant to merge).
-    volume_check=True: also a rough volume sanity check."""
+    volume_check=True: also a rough volume sanity check.
+
+    with_history=True returns (shape, history) — the boolean's own history, then the refine step's,
+    then the healer's, in the order the steps ran."""
+    def done(res, *steps):
+        return (res, _chain(*steps)) if with_history else res
     if not check:
-        res = _run_boolean(cls, a, b, 1e-6, False)
+        res, op = _run_boolean(cls, a, b, 1e-6, False)
         if res is None:
             raise KernelError("Boolean operation failed")
-        return clean(res)
+        if not with_history:
+            return clean(res)
+        res, refine = clean(res, with_history=True)
+        return done(res, _maker_history(op, [a, b]), refine)
     want_solid = bool(solids(a)) and cls is not BRepAlgoAPI_Common
     for fuzzy, preset in ((0.0, True), (1e-7, True), (1e-5, True), (1e-6, False)):
-        r = _run_boolean(cls, a, b, fuzzy, preset)
+        r, op = _run_boolean(cls, a, b, fuzzy, preset)
         if r is None:
             continue
+        fixed = None
         if not is_valid(r):
-            r = _repair(r)               # usually just edge tolerances at the new cut edges
-            if r is None:
+            fix = _repair(r, with_history)  # usually just edge tolerances at the new cut edges
+            if fix is None:
                 continue
+            r, fixed = fix if with_history else (fix, None)
         n = len(solids(r))
         if (want_solid and n == 0) or (single and n != 1):
             continue
         if volume_check and not _plausible(cls, a, b, r):
             continue
-        return r
+        return done(r, _maker_history(op, [a, b]), fixed)
     raise KernelError("Boolean operation failed")
 
 
-def fuse(a, b, check=False, single=False, volume_check=False):
-    return _boolean(BRepAlgoAPI_Fuse, a, b, check, single, volume_check)
+def fuse(a, b, check=False, single=False, volume_check=False, with_history=False):
+    return _boolean(BRepAlgoAPI_Fuse, a, b, check, single, volume_check, with_history)
 
 
-def cut(a, b, check=False, volume_check=False):
-    return _boolean(BRepAlgoAPI_Cut, a, b, check, False, volume_check)
+def cut(a, b, check=False, volume_check=False, with_history=False):
+    return _boolean(BRepAlgoAPI_Cut, a, b, check, False, volume_check, with_history)
 
 
-def common(a, b, check=False, volume_check=False):
-    return _boolean(BRepAlgoAPI_Common, a, b, check, False, volume_check)
+def common(a, b, check=False, volume_check=False, with_history=False):
+    return _boolean(BRepAlgoAPI_Common, a, b, check, False, volume_check, with_history)
 
 
-def fuse_all(shapes):
+def fuse_all(shapes, with_history=False):
     shapes = [s for s in shapes if s is not None]
     if not shapes:
-        return None
+        return (None, BRepTools_History()) if with_history else None
     acc = shapes[0]
+    hist = BRepTools_History()
     for s in shapes[1:]:
-        acc = fuse(acc, s)
-    return acc
+        if not with_history:
+            acc = fuse(acc, s)
+            continue
+        acc, step = fuse(acc, s, with_history=True)
+        hist = _chain(hist, step)      # each fuse maps what the one before it made
+    return (acc, hist) if with_history else acc
 
 
 def intersects(a, b) -> bool:

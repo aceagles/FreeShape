@@ -10,22 +10,11 @@ from freeshape import kernel as K  # noqa: E402
 from freeshape import features as F  # noqa: E402
 from freeshape.document import Document  # noqa: E402
 from freeshape.sketch import Sketch  # noqa: E402
+from conftest import block_doc  # noqa: E402
 
 
 def _block_doc(fillet=False, boss=False):
-    doc = Document()
-    s = Sketch()
-    p = [s.add_point(0, 0), s.add_point(40, 0), s.add_point(40, 20), s.add_point(0, 20)]
-    for a, b in zip(p, p[1:] + p[:1]):
-        s.add_line(a, b)
-    s.solve()
-    f = doc.make_feature("sketch")
-    f["params"]["sketch"] = s.to_dict()
-    doc.add_feature(f)
-    sr = doc.state.sketches[f["id"]]
-    e = doc.make_feature("extrude")
-    e["params"].update(regions=[F.region_ref(sr, f["id"], sr.regions[0])], depth=10, op="new")
-    doc.add_feature(e)
+    doc = block_doc(40, 20, 10)
     if boss:                                              # a 5 mm high cylinder on top
         s2 = Sketch()
         s2.add_circle(s2.add_point(20, 10), 5)

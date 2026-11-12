@@ -101,11 +101,7 @@ def box(doc, w=40, d=30, h=20, op='new'):
     ex = doc.make_feature('extrude'); ex['params'].update(regions=regions(doc, sid), depth=h, op=op); doc.add_feature(ex)
     return sid, ex
 def vol(doc): return round(sum(K.volume(p.shape) for p in doc.state.parts.values()), 2)
-def add(doc, ftype, **params):
-    f = doc.make_feature(ftype); f['params'].update(params); doc.add_feature(f)
-    err = doc.errors.get(f['id'])
-    if err: raise AssertionError(f'{ftype}: {err}')
-    return f
+from conftest import add  # noqa: E402  (add a feature, raise on its rebuild error)
 
 def test_part_variables():
     doc = Document()

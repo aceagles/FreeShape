@@ -1,0 +1,108 @@
+{
+ "_meta": {
+  "cadquery-ocp": "7.9.3.1.1",
+  "note": "written by `pytest tests --update-golden`; see tests/conftest.py"
+ },
+ "rows": {
+  "bore": [
+   [
+    "Area",
+    "188.496 mm\u00b2"
+   ],
+   [
+    "Diameter",
+    "6 mm"
+   ],
+   [
+    "Radius",
+    "3 mm"
+   ]
+  ],
+  "bores": [
+   [
+    "Minimum distance",
+    "14 mm"
+   ],
+   [
+    "\u0394X \u00b7 \u0394Y \u00b7 \u0394Z",
+    "14 \u00b7 0 \u00b7 0"
+   ],
+   [
+    "Axis to axis",
+    "20 mm"
+   ],
+   [
+    "Angle",
+    "0\u00b0"
+   ]
+  ],
+  "part": [
+   [
+    "Volume",
+    "7434.51 mm\u00b3"
+   ],
+   [
+    "Surface area",
+    "3063.89 mm\u00b2"
+   ],
+   [
+    "Size",
+    "40 \u00d7 20 \u00d7 10 mm"
+   ],
+   [
+    "Mass",
+    "PLA 9.2 g \u00b7 Al 20.1 g \u00b7 steel 58.4 g"
+   ],
+   [
+    "Centre of mass",
+    "(20, 10, 5)"
+   ]
+  ],
+  "rim": [
+   [
+    "Length",
+    "18.85 mm"
+   ],
+   [
+    "Diameter",
+    "6 mm"
+   ],
+   [
+    "Radius",
+    "3 mm"
+   ],
+   [
+    "Centre",
+    "(10, 10, 10)"
+   ]
+  ],
+  "top": [
+   [
+    "Area",
+    "743.451 mm\u00b2"
+   ],
+   [
+    "Normal",
+    "(0, 0, 1)"
+   ]
+  ],
+  "top_bottom": [
+   [
+    "Minimum distance",
+    "10 mm"
+   ],
+   [
+    "\u0394X \u00b7 \u0394Y \u00b7 \u0394Z",
+    "0 \u00b7 0 \u00b7 10"
+   ],
+   [
+    "Angle",
+    "0\u00b0"
+   ],
+   [
+    "Plane to plane",
+    "10 mm"
+   ]
+  ]
+ }
+}

@@ -130,7 +130,9 @@ def test_point_normal_line_angle_and_selection_detection():
     assert F.plane_type({"type": "three_point", "refs": []}) == "three_point"
     f = doc.make_feature("plane")
     f["params"].update(refs=[edge_x, edge_x, v, v])
-    assert doc.preview(f, doc.insert_index())[1]
+    assert F.plane_type(f["params"]) is None
+    err = doc.preview(f, doc.insert_index())[1]
+    assert err and err.startswith("That selection doesn't fit a plane type"), err
 
 
 def test_curve_point_and_tangent():

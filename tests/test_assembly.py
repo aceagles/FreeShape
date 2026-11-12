@@ -91,7 +91,13 @@ def test_connector_frames(lib):
     ip = a.insert(src("plate"))
     top = face(a, ip, lambda f: f.get("n") and f["n"][2] > 0.9)
     c = a.connector(ip, "face", top)
-    assert np.allclose(c["frame"]["z"], [0, 0, 1]) and np.allclose(c["frame"]["o"], [30, 20, 10], atol=1e-6) is False
+    # a flat face's connector sits on its area centroid: the top face is 60x40 less the r=4 hole at x=15
+    a_full, a_hole = 60 * 40, np.pi * 16
+    cx = (a_full * 30 - a_hole * 15) / (a_full - a_hole)
+    assert np.allclose(c["frame"]["z"], [0, 0, 1])
+    assert np.allclose(c["frame"]["o"], [cx, 20, 10], atol=1e-9), c["frame"]["o"]
+    assert np.allclose(np.abs(c["frame"]["x"]), [1, 0, 0])             # X along the longest straight edge
+    assert c["frame"]["what"] == "flat face"
     # circular edge of the hole on the top face: centre + outward normal
     e = edge(a, ip, lambda e: near(e.get("r", 0), 4) and near(e["center"][2], 10))
     c = a.connector(ip, "edge", e)

@@ -37,7 +37,6 @@ def test_tapped_through_and_blind():
     blk = BRepPrimAPI_MakeBox(gp_Pnt(-10, -10, 0), 20, 20, 12).Shape()
     nut = K.cut_internal_thread(blk, (0, 0, 12), (0, 0, -1), 6, 1.0, 0, 9, extend=(True, False))
     _close(K.volume(blk) - K.volume(nut), rod_volume(3 - K.THREAD_H, 3, 1.0, 9))
-    return "through and blind tapped holes exact"
 
 
 def test_bolt():
@@ -47,7 +46,6 @@ def test_bolt():
     out = K.external_thread(bolt, (0, 0, 0), (0, 0, 1), rmaj, P, 0, Lt)
     assert K.is_valid(out) and len(K.solids(out)) == 1
     _close(K.volume(out), K.volume(bolt) - math.pi * rmaj ** 2 * Lt + rod_volume(rmin, rmaj, P, Lt))
-    return "M6 bolt exact"
 
 
 def test_left_hand_and_clearance():
@@ -57,7 +55,6 @@ def test_left_hand_and_clearance():
     loose = K.cut_internal_thread(blk, (0, 0, 0), (0, 0, 1), 6, 1.0, 0, 10, clearance=0.15)
     assert K.is_valid(lh) and abs(K.volume(lh) - K.volume(rh)) < 1e-3
     assert K.volume(loose) < K.volume(rh)
-    return "left-hand mirrors right-hand; clearance removes more"
 
 
 def _sketch(doc, plane, build):
@@ -93,13 +90,13 @@ def test_hole_and_thread_features():
     th = doc.make_feature("thread"); th["params"]["faces"] = [F.make_ref(pid, hole, "face", shape)]
     doc.add_feature(th)
     assert not doc.errors, doc.errors
-    return "Hole (modelled M5) and Thread on a Ø5 hole (auto M6)"
 
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
-            print("ok  ", name, "-", fn())
+            fn()
+            print("ok  ", name)
 
 
 def test_thread_whole_length_of_plain_rod():

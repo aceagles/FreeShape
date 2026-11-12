@@ -144,4 +144,5 @@ def test_offset_surface_flat_and_curved():
 
 def test_offset_surface_needs_a_selection():
     st, err = _run(_block_doc(), "offset_surface", faces=[], distance=2.0)
-    assert err
+    assert err == "Select faces to offset", err
+    assert len(st.parts) == 1                                      # nothing was added

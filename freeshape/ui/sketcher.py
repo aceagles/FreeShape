@@ -168,9 +168,11 @@ class Sketcher:
             for cid, r in self._dim_rects.items():
                 if r.contains(QPointF(x, y)) and cid not in exclude:
                     return ("constraint", cid)
-            for r, cid in self._glyph_rects:
-                if r.contains(QPointF(x, y)) and cid not in exclude:
-                    return ("constraint", cid)
+            # a point under a constraint glyph (e.g. the "M" badge beside a midpoint) wins over the glyph
+            if "point" not in kinds or self.hit(vp, x, y, kinds=("point",), exclude=exclude) is None:
+                for r, cid in self._glyph_rects:
+                    if r.contains(QPointF(x, y)) and cid not in exclude:
+                        return ("constraint", cid)
         if "point" in kinds:
             best = (8.0, None)
             for pid, p in self.sk.points.items():
@@ -250,6 +252,14 @@ class Sketcher:
             if "V" in pick:
                 u = pick["V"][1][0]
             uv = np.array([u, v])
+            # an existing point at the aligned position wins over the alignment guide (snap onto it, no free point)
+            sp = self.scr(vp, uv)
+            near = self.hit(vp, float(sp[0]), float(sp[1]), kinds=("point",), exclude=exclude)
+            if near and not (anchor_uv is not None
+                             and np.linalg.norm(self.sk.P(near[1]) - np.asarray(anchor_uv, float)) < 1e-9):
+                self.infer_hits = []
+                self._acquire_source(near[1], anchor_uv)
+                return np.array(self.sk.points[near[1]]), near
             for axis, (ref, s_uv) in pick.items():
                 self.infer_hits.append((s_uv, axis))
                 if ref is None:
@@ -689,8 +699,26 @@ class Sketcher:
             return self.sk.entities[i]["p"]
         return i
 
+    # constraints that hang off a single point (refs[0]); selecting one stands for that point
+    _POINT_CONSTRAINTS = ("midpoint", "fix", "coincident", "point_on")
+
+    def _resolve_pick(self, p):
+        """A selected sketch point / entity id as is; a constraint id attached to a point becomes that point."""
+        if p in self.sk.points or p in self.sk.entities:
+            return p
+        c = self._constraint(p)
+        if c and c["type"] in self._POINT_CONSTRAINTS and c["refs"] and c["refs"][0] in self.sk.points:
+            return c["refs"][0]
+        return None
+
     def _apply_constraint(self, tool, picks) -> bool:
-        picks = [p for p in picks if p in self.sk.points or p in self.sk.entities]
+        raw = list(picks)
+        picks = []
+        for p in raw:
+            r = self._resolve_pick(p)
+            if r is not None and r not in picks:
+                picks.append(r)
+        dropped = len(picks) < len(raw)
         types = [self._etype(p) for p in picks]
         sk = self.sk
         curves = ("circle", "arc")
@@ -761,6 +789,11 @@ class Sketcher:
                     made.append(("symmetric", [ea["p1"], q1, axis], None))
                     made.append(("symmetric", [ea["p2"], q2, axis], None))
         if not made:
+            need = {"fix": 1, "symmetric": 3}.get(tool, 2)
+            if dropped or len(picks) >= need:
+                # the selection cannot be used: say what the tool wants instead of doing nothing
+                self._flashing = True
+                self._prompt_label = "⚠ " + CONSTRAINT_TOOLS.get(tool, "Selection does not fit this constraint")
             return False
         self.push_undo()
         for t, refs, val in made:

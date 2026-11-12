@@ -22,7 +22,7 @@ from OCP.TopAbs import TopAbs_IN, TopAbs_REVERSED
 from OCP.TopoDS import TopoDS_Shape
 from OCP.gp import gp_Pnt
 
-from conftest import ANALYTIC, FREEFORM, ROOT
+from conftest import ANALYTIC, FREEFORM, ROOT, shape_fingerprint
 from freeshape import kernel as K
 
 DATA = os.path.join(ROOT, "tests", "data", "freecad")
@@ -63,6 +63,8 @@ CASES = [
     Case("holes_in_face2", "brep/holesInFace2.brep", "brep", True, 1, 1, ANALYTIC, 120),
     Case("schenkel", "step/Schenkel.stp", "step", True, 1, 1, FREEFORM, 11672),
     Case("groove002", "brep/groove002.brep", "brep", True, 1, 1, ANALYTIC, 1391),
+    Case("hole_puzzle", "brep/hole_puzzle_partshape4.brep.gz", "brep.gz", True, 1, 2, FREEFORM, 16041,
+         ops=("cut",)),
     Case("assembly_shape015", "brep/assembly_shape015.brep", "brep", True, 1, 1, ANALYTIC, 2232),
 ]
 
@@ -93,6 +95,12 @@ def load(case: Case):
         assert len(items) == 1, [n for _, n, _, _ in items]
         return items[0][0]
     raise ValueError(case.loader)
+
+
+@functools.lru_cache(maxsize=None)
+def fingerprint(case: Case):
+    """shape_fingerprint of the loaded shape (the integration of freeform faces is the slow part)."""
+    return shape_fingerprint(load(case))
 
 
 @functools.lru_cache(maxsize=None)

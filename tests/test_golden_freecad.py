@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from conftest import add, assert_golden, shape_fingerprint
-from freecad_shapes import (CASES, data_path, fillet_choice, half_box, load, mesh, open_mesh_edges,
+from freecad_shapes import (CASES, data_path, fillet_choice, fingerprint, half_box, load, mesh, open_mesh_edges,
                             referenced_normals)
 from freeshape import kernel as K
 from freeshape.document import Document
@@ -32,7 +32,7 @@ def test_import_counts(case):
     shape = load(case)
     assert not shape.IsNull()
     assert len(K.solids(shape)) == case.solids
-    fp = shape_fingerprint(shape)
+    fp = fingerprint(case)
     assert (fp["solids"], fp["shells"]) == (case.solids, case.shells)
     assert fp["faces"] > 0
 
@@ -44,7 +44,7 @@ def test_validity_matches_expectation(case):
 
 @pytest.mark.parametrize("case", CASES, ids=_ids(CASES))
 def test_fingerprint_golden(case):
-    assert_golden(f"freecad/{case.id}", shape_fingerprint(load(case)), case.tol)
+    assert_golden(f"freecad/{case.id}", fingerprint(case), case.tol)
 
 
 # ----------------------------------------------------------------------------- Schenkel through both STEP paths
@@ -62,7 +62,7 @@ def test_schenkel_part_studio_import_feature():
     add(doc, "import", data=data, filename="Schenkel.stp")
     parts = list(doc.state.parts.values())
     assert [p.name for p in parts] == ["Schenkel"]
-    direct = shape_fingerprint(load(next(c for c in CASES if c.id == "schenkel")))
+    direct = fingerprint(next(c for c in CASES if c.id == "schenkel"))
     via_feature = shape_fingerprint(parts[0].shape)
     assert via_feature["faces"] == direct["faces"] == 409
     assert via_feature["valid"] and via_feature["volume"] == pytest.approx(direct["volume"], rel=1e-6)
@@ -119,4 +119,4 @@ def test_fillet_longest_convex_edge(case):
     edge, radius = pick
     out = K.fillet(shape, [edge], radius)
     assert K.is_valid(out)
-    assert abs(K.volume(out) - K.volume(shape)) < 0.2 * K.volume(shape)
+    assert abs(K.rough_volume(out) - K.rough_volume(shape)) < 0.2 * K.rough_volume(shape)

@@ -19,6 +19,7 @@ from .. import features as F
 from ..document import Document
 from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
+from .. import links
 from ..sketch import Sketch
 from . import theme, navstyles
 from .icons import icon
@@ -78,6 +79,9 @@ class MainWindow(QMainWindow):
         self.section_panel = None
         from PySide6.QtCore import QSettings
         self.settings = QSettings("FreeShape", "FreeShape")
+        self.resolver = links.LinkResolver(find_open_studio=self._find_open_studio,
+                                           find_open_assembly=self._find_open_assembly,
+                                           flat_pattern_of=self.flat_pattern_of)
         self._build_ui()
         self._bind_shortcuts()
         self.set_theme(str(self.settings.value("theme", "light")), save=False)
@@ -1408,8 +1412,7 @@ class MainWindow(QMainWindow):
             if not (doc.dirty and self._has_content(doc)):
                 continue
             try:
-                if doc.kind == "assembly":
-                    self._update_link_paths(doc)
+                links.repair_links(self.resolver, doc)
                 d = json.loads(doc.to_json())
                 d["autosave"] = {"path": doc.path, "name": doc.name, "time": time.time()}
                 tmp = self._autosave_path(doc) + ".tmp"
@@ -2292,61 +2295,7 @@ class MainWindow(QMainWindow):
         self._add_tab(g)
 
     def _resolve_drawing_source(self, src):
-        """The shape a drawing shows (kept as the same object while the model is unchanged, so views aren't
-        worked out again for nothing)."""
-        cache = self.__dict__.setdefault("_dwg_shapes", {})
-        if src.get("kind") == "assembly":
-            asm = next((d for d in self.docs.values() if d.kind == "assembly" and d.uid == src.get("uid")), None)
-            if asm is None and src.get("path"):
-                ap = os.path.abspath(src["path"])
-                asm = next((d for d in self.docs.values() if d.kind == "assembly" and d.path
-                            and os.path.abspath(d.path) == ap), None)
-                if asm is None and os.path.exists(ap):
-                    asm = AssemblyDoc.load(ap, resolver=self._resolve_source)
-            if asm is None:
-                raise K.KernelError(f"Assembly “{src.get('name', '?')}” isn't open")
-            src["name"] = asm.name
-            if asm.path:
-                src["path"] = os.path.abspath(asm.path)
-            items = [(id(asm.parts[i["id"]].shape), tuple(np.round(np.array(i["T"], float).ravel(), 9)))
-                     for i in asm.visible_instances() if i["id"] in asm.parts]
-            key = ("asm", src.get("uid"), tuple(items))
-            if key not in cache:
-                cache[key] = K.compound([K.located(asm.parts[i["id"]].shape, np.array(i["T"], float))
-                                         for i in asm.visible_instances() if i["id"] in asm.parts])
-            return cache[key]
-        studio = self.studio_by_uid(src.get("uid"), src.get("path"), load=True)
-        if studio is None:
-            raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
-        src["studio_name"] = studio.name
-        src["uid"] = studio.uid
-        if studio.path:
-            src["path"] = os.path.abspath(studio.path)
-        if src.get("part") in (None, "*"):
-            parts = [p for p in studio.state.parts.values() if p.id not in studio.hidden_parts]
-            if not parts:
-                raise K.KernelError(f"“{studio.name}” has no parts")
-            if len(parts) == 1:
-                return parts[0].shape
-            key = ("studio", studio.uid, tuple(id(p.shape) for p in parts))
-            if key not in cache:
-                cache[key] = K.compound([p.shape for p in parts])
-            return cache[key]
-        p = studio.state.parts.get(src["part"])
-        if p is None:
-            raise K.KernelError(f"The part no longer exists in “{studio.name}”")
-        src["part_name"] = p.name
-        if src.get("flat"):
-            if p.id not in getattr(studio.state, "sheet", {}):
-                raise K.KernelError(f"“{p.name}” isn't sheet metal any more")
-            fp = self.flat_pattern_of(studio.state, p.id)
-            # bend lines go on the drawing too (kept in the source, so they're there when reopened)
-            src["bends"] = [[list(map(float, a)), list(map(float, b)), lab] for a, b, lab in fp.bend_lines]
-            key = ("flat", studio.uid, p.id, id(p.shape))
-            if key not in cache:
-                cache[key] = fp.solid()
-            return cache[key]
-        return p.shape
+        return self.resolver.resolve_drawing_source(src)
 
     # ------------------------------------------------------------------ links between tabs
     def studio_docs(self):
@@ -2357,59 +2306,41 @@ class MainWindow(QMainWindow):
                 out.append(d)
         return out
 
-    def studio_by_uid(self, uid, path=None, load=False, show=False):
-        """The Part Studio an assembly instance links to: an open tab (by id, then by file), else the file."""
+    def _find_open_studio(self, uid, path):
         studios = self.studio_docs()
         doc = next((d for d in studios if uid and d.uid == uid), None)
         if doc is None and path:
             ap = os.path.abspath(path)
             doc = next((d for d in studios if d.path and os.path.abspath(d.path) == ap), None)
-        if doc is not None:
-            if show:
-                self.tabs.setCurrentIndex(self._tab_index(doc))
-            return doc
-        if not (load and path and os.path.exists(path)):
-            return None
+        return doc
+
+    def _find_open_assembly(self, uid, path):
+        asms = [d for d in self.docs.values() if d.kind == "assembly"]
+        doc = next((d for d in asms if uid and d.uid == uid), None)
+        if doc is None and path:
+            ap = os.path.abspath(path)
+            doc = next((d for d in asms if d.path and os.path.abspath(d.path) == ap), None)
+        return doc
+
+    def studio_by_uid(self, uid, path=None, load=False, show=False):
+        """The Part Studio an assembly instance links to: an open tab (by id, then by file), else the file."""
         if show:
+            return self._show_studio(uid, path, load)
+        return self.resolver.studio_by_uid(uid, path, load=load)
+
+    def _show_studio(self, uid, path, load):
+        """studio_by_uid(show=True): switch to the tab if it's already open, else open it in one."""
+        doc = self.resolver.studio_by_uid(uid, path)
+        if doc is not None:
+            self.tabs.setCurrentIndex(self._tab_index(doc))
+            return doc
+        if load and path and os.path.exists(path):
             self.open_file(path)
-            return self.studio_by_uid(uid, path)
-        cache = self.__dict__.setdefault("_linked_docs", {})
-        ap = os.path.abspath(path)
-        mtime = os.path.getmtime(ap)
-        hit = cache.get(ap)
-        if hit is None or hit[0] != mtime:
-            try:
-                hit = (mtime, Document.load(ap))
-            except Exception:
-                return None
-            cache[ap] = hit
-        return hit[1]
+            return self.resolver.studio_by_uid(uid, path)
+        return None
 
     def _resolve_source(self, src):
-        studio = self.studio_by_uid(src.get("uid"), src.get("path"), load=True)
-        if studio is None:
-            raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
-        if studio.path and src.get("path") != studio.path:
-            src["path"] = studio.path
-        src["studio_name"] = studio.name
-        if studio.uid != src.get("uid"):
-            src["uid"] = studio.uid
-        p = studio.state.parts.get(src.get("part"))
-        if p is None:
-            raise K.KernelError(f"The part no longer exists in “{studio.name}”")
-        return p
-
-    def _update_link_paths(self, asm):
-        """Record where each linked Part Studio is saved now, so the assembly finds it next time."""
-        for inst in asm.instances:
-            src = inst["source"]
-            if src.get("kind") != "studio":
-                continue
-            st = next((d for d in self.studio_docs() if d.uid == src.get("uid")), None)
-            if st is not None:
-                src["studio_name"] = st.name
-                if st.path:
-                    src["path"] = os.path.abspath(st.path)
+        return self.resolver.resolve_source(src)
 
     def open_studio_for_link(self, path):
         """Open a Part Studio file in a background tab (keeping the current tab), for inserting from it."""
@@ -2494,8 +2425,9 @@ class MainWindow(QMainWindow):
     def save(self):
         if not self.doc.path:
             return self.save_as()
+        if self.is_asm or self.is_dwg:
+            links.repair_links(self.resolver, self.doc)
         if self.is_asm:
-            self._update_link_paths(self.doc)
             unsaved = sorted({s.name for s in self.studio_docs() if not s.path and any(
                 i["source"].get("uid") == s.uid for i in self.doc.instances)})
             if unsaved:

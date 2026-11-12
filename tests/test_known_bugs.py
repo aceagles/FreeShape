@@ -60,3 +60,36 @@ def test_mate_connector_on_chamfer_points_out():
     idx = next(i for i, f in enumerate(K.faces(part.shape)) if f.IsSame(face))
     fr = A.connector_frame(part.shape, "face", idx)
     assert np.dot(fr["z"], _true_outward(face)) > 0.99
+
+
+# --- found by the FreeCAD stress shapes in tests/data/freecad (see test_golden_freecad.py)
+
+def _case(case_id):
+    from freecad_shapes import CASES
+    return next(c for c in CASES if c.id == case_id)
+
+
+@pytest.mark.xfail(strict=True, reason="K.tessellate gives the apex face of countersink_cone.brep 0 triangles "
+                                       "(a hole in the render)")
+def test_tessellate_countersink_cone_has_triangles():
+    from freecad_shapes import mesh
+    m = mesh(_case("countersink_cone"))
+    assert len(m.tris) > 0 and all(a != b for a, b in m.face_ranges)
+
+
+@pytest.mark.xfail(strict=True, reason="K.tessellate leaves 219 open mesh edges on cylinder7_V2.brep (shapes valid; "
+                                       "the plane and cylinder faces get different boundary nodes, merge tolerance "
+                                       "1e-6 x bbox diagonal)")
+def test_tessellate_cylinder7_v2_is_watertight():
+    from freecad_shapes import load, mesh, open_mesh_edges
+    case = _case("cylinder7_v2")
+    assert open_mesh_edges(mesh(case), load(case)) == 0
+
+
+@pytest.mark.xfail(strict=True, reason="K.tessellate leaves 436 open mesh edges on cylinderSeam10.brep (valid shape; "
+                                       "cylinder, plane, BSpline and cone faces get different boundary nodes, merge "
+                                       "tolerance 1e-6 x bbox diagonal)")
+def test_tessellate_cylinder_seam10_is_watertight():
+    from freecad_shapes import load, mesh, open_mesh_edges
+    case = _case("cylinder_seam10")
+    assert open_mesh_edges(mesh(case), load(case)) == 0

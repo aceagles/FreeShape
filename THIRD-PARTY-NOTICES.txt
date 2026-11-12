@@ -41,3 +41,7 @@ PyInstaller (used to build FreeShape.exe)
   https://pyinstaller.org
 
 The full texts of the GNU LGPL v2.1 and v3 are available at https://www.gnu.org/licenses/.
+
+Test data (not shipped): tests/data/freecad/
+  FreeCAD kernel-stress shapes under LGPL-2.1+, CC-BY-SA-4.0, CC-BY-4.0 and Public Domain.
+  Sources, attribution and licence texts: tests/data/freecad/NOTICE.md and tests/data/freecad/LICENSES/

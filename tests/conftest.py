@@ -242,6 +242,31 @@ def pytest_configure(config):
     _UPDATE["on"] = bool(config.getoption("--update-golden"))
     _REPORT["path"] = config.getoption("--golden-diff-report")
     config.addinivalue_line("markers", "golden: compares against stored golden values")
+    config.addinivalue_line("markers", "slow: over ~1.5 s; skipped by `-m 'not slow'` while iterating, always run at landing")
+
+
+# Tests measured over ~1.5 s (pytest --durations, OCP 8.0, 2026-11-12). Kept as one list so the
+# fast/full split is visible in one place; re-measure with `--durations=25` when the suite changes.
+SLOW_TESTS = {
+    "test_golden_features.py::test_every_runner_is_characterised",
+    "test_golden_freecad.py::test_fillet_longest_convex_edge[schenkel]",
+    "test_golden_freecad.py::test_import_counts[hole_puzzle]",
+    "test_golden_freecad.py::test_half_box_cut_checked[hole_puzzle]",
+    "test_threads.py::test_tapped_through_and_blind",
+    "test_threads.py::test_left_hand_and_clearance",
+    "test_threads.py::test_hole_and_thread_features",
+    "test_threads.py::test_thread_whole_length_of_plain_rod",
+    "test_golden_features.py::test_save_load_roundtrip[thread_internal_auto]",
+    "test_golden_features.py::test_save_load_roundtrip[hole_tapped_modelled_m5]",
+    "test_golden_features.py::test_save_load_roundtrip[thread_internal_left_hand_clearance]",
+    "test_golden_features.py::test_save_load_roundtrip[thread_external_length]",
+}
+
+
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        if item.nodeid.split("tests/", 1)[-1] in SLOW_TESTS:
+            item.add_marker(pytest.mark.slow)
 
 
 def pytest_sessionfinish(session, exitstatus):

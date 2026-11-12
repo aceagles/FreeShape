@@ -159,6 +159,11 @@ class Viewport(QOpenGLWidget):
         self._thumb = False            # drawing a clean picture for the home page
         self._orbiting = False
         self.last_click = None
+        # hover snap points (the mate dialog sets snap_provider: Pick -> [{"type", "pw", ...}])
+        self.snap_provider = None
+        self.snap_base: Pick | None = None
+        self.snap_points: list = []
+        self.snap_hi: dict | None = None
         self._press = None
         self._last = None
         self._moved = False
@@ -1050,6 +1055,7 @@ class Viewport(QOpenGLWidget):
         self._draw_manipulators(p)
         if self.drag_handler is not None and hasattr(self.drag_handler, "draw_overlay") and not self._thumb_on():
             self.drag_handler.draw_overlay(p)
+        self._draw_snaps(p)
         self._draw_scale_bar(p)
         if self.status_text:
             f.setPixelSize(12)
@@ -1623,11 +1629,78 @@ class Viewport(QOpenGLWidget):
         xy = getattr(self, "_hover_xy", None)
         if xy is None or self._press is not None or self.sketcher:
             return
+        if self.snap_provider is not None and self.snap_points and self._snap_near(*xy) is not None:
+            # a dot is under the cursor: keep the hovered face/edge so the dots do not vanish at its boundary
+            self._update_snap_hi(*xy)
+            self.update()
+            return
         h = self.pick(*xy)
         if h != self.hover:
             self.hover = h
             self.hoverChanged.emit(h)
-            self.update()
+        self._update_snaps(h, *xy)
+        self.update()
+
+    SNAP_PX = 12.0          # a snap point this close to the cursor is taken
+    SNAP_CENTER_BONUS = 5.0  # circle centres win over nearer dots within this many pixels
+
+    def _snap_near(self, x, y):
+        best, best_s = None, None
+        for c in self.snap_points:
+            sp = self.cam.to_screen(np.asarray(c["pw"], float))
+            d = math.hypot(sp[0] - x, sp[1] - y)
+            if d > self.SNAP_PX:
+                continue
+            sc = d - (self.SNAP_CENTER_BONUS if c.get("type") == "center" else 0.0)
+            if best_s is None or sc < best_s:
+                best, best_s = c, sc
+        return best
+
+    def _update_snap_hi(self, x, y):
+        self.snap_hi = self._snap_near(x, y)
+
+    def _update_snaps(self, h, x, y):
+        """Refresh the snap dots for the hovered pick (only when the pick changed), then the highlighted one."""
+        if self.snap_provider is None:
+            return
+        if h is None or h.kind not in ("face", "edge"):
+            self.snap_base, self.snap_points = None, []
+        elif h != self.snap_base:
+            self.snap_base = h
+            try:
+                self.snap_points = list(self.snap_provider(h))
+            except Exception:
+                self.snap_points = []
+        self._update_snap_hi(x, y)
+
+    def clear_snaps(self):
+        self.snap_base, self.snap_points, self.snap_hi = None, [], None
+
+    def _draw_snaps(self, p: QPainter):
+        if not self.snap_points:
+            return
+        for c in self.snap_points:
+            sp = self.cam.to_screen(np.asarray(c["pw"], float))
+            pt = QPointF(float(sp[0]), float(sp[1]))
+            if c is self.snap_hi:
+                continue
+            p.setPen(QPen(QColor(255, 255, 255, 230), 1.5))
+            p.setBrush(QColor(31, 111, 209))
+            p.drawEllipse(pt, 3.5, 3.5)
+        if self.snap_hi is not None:
+            sp = self.cam.to_screen(np.asarray(self.snap_hi["pw"], float))
+            pt = QPointF(float(sp[0]), float(sp[1]))
+            p.setPen(QPen(QColor(255, 255, 255, 240), 2))
+            p.setBrush(QColor(255, 150, 20))
+            p.drawEllipse(pt, 6, 6)
+            label = {"center": "Circle centre", "mid": "Edge midpoint", "vertex": "Vertex",
+                     "centroid": "Face centre"}.get(self.snap_hi.get("type"), "")
+            if label:
+                f = QFont()
+                f.setPixelSize(11)
+                p.setFont(f)
+                p.setPen(QColor(theme.TEXT_MUTED))
+                p.drawText(QPointF(pt.x() + 10, pt.y() - 8), label)
 
     def _thumb_on(self):
         return bool(getattr(self, "_thumb", False))
@@ -1859,6 +1932,7 @@ class Viewport(QOpenGLWidget):
             self.update()
 
     def leaveEvent(self, e):
+        self.clear_snaps()
         if self.hover:
             self.hover = None
             self.hoverChanged.emit(None)

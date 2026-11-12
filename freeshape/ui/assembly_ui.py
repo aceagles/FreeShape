@@ -521,16 +521,29 @@ class MateDialog(QFrame):
                 f.text.setStyleSheet("")
         self.ctl.update_triads()
 
+    def snap_candidates(self, pick: Pick):
+        """Snap points for the viewport to draw while hovering a face or edge."""
+        if pick.kind not in ("face", "edge"):
+            return []
+        iid, idx = pick.key
+        return self.doc.snap_points(iid, pick.kind, idx)
+
     def handle_pick(self, pick: Pick):
+        vp = self.ctl.w.viewport
+        snap, base = vp.snap_hi, vp.snap_base
+        if snap is not None and base is not None and base.kind in ("face", "edge"):
+            pick = base                      # a highlighted snap point wins over whatever is under the cursor
+        else:
+            snap = None
+        vp.clear_snaps()
         if pick.kind not in ("face", "edge"):
             return
         iid, idx = pick.key
-        vp = self.ctl.w.viewport
         click = vp.surface_point(*vp.last_click) if vp.last_click else None
         if pick.kind == "edge" and vp.last_click:
             click = None
         try:
-            c = self.doc.connector(iid, pick.kind, idx, click)
+            c = self.doc.connector(iid, pick.kind, idx, click, snap)
         except Exception as e:
             self._error(f"Can't use that: {e}")
             return
@@ -990,6 +1003,7 @@ class AssemblyController:
         self.mate_dialog.accepted.connect(self._mate_accepted)
         self.mate_dialog.rejected.connect(self._mate_rejected)
         self.vp.pick_handler = self.mate_dialog.handle_pick
+        self.vp.snap_provider = self.mate_dialog.snap_candidates
         self.panel.populate(self.doc, None if is_new else m["id"])
 
     def edit_mate(self, mid):
@@ -1006,6 +1020,8 @@ class AssemblyController:
         self.w.mode = "idle"
         vp = self.vp
         vp.pick_handler = None
+        vp.snap_provider = None
+        vp.clear_snaps()
         vp.select_filter = None
         vp.clear_selection()
         return d

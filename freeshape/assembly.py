@@ -210,6 +210,85 @@ def connector_frame(shape, kind, index, click=None):
     return {"o": K._np(p), "z": z, "x": perp(z), "what": "edge"}
 
 
+# =========================================================================== hover snap points
+
+SNAP_WHAT = {"center": "circle centre", "mid": "edge midpoint", "vertex": "vertex", "centroid": "face centre"}
+
+
+def snap_candidates(shape, kind, index):
+    """Snap points (part coordinates) offered while hovering a face or edge: circle/arc centres, straight-edge
+    midpoints, vertices and, for a face, its centroid. Each is {"type", "p", "edge"} where `edge` is the index of
+    the edge it comes from (centres and midpoints) or None."""
+    from OCP.GeomAbs import GeomAbs_Line, GeomAbs_Circle
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    all_e = K.edges(shape)
+
+    def eidx(e):
+        for i, o in enumerate(all_e):
+            if o.IsSame(e):
+                return i
+        return None
+
+    if kind == "face":
+        f = K.faces(shape)[index]
+        planar = "n" in K.face_info(f)
+        subs, vsrc = K.edges(f), f
+    else:
+        subs, vsrc, planar = [all_e[index]], all_e[index], True
+    centres, mids = [], []
+    for e in subs:
+        ct = BRepAdaptor_Curve(e).GetType()
+        ei = K.edge_info(e)
+        if ct == GeomAbs_Circle:
+            centres.append({"type": "center", "p": np.array(ei["center"], float), "edge": eidx(e)})
+        elif ct == GeomAbs_Line and planar:
+            mids.append({"type": "mid", "p": (np.array(ei["p0"], float) + np.array(ei["p1"], float)) / 2,
+                         "edge": eidx(e)})
+    verts = [{"type": "vertex", "p": np.asarray(v, float), "edge": None} for v in K._vertices_np(vsrc)]
+    out = centres + verts + mids
+    if kind == "face":
+        out.append({"type": "centroid", "p": np.array(K.face_info(K.faces(shape)[index])["c"], float), "edge": None})
+    lo, hi = K.bbox(shape)
+    tol = max(float(np.linalg.norm(hi - lo)), 1e-6) * 1e-6
+    kept = []
+    for c in out:                                   # coincident points: the first (most specific) wins
+        if not any(np.linalg.norm(c["p"] - k["p"]) < tol for k in kept):
+            kept.append(c)
+    return kept
+
+
+def snap_frame(shape, kind, index, snap):
+    """Connector frame for a snap point on face/edge `index`. `snap` is the stored form {"type", "p", "edge_ref"}.
+    Z is the face normal (the circle axis, signed outward, for a centre); X is the part's X axis projected
+    onto the plane (perp), so it does not depend on which edge happens to be longest."""
+    t = snap["type"]
+    p = np.asarray(snap["p"], float)
+    if t == "center":
+        ei = _refind(shape, snap["edge_ref"], "edge")
+        if ei is None:
+            raise ValueError("snap edge not found")
+        base = connector_frame(shape, "edge", ei)
+        o = np.array(K.edge_info(K.edges(shape)[ei])["center"], float)
+    elif t == "mid":
+        ei = _refind(shape, snap["edge_ref"], "edge")
+        if ei is None:
+            raise ValueError("snap edge not found")
+        info = K.edge_info(K.edges(shape)[ei])
+        o = (np.array(info["p0"], float) + np.array(info["p1"], float)) / 2
+        base = connector_frame(shape, kind, index, o if kind == "face" else None)
+    elif t == "vertex":
+        vs = [c["p"] for c in snap_candidates(shape, kind, index) if c["type"] == "vertex"]
+        if not vs:
+            raise ValueError("no vertex")
+        o = min(vs, key=lambda v: float(np.linalg.norm(v - p)))
+        base = connector_frame(shape, kind, index, o if kind == "face" else None)
+    else:
+        base = connector_frame(shape, "face", index)
+        o = base["o"]
+    z = unit(base["z"])
+    return {"o": np.asarray(o, float), "z": z, "x": perp(z), "what": SNAP_WHAT.get(t, "snap point")}
+
+
 def frame_to_json(fr):
     return {"o": [float(a) for a in fr["o"]], "z": [float(a) for a in fr["z"]], "x": [float(a) for a in fr["x"]],
             "what": fr.get("what", "")}
@@ -477,7 +556,10 @@ class AssemblyDoc:
                         self.errors[m["id"]] = "Lost its connector after the part changed — edit the mate to re-pick"
                         continue
                     try:
-                        fr = connector_frame(shp, c["kind"], ok_idx, c.get("click"))
+                        if c.get("snap"):
+                            fr = snap_frame(shp, c["kind"], ok_idx, c["snap"])
+                        else:
+                            fr = connector_frame(shp, c["kind"], ok_idx, c.get("click"))
                         c["frame"] = frame_to_json(fr)
                         c["index"] = ok_idx
                     except Exception:
@@ -646,17 +728,39 @@ class AssemblyDoc:
             self.solve(keep=iid)
         self.notify()
 
-    def connector(self, iid, kind, index, click_world=None):
-        """Make a connector dict for a picked face/edge of an instance (stored in part coordinates)."""
+    def connector(self, iid, kind, index, click_world=None, snap=None):
+        """Make a connector dict for a picked face/edge of an instance (stored in part coordinates).
+        `snap` is a candidate from snap_points(); the connector is then built at that point."""
         p = self.parts[iid]
         T = self.T(iid)
         click = None
         if click_world is not None:
             Ti = np.linalg.inv(T)
             click = (Ti[:3, :3] @ np.asarray(click_world, float) + Ti[:3, 3]).tolist()
-        fr = connector_frame(p.shape, kind, index, click)
-        return {"inst": iid, "kind": kind, "index": int(index), "click": click,
-                "ref": _ref_signature(p.shape, kind, index), "frame": frame_to_json(fr)}
+        out = {"inst": iid, "kind": kind, "index": int(index), "click": click,
+               "ref": _ref_signature(p.shape, kind, index)}
+        if snap is not None:
+            st = {"type": snap["type"], "p": [float(a) for a in snap["p"]],
+                  "edge_ref": _ref_signature(p.shape, "edge", snap["edge"]) if snap.get("edge") is not None else None}
+            out["snap"] = st
+            fr = snap_frame(p.shape, kind, index, st)
+        else:
+            fr = connector_frame(p.shape, kind, index, click)
+        out["frame"] = frame_to_json(fr)
+        return out
+
+    def snap_points(self, iid, kind, index):
+        """Hover snap candidates for a face/edge of an instance, each with its world position under "pw"."""
+        p = self.parts.get(iid)
+        if p is None:
+            return []
+        T = self.T(iid)
+        out = []
+        for c in snap_candidates(p.shape, kind, index):
+            d = dict(c)
+            d["pw"] = T[:3, :3] @ c["p"] + T[:3, 3]
+            out.append(d)
+        return out
 
     def world_frame(self, c):
         return transform_frame(self.T(c["inst"]), frame_from_json(c["frame"]))

@@ -22,6 +22,25 @@ from .expr import parse_number, var_names
 
 DEFAULT_COLOR = (0.60, 0.74, 0.85)      # Onshape-style steel blue
 
+# Muted colours for new parts, in creation order (the first is DEFAULT_COLOR). Mid-light so they read on light and dark themes.
+PART_PALETTE = (
+    DEFAULT_COLOR,              # steel blue
+    (0.93, 0.66, 0.45),         # apricot
+    (0.55, 0.78, 0.60),         # sage green
+    (0.84, 0.58, 0.68),         # dusty rose
+    (0.72, 0.66, 0.88),         # lavender
+    (0.90, 0.80, 0.45),         # mustard
+    (0.50, 0.78, 0.78),         # teal
+    (0.80, 0.62, 0.52),         # clay
+    (0.66, 0.76, 0.46),         # olive
+    (0.62, 0.68, 0.80),         # slate blue
+)
+
+
+def palette_color(n):
+    """Colour for the n-th part (1-based) created in a replay."""
+    return PART_PALETTE[(n - 1) % len(PART_PALETTE)]
+
 FEATURE_LABELS = {
     "sketch": "Sketch", "extrude": "Extrude", "revolve": "Revolve", "fillet": "Fillet",
     "chamfer": "Chamfer", "shell": "Shell", "plane": "Plane", "mirror": "Mirror",
@@ -165,8 +184,10 @@ class ModelState:
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet))
 
-    def new_part(self, shape, fid, color=DEFAULT_COLOR):
+    def new_part(self, shape, fid, color=None):
         self.part_counter += 1
+        if color is None:
+            color = palette_color(self.part_counter)
         pid = f"{fid}:{self.part_counter}"
         p = Part(pid, f"Part {self.part_counter}", shape, color)
         self.parts[pid] = p
@@ -891,7 +912,7 @@ def run_import(state, f):
         except Exception:
             items = [(s, None, None, {}) for s in K.import_step(path)]   # plain geometry as a fallback
         for shape, name, color, fcols in items:
-            part = state.new_part(shape, f["id"], tuple(color) if color else DEFAULT_COLOR)
+            part = state.new_part(shape, f["id"], tuple(color) if color else None)
             state.parts[part.id] = Part(part.id, name or part.name, part.shape, part.color, fcols or None)
     finally:
         os.unlink(path)

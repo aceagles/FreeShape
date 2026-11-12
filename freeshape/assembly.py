@@ -20,6 +20,7 @@ import uuid
 import numpy as np
 
 from . import kernel as K
+from . import migrations as M
 
 MATE_TYPES = {
     "fastened": ("Fastened", "No motion — the parts are locked together"),
@@ -31,7 +32,6 @@ MATE_TYPES = {
 }
 MATE_DOF = {"fastened": 0, "revolute": 1, "slider": 1, "cylindrical": 2, "planar": 3, "ball": 3}
 FILE_FORMAT = "freeshape-assembly"
-FILE_VERSION = 1
 INSTANCE_COLORS = [(0.60, 0.74, 0.85), (0.72, 0.74, 0.78), (0.86, 0.66, 0.40), (0.56, 0.78, 0.56),
                    (0.85, 0.55, 0.55), (0.70, 0.60, 0.85), (0.50, 0.78, 0.78), (0.85, 0.78, 0.45)]
 
@@ -1208,8 +1208,8 @@ class AssemblyDoc:
                         except ValueError:
                             pass
         used = {i["source"]["blob"] for i in self.instances if i["source"].get("kind") == "step"}
-        return json.dumps({"format": FILE_FORMAT, "version": FILE_VERSION, "name": self.name, "uid": self.uid,
-                           "instances": insts, "mates": self.mates,
+        return json.dumps({"format": FILE_FORMAT, "version": M.latest_version("assembly"), "name": self.name,
+                           "uid": self.uid, "instances": insts, "mates": self.mates,
                            "blobs": {k: v for k, v in self.blobs.items() if k in used}}, indent=1)
 
     def save(self, path=None):
@@ -1227,6 +1227,7 @@ class AssemblyDoc:
             d = json.load(fh)
         if d.get("format") != FILE_FORMAT:
             raise K.KernelError("Not a FreeShape assembly")
+        d = M.migrate("assembly", d, path)
         a = AssemblyDoc()
         a.name = d.get("name", "Assembly 1")
         a.uid = d.get("uid") or a.uid

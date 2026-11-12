@@ -1,0 +1,377 @@
+{
+ "format": "freeshape-drawing",
+ "version": 1,
+ "name": "Drawing 1",
+ "uid": "eec0ededdc3346718c7b506118411358",
+ "source": {
+  "kind": "studio"
+ },
+ "sheet": {
+  "size": "A4",
+  "portrait": false,
+  "scale": 1.0,
+  "projection": "first"
+ },
+ "title": {
+  "title": "",
+  "number": "",
+  "rev": "A",
+  "drawn": "",
+  "date": "12/11/2026",
+  "company": "",
+  "material": "",
+  "tolerance": "ISO 2768-m",
+  "sheet": "1/1"
+ },
+ "views": [
+  {
+   "id": "V2",
+   "type": "base",
+   "d": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "up": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "o": [
+    60.429773899500844,
+    156.99659836075406
+   ],
+   "scale": null,
+   "hidden": true,
+   "tangent": false,
+   "centre_marks": true,
+   "parent": null,
+   "align": null,
+   "label": ""
+  },
+  {
+   "id": "V3",
+   "type": "projected",
+   "d": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "up": [
+    -0.0,
+    1.0,
+    -0.0
+   ],
+   "o": [
+    60.429773899500844,
+    84.49829913037705
+   ],
+   "scale": null,
+   "hidden": true,
+   "tangent": false,
+   "centre_marks": true,
+   "parent": "V2",
+   "align": "v",
+   "label": ""
+  },
+  {
+   "id": "V4",
+   "type": "projected",
+   "d": [
+    -1.0,
+    -0.0,
+    0.0
+   ],
+   "up": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "o": [
+    221.21488699975043,
+    156.99659836075406
+   ],
+   "scale": null,
+   "hidden": true,
+   "tangent": false,
+   "centre_marks": true,
+   "parent": "V2",
+   "align": "h",
+   "label": ""
+  },
+  {
+   "id": "V5",
+   "type": "iso",
+   "d": [
+    0.5773502691896258,
+    -0.5773502691896258,
+    0.5773502691896258
+   ],
+   "up": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "o": [
+    165.85954794042306,
+    104.49829913037705
+   ],
+   "scale": null,
+   "hidden": false,
+   "tangent": true,
+   "centre_marks": false,
+   "parent": null,
+   "align": null,
+   "label": ""
+  }
+ ],
+ "annots": [],
+ "_brep": "eJyNVsGO0zAQvfsrfARCkMd2nOS4tMsJsYhWyxGFbtitVDVVS0H79zhjO8kkTom6SmyPPfPemxln1x+/1acf63P1t/p5qDcv1almbHW3Wd2t7/m2OTWH5vmVP6r3/M3uLX841Ue+qi676qlmn5td9XvfHC9csNX1/KeWTxeuBAMu7K990iEInKUQ1lsLDlMd2z+7nQxj58w45ng3XdZxiKbbJDlkXLpdafvSeA6AQp24GzEzUWr/DxNOmQ+yUFBkSuSQl1lhZLutV9GPMRcX66sLRCXwzkWHdiJuKsbEcK0HO3bYb3D0J0cGQTuWwY3f6u26R0V8UJyGAg0+511C2drTUAXsa3N4fW6Oam2L148fjtvzvjo+Xw9dWW+u51/VzoqZj7XohjSjbpGA6FWKYevZ3jg7e9TcwBQ06TiPRZmwZVvs/wvXmj3WDOpU5Mxhb1+MCRBg/9g7ap5Y758YR7OLaoHyIIKF5aGEmbS/EMQ5EUKwVGu7lmhlnyScjsGJBHRONYZQPqCbaa7CjAQEDKgjAZfEUwNKGSFouI4SxHiqxHgRh3oAOScEChsgQgBdBcW+7wPeNlQrRopVlqgCnznu+lRZZl1gdAboLFGG6mCWJtpBMwi09FlwM9sBnZHgjmbaxAsvEtEMSwvodKa4lEQR9Jz2+RC2oixC+YxZyEH5EPVVuz9VLt2YA8wHVV8S9WU5EWNp3RdDrJmvIj81cegyR1Awp0Y5qD3IvcB+WsSbyblUMlKLeNdJ06shM0rWXdWLyPpLdfRhLBFZGchGjNZ/HjeKHmoiMXEy0lBymkDFB/wTiTUtIZbGRcRgkDfrZphGGzzaR1DevlCga4XWiSKNYvFGLymXRyinEkCBXxq0+2wWE1E0qWows9C6ImqxZKTErPPodefpxhouR2juolNIYHSruxJblAg9X0R5yEPMWCypMExJCpE2AZiImZEKA0dMROjjhx67KnH58fSHzgzJTDGbmNaLnQFTlpNtKbH6gsRwjeCRN5slwRJBVqmZoMkJNXcfbF6GnDL0jinF//MSRJZiDWC6HcVNg4eE+4bh0souQVhySlu09v0PxFs4cg==",
+ "_views": {
+  "model": "ad83b178db0e86d6c1daeb142b9d61971abedecb",
+  "views": [
+   {
+    "d": [
+     0.0,
+     -1.0,
+     0.0
+    ],
+    "up": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "curves": {
+     "visible": [
+      [
+       "line",
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        10.0
+       ]
+      ],
+      [
+       "line",
+       [
+        0.0,
+        0.0
+       ],
+       [
+        60.0,
+        0.0
+       ]
+      ],
+      [
+       "line",
+       [
+        60.0,
+        0.0
+       ],
+       [
+        60.0,
+        10.0
+       ]
+      ],
+      [
+       "line",
+       [
+        0.0,
+        10.0
+       ],
+       [
+        60.0,
+        10.0
+       ]
+      ]
+     ],
+     "hidden": [
+      [
+       "line",
+       [
+        19.0,
+        0.0
+       ],
+       [
+        19.0,
+        10.0
+       ]
+      ],
+      [
+       "line",
+       [
+        11.0,
+        0.0
+       ],
+       [
+        11.0,
+        10.0
+       ]
+      ]
+     ],
+     "tangent": []
+    }
+   },
+   {
+    "d": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "up": [
+     -0.0,
+     1.0,
+     -0.0
+    ],
+    "curves": {
+     "visible": [
+      [
+       "line",
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        40.0
+       ]
+      ],
+      [
+       "line",
+       [
+        0.0,
+        0.0
+       ],
+       [
+        60.0,
+        0.0
+       ]
+      ],
+      [
+       "line",
+       [
+        0.0,
+        40.0
+       ],
+       [
+        60.0,
+        40.0
+       ]
+      ],
+      [
+       "line",
+       [
+        60.0,
+        0.0
+       ],
+       [
+        60.0,
+        40.0
+       ]
+      ],
+      [
+       "circle",
+       [
+        15.0,
+        20.0
+       ],
+       4.0,
+       0.0,
+       6.283185307179586
+      ]
+     ],
+     "hidden": [],
+     "tangent": []
+    }
+   },
+   {
+    "d": [
+     -1.0,
+     -0.0,
+     0.0
+    ],
+    "up": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "curves": {
+     "visible": [
+      [
+       "line",
+       [
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        10.0
+       ]
+      ],
+      [
+       "line",
+       [
+        0.0,
+        10.0
+       ],
+       [
+        -40.0,
+        10.0
+       ]
+      ],
+      [
+       "line",
+       [
+        -40.0,
+        0.0
+       ],
+       [
+        -40.0,
+        10.0
+       ]
+      ],
+      [
+       "line",
+       [
+        0.0,
+        0.0
+       ],
+       [
+        -40.0,
+        0.0
+       ]
+      ]
+     ],
+     "hidden": [
+      [
+       "line",
+       [
+        -16.0,
+        0.0
+       ],
+       [
+        -16.0,
+        10.0
+       ]
+      ],
+      [
+       "line",
+       [
+        -24.0,
+        0.0
+       ],
+       [
+        -24.0,
+        10.0
+       ]
+      ]
+     ],
+     "tangent": []
+    }
+   }
+  ]
+ }
+}

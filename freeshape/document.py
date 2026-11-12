@@ -7,9 +7,8 @@ import json
 import traceback
 
 from . import kernel as K
+from . import migrations as M
 from .features import RUNNERS, FEATURE_LABELS, ModelState, default_params, Part, prepare, carry_face_colors
-
-FILE_VERSION = 1
 
 
 class Document:
@@ -285,8 +284,8 @@ class Document:
 
     # ------------------------------------------------------------------ files
     def to_json(self):
-        return json.dumps({"format": "freeshape", "version": FILE_VERSION, "name": self.name, "uid": self.uid,
-                           "features": self.features, "rollback": self.rollback,
+        return json.dumps({"format": "freeshape", "version": M.latest_version("document"), "name": self.name,
+                           "uid": self.uid, "features": self.features, "rollback": self.rollback,
                            "overrides": self.part_overrides, "hidden": sorted(self.hidden_parts),
                            "hidden_features": sorted(self.hidden_features)}, indent=1)
 
@@ -301,6 +300,7 @@ class Document:
     def load(path) -> "Document":
         with open(path) as fh:
             d = json.load(fh)
+        d = M.migrate("document", d, path)
         doc = Document()
         doc.name = d.get("name", "Part Studio 1")
         doc.uid = d.get("uid") or doc.uid

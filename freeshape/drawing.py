@@ -32,9 +32,9 @@ import uuid
 import numpy as np
 
 from . import kernel as K
+from . import migrations as M
 
 FILE_FORMAT = "freeshape-drawing"
-FILE_VERSION = 1
 
 SHEETS = {"A4": (297.0, 210.0), "A3": (420.0, 297.0), "A2": (594.0, 420.0), "A1": (841.0, 594.0),
           "A0": (1189.0, 841.0)}
@@ -1053,7 +1053,7 @@ class DrawingDoc:
 
     # ------------------------------------------------------------------ files
     def to_json(self, embed=True):
-        d = {"format": FILE_FORMAT, "version": FILE_VERSION, "name": self.name, "uid": self.uid,
+        d = {"format": FILE_FORMAT, "version": M.latest_version("drawing"), "name": self.name, "uid": self.uid,
              "source": copy.deepcopy(self.source), "sheet": self.sheet, "title": self.title,
              "views": self.views, "annots": self.annots}
         if embed and self.shape is not None:
@@ -1094,6 +1094,7 @@ class DrawingDoc:
             d = json.load(fh)
         if d.get("format") != FILE_FORMAT:
             raise K.KernelError("Not a FreeShape drawing")
+        d = M.migrate("drawing", d, path)
         g = DrawingDoc()
         g.name = d.get("name", "Drawing 1")
         g.uid = d.get("uid") or g.uid

@@ -13,6 +13,9 @@ Golden values
 Run `pytest tests --update-golden` to (re)write the stored values from the current build. Goldens were
 recorded on cadquery-ocp 7.9.3.1.1 (OCCT 7.9.3); each file records the version in "_meta".
 
+`pytest tests --golden-diff-report out.json` additionally lists every numeric deviation from the stored
+values at zero tolerance (largest relative first), to see how far a new kernel moved within tolerance.
+
 Helpers here are importable from test modules (`from conftest import ...`): pytest puts tests/ on sys.path.
 """
 from __future__ import annotations
@@ -225,19 +228,27 @@ def matrix_list(M):
 _GOLDEN_CACHE: dict = {}
 _GOLDEN_DIRTY: set = set()
 _UPDATE = {"on": False}
+_REPORT = {"path": None, "rows": []}
 
 
 def pytest_addoption(parser):
     parser.addoption("--update-golden", action="store_true", default=False,
                      help="rewrite tests/golden/*.json from the current build instead of comparing")
+    parser.addoption("--golden-diff-report", default=None, metavar="PATH",
+                     help="write every numeric deviation from the goldens (at zero tolerance) to PATH as JSON")
 
 
 def pytest_configure(config):
     _UPDATE["on"] = bool(config.getoption("--update-golden"))
+    _REPORT["path"] = config.getoption("--golden-diff-report")
     config.addinivalue_line("markers", "golden: compares against stored golden values")
 
 
 def pytest_sessionfinish(session, exitstatus):
+    if _REPORT["path"]:
+        rows = sorted(_REPORT["rows"], key=lambda r: -(r["rel"] or 0))
+        with open(_REPORT["path"], "w") as fh:
+            json.dump({"cadquery-ocp": OCP_VERSION, "deviations": rows}, fh, indent=1)
     for group in sorted(_GOLDEN_DIRTY):
         data = _GOLDEN_CACHE[group]
         data["_meta"] = {"cadquery-ocp": OCP_VERSION,
@@ -326,6 +337,11 @@ def assert_golden(name, value, rel_tol=ANALYTIC, abs_tol=None):
     expected = data[key]
     if abs_tol is None:
         abs_tol = rel_tol * max(1.0, _max_diag(expected))
+    if _REPORT["path"]:
+        for p, e, a, d in golden_diffs(expected, actual, 0.0, 0.0):
+            rel = d / abs(e) if d is not None and isinstance(e, (int, float)) and e else None
+            _REPORT["rows"].append({"name": name, "path": p, "expected": e, "actual": a, "abs": d, "rel": rel,
+                                    "over_tol": d is None or d > max(rel_tol * abs(float(e)), abs_tol)})
     diffs = golden_diffs(expected, actual, rel_tol, abs_tol)
     if diffs:
         lines = [f"golden mismatch for {name} (rel_tol={rel_tol:g}, abs_tol={abs_tol:g}, ocp {OCP_VERSION}):"]

@@ -697,6 +697,14 @@ def _profile_normal(state, p, profs):
     return pl.normal
 
 
+def signed_extent(value, flip=False):
+    """Onshape-style signed distance: a negative value means the other way. Returns (abs value, flip)."""
+    v = float(value)
+    if v < 0:
+        return -v, not flip
+    return v, flip
+
+
 def run_extrude(state, f):
     p = f["params"]
     profs = _profiles(state, p)
@@ -704,9 +712,8 @@ def run_extrude(state, f):
         raise K.KernelError("Select sketch regions or a planar face")
     n = _profile_normal(state, p, profs)
     op = p.get("op", "add")
-    flip = p.get("flip", False)
     end = p.get("end", "blind")
-    depth = float(p.get("depth", 10))
+    depth, flip = signed_extent(p.get("depth", 10), p.get("flip", False))
     symmetric = end == "symmetric"
     cutting = op in ("remove", "intersect")
     if cutting and not p.get("regions"):
@@ -723,6 +730,8 @@ def run_extrude(state, f):
             both = p.get("both", False) or (cutting and p.get("regions"))
             return K.extrude(profs, direction, dd, depth2=dd if both else 0.0)
         depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric else 0.0
+        if depth + depth2 <= 0 and depth2:
+            raise K.KernelError("The second depth cancels the first")
         return K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2)
 
     d = -n if flip else n
@@ -741,10 +750,10 @@ def run_revolve(state, f):
     p = f["params"]
     profs = _profiles(state, p)
     a, d = resolve_axis(state, p.get("axis", {}))
-    if p.get("flip"):
-        d = -d
     end = p.get("end", "full")
-    angle = 360.0 if end == "full" else float(p.get("angle", 180))
+    angle, flip = signed_extent(360.0 if end == "full" else p.get("angle", 180), p.get("flip", False))
+    if flip:
+        d = -d
     body = K.revolve(profs, a, d, angle, symmetric=(end == "symmetric"))
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"))
 

@@ -68,3 +68,20 @@ def test_too_big_fillet_is_an_error_not_a_broken_part():
     assert K.is_valid(ok) and len(K.solids(ok)) == 1
     with pytest.raises(K.KernelError, match="largest that works here is about 39"):
         K.fillet(cyl, ends, 45)
+
+
+def test_scope_survives_the_dialog_round_trip():
+    """The Merge scope field's part ids go to params and back unchanged."""
+    from freeshape.ui.dialogs import SCHEMAS, params_to_fields, fields_to_params
+    for ftype in ("extrude", "revolve", "sweep", "loft"):
+        assert any(s.get("key") == "scope" for s in SCHEMAS[ftype]), ftype
+        p = {"op": "add", "scope": ["part2", "part3"]}
+        fields = params_to_fields(ftype, p)
+        assert fields["scope"] == [("part", "part2"), ("part", "part3")]
+        out = {}
+        fields_to_params(ftype, fields, out)
+        assert out["scope"] == ["part2", "part3"]
+        fields_to_params(ftype, {}, out)
+        assert out["scope"] == []
+    spec = next(s for s in SCHEMAS["extrude"] if s.get("key") == "scope")
+    assert spec["visible"]({"op": "remove"}) and not spec["visible"]({"op": "new"})

@@ -347,8 +347,10 @@ def _hole_info(p):
     return t
 
 
-def _num(key, label, unit="mm", visible=None, minimum=None):
-    return {"t": "num", "key": key, "label": label, "unit": unit, "visible": visible, "min": minimum}
+def _num(key, label, unit="mm", visible=None, minimum=None, signed=False):
+    """signed: a negative value is allowed and means the other way (the runner flips); only zero is rejected."""
+    return {"t": "num", "key": key, "label": label, "unit": unit, "visible": visible, "min": minimum,
+            "signed": signed}
 
 
 def _choice(key, label, options, visible=None):
@@ -361,6 +363,15 @@ def _check(key, label, visible=None):
 
 def _sel(key, label, want, multi=True, visible=None):
     return {"t": "sel", "key": key, "label": label, "want": want, "multi": multi, "visible": visible}
+
+
+SCOPE_OPS = ("add", "remove", "intersect")
+SCOPE_FEATURES = ("extrude", "revolve", "sweep", "loft")
+
+
+def _scope():
+    return _sel("scope", "Merge scope (empty = every part it touches)", {"part"},
+                visible=lambda p: p.get("op", "add") in SCOPE_OPS)
 
 
 def _ops(options=None):
@@ -392,11 +403,12 @@ SCHEMAS = {
         _ops(),
         _sel("profiles", "Faces and sketch regions to extrude", {"region", "face"}),
         _choice("end", "End type", [("blind", "Blind"), ("symmetric", "Symmetric"), ("through", "Through all")]),
-        _num("depth", "Depth", visible=lambda p: p.get("end") != "through", minimum=1e-6),
+        _num("depth", "Depth", visible=lambda p: p.get("end") != "through", signed=True),
         _check("flip", "Opposite direction", visible=lambda p: p.get("end") != "symmetric"),
         _check("second", "Second end position", visible=lambda p: p.get("end") == "blind"),
         _num("depth2", "Second depth", visible=lambda p: p.get("end") == "blind" and p.get("second")),
         _check("both", "Both directions", visible=lambda p: p.get("end") == "through"),
+        _scope(),
     ],
     "revolve": [
         _ops(),
@@ -404,8 +416,9 @@ SCHEMAS = {
         _sel("axis_sel", "Revolve axis (sketch line or edge)", {"axis"}, multi=False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _choice("end", "Revolve type", [("full", "Full"), ("one", "One direction"), ("symmetric", "Symmetric")]),
-        _num("angle", "Revolve angle", unit="deg", visible=lambda p: p.get("end") != "full"),
+        _num("angle", "Revolve angle", unit="deg", visible=lambda p: p.get("end") != "full", signed=True),
         _check("flip", "Opposite direction", visible=lambda p: p.get("end") == "one"),
+        _scope(),
     ],
     "fillet": [
         _sel("edges", "Edges or faces to fillet", {"edge"}),
@@ -480,11 +493,13 @@ SCHEMAS = {
         _ops(),
         _sel("profiles", "Faces and sketch regions to sweep", {"region", "face"}),
         _sel("path", "Sweep path (sketch curves or edges)", {"path"}),
+        _scope(),
     ],
     "loft": [
         _ops(),
         _sel("profiles", "Profiles — pick them in order", {"region", "face"}),
         _check("ruled", "Straight sides (ruled)"),
+        _scope(),
     ],
     "draft": [
         _sel("faces", "Faces to draft", {"face"}),
@@ -560,6 +575,8 @@ def params_to_fields(ftype, p):
     f = {}
     if ftype in ("extrude", "revolve", "sweep"):
         f["profiles"] = [("region", r) for r in p.get("regions", [])] + [("face", r) for r in p.get("faces", [])]
+    if ftype in SCOPE_FEATURES:
+        f["scope"] = [("part", i) for i in p.get("scope", [])]
     if ftype == "sm_base":
         f["profiles"] = [("region", r) for r in p.get("regions", [])]
     if ftype == "sm_flange":
@@ -605,6 +622,8 @@ def params_to_fields(ftype, p):
 
 
 def fields_to_params(ftype, fields, p):
+    if ftype in SCOPE_FEATURES:
+        p["scope"] = [r for k, r in fields.get("scope", [])]
     if ftype == "sm_base":
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
     if ftype == "sm_flange":
@@ -904,10 +923,10 @@ class FeatureDialog(_ResizableFrame):
                 ed.setPlaceholderText(unit)
                 ed.setToolTip(f"Value in {unit}. Expressions, units and variables work: '25/2', '1 in', '#wall * 2'.")
 
-            def done(ed=ed, k=spec["key"], unit=unit, mn=spec.get("min")):
+            def done(ed=ed, k=spec["key"], unit=unit, mn=spec.get("min"), signed=spec.get("signed")):
                 txt = ed.text()
                 v = parse_number(txt, angle=(unit == "deg"), variables=self.base_state.vars)
-                bad = v is None or (mn is not None and v < mn)
+                bad = v is None or (mn is not None and v < mn) or (signed and abs(v) < 1e-6)
                 ed.setProperty("invalid", "true" if bad else "false")
                 ed.style().unpolish(ed)
                 ed.style().polish(ed)
@@ -1168,8 +1187,8 @@ class FeatureDialog(_ResizableFrame):
                 area = sum(i["area"] for i in infos) or 1.0
                 origin = sum(np.array(i["c"]) * i["area"] for i in infos) / area
                 symmetric = p.get("end") == "symmetric"
-                depth = float(p.get("depth", 10))
-                value = depth / 2 if symmetric else (-depth if p.get("flip") else depth)
+                depth, flip = F.signed_extent(p.get("depth", 10), p.get("flip"))
+                value = depth / 2 if symmetric else (-depth if flip else depth)
 
                 def on_drag(v, symmetric=symmetric):
                     if symmetric:
@@ -1201,7 +1220,7 @@ class FeatureDialog(_ResizableFrame):
                     self.schedule_preview()
                 return [{"origin": base.origin, "dir": base.normal, "value": value, "on_drag": on_drag,
                          "on_done": self.schedule_preview, "snap": self._snap_step(), "label": fmt(off) + " mm"}]
-        except (K.KernelError, KeyError, IndexError):
+        except (K.KernelError, KeyError, IndexError, ValueError):
             return []
         return []
 

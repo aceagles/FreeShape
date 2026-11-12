@@ -95,3 +95,16 @@ def test_dialog_dir_remembered_then_document_then_desktop(tmp_path):
     last.rmdir()                                                   # a vanished folder is ignored
     assert start_dir(s, "doc", None, desktop=str(desk)) == str(desk)
     assert start_dir(s, "doc", None, desktop=str(tmp_path / "gone")) == os.path.expanduser("~")
+
+
+def test_toggling_sketch_visibility_refreshes_open_feature_preview():
+    w = _window()
+    sid = sketch_feature(w.doc, lambda s: rect_lines(s, 0, 0, 10, 10))
+    w.doc.rebuild()
+    w.start_feature("extrude")
+    assert w.mode == "dialog"
+    calls = []
+    w.dialog.schedule_preview = lambda: calls.append(1)
+    w.doc.toggle_feature_hidden(sid)
+    assert calls, "showing/hiding a sketch while a feature dialog is open must refresh its preview"
+    w.cancel_dialog()

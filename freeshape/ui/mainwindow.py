@@ -745,6 +745,9 @@ class MainWindow(QMainWindow):
         self._populate_lists()
         if self.mode == "idle":
             self._show_state(self.doc.state)
+        elif self.mode == "dialog" and hasattr(self.dialog, "schedule_preview"):
+            # e.g. a sketch shown/hidden from the feature list while a feature is open: redraw its preview
+            self.dialog.schedule_preview()
         self._update_feature_hl()
         self.btn_undo.setEnabled(self.doc.can_undo())
         self.btn_redo.setEnabled(self.doc.can_redo())

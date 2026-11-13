@@ -135,6 +135,33 @@ class FolderDocument:
         self.tabs.remove(tab)
         self.errors.pop(tab_id, None)
 
+    def _context_assembly(self, tab_id, fid):
+        """(studio, the live AssemblyDoc or None) for a Context feature: the open Assembly tab named by the
+        feature's assembly id (a tab id, or the uid the capture stored), so unsaved Assembly edits count."""
+        tab = self.tab(tab_id)
+        if tab is None or tab.kind != "studio" or tab.doc is None:
+            raise K.KernelError(f"No Part Studio tab {tab_id!r}")
+        f = tab.doc.feature(fid)
+        want = ((f or {}).get("params") or {}).get("assembly")
+        asm = next((t.doc for t in self.tabs if t.kind == "assembly" and t.doc is not None
+                    and want and want in (t.id, getattr(t.doc, "uid", None))), None)
+        return tab.doc, asm
+
+    def context_status(self, tab_id, fid):
+        """"current", "out of date" or "assembly missing" for Context feature `fid` of studio tab `tab_id`.
+        A query: no Link edge, nothing rebuilt."""
+        from .document import context_status
+        doc, asm = self._context_assembly(tab_id, fid)
+        return context_status(doc, fid, asm)
+
+    def update_context(self, tab_id, fid):
+        """Recapture Context feature `fid` of studio tab `tab_id` from its Assembly tab (see
+        document.update_context). Raises KernelError when the Assembly tab or instance is missing."""
+        from .document import update_context
+        self._check_writable()
+        doc, asm = self._context_assembly(tab_id, fid)
+        update_context(doc, fid, asm)
+
     def refresh_links(self):
         """Re-read every studio's, assembly's and drawing's links against the current tabs."""
         done = set()

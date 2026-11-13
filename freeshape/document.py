@@ -60,6 +60,52 @@ def _migrate_part_ids(data):
 M.register("document", _migrate_part_ids)
 
 
+CONTEXT_CURRENT, CONTEXT_OUT_OF_DATE, CONTEXT_ASSEMBLY_MISSING = "current", "out of date", "assembly missing"
+
+
+def context_status(doc, fid, asm):
+    """Whether the "context" feature `fid` of studio `doc` still matches the Assembly `asm` (the live
+    AssemblyDoc, or None): "current", "out of date" or "assembly missing" (ADR 0004). Out of date means a
+    captured neighbour's hash differs, its position relative to the edited instance moves by more than 1e-6,
+    or a neighbour was added or removed. The edited instance's own shape is not compared. A query only:
+    nothing is rebuilt, changed or acted on. A capture that cannot be read counts as out of date."""
+    import numpy as np
+    from .assembly import capture_context
+    f = doc.feature(fid)
+    if f is None or f.get("type") != "context":
+        raise K.KernelError(f"No Context feature {fid}")
+    p = f.get("params") or {}
+    if asm is None or asm.instance(p.get("instance")) is None:
+        return CONTEXT_ASSEMBLY_MISSING
+    try:
+        stored = {n["id"]: n for n in context_listing(doc._blob_get, p.get("capture"))["neighbours"]}
+    except (blobstore.BlobError, ValueError):
+        return CONTEXT_OUT_OF_DATE
+    now = {n["id"]: n for n in capture_context(asm, p["instance"])["neighbours"]}
+    if set(now) != set(stored):
+        return CONTEXT_OUT_OF_DATE
+    for k, n in now.items():
+        if n["hash"] != stored[k]["hash"] or not np.allclose(n["T"], stored[k]["T"], rtol=0, atol=1e-6):
+            return CONTEXT_OUT_OF_DATE
+    return CONTEXT_CURRENT
+
+
+def update_context(doc, fid, asm):
+    """Recapture the "context" feature `fid` from the Assembly `asm`: new blobs, a new capture key, one undoable
+    param edit that rebuilds the studio. Raises KernelError when the Assembly or the instance is missing."""
+    from .assembly import capture_context
+    f = doc.feature(fid)
+    if f is None or f.get("type") != "context":
+        raise K.KernelError(f"No Context feature {fid}")
+    p = f.get("params") or {}
+    if asm is None or asm.instance(p.get("instance")) is None:
+        raise K.KernelError("Can't update the Context: its Assembly or instance is missing")
+    key = doc.store_context(capture_context(asm, p["instance"]))
+    new = copy.deepcopy(f)
+    new["params"]["capture"] = key
+    doc.replace_feature(new)
+
+
 class Document:
     kind = "studio"
 

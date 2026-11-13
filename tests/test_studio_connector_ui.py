@@ -127,3 +127,22 @@ def test_edge_pick(win):
     f = [g for g in win.doc.features if g["type"] == "mate_connector"][0]
     assert f["params"]["kind"] == "edge" and win.doc.errors.get(f["id"]) is None
     assert len(win.viewport.triads) == 1
+
+
+def test_owner_part_row_is_offered_for_a_face_connector(win):
+    """The Owner part row shows for a face pick too; choosing another part makes the connector that part's."""
+    from test_studio_connectors import second_part
+    doc = win.doc
+    plate = only_part(doc)
+    other = second_part(doc)
+    win.start_feature("mate_connector")
+    d = win.dialog
+    d.handle_pick(Pick("face", (plate.id, top_index(plate.shape))))
+    cb = d.widgets["owner"]
+    assert cb.isVisibleTo(d), "the Owner part row must show for a face or edge connector"
+    assert cb.currentData() is None and d.feature["params"].get("owner") is None      # default: the face's own part
+    cb.setCurrentIndex(cb.findData(other))
+    win.commit_dialog()
+    f = [x for x in doc.features if x["type"] == "mate_connector"][-1]
+    assert not doc.errors.get(f["id"])
+    assert doc.state.connectors[f["id"]]["part"] == other

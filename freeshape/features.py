@@ -1108,7 +1108,8 @@ def _derived_sketch(out, fid, label):
 
 
 def run_mate_connector(state, f):
-    """A Mate connector on a face or edge of a part (or on the studio origin, owned by a part).
+    """A Mate connector on a face or edge of a part (or on the studio origin, owned by a part). It belongs to the
+    picked element's part unless `owner` names another part or sketch (Onshape's Owner part).
     The element is found by name (`resolve`); the frame comes from assembly.connector_frame (or snap_frame for a
     snap point) and X is rebuilt from the stored `x_ref` (I1.14), so an edit that changes which face edge is
     longest does not turn X round. `flip` reverses Z and keeps X. A missing element or owner part is an error."""
@@ -1143,6 +1144,14 @@ def run_mate_connector(state, f):
             fr = AS.connector_frame(shape, kind, index, p.get("click"))
         if p.get("x_ref") is not None:
             fr = AS.apply_x_ref(fr, p["x_ref"])
+    owner = p.get("owner")
+    if owner and not ref.get("origin"):      # Owner part: the frame stays on the picked element, the owner is chosen
+        if owner in state.parts:
+            pid, sketch_fid = owner, None
+        elif owner in state.sketches:
+            pid, sketch_fid = None, owner
+        else:
+            raise K.KernelError(f"Part {owner} is gone: the mate connector has no owner")
     z = AS.unit(fr["z"])
     x = AS.unit(np.asarray(fr["x"], float) - (np.asarray(fr["x"], float) @ z) * z)
     if p.get("flip"):

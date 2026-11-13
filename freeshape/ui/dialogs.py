@@ -407,6 +407,9 @@ def _ops(options=None):
     return {"t": "ops", "key": "op", "options": options or OP_LABELS}
 
 
+OWNER_PICK = "— select —"                              # Owner part: the origin connector has no default owner
+OWNER_SAME = "Same as the picked face or edge"         # ...any other connector defaults to its element's part
+
 SCHEMAS = {
     "sm_base": [
         _sel("profiles", "Sketch region(s) — the sheet's outline", {"region"}),
@@ -592,7 +595,7 @@ SCHEMAS = {
     "mate_connector": [
         {"t": "text", "key": "name", "label": "Name", "placeholder": "e.g. Hinge pin"},
         _sel("element", "Face, edge or sketch geometry (hover for snap points)", {"element"}, multi=False),
-        {"t": "owner_part", "key": "owner", "label": "Owner part", "visible": lambda p: (p.get("ref") or {}).get("origin")},
+        {"t": "owner_part", "key": "owner", "label": "Owner part"},
         _check("flip", "Flip (reverse the Z axis)"),
     ],
     "variable": [
@@ -1098,7 +1101,7 @@ class FeatureDialog(_ResizableFrame):
             return row
         if t == "owner_part":
             cb = QComboBox()
-            cb.addItem("— select —", None)
+            cb.addItem(OWNER_PICK if (p.get("ref") or {}).get("origin") else OWNER_SAME, None)
             for pid, part in self.base_state.parts.items():
                 cb.addItem(getattr(part, "name", pid), pid)
             for sid in self.base_state.sketches:          # a sketch can own the origin connector too (I1.6)
@@ -1106,8 +1109,9 @@ class FeatureDialog(_ResizableFrame):
                 cb.addItem(f"{sf['name'] if sf else sid} (sketch)", sid)
             cb.setCurrentIndex(max(0, cb.findData(p.get(spec["key"]))))
             cb.currentIndexChanged.connect(lambda i, cb=cb, k=spec["key"]: self._set(k, cb.itemData(i)))
-            cb.setToolTip("The part or sketch the origin connector belongs to. Assemblies mate it as that part's "
-                          "or sketch's own connector.")
+            cb.setToolTip("The part or sketch the connector belongs to: Assemblies mate it as that part's or "
+                          "sketch's own connector. A connector on a face or edge belongs to that element's part "
+                          "unless you choose another; the origin connector always needs an owner.")
             self.widgets[spec["key"]] = cb
             h.addWidget(cb)
             return row
@@ -1716,6 +1720,8 @@ class FeatureDialog(_ResizableFrame):
 
     def _sync_visibility(self):
         p = self.feature["params"]
+        if self.ftype == "mate_connector" and self.widgets.get("owner") is not None:
+            self.widgets["owner"].setItemText(0, OWNER_PICK if (p.get("ref") or {}).get("origin") else OWNER_SAME)
         for spec, lab in self._info_rows:
             txt = spec["text"](p)
             lab.setText(txt)

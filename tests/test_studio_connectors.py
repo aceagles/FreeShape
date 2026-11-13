@@ -199,3 +199,36 @@ def test_moving_the_connector_changes_the_digest_but_a_sketch_rename_does_not(en
     out = engine.outputs(tab)
     assert np.allclose(out.connectors[0].frame["z"], [0, 0, -1], atol=1e-9)
     assert _digest(engine, tab) != before
+
+
+def second_part(doc):
+    """Add a second, separate part beside the plate; returns its part id."""
+    from conftest import TOP, rect_lines, region_refs, sketch_feature
+    before = set(doc.state.parts)
+    sid = sketch_feature(doc, lambda s: rect_lines(s, 100, 0, 10, 10), TOP)
+    add(doc, "extrude", regions=region_refs(doc, sid), depth=5, op="new")
+    (pid,) = set(doc.state.parts) - before
+    return pid
+
+
+def test_owner_part_can_differ_from_the_picked_faces_part():
+    """Like Onshape's Owner part: the frame sits on the picked face, the connector belongs to the chosen part."""
+    doc, _ = plate_studio()
+    plate = only_part(doc).id
+    params = connector_params(doc, name="OnPlate")
+    other = second_part(doc)
+    own = add(doc, "mate_connector", **params)
+    moved = add(doc, "mate_connector", **{**params, "name": "ForOther"}, owner=other)
+    a, b = doc.state.connectors[own["id"]], doc.state.connectors[moved["id"]]
+    assert a["part"] == plate and b["part"] == other
+    for k in ("o", "z", "x"):
+        assert np.allclose(a["frame"][k], b["frame"][k]), k      # same frame, only the owner differs
+    assert not doc.errors
+
+
+def test_owner_part_that_is_gone_is_an_error_naming_it():
+    doc, _ = plate_studio()
+    params = connector_params(doc)
+    f, err = try_add(doc, "mate_connector", **params, owner="nope/1")
+    assert err and "nope/1" in err
+    assert f["id"] not in doc.state.connectors

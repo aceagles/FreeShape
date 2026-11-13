@@ -1616,7 +1616,14 @@ def run_boolean(state, f):
 
 def run_import(state, f):
     p = f["params"]
-    data = base64.b64decode(p["data"])
+    if p.get("blob"):           # the STEP file in the blobs (I4.9): PartStudioDoc.compute hands in `get`
+        try:
+            data = p["resolved"](p["blob"])
+        except Exception as e:  # BlobError, or no `get` handed in
+            raise K.KernelError(f"The imported STEP file {p.get('filename') or ''} is missing: blob {p['blob']} "
+                                f"({e})") from e
+    else:
+        data = base64.b64decode(p["data"])
     with tempfile.NamedTemporaryFile(suffix=".step", delete=False) as tmp:
         tmp.write(data)
         path = tmp.name

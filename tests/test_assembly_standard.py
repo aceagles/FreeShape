@@ -88,9 +88,9 @@ def test_round_trip_stores_no_shape(tmp_path):
     asm.save(path)
     d = json.load(open(path))
     assert d["version"] == Mig.latest_version("assembly")
-    assert not d["blobs"]
+    assert "blobs" not in d
     for inst in d["instances"]:
-        assert "_brep" not in inst
+        assert "_brep_blob" not in inst
     assert "_brep" not in open(path).read()
     back = A.AssemblyDoc.load(path)
     assert back.errors == {}
@@ -103,8 +103,8 @@ def test_round_trip_stores_no_shape(tmp_path):
 def test_stale_brep_is_dropped_on_save(tmp_path):
     asm = A.AssemblyDoc()
     iid = asm.insert_standard_part(TYPE, PARAMS)
-    asm.instance(iid)["_brep"] = "AAAA"
-    assert "_brep" not in json.loads(asm.to_json())["instances"][0]
+    asm.instance(iid)["_brep_blob"] = "0" * 64
+    assert "_brep_blob" not in json.loads(asm.to_json())["instances"][0]
 
 
 def test_unregistered_type_loads_unresolved_and_saves_unchanged(tmp_path):

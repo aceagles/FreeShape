@@ -149,7 +149,7 @@ def test_previous_version_file_loads_with_no_relations(tmp_path, version):
     a, m1, *_ = _two_sliders()
     a.set_limits(m1["id"], "tz", -50.0, 50.0)
     d = json.loads(a.to_json())
-    assert d["version"] == M.latest_version("assembly") == 7 and d["relations"] == []
+    assert d["version"] == M.latest_version("assembly") == 8 and d["relations"] == []
     d["version"] = version
     d.pop("relations")
     path = str(tmp_path / "old.fasm")

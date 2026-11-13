@@ -144,6 +144,32 @@ def _upgrade_standard_part_source(data):
 M.register("assembly", _upgrade_standard_part_source)
 
 
+def _move_geometry_to_blobs(data):
+    """Assembly file version 7 -> 8 (I4.9, ADR 0009): binary data moves to the store's blobs, addressed by sha256.
+    An instance's base64 `_brep` becomes `_brep_blob`, the key of the same bytes; the base64 STEP files in
+    `blobs` leave the file and a `step` source's `blob` becomes the sha256 key of the decoded bytes. The bytes
+    wait in `data[blobstore.HELD]` for `from_data`, which keeps them until the next save writes them out: a
+    step has no store to write to (a loose file, a read-only Version)."""
+    from . import blobstore
+    old = data.pop("blobs", None)
+    renamed = {}
+    for key, text in (old.items() if isinstance(old, dict) else ()):
+        new = blobstore.hold_base64(data, text)
+        if new is not None:
+            renamed[key] = new
+    for inst in data.get("instances", []):
+        src = inst.get("source") or {}
+        if src.get("kind") == "step" and src.get("blob") in renamed:
+            src["blob"] = renamed[src["blob"]]
+        key = blobstore.hold_base64(data, inst.pop("_brep", None))
+        if key is not None:
+            inst["_brep_blob"] = key
+    return data
+
+
+M.register("assembly", _move_geometry_to_blobs)
+
+
 INSTANCE_COLORS = [(0.60, 0.74, 0.85), (0.72, 0.74, 0.78), (0.86, 0.66, 0.40), (0.56, 0.78, 0.56),
                    (0.85, 0.55, 0.55), (0.70, 0.60, 0.85), (0.50, 0.78, 0.78), (0.85, 0.78, 0.45)]
 
@@ -649,7 +675,11 @@ class AssemblyDoc:
         self.relations: list[dict] = []
         # explicit mate connectors at an instance's origin: {id, inst, name, kind: "origin"}; additive in .fasm
         self.connectors: list[dict] = []
-        self.blobs: dict[str, str] = {}          # embedded STEP files (base64), keyed by content hash
+        # held blobs, {sha256 key: bytes}: STEP files and saved part copies read or made since the load, written
+        # by the next save (write_blobs); the file names only the keys (I4.9)
+        self.blobs: dict[str, bytes] = {}
+        self.blob_view = None                    # this tab's blobs in a Document store (docstore.BlobView), if any
+        self._breps: dict[int, tuple] = {}       # id(shape) -> (shape, key, bytes) of a part copy; memory only
         self.path = None
         self.dirty = False
         self.listeners = []
@@ -745,11 +775,21 @@ class AssemblyDoc:
             cb()
 
     # ------------------------------------------------------------------ parts
+    def _blob_get(self, key):
+        """A blob of this Assembly: held in memory, else read from its store (blobstore.read_held). Raises
+        blobstore.BlobError naming the key."""
+        from . import blobstore
+        return blobstore.read_held(self.blobs, key, self.blob_view, self.path)
+
     def _step_parts(self, src):
+        from . import blobstore
         key = src["blob"]
         if key not in self._step_cache:
             import tempfile
-            data = base64.b64decode(self.blobs[key])
+            try:
+                data = self._blob_get(key)
+            except blobstore.BlobError as e:
+                raise K.KernelError(f"The imported STEP file {src.get('filename') or ''} is missing: {e}") from e
             fd, path = tempfile.mkstemp(suffix=".step")
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
@@ -938,15 +978,15 @@ class AssemblyDoc:
                         "Linked Part Studio not found — showing the copy saved in this assembly"
                         if inst["id"] in self._fallback else f"{e} — showing the last version of the part")
                     continue
-                shp = self._fallback.get(inst["id"])
-                if shp is None and inst.get("_brep"):
+                shp, lost = self._fallback.get(inst["id"]), ""
+                if shp is None and inst.get("_brep_blob"):
                     try:
-                        shp = K.shape_from_brep(base64.b64decode(inst["_brep"]))
+                        shp = K.shape_from_brep(self._blob_get(inst["_brep_blob"]))
                         self._fallback[inst["id"]] = shp
-                    except Exception:
-                        shp = None
+                    except Exception as why:
+                        shp, lost = None, f"; its saved copy is unreadable: {why}"
                 if shp is None:
-                    self.errors[inst["id"]] = f"Part not found: {e}"
+                    self.errors[inst["id"]] = f"Part not found: {e}{lost}"
                     self.parts.pop(inst["id"], None)
                     continue
                 p = Part(inst["id"], inst.get("part_name") or inst["name"], shp,
@@ -1071,9 +1111,12 @@ class AssemblyDoc:
         return f"{base} <{n}>"
 
     def add_step_blob(self, data_b64):
-        import hashlib
-        key = hashlib.sha1(data_b64.encode()).hexdigest()[:16]
-        self.blobs[key] = data_b64
+        """Hold an imported STEP file (base64 text, or its bytes) until the next save writes it to the blobs;
+        returns its key for a `step` source's `blob`."""
+        from . import blobstore
+        raw = bytes(data_b64) if isinstance(data_b64, (bytes, bytearray)) else base64.b64decode(data_b64)
+        key = blobstore.key_of(raw)
+        self.blobs[key] = raw
         return key
 
     def insert(self, source, T=None, name=None, checkpoint=True):
@@ -2365,29 +2408,78 @@ class AssemblyDoc:
                                   self.instance_color(i)) for i in insts], path, self.name)
 
     # ------------------------------------------------------------------ files
+    def _part_brep(self, shape):
+        """(key, bytes) of the saved copy of a part shape (K.shape_to_brep, the bytes the base64 `_brep` held
+        before I4.9), or (None, None) when it cannot be written. Kept per shape until the shape is gone."""
+        hit = self._breps.get(id(shape))
+        if hit is not None and hit[0] is shape:
+            return hit[1:]
+        from . import blobstore
+        try:
+            raw = K.shape_to_brep(shape)
+        except Exception:
+            return None, None
+        self._breps[id(shape)] = (shape, blobstore.key_of(raw), raw)
+        return self._breps[id(shape)][1:]
+
+    def _saved_blobs(self, embed=True):
+        """{key: bytes} of every blob `to_json(embed)` names that can be read now: the STEP files of `step`
+        instances, with `embed` a fresh copy of each resolved part, and the copy an instance already names
+        (a blob that is missing stays missing; its instance is red)."""
+        from . import blobstore
+        out = {}
+        for inst in self.instances:
+            kind, key = inst["source"].get("kind"), None
+            if kind == "standard":
+                continue
+            if kind == "step":
+                key = inst["source"].get("blob")
+            elif embed and inst["id"] in self.parts:
+                key, raw = self._part_brep(self.parts[inst["id"]].shape)
+                if key is not None:
+                    out[key] = raw
+                continue
+            else:
+                key = inst.get("_brep_blob")
+            if key:
+                try:
+                    out[key] = self._blob_get(key)
+                except blobstore.BlobError:
+                    pass
+        return out
+
+    def write_blobs(self, path=None, store=None, embed=True):
+        """Put every blob the file names into `store` (an object with `put`; by default the blob store beside
+        `path`, the tab file about to be written), before the JSON that names the keys. A loose Assembly
+        writes them beside itself; in a Document, doc_folder hands in the store's blobs for this tab. With no
+        store and no path there is nowhere to write, and the blobs stay held."""
+        from . import blobstore
+        target = path or self.path
+        if store is None and not target:
+            return
+        store = store if store is not None else blobstore.store_for(target)
+        for raw in self._saved_blobs(embed).values():
+            store.put(raw)
+
     def to_json(self, embed=True):
         insts = copy.deepcopy(self.instances)
         if embed:
-            # a copy of each linked part goes in the file, so it still opens if the Part Studio is missing
-            done = {}
+            # a copy of each linked part goes to the blobs, so the file still opens if the Part Studio is missing
+            live = {id(p.shape) for p in self.parts.values()}
+            self._breps = {k: v for k, v in self._breps.items() if k in live}
             for inst in insts:
                 if inst["source"].get("kind") == "step":
-                    inst.pop("_brep", None)
+                    inst.pop("_brep_blob", None)
                     continue
                 if inst["source"].get("kind") == "standard":
-                    inst.pop("_brep", None)       # regenerated from the Plugin, never stored
+                    inst.pop("_brep_blob", None)  # regenerated from the Plugin, never stored
                     continue
                 p = self.parts.get(inst["id"])
                 if p is None:
                     continue
-                key = id(p.shape)
-                if key not in done:
-                    try:
-                        done[key] = base64.b64encode(K.shape_to_brep(p.shape)).decode()
-                    except Exception:
-                        done[key] = None
-                if done[key]:
-                    inst["_brep"] = done[key]
+                key, _ = self._part_brep(p.shape)
+                if key:
+                    inst["_brep_blob"] = key
                 if self.path:
                     sp = inst["source"].get("path")
                     if sp:
@@ -2395,20 +2487,19 @@ class AssemblyDoc:
                             inst["source"]["relpath"] = os.path.relpath(sp, os.path.dirname(os.path.abspath(self.path)))
                         except ValueError:
                             pass
-        used = {i["source"]["blob"] for i in self.instances if i["source"].get("kind") == "step"}
         return json.dumps({"format": FILE_FORMAT, "version": M.latest_version("assembly"), "name": self.name,
                            "uid": self.uid, "instances": insts, "mates": self.mates, "groups": self.groups,
                            "relations": self.relations,
-                           **({"connectors": self.connectors} if self.connectors else {}),
-                           "blobs": {k: v for k, v in self.blobs.items() if k in used}}, indent=1)
+                           **({"connectors": self.connectors} if self.connectors else {})}, indent=1)
 
     def to_data(self) -> bytes:
         """The tab's data as a Document store holds it (the bytes `save` writes). Set `path` first: relative
-        source paths are written against it."""
+        source paths are written against it. Binary data is named by key only: call `write_blobs` first."""
         return self.to_json().encode("utf-8")
 
     def save(self, path=None):
         self.path = path or self.path
+        self.write_blobs(self.path)
         txt = self.to_data().decode("utf-8")
         tmp = self.path + ".tmp"
         with open(tmp, "w") as fh:
@@ -2426,12 +2517,19 @@ class AssemblyDoc:
     def from_data(data, path=None, resolver=None, blobs=None):
         """An Assembly from its bytes. `path` is the file they came from, if any: it names the file in errors,
         becomes the Assembly's `path`, and a source's `relpath` is found against its folder. `resolver` resolves
-        sources. `blobs` is unused until Assembly geometry moves into blobs."""
+        sources. `blobs` is this tab's blob lookup in a Document store (docstore.DocumentStore.blobs, or any object
+        with `get(key)` returning the bytes and raising blobstore.BlobError when it has none): STEP files and saved
+        part copies are read from it, then from the blobs folder beside `path`. Bytes an old file carried inline
+        are held in memory until the next save (I4.9)."""
+        from . import blobstore
         d = json.loads(bytes(data).decode("utf-8"))
         if d.get("format") != FILE_FORMAT:
             raise K.KernelError("Not a FreeShape assembly")
         d = M.migrate("assembly", d, path if path is not None else "This Assembly")
+        held = blobstore.take_held(d)
         a = AssemblyDoc()
+        a.blobs = held
+        a.blob_view = blobs
         a.name = d.get("name", "Assembly 1")
         a.uid = d.get("uid") or a.uid
         a.instances = d.get("instances", [])
@@ -2439,7 +2537,6 @@ class AssemblyDoc:
         a.groups = d.get("groups", [])
         a.relations = d.get("relations", [])
         a.connectors = d.get("connectors", [])
-        a.blobs = d.get("blobs", {})
         a.path = path
         base = os.path.dirname(os.path.abspath(path)) if path is not None else None
         for inst in a.instances:

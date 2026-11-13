@@ -95,6 +95,7 @@ def _studio():
     extra[0]["params"]["source"] = L.studio_source(tab, "F1/1", document="doc-id", version="v1")
     extra[1]["params"].update(source={"kind": "variables", "tab": "T3", "name": "V"}, names=["w"])
     extra[3]["params"].update(assembly="T2", instance="I1", capture="0" * 64)
+    extra[5]["params"].update(data="U1RFUA==", filename="p.step")      # written as `blob` (I4.9)
     doc.features.extend(extra)
     doc.part_overrides = {f"{py['id']}/1": {"name": "Box", "color": [0.1, 0.2, 0.3], "material": "Steel"}}
     doc.hidden_parts = {f"{py['id']}/1"}
@@ -195,6 +196,8 @@ def test_part_studio_keys_are_documented(tmp_path):
     assert _missing(entry, "Python build entry") == []
     assert _missing({k for p in entry["parts"] for k in p}, "Python build entry") == []
     params = {k for f in extra for k in f["params"] if k != "resolved"}
+    params |= {k for f in data["features"] if f["type"] == "import" for k in f["params"]}
+    assert "blob" in params
     assert _missing(params, "Feature types") == []
     assert f"Latest version {data['version']}." in _sections()["Chain document"]
 
@@ -204,11 +207,11 @@ def test_assembly_keys_are_documented(tmp_path):
     path = str(tmp_path / "a.fasm")
     a.path = path
     data = json.loads(a.to_json())
-    assert data["connectors"] and data["groups"] and data["relations"] and data["blobs"]
+    assert data["connectors"] and data["groups"] and data["relations"] and "blobs" not in data
     assert data["version"] == M.latest_version("assembly")
     assert _missing(data, "Assembly file") == []
     assert _missing({k for i in data["instances"] for k in i}, "Instance") == []
-    assert {"color", "suppressed", "_brep", "material"} <= {k for i in data["instances"] for k in i}
+    assert {"color", "suppressed", "_brep_blob", "material"} <= {k for i in data["instances"] for k in i}
     assert _missing({k for i in data["instances"] for k in i["source"]}, "Instance source") == []
     assert _missing({k for m in data["mates"] for k in m}, "Mate") == []
     assert "limits" in {k for m in data["mates"] for k in m}
@@ -222,7 +225,7 @@ def test_drawing_keys_are_documented(tmp_path):
     g = _drawing(tmp_path)
     g.path = str(tmp_path / "d.fdwg")
     data = json.loads(g.to_json())
-    assert "_brep" in data and "_views" in data
+    assert "_brep_blob" in data and "_views_blob" in data
     assert data["version"] == M.latest_version("drawing")
     assert _missing(data, "Drawing file") == []
     assert _missing(data["source"], "Drawing source") == []

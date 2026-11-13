@@ -124,21 +124,34 @@ def _save_all(base):
 
 # sha256 of every file each Document's save wrote at commit 0ed1882 (before this card), the same on OCP 7.9 and
 # 8.0; "resaved" is after opening the saved Document, marking every tab dirty and saving it again in place.
+# Re-recorded for I4.9 (one sidecar mechanism for binary data), the same on OCP 7.9 and 8.0: the .fasm and
+# .fdwg files lost their inline base64 geometry and went up a file version, every Part Studio file a save
+# rewrites went up a file version (3), and the part copies and Drawing views now sit in blobs/ as new entries.
+# Unchanged since 0ed1882: document.json, Vars.fvars, the Python-feature blobs, and the example .fshape files
+# under "saved" (add_files copies them without rewriting).
 BEFORE = {
     'bolted_bracket': {
         'saved': {
+            'blobs/4a8b67ba2f698d4076726787b0066b71475dc50fc8cdb4235b10e50c3ba4e6ac':
+                '4a8b67ba2f698d4076726787b0066b71475dc50fc8cdb4235b10e50c3ba4e6ac',
+            'blobs/c4f35fa03799241c9a0db0eee50ec84f364c11cfb429f795733a97225045b678':
+                'c4f35fa03799241c9a0db0eee50ec84f364c11cfb429f795733a97225045b678',
             'bolted_bracket.fasm':
-                'e6af173889dc324e91d20e01c595c4c576a08c013b06d8addba9ebeb57cdb78b',
+                'a2829e16a34a009a6656bd0a6d277ad587f8edfd349cc71066b97c3e4401f09c',
             'bolted_bracket_parts.fshape':
                 'd78e42b624c96ca05a885eb87282fb4975532a3584d1e1ae22987ad350ee8547',
             'document.json':
                 'daf12f6b952cf1df83bb3aacfb077f45e11d03229c71212aee5e4d54bf87d5a9',
         },
         'resaved': {
+            'blobs/4a8b67ba2f698d4076726787b0066b71475dc50fc8cdb4235b10e50c3ba4e6ac':
+                '4a8b67ba2f698d4076726787b0066b71475dc50fc8cdb4235b10e50c3ba4e6ac',
+            'blobs/c4f35fa03799241c9a0db0eee50ec84f364c11cfb429f795733a97225045b678':
+                'c4f35fa03799241c9a0db0eee50ec84f364c11cfb429f795733a97225045b678',
             'bolted_bracket.fasm':
-                'e6af173889dc324e91d20e01c595c4c576a08c013b06d8addba9ebeb57cdb78b',
+                'a2829e16a34a009a6656bd0a6d277ad587f8edfd349cc71066b97c3e4401f09c',
             'bolted_bracket_parts.fshape':
-                'd78e42b624c96ca05a885eb87282fb4975532a3584d1e1ae22987ad350ee8547',
+                'b7c05e3ef6e91c61ec8184083c84965616688f98f08d69487524b794b4712361',
             'document.json':
                 'daf12f6b952cf1df83bb3aacfb077f45e11d03229c71212aee5e4d54bf87d5a9',
         },
@@ -152,7 +165,7 @@ BEFORE = {
         },
         'resaved': {
             'bracket.fshape':
-                'c42e87035fde2971cc0cf958d741eb2d43d8081f3f289c4480d8e6c5a500d699',
+                'fb255405f215d973c06a30a7c8936e448c2134807b0593ac4214d91bcc4b8a49',
             'document.json':
                 '356cc886bbf61d1f3bf99378ece1590f20698510599f0e70ed869ffa4c4e2827',
         },
@@ -160,13 +173,17 @@ BEFORE = {
     'built': {
         'saved': {
             'Asm.fasm':
-                '6029eb72d3fc0b89e6a726c3817be9e798980070af792d0a0ad187464d0e792c',
+                '38ed103adc2aebe11a60de930b37a415644ac16233fc34b1619b430570b6ba01',
             'Dwg.fdwg':
-                '9b8f06687d1b07c69581a36f1a6246708adfb79bcb2c74eefeda1bdeb4f26409',
+                'e8f24eef5a746e6513250b40f0d17d555aabc09deefb47c4c6cb9ad9e919ce4b',
             'Studio.fshape':
-                'b02955ff05f4154afec8155e5243f801d77342341a71a73d04579af69c8afaf8',
+                '29d22a851f458292e1477c6bdaebcefc375d89db8867bd2fdbe4062613f61ada',
             'Vars.fvars':
                 'dbca3925a4c877982c7b7190459ce9cba4779c56d068c9951ee007700de0c86c',
+            'blobs/42aa9e4532b97dee001028762b1b07b10cd5822bf660c466b4e766850d31e21d':
+                '42aa9e4532b97dee001028762b1b07b10cd5822bf660c466b4e766850d31e21d',
+            'blobs/b810049752e31f61d3e75ddd111952750a08152e83946520dde30e865dac3836':
+                'b810049752e31f61d3e75ddd111952750a08152e83946520dde30e865dac3836',
             'blobs/d4c57ab80879e2853080a97a1ff00bc5f3fd2a4a2758b6acc22fc962c80b7b19':
                 'd4c57ab80879e2853080a97a1ff00bc5f3fd2a4a2758b6acc22fc962c80b7b19',
             'blobs/e27641546df8ad051f91ae83fc49ac6e9a8008816bbc188afdd265ef9aec5cb5':
@@ -176,13 +193,17 @@ BEFORE = {
         },
         'resaved': {
             'Asm.fasm':
-                '6029eb72d3fc0b89e6a726c3817be9e798980070af792d0a0ad187464d0e792c',
+                '38ed103adc2aebe11a60de930b37a415644ac16233fc34b1619b430570b6ba01',
             'Dwg.fdwg':
-                '1a6ffe9ca3f66d6f495e09788e612ce7d62fd7760586741d8ecbfe9e772fce9b',
+                '782e1f583bc09d593958149eb159d3f4ed0666284efb9b7d786e5754e15a3dff',
             'Studio.fshape':
-                'b02955ff05f4154afec8155e5243f801d77342341a71a73d04579af69c8afaf8',
+                '29d22a851f458292e1477c6bdaebcefc375d89db8867bd2fdbe4062613f61ada',
             'Vars.fvars':
                 'dbca3925a4c877982c7b7190459ce9cba4779c56d068c9951ee007700de0c86c',
+            'blobs/42aa9e4532b97dee001028762b1b07b10cd5822bf660c466b4e766850d31e21d':
+                '42aa9e4532b97dee001028762b1b07b10cd5822bf660c466b4e766850d31e21d',
+            'blobs/b810049752e31f61d3e75ddd111952750a08152e83946520dde30e865dac3836':
+                'b810049752e31f61d3e75ddd111952750a08152e83946520dde30e865dac3836',
             'blobs/d4c57ab80879e2853080a97a1ff00bc5f3fd2a4a2758b6acc22fc962c80b7b19':
                 'd4c57ab80879e2853080a97a1ff00bc5f3fd2a4a2758b6acc22fc962c80b7b19',
             'blobs/e27641546df8ad051f91ae83fc49ac6e9a8008816bbc188afdd265ef9aec5cb5':
@@ -193,20 +214,32 @@ BEFORE = {
     },
     'hinge': {
         'saved': {
+            'blobs/5f891de5b389330539d9fd9e003e1fb425713cd39160213c3aa3ec85cbdfd99c':
+                '5f891de5b389330539d9fd9e003e1fb425713cd39160213c3aa3ec85cbdfd99c',
+            'blobs/b35f602f7fc07ed8e41e5d6c327ac24e4f42e2405bb3b3bddee03d90b9835fef':
+                'b35f602f7fc07ed8e41e5d6c327ac24e4f42e2405bb3b3bddee03d90b9835fef',
+            'blobs/ff91f0295707707cc0fce33d932cb3077091bfd979bafe3c55f4a347e1f9ed32':
+                'ff91f0295707707cc0fce33d932cb3077091bfd979bafe3c55f4a347e1f9ed32',
             'document.json':
                 '593e8418f86ab9035bdea279960a3bd39f8e47c7b858a29c8525b3b4b777db6a',
             'hinge.fasm':
-                '851b136b9e439857f222785b75f62794eb3b0aea157ba5bf5dc9dfe2c06ab262',
+                'ca84326830ae93bc25de728a57db3827e890b1f462a701be54c551368bdccec6',
             'hinge_parts.fshape':
                 'd7f5336ecbbcc841d7c8cc39039840d237c4e266ef6023d52222a4659503ea2b',
         },
         'resaved': {
+            'blobs/5f891de5b389330539d9fd9e003e1fb425713cd39160213c3aa3ec85cbdfd99c':
+                '5f891de5b389330539d9fd9e003e1fb425713cd39160213c3aa3ec85cbdfd99c',
+            'blobs/b35f602f7fc07ed8e41e5d6c327ac24e4f42e2405bb3b3bddee03d90b9835fef':
+                'b35f602f7fc07ed8e41e5d6c327ac24e4f42e2405bb3b3bddee03d90b9835fef',
+            'blobs/ff91f0295707707cc0fce33d932cb3077091bfd979bafe3c55f4a347e1f9ed32':
+                'ff91f0295707707cc0fce33d932cb3077091bfd979bafe3c55f4a347e1f9ed32',
             'document.json':
                 '593e8418f86ab9035bdea279960a3bd39f8e47c7b858a29c8525b3b4b777db6a',
             'hinge.fasm':
-                '851b136b9e439857f222785b75f62794eb3b0aea157ba5bf5dc9dfe2c06ab262',
+                'ca84326830ae93bc25de728a57db3827e890b1f462a701be54c551368bdccec6',
             'hinge_parts.fshape':
-                'f0da97d792b8ad1dd7ca4b6d349861678a79a562e32427b728c243b0b87ee23a',
+                '99bc19e716ff13a7e96ffb8b9d9635f5d89d7f463e2ee46a1da058b165319c56',
         },
     },
 }

@@ -63,6 +63,28 @@ def _migrate_part_ids(data):
 M.register("document", _migrate_part_ids)
 
 
+def _import_params_with_blob(params, key):
+    """An "import" feature's params with its inline base64 `data` replaced, in place, by `blob`: its key."""
+    return {("blob" if k == "data" else k): (key if k == "data" else v) for k, v in params.items()}
+
+
+def _move_import_data_to_blobs(data):
+    """FILE_VERSION 2 -> 3 (I4.9, ADR 0009): an "import" feature's STEP file moves to the store's blobs. Its
+    base64 `params.data` becomes `params.blob`, the sha256 key of the decoded bytes. The bytes wait in
+    `data[blobstore.HELD]` for `from_data`, which keeps them until the next save writes them out (see
+    assembly._move_geometry_to_blobs). A value that is not base64 is left as it is; the import reports it."""
+    for f in data.get("features", []):
+        p = f.get("params") if isinstance(f, dict) and f.get("type") == "import" else None
+        if isinstance(p, dict) and "blob" not in p:
+            key = blobstore.hold_base64(data, p.get("data"))
+            if key is not None:
+                f["params"] = _import_params_with_blob(p, key)
+    return data
+
+
+M.register("document", _move_import_data_to_blobs)
+
+
 CONTEXT_CURRENT, CONTEXT_OUT_OF_DATE, CONTEXT_ASSEMBLY_MISSING = "current", "out of date", "assembly missing"
 
 
@@ -125,6 +147,7 @@ class PartStudioDoc:
         self.python_builds: dict = {}
         self._blob_bytes: dict = {}                 # blob key -> bytes read while restoring a stored build
         self._build_memo: dict = {}                 # feature id -> (state, entry, blobs) of its last record
+        self._import_keys: dict = {}                # id(base64 text) -> (text, key) of an inline import; memory only
         self.hidden_parts: set = set()
         self.hidden_features: set = set()         # sketches / planes hidden in the view
         self.path = None
@@ -213,7 +236,17 @@ class PartStudioDoc:
     def insert_index(self):
         return self.active_count()
 
+    def _hold_import(self, feat):
+        """An "import" feature made with its STEP file inline (base64 `params.data`, as the Import command makes
+        it) is turned, in place and before it first builds, into the form the file keeps: `params.blob`, the
+        bytes held until the next save (I4.9)."""
+        stored = self._file_feature(feat)
+        if stored is not feat:
+            feat["params"] = stored["params"]
+        return feat
+
     def add_feature(self, feat, index=None):
+        self._hold_import(feat)
         self.checkpoint()
         if index is None:
             index = self.insert_index()
@@ -225,6 +258,7 @@ class PartStudioDoc:
         self.rebuild()
 
     def replace_feature(self, feat):
+        self._hold_import(feat)
         self.checkpoint()
         for i, f in enumerate(self.features):
             if f["id"] == feat["id"]:
@@ -381,6 +415,9 @@ class PartStudioDoc:
         if f.get("type") == "context" and not f.get("suppressed"):
             key = (f.get("params") or {}).get("capture")
             h.update(b"1" if self._has_blob(key) else b"0")      # a capture blob that appears on a save rebuilds
+            return dict(f, params=dict(f["params"], resolved=self._blob_get))
+        if f.get("type") == "import" and not f.get("suppressed") and (f.get("params") or {}).get("blob"):
+            h.update(b"1" if self._has_blob(f["params"]["blob"]) else b"0")   # the STEP file's blob (I4.9)
             return dict(f, params=dict(f["params"], resolved=self._blob_get))
         if f.get("type") not in links.SOURCE_FEATURES or f.get("suppressed"):
             return f
@@ -606,9 +643,49 @@ class PartStudioDoc:
                 blobs.update(memo[2])
         return builds, blobs
 
+    def _import_key(self, text):
+        """The blob key of an "import" feature's inline base64 STEP file (as a feature made by the Import command
+        holds it in memory), its bytes held for the next save; None when it is not base64. Decoded once."""
+        hit = self._import_keys.get(id(text))
+        if hit is not None and hit[0] is text:
+            return hit[1]
+        import base64
+        import binascii
+        try:
+            raw = base64.b64decode(text)
+        except (binascii.Error, ValueError, TypeError):
+            return None
+        key = blobstore.key_of(raw)
+        self._blob_bytes[key] = raw
+        self._import_keys[id(text)] = (text, key)
+        return key
+
+    def _file_feature(self, f):
+        """`f` as the file holds it: an "import" feature names its STEP file by blob key (I4.9)."""
+        p = f.get("params")
+        if f.get("type") == "import" and isinstance(p, dict) and isinstance(p.get("data"), str) and p["data"]:
+            key = self._import_key(p["data"])
+            if key is not None:
+                return dict(f, params=_import_params_with_blob(p, key))
+        return f
+
+    def _import_blobs(self):
+        """{key: bytes} of the STEP file of every "import" feature that can be read now (a missing one stays
+        missing; its feature is red)."""
+        out = {}
+        for f in self.features:
+            key = (self._file_feature(f).get("params") or {}).get("blob") if f.get("type") == "import" else None
+            if isinstance(key, str):
+                try:
+                    out[key] = self._blob_get(key)
+                except blobstore.BlobError:
+                    continue
+        return out
+
     def to_json(self):
         data = {"format": "freeshape", "version": M.latest_version("document"), "name": self.name,
-                "uid": self.uid, "features": self.features, "rollback": self.rollback,
+                "uid": self.uid, "features": [self._file_feature(f) for f in self.features],
+                "rollback": self.rollback,
                 "overrides": self.part_overrides, "hidden": sorted(self.hidden_parts),
                 "hidden_features": sorted(self.hidden_features),
                 "part_aliases": self.part_aliases}
@@ -627,7 +704,8 @@ class PartStudioDoc:
         Returns the builds."""
         builds, blobs = self._python_builds()
         blobs.update(self._context_blobs())
-        if blobs:
+        blobs.update(self._import_blobs())
+        if blobs and (store is not None or path or self.path):     # nowhere to write: they stay held
             store = store if store is not None else blobstore.store_for(path or self.path)
             for data in blobs.values():
                 store.put(data)
@@ -675,6 +753,7 @@ class PartStudioDoc:
             raise K.KernelError("Not a FreeShape Part Studio (no features list)")
         d = M.migrate("document", d, path if path is not None else "This Part Studio")
         doc = PartStudioDoc()
+        doc._blob_bytes.update(blobstore.take_held(d))     # STEP files an old file carried inline (I4.9)
         doc.name = d.get("name", "Part Studio 1")
         doc.uid = d.get("uid") or doc.uid
         doc.features = d["features"]

@@ -585,6 +585,8 @@ class LiveTabs:
         path = os.path.join(self._tmp, f"{rec.want_tab}-{next(self._files)}{ext}")
         with open(path, "w") as fh:
             fh.write(snap["json"])
+        if rec.kind == "assembly":      # its STEP files, which the JSON names by blob key (I4.9)
+            rec.doc.write_blobs(path, embed=False)
         if any(t[0] == rec.want_tab for t in eng.tabs()):
             eng.close_tab(rec.want_tab)
         self.bind_document(eng)

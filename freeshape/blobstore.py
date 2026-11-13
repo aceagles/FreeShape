@@ -1,7 +1,8 @@
 """Content-addressed store for the binary sidecar data a tab keeps beside its file.
 
 A tab is a JSON file in a git folder (ADR 0001), so bytes that do not belong in JSON -- a Python feature's
-last built shape (BREP) and its element names, captured Context shapes (ADR 0004) -- go to
+last built shape (BREP) and its element names, captured Context shapes (ADR 0004), an Assembly instance's or a
+Drawing's saved part copy, a Drawing's exact views and imported STEP files (I4.9) -- go to
 `<tab dir>/blobs/<sha256 hex>`. FreeCAD keeps the equivalent inside the FCStd zip (a FeaturePython's `Shape`
 is saved with the object); here the file is a separate blob, so equal content is stored once and diffs stay small.
 
@@ -127,6 +128,68 @@ class BlobStore:
 def store_for(tab_path) -> BlobStore:
     """The store beside a tab file. The folder is created by the first `put`, not here."""
     return BlobStore(os.path.join(os.path.dirname(os.fspath(tab_path)), "blobs"))
+
+
+# -- one sidecar mechanism for every tab (I4.9) ------------------------------------------------------------
+# Old Assembly, Drawing and Part Studio files carry binary data inline (base64). A migration step is a pure
+# function on the parsed dict and may run where there is no store (a loose file, a read-only Version, a
+# MemoryStore Document), so it moves the bytes out of the tab data into `data[HELD]`, {sha256 key: bytes},
+# and leaves the key in their place. `from_data` pops that dict and keeps it as the tab's held blobs: bytes in
+# memory that the next save writes to the store (`write_blobs`), exactly as a Context capture not yet saved.
+HELD = "_held_blobs"
+
+
+def key_of(data: bytes) -> str:
+    return hashlib.sha256(bytes(data)).hexdigest()
+
+
+def hold(data: dict, raw: bytes) -> str:
+    """Keep `raw` in `data[HELD]` (see HELD) and return its key: for a migration step."""
+    key = key_of(raw)
+    data.setdefault(HELD, {})[key] = bytes(raw)
+    return key
+
+
+def take_held(data: dict) -> dict:
+    """Pop `data[HELD]` for `from_data`. Only bytes a migration step put there count: JSON read from a file
+    cannot hold bytes, so a file that names the key itself contributes nothing."""
+    held = data.pop(HELD, None)
+    return {k: v for k, v in held.items() if isinstance(v, bytes)} if isinstance(held, dict) else {}
+
+
+def hold_base64(data: dict, text):
+    """`hold` the bytes of a base64 string; None when it is not one (the caller leaves that value alone)."""
+    import base64
+    import binascii
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        return hold(data, base64.b64decode(text))      # as the loaders before I4.9 decoded it
+    except (binascii.Error, ValueError):
+        return None
+
+
+def read_held(held: dict, key, view=None, path=None) -> bytes:
+    """A tab's blob: from `held` (bytes migrated from an old file or made since the last save), else from the
+    tab's store -- `view` (a docstore.BlobView or BlobStore handed to `from_data`), then the blobs folder beside
+    `path` -- and kept in `held` so a save elsewhere can write it. Raises BlobError naming the key."""
+    data = held.get(key) if isinstance(key, str) else None
+    if data is not None:
+        return data
+    stores = [s for s in (view, store_for(path) if path else None) if s is not None]
+    if not stores:
+        raise BlobError(f"blob {key} is missing: the tab has no blob store")
+    why = None
+    for store in stores:
+        try:
+            data = store.get(key)
+            break
+        except BlobError as e:
+            why = why or e
+    else:
+        raise BlobError(f"blob {key} is missing or unreadable ({why})")
+    held[key] = data
+    return data
 
 
 # -- BREP and JSON helpers ---------------------------------------------------------------------------------

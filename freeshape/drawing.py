@@ -21,7 +21,6 @@ circle's centre / radius) and re-found on the current model each time, so they s
 """
 from __future__ import annotations
 
-import base64
 import copy
 import json
 import math
@@ -46,6 +45,24 @@ def _upgrade_part_id_syntax(data):
 
 
 M.register("drawing", _upgrade_part_id_syntax)
+
+
+def _move_geometry_to_blobs(data):
+    """Drawing file version 2 -> 3 (I4.9, ADR 0009): binary data moves to the store's blobs, addressed by sha256.
+    The base64 `_brep` becomes `_brep_blob`, the key of the same bytes; the exact views `_views` become
+    `_views_blob`, the key of their JSON (blobstore.dump_json). The bytes wait in `data[blobstore.HELD]` for
+    `from_data`, which keeps them until the next save writes them out (see assembly._move_geometry_to_blobs)."""
+    from . import blobstore
+    key = blobstore.hold_base64(data, data.pop("_brep", None))
+    if key is not None:
+        data["_brep_blob"] = key
+    views = data.pop("_views", None)
+    if isinstance(views, dict):
+        data["_views_blob"] = blobstore.hold(data, blobstore.dump_json(views))
+    return data
+
+
+M.register("drawing", _move_geometry_to_blobs)
 
 SHEETS = {"A4": (297.0, 210.0), "A3": (420.0, 297.0), "A2": (594.0, 420.0), "A1": (841.0, 594.0),
           "A0": (1189.0, 841.0)}
@@ -188,6 +205,10 @@ class DrawingDoc:
         self.version = 0                     # bumps whenever the picture changes
         self.hlr_async = None                # callable(doc, view): work out the exact view in the background
         self._saved_views = None             # exact views stored in the file (used if the model is unchanged)
+        self._blob_bytes: dict = {}          # held blobs {sha256 key: bytes}, written by the next save (I4.9)
+        self.blob_view = None                # this tab's blobs in a Document store (docstore.BlobView), if any
+        self._fallback_lost = None           # why the saved shape could not be read (a missing blob), for `error`
+        self._embedded = None                # (shape, brep key, brep bytes) of the last saved copy; memory only
         # attributes some generic window code looks at
         from .features import ModelState
         self.features = []
@@ -281,6 +302,8 @@ class DrawingDoc:
                 self.error += " — showing the copy saved in this drawing"
         if shape is None and old is not None:
             shape = old
+        if shape is None and self._fallback_lost:
+            self.error = f"{self.error} — {self._fallback_lost}" if self.error else self._fallback_lost
         self.shape = shape
         if shape is not old:
             self._snaps = {}
@@ -1356,25 +1379,57 @@ class DrawingDoc:
         self._dim_text_out(out, layer, own, at, a, value, 0.0, "center", "center")
 
     # ------------------------------------------------------------------ files
+    def _saved_blobs(self):
+        """({file key: blob key}, {blob key: bytes}) of what a save keeps beside the file: the shown shape
+        (`_brep_blob`, K.shape_to_brep bytes) and the exact views (`_views_blob`, so reopening doesn't have to
+        work them out again). Empty without a shape."""
+        keys, out = {}, {}
+        if self.shape is None:
+            return keys, out
+        from . import blobstore
+        try:
+            if self._embedded is None or self._embedded[0] is not self.shape:
+                raw = K.shape_to_brep(self.shape)
+                self._embedded = (self.shape, blobstore.key_of(raw), raw)
+            _, key, raw = self._embedded
+            keys["_brep_blob"], out[key] = key, raw
+            import hashlib
+            saved = []
+            for v in self.views:
+                ex = K.hlr_cached(self.shape, v["d"], v["up"])
+                if ex is not None:
+                    saved.append({"d": v["d"], "up": v["up"], "curves": ex})
+            if saved:
+                data = blobstore.dump_json({"model": hashlib.sha1(raw).hexdigest(), "views": saved})
+                keys["_views_blob"] = blobstore.key_of(data)
+                out[keys["_views_blob"]] = data
+        except Exception:
+            pass
+        return keys, out
+
+    def _blob_get(self, key):
+        """A blob of this Drawing: held in memory, else read from its store. Raises blobstore.BlobError."""
+        from . import blobstore
+        return blobstore.read_held(self._blob_bytes, key, self.blob_view, self.path)
+
+    def write_blobs(self, path=None, store=None):
+        """Put the blobs the file names into `store` (an object with `put`; by default the blob store beside
+        `path`, the tab file about to be written), before the JSON that names the keys. As for
+        AssemblyDoc.write_blobs: a loose Drawing writes them beside itself."""
+        from . import blobstore
+        target = path or self.path
+        if store is None and not target:
+            return
+        store = store if store is not None else blobstore.store_for(target)
+        for raw in self._saved_blobs()[1].values():
+            store.put(raw)
+
     def to_json(self, embed=True):
         d = {"format": FILE_FORMAT, "version": M.latest_version("drawing"), "name": self.name, "uid": self.uid,
              "source": copy.deepcopy(self.source), "sheet": self.sheet, "title": self.title,
              "views": self.views, "annots": self.annots}
-        if embed and self.shape is not None:
-            try:
-                raw = K.shape_to_brep(self.shape)
-                d["_brep"] = base64.b64encode(raw).decode()
-                # the exact views, so reopening doesn't have to work them out again
-                import hashlib
-                saved = []
-                for v in self.views:
-                    ex = K.hlr_cached(self.shape, v["d"], v["up"])
-                    if ex is not None:
-                        saved.append({"d": v["d"], "up": v["up"], "curves": ex})
-                if saved:
-                    d["_views"] = {"model": hashlib.sha1(raw).hexdigest(), "views": saved}
-            except Exception:
-                pass
+        if embed:
+            d.update(self._saved_blobs()[0])
         if self.path and d["source"] and d["source"].get("path"):
             try:
                 d["source"]["relpath"] = os.path.relpath(d["source"]["path"],
@@ -1385,11 +1440,12 @@ class DrawingDoc:
 
     def to_data(self) -> bytes:
         """The tab's data as a Document store holds it (the bytes `save` writes). Set `path` first: the source's
-        relative path is written against it."""
+        relative path is written against it. Binary data is named by key only: call `write_blobs` first."""
         return self.to_json().encode("utf-8")
 
     def save(self, path=None):
         self.path = path or self.path
+        self.write_blobs(self.path)
         txt = self.to_data().decode("utf-8")
         tmp = self.path + ".tmp"
         with open(tmp, "w") as fh:
@@ -1407,12 +1463,18 @@ class DrawingDoc:
     def from_data(data, path=None, resolver=None, hlr_async=None, blobs=None):
         """A Drawing from its bytes. `path` is the file they came from, if any: it names the file in errors,
         becomes the Drawing's `path`, and the source's `relpath` is found against its folder. `resolver` and
-        `hlr_async` are as for `load`. `blobs` is unused until Drawing geometry moves into blobs."""
+        `hlr_async` are as for `load`. `blobs` is this tab's blob lookup in a Document store, as for
+        AssemblyDoc.from_data: the saved shape and exact views are read from it, then from the blobs folder
+        beside `path`. Bytes an old file carried inline are held in memory until the next save (I4.9)."""
+        from . import blobstore
         d = json.loads(bytes(data).decode("utf-8"))
         if d.get("format") != FILE_FORMAT:
             raise K.KernelError("Not a FreeShape drawing")
         d = M.migrate("drawing", d, path if path is not None else "This Drawing")
+        held = blobstore.take_held(d)
         g = DrawingDoc()
+        g._blob_bytes = held
+        g.blob_view = blobs
         g.name = d.get("name", "Drawing 1")
         g.uid = d.get("uid") or g.uid
         g.source = d.get("source")
@@ -1426,14 +1488,19 @@ class DrawingDoc:
             cand = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(path)), src["relpath"]))
             if os.path.exists(cand):
                 src["path"] = cand
-        if d.get("_brep"):
+        if d.get("_brep_blob"):
             try:
-                g._fallback = K.shape_from_brep(base64.b64decode(d["_brep"]))
-            except Exception:
+                g._fallback = K.shape_from_brep(g._blob_get(d["_brep_blob"]))
+            except Exception as e:
                 g._fallback = None
+                g._fallback_lost = f"The copy saved in this drawing is unreadable: {e}"
         nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0) for x in g.views + g.annots]
         g._counter = max(nums + [0])
-        g._saved_views = d.get("_views")
+        if d.get("_views_blob"):
+            try:                    # only a cache: when it is gone the views are worked out again
+                g._saved_views = blobstore.load_json(g._blob_get(d["_views_blob"]))
+            except blobstore.BlobError:
+                g._saved_views = None
         g.resolver = resolver
         g.hlr_async = hlr_async
         g.refresh(notify=False)

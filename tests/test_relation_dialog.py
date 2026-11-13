@@ -26,6 +26,13 @@ class _Status:
         self.msgs.append(text)
 
 
+# A dialog closed in a test is deleted later (deleteLater), the next time an event loop spins. It is a child of
+# the stand-in viewport made here; were that viewport garbage-collected first, the deferred delete would reach a
+# freed object and kill the process in a later test that waits on the event loop. In the app the viewport
+# outlives every dialog, so the stand-ins are kept for the whole run (see tests/test_mate_limits_ui.py).
+_KEEP = []
+
+
 def _ctl(a):
     from freeshape.ui.assembly_ui import AssemblyController, AssemblyPanel
     from freeshape.ui.viewport import Viewport
@@ -35,6 +42,7 @@ def _ctl(a):
     ctl.panel = AssemblyPanel()
     ctl.update_triads = lambda: None
     ctl.show_scene = lambda: None
+    _KEEP.append(ctl)
     return ctl
 
 

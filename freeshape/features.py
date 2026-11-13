@@ -1676,55 +1676,72 @@ def _selected_parts(state, p):
 
 
 # --------------------------------------------------------------------------- feature patterns
-def _feature_changes(state, fids):
-    """What each feature did to the model, part by part: [(part id, material added, material removed)].
-    Used to repeat features (a hole, a boss, a pocket) in a pattern or mirror."""
+def _feature_changes(state, fid, fids):
+    """What each feature did to the model, part by part:
+    [(part id, material added, its names, material removed, its names)].
+    Used to repeat features (a hole, a boss, a pocket) in a pattern or mirror. The names of each piece
+    come from the part's maps before and after the feature, through the history of the cut that
+    isolates the piece, so its faces keep the names the feature gave them."""
     out = []
-    for fid in fids:
-        h = state.history.get(fid)
+    for fi in fids:
+        h = state.history.get(fi)
         if h is None:
             raise K.KernelError("Pick features that come before this one (and aren't suppressed)")
         before, after = h
         for pid, part in after.parts.items():
             old = before.parts.get(pid)
+            now = after.named(pid)
             if old is None:
-                out.append((pid, part.shape, None))
+                out.append((pid, part.shape, now, None, None))
                 continue
             if old.shape is part.shape:
                 continue
-            add, rem = K.cut(part.shape, old.shape), K.cut(old.shape, part.shape)
+            was = before.named(pid)
+            add, ha = K.cut(part.shape, old.shape, with_history=True)
+            rem, hr = K.cut(old.shape, part.shape, with_history=True)
             tiny = 1e-9 * max(K.volume(old.shape), 1.0)
-            out.append((pid, add if K.volume(add) > tiny else None, rem if K.volume(rem) > tiny else None))
+            has_add, has_rem = K.volume(add) > tiny, K.volume(rem) > tiny
+            out.append((pid,
+                        add if has_add else None,
+                        name_feature(state, fid, [now, was], add, ha, "cut", stamp=False) if has_add else None,
+                        rem if has_rem else None,
+                        name_feature(state, fid, [was, now], rem, hr, "cut", stamp=False) if has_rem else None))
     if not out:
         raise K.KernelError("Those features don't change any part, so there's nothing to repeat")
     return out
 
 
-def _repeat_features(state, f, transforms):
-    """Apply what the chosen features did again at each transform (a function shape -> moved shape)."""
-    changes = _feature_changes(state, f["params"].get("features", []))
-    adds, rems = {}, {}
-    for T in transforms:
-        for pid, add, rem in changes:
-            if add is not None:
-                adds.setdefault(pid, []).append(T(add))
-            if rem is not None:
-                rems.setdefault(pid, []).append(T(rem))
+def _repeat_features(state, f, copies, op):
+    """Apply what the chosen features did again at each copy. `copies` is [(k, move)]: k is the copy's
+    index (an int, a pair for a grid, or None for the single copy of a mirror), move(shape) is
+    (moved shape, its history). Each copy of a piece is named from the piece's map under the tag
+    `<feature id>_<k>` (`_pattern_instance_name`), as a whole-part pattern's copies are, so the faces
+    of copy 3 keep their names when the count changes."""
+    changes = _feature_changes(state, f["id"], f["params"].get("features", []))
+    adds, rems = {}, {}            # part id -> [(shape, names)] of every copy of what was added / removed
+    for k, move in copies:
+        for pid, add, add_n, rem, rem_n in changes:
+            for piece, piece_n, into in ((add, add_n, adds), (rem, rem_n, rems)):
+                if piece is not None:
+                    c, h = move(piece)
+                    into.setdefault(pid, []).append(
+                        (c, _pattern_instance_name(state, f["id"], piece_n, c, h, op, k)))
     for pid in list(adds) + [q for q in rems if q not in adds]:
         part = state.parts.get(pid)
         if part is None:                      # the feature made a part that has since gone: new parts
-            for s_ in adds.get(pid, []):
+            for s_, _ in adds.get(pid, []):
                 for sol in K.solids(s_):
                     state.new_part(sol, f["id"])
             continue
         # through the named boolean helpers, so the part keeps its element names (as apply_body does)
         shape, named = part.shape, state.named(pid)
-        if adds.get(pid):
-            shape, h = K.fuse(shape, K.fuse_all(adds[pid]), with_history=True)
-            named = name_feature(state, f["id"], [named], shape, h, "fuse", stamp=False)
-        if rems.get(pid):
-            shape, h = K.cut(shape, K.fuse_all(rems[pid]), with_history=True)
-            named = name_feature(state, f["id"], [named], shape, h, "cut", stamp=False)
+        for pieces, how, boolean in ((adds.get(pid), "fuse", K.fuse), (rems.get(pid), "cut", K.cut)):
+            if not pieces:
+                continue
+            tool, h = K.fuse_all([c for c, _ in pieces], with_history=True)
+            tool_n = name_feature(state, f["id"], [n for _, n in pieces], tool, h, "fuse_all", stamp=False)
+            shape, h = boolean(shape, tool, with_history=True)
+            named = name_feature(state, f["id"], [named, tool_n], shape, h, how, stamp=False)
         set_part_shape(state, part, shape, named)
 
 
@@ -1736,7 +1753,7 @@ def run_mirror(state, f):
     p = f["params"]
     if _features_mode(p):
         plane = resolve_plane(state, p["plane"])
-        _repeat_features(state, f, [lambda s_: K.mirror(s_, plane)])
+        _repeat_features(state, f, [(None, lambda s_: K.mirror(s_, plane, with_history=True))], "mirror")
         return
     ids = _selected_parts(state, p)
     plane = resolve_plane(state, p["plane"])
@@ -1755,7 +1772,9 @@ def _pattern_instance_name(state, fid, pid, copy, history, op, k):
     other instances' names alone. FreeCAD's `;:C<n>` disambiguator (spec section 7) is not an index
     to read back; this keeps the same one-name-per-instance effect with an index that is stable.
     k may be a pair (k1, k2) for a two-direction grid: the tag is then "F5_1_2". A single index
-    keeps the tag exactly as before."""
+    keeps the tag exactly as before. k None (a mirror's one copy) keeps the feature's own tag."""
+    if k is None:
+        return name_feature(state, fid, [pid], copy, history, op)
     tag = "_".join(str(i) for i in k) if isinstance(k, tuple) else str(k)
     return name_feature(state, f"{fid}_{tag}", [pid], copy, history, op)
 
@@ -1780,12 +1799,15 @@ def run_linear_pattern(state, f):
         if grid:        # the second direction applies to repeated features as it does to parts
             if n * n2 < 2:
                 raise K.KernelError("Count must be at least 2")
-            _repeat_features(state, f, [lambda s_, v=d * sp * k1 + d2 * sp2 * k2: K.translate(s_, v)
-                                        for k1 in range(n) for k2 in range(n2) if (k1, k2) != (0, 0)])
+            _repeat_features(state, f, [((k1, k2), lambda s_, v=d * sp * k1 + d2 * sp2 * k2:
+                                         K.pattern_translate(s_, v, with_history=True))
+                                        for k1 in range(n) for k2 in range(n2) if (k1, k2) != (0, 0)],
+                             "linear_pattern")
             return
         if n < 2:
             raise K.KernelError("Count must be at least 2")
-        _repeat_features(state, f, [lambda s_, k=k: K.translate(s_, d * sp * k) for k in range(1, n)])
+        _repeat_features(state, f, [(k, lambda s_, k=k: K.pattern_translate(s_, d * sp * k, with_history=True))
+                                    for k in range(1, n)], "linear_pattern")
         return
     if grid:
         copies, named = [], []
@@ -1821,7 +1843,8 @@ def run_circular_pattern(state, f):
     if _features_mode(p):
         if n < 2:
             raise K.KernelError("Count must be at least 2")
-        _repeat_features(state, f, [lambda s_, k=k: K.rotate(s_, a, d, step * k) for k in range(1, n)])
+        _repeat_features(state, f, [(k, lambda s_, k=k: K.pattern_rotate(s_, a, d, step * k, with_history=True))
+                                    for k in range(1, n)], "circular_pattern")
         return
     copies, named = [], []
     for i in ids:

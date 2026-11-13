@@ -138,7 +138,10 @@ def toolbar_button(window, layout):
 
 
 def notices_for(features) -> dict:
-    """{feature id: notice text} for the feature list; empty when there is nothing to say or lookup fails."""
+    """{feature id: notice text} for the feature list; empty when there is nothing to say or lookup fails.
+
+    Pass the Document to include the "locked" text of features shown on a stored build; a plain feature
+    list gets the missing-plugin and version notices only."""
     try:
         return pyfeature.notices(features)
     except Exception:

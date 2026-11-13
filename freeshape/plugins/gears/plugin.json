@@ -1,0 +1,2 @@
+{"id": "gears", "name": "Gears", "version": "1.0.0", "licence": "GPL-3.0-or-later",
+ "features": ["features:SpurGear", "features:BevelGear"]}

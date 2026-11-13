@@ -189,7 +189,7 @@ class FeatureList(_EyeMixin, QListWidget):
                 it.setForeground(QColor("#9aa3ae"))
             self.addItem(it)
         active = doc.active_count()
-        notices = pyfeature_ui.notices_for(doc.features)
+        notices = pyfeature_ui.notices_for(doc)
         for i, f in enumerate(doc.features):
             if i == active:
                 self._add_rollback()

@@ -1,7 +1,7 @@
 """The UI side of Standard parts in an Assembly.
 
 `StandardPartEditDialog` edits size, length and `Model the thread` of one or more Standard part instances (card I3.5).
-`StandardPartsPane`, the Standard parts tab of the Insert panel, is added to this module by card I3.4.
+`StandardPartsPane` is the Standard parts tab of the Assembly Insert panel (card I3.4).
 
 Nothing here knows a particular Plugin: the fields come from each type's `sizes()`, `lengths(size)` and
 `default_params()`.
@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFormLayout, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFormLayout, QHeaderView, QLabel, QPushButton, QTableWidget,
+    QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QHBoxLayout, QWidget,
 )
 
 from .. import pyfeature
@@ -238,3 +239,417 @@ class StandardPartEditDialog(QDialog):
     def accept(self):
         self.apply()
         super().accept()
+
+
+# =========================================================================== the Insert panel's tab
+
+CATEGORY_ORDER = ("Screws", "Nuts", "Washers")
+PARAM_LABELS = {THREAD_PARAM: "Model the thread", "point": "Point", "standard": "Standard"}
+PARAM_NAMES = {THREAD_PARAM: "sp_thread", "point": "sp_point", "standard": "sp_standard"}
+POINT_CHOICES = ("C", "F", "R")
+POINT_TEXT = {"C": "C (conical)", "F": "F (flat)", "R": "R (rounded)"}
+ROLE_TYPE = Qt.UserRole + 1
+
+
+class StandardPartsPane(QWidget):
+    """Insert Standard parts into the holes selected in the viewport, or one free instance when none match.
+
+    Pick a type in the tree (grouped by category). Below it sit the type's extra parameters, then either a
+    results table (one row per matched hole size: size, hole count, a length drop-down preset to the plan's
+    default) with a line naming the holes that fit no size, or, when the selection holds no usable hole, one size
+    and one length drop-down. `Insert` makes one `apply_insert` call (or one `insert_standard_part`), writes a
+    status line, clears the viewport selection and leaves the pane as it is.
+
+    `doc` is the AssemblyDoc, or a callable returning the current one. `viewport` supplies the selection
+    (`viewport.selection`, refreshed on `selectionChanged`); with none, `set_picks` stands in for it. The plan is
+    recomputed only when the type, an extra parameter or the selection changes. Everything runs without a modal
+    loop: `select_type`, `set_param`, `set_row_length`, `set_free_size`, `set_free_length`, `insert`.
+
+    Object names: sp_tree, sp_params, sp_sizes (the table), sp_skipped, sp_size, sp_length, sp_insert, sp_status;
+    sp_thread, sp_point, sp_standard for the extra parameters and sp_row_length_<size> for each row's length drop-down."""
+
+    inserted = Signal(object)
+
+    def __init__(self, doc, viewport=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("standardPartsPane")
+        self._doc = doc
+        self.viewport = viewport
+        self._picks = []
+        self.type_id = None
+        self.plan = None
+        self.free = True
+        self.last_result = None
+        self._building = False
+        self._param_widgets = {}
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self.tree = QTreeWidget()
+        self.tree.setObjectName("sp_tree")
+        self.tree.setHeaderHidden(True)
+        self.tree.setMinimumHeight(130)
+        self.tree.currentItemChanged.connect(self._on_tree)
+        lay.addWidget(self.tree)
+
+        self.params_box = QWidget()
+        self.params_box.setObjectName("sp_params")
+        self.params_form = QFormLayout(self.params_box)
+        self.params_form.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.params_box)
+
+        self.table = QTableWidget(0, 2)
+        self.table.setObjectName("sp_sizes")
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.table.setMinimumHeight(90)
+        lay.addWidget(self.table)
+
+        self.skipped = QLabel("")
+        self.skipped.setObjectName("sp_skipped")
+        self.skipped.setWordWrap(True)
+        lay.addWidget(self.skipped)
+
+        self.free_box = QWidget()
+        ff = QFormLayout(self.free_box)
+        ff.setContentsMargins(0, 0, 0, 0)
+        self.size = QComboBox()
+        self.size.setObjectName("sp_size")
+        self.size.currentIndexChanged.connect(self._on_free_size)
+        ff.addRow("Size", self.size)
+        self.length = QComboBox()
+        self.length.setObjectName("sp_length")
+        self.length_label = QLabel("Length (mm)")
+        ff.addRow(self.length_label, self.length)
+        lay.addWidget(self.free_box)
+
+        self.insert_btn = QPushButton("Insert")
+        self.insert_btn.setObjectName("sp_insert")
+        self.insert_btn.setDefault(True)
+        self.insert_btn.clicked.connect(lambda: self.insert())
+        lay.addWidget(self.insert_btn)
+        self.status = QLabel("")
+        self.status.setObjectName("sp_status")
+        self.status.setWordWrap(True)
+        lay.addWidget(self.status)
+
+        self._fill_tree()
+        self._show_mode()
+        if viewport is not None:
+            viewport.selectionChanged.connect(self._on_selection)
+
+    # ------------------------------------------------------------------ inputs
+    @property
+    def doc(self):
+        return self._doc() if callable(self._doc) else self._doc
+
+    def picks(self):
+        """The picks the plan is made from: the viewport's selection, else those set with `set_picks`."""
+        return list(self.viewport.selection) if self.viewport is not None else list(self._picks)
+
+    def set_picks(self, picks):
+        """For a pane without a viewport: set the picks and rebuild."""
+        self._picks = list(picks)
+        self.refresh()
+
+    def _on_selection(self):
+        self.refresh()
+
+    # ------------------------------------------------------------------ type tree
+    def _fill_tree(self):
+        cats = {}
+        for type_id, cls, _info in pyfeature.standard_parts():
+            cats.setdefault(getattr(cls, "category", "") or "Other", []).append((type_id, cls))
+        order = [c for c in CATEGORY_ORDER if c in cats] + sorted(c for c in cats if c not in CATEGORY_ORDER)
+        for c in order:
+            top = QTreeWidgetItem([c])
+            top.setFlags(Qt.ItemIsEnabled)
+            for type_id, cls in sorted(cats[c], key=lambda t: t[1].label):
+                it = QTreeWidgetItem([cls.label])
+                it.setData(0, ROLE_TYPE, type_id)
+                top.addChild(it)
+            self.tree.addTopLevelItem(top)
+            top.setExpanded(True)
+
+    def type_items(self):
+        """{category: [type id, ...]} as the tree shows it."""
+        out = {}
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            out[top.text(0)] = [top.child(k).data(0, ROLE_TYPE) for k in range(top.childCount())]
+        return out
+
+    def select_type(self, type_id):
+        """Choose a type, as a click in the tree does. Returns False for a type the tree does not list."""
+        for i in range(self.tree.topLevelItemCount()):
+            top = self.tree.topLevelItem(i)
+            for k in range(top.childCount()):
+                if top.child(k).data(0, ROLE_TYPE) == type_id:
+                    self.tree.setCurrentItem(top.child(k))
+                    return True
+        return False
+
+    def _on_tree(self, cur, _prev):
+        tid = cur.data(0, ROLE_TYPE) if cur is not None else None
+        self.type_id = tid
+        self._build_params()
+        self.refresh()
+
+    def _cls(self):
+        return pyfeature.standard_part(self.type_id) if self.type_id else None
+
+    # ------------------------------------------------------------------ extra parameters
+    def _build_params(self):
+        while self.params_form.rowCount():
+            self.params_form.removeRow(0)
+        self._param_widgets = {}
+        cls = self._cls()
+        if cls is None:
+            self.params_box.hide()
+            return
+        inst = cls()
+        defaults = inst.default_params()
+        for key, val in defaults.items():
+            if key in ("size", "length"):
+                continue
+            if key == "standard":
+                choices = list(inst.standards()) if hasattr(inst, "standards") else []
+                if len(choices) < 2:
+                    continue                        # one standard is no choice
+                w = QComboBox()
+                for c in choices:
+                    w.addItem(str(c), c)
+            elif key == "point":
+                w = QComboBox()
+                for c in POINT_CHOICES:
+                    w.addItem(POINT_TEXT.get(c, c), c)
+            elif isinstance(val, bool):
+                w = QCheckBox()
+                w.setChecked(val)
+            else:
+                continue
+            if isinstance(w, QComboBox):
+                k = w.findData(val)
+                w.setCurrentIndex(max(k, 0))
+                w.currentIndexChanged.connect(lambda _=0: self._on_param())
+            else:
+                w.toggled.connect(lambda _=False: self._on_param())
+            w.setObjectName(PARAM_NAMES.get(key, f"sp_param_{key}"))
+            self._param_widgets[key] = w
+            self.params_form.addRow(PARAM_LABELS.get(key, key), w)
+        self.params_box.setVisible(bool(self._param_widgets))
+
+    def param_keys(self):
+        """The extra parameters shown for the current type."""
+        return list(self._param_widgets)
+
+    def base_params(self):
+        """{key: value} of the extra parameters (without size and length)."""
+        out = {}
+        for k, w in self._param_widgets.items():
+            out[k] = w.currentData() if isinstance(w, QComboBox) else w.isChecked()
+        return out
+
+    def set_param(self, key, value):
+        w = self._param_widgets[key]
+        if isinstance(w, QComboBox):
+            w.setCurrentIndex(max(w.findData(value), 0))
+        else:
+            w.setChecked(bool(value))
+
+    def _on_param(self):
+        if not self._building:
+            self.refresh()
+
+    # ------------------------------------------------------------------ plan and table
+    def refresh(self):
+        """Rebuild the plan and what shows it. Called for a type, parameter or selection change."""
+        self._building = True
+        try:
+            self.plan = None
+            self.skipped.setText("")
+            self.skipped.hide()
+            self.table.setRowCount(0)
+            cls = self._cls()
+            doc = self.doc
+            if cls is not None and doc is not None and self.picks():
+                from ..standard_insert import plan_insert
+                try:
+                    self.plan = plan_insert(doc, self.type_id, self.picks(), self.base_params())
+                except Exception as e:
+                    self.plan = {"type": self.type_id, "groups": [], "unmatched": []}
+                    self.skipped.setText(f"Could not read the selection: {e}")
+                    self.skipped.show()
+            self.free = not (self.plan and self.plan["groups"])
+            if not self.free:
+                self._fill_table()
+            else:
+                self._fill_free()
+            if self.plan and self.plan["unmatched"]:
+                self.skipped.setText(self.skipped_text(self.plan["unmatched"]))
+                self.skipped.show()
+            self._show_mode()
+        finally:
+            self._building = False
+
+    @staticmethod
+    def skipped_text(targets):
+        n = len(targets)
+        dias = sorted({round(float(t["diameter"]), 3) for t in targets})
+        return (f"Skipped {n} hole{'s' if n != 1 else ''} (no size fits): "
+                + ", ".join(f"{d:.1f} mm" if abs(d * 10 - round(d * 10)) < 1e-6 else f"{d:g} mm" for d in dias))
+
+    def _has_lengths(self, groups):
+        return any(g["lengths"] for g in groups)
+
+    def _fill_table(self):
+        groups = self.plan["groups"]
+        with_len = self._has_lengths(groups)
+        self.table.setColumnCount(3 if with_len else 2)
+        self.table.setHorizontalHeaderLabels(["Size", "Holes"] + (["Length (mm)"] if with_len else []))
+        self.table.setRowCount(len(groups))
+        for r, g in enumerate(groups):
+            self.table.setItem(r, 0, QTableWidgetItem(g["size"]))
+            self.table.setItem(r, 1, QTableWidgetItem(str(len(g["targets"]))))
+            if with_len:
+                cb = QComboBox()
+                cb.setObjectName(f"sp_row_length_{g['size']}")
+                for v in g["lengths"]:
+                    cb.addItem(length_text(v), v)
+                k = cb.findData(g["default_length"])
+                cb.setCurrentIndex(max(k, 0))
+                self.table.setCellWidget(r, 2, cb)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Stretch)
+        self.table.resizeRowsToContents()
+
+    def rows(self):
+        """[(size, hole count, length or None)] of the table as it stands (empty in free mode)."""
+        out = []
+        for r in range(self.table.rowCount() if not self.free else 0):
+            cb = self.table.cellWidget(r, 2)
+            out.append((self.table.item(r, 0).text(), int(self.table.item(r, 1).text()),
+                        cb.currentData() if cb is not None else None))
+        return out
+
+    def lengths_by_size(self):
+        return {s: v for s, _n, v in self.rows() if v is not None}
+
+    def has_length_column(self):
+        return not self.free and self.table.columnCount() == 3
+
+    def set_row_length(self, size, length):
+        """Choose `length` in the length drop-down of the row for `size`."""
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 0).text() == size:
+                cb = self.table.cellWidget(r, 2)
+                k = cb.findData(length)
+                if k < 0:
+                    raise ValueError(f"{length} is not offered for {size}")
+                cb.setCurrentIndex(k)
+                return
+        raise ValueError(f"no row for {size}")
+
+    # ------------------------------------------------------------------ free instance
+    def _fill_free(self):
+        cls = self._cls()
+        self.size.blockSignals(True)
+        self.size.clear()
+        if cls is not None:
+            try:
+                for s in cls().sizes(**self._kw(cls().sizes)):
+                    self.size.addItem(s, s)
+            except Exception:
+                pass
+        self.size.blockSignals(False)
+        self._fill_free_lengths()
+
+    def _kw(self, fn):
+        import inspect
+        have = inspect.signature(fn).parameters
+        return {k: v for k, v in self.base_params().items() if k in have and k != "size"}
+
+    def _fill_free_lengths(self):
+        from ..standard_insert import _default_length, _nominal_diameter
+        cls = self._cls()
+        size = self.size.currentData()
+        lens = []
+        if cls is not None and size is not None:
+            lens = type_lengths(self.type_id, size, self.base_params())
+        self.length.blockSignals(True)
+        self.length.clear()
+        for v in lens:
+            self.length.addItem(length_text(v), v)
+        if lens:
+            d = _default_length(lens, _nominal_diameter(cls(), size))
+            self.length.setCurrentIndex(max(self.length.findData(d), 0))
+        self.length.blockSignals(False)
+
+    def _on_free_size(self, _i=0):
+        if not self._building:
+            self._fill_free_lengths()
+            self._show_mode()
+
+    def set_free_size(self, size):
+        k = self.size.findData(size)
+        if k < 0:
+            raise ValueError(f"{size} is not offered")
+        self.size.setCurrentIndex(k)
+
+    def set_free_length(self, length):
+        k = self.length.findData(length)
+        if k < 0:
+            raise ValueError(f"{length} is not offered")
+        self.length.setCurrentIndex(k)
+
+    def _show_mode(self):
+        """Which controls show: nothing before a type is chosen; the table or the two drop-downs after.
+        Uses setHidden, which holds before the pane itself is shown."""
+        chosen = self.type_id is not None
+        self.table.setHidden(not (chosen and not self.free))
+        self.free_box.setHidden(not (chosen and self.free))
+        if chosen and self.free:
+            has = self.length.count() > 0
+            self.length.setHidden(not has)
+            self.length_label.setHidden(not has)
+        self.insert_btn.setEnabled(chosen and (not self.free or self.size.count() > 0))
+
+    # ------------------------------------------------------------------ insert
+    def insert(self):
+        """What the Insert button does. Returns the apply_insert result (or {"instances": [iid], "mates": []}
+        for a free instance), or None when nothing was inserted (the status line says why)."""
+        doc, cls = self.doc, self._cls()
+        if doc is None or cls is None:
+            return None
+        from .. import kernel as K
+        label = cls.label
+        base = self.base_params()
+        try:
+            if not self.free:
+                from ..standard_insert import apply_insert
+                res = apply_insert(doc, self.plan, self.lengths_by_size(), base)
+                n = len(res["instances"])
+                msg = f"Inserted {n} {label} in {len(res['mates'])} hole{'s' if len(res['mates']) != 1 else ''}"
+            else:
+                size = self.size.currentData()
+                if size is None:
+                    return None
+                params = dict(base, size=size)
+                if self.length.count():
+                    params["length"] = self.length.currentData()
+                iid = doc.insert_standard_part(self.type_id, params)
+                res = {"instances": [iid], "mates": []}
+                msg = f"Inserted 1 {label}"
+        except K.KernelError as e:
+            self.status.setText(f"Not inserted: {e}")
+            return None
+        self.last_result = res
+        self.status.setText(msg)
+        self.inserted.emit(res)
+        if self.viewport is not None:
+            self.viewport.clear_selection()
+        else:
+            self.set_picks([])
+        return res

@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QListWidget, QListWidgetItem, QWidget,
     QGraphicsDropShadowEffect, QTreeWidget, QTreeWidgetItem, QPushButton, QDialog, QTableWidget,
-    QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QFileDialog, QMessageBox, QCheckBox,
+    QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QFileDialog, QMessageBox, QCheckBox, QTabWidget,
 )
 
 from .. import kernel as K
@@ -235,17 +235,21 @@ class InsertPanel(QFrame):
         self.title.setReadOnly(True)
         lay.addLayout(head)
         lay.addWidget(_hline())
+        parts_page = QWidget()
+        pl = QVBoxLayout(parts_page)
+        pl.setContentsMargins(0, 6, 0, 0)
+        pl.setSpacing(6)
         hint = QLabel("Double-click a part to insert it. Pick a Part Studio to insert all its parts as they "
                       "sit there. Inserted parts stay linked: edit them in their tab and the assembly updates.")
         hint.setWordWrap(True)
         hint.setObjectName("muted")
-        lay.addWidget(hint)
+        pl.addWidget(hint)
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setIconSize(QSize(16, 16))
         self.tree.setMinimumHeight(220)
         self.tree.itemDoubleClicked.connect(lambda it, _c: self._insert_item(it))
-        lay.addWidget(self.tree)
+        pl.addWidget(self.tree)
         row = QHBoxLayout()
         b = QPushButton("Insert")
         b.setDefault(True)
@@ -255,11 +259,22 @@ class InsertPanel(QFrame):
         f.setToolTip("A FreeShape document (.fshape) or a STEP file")
         f.clicked.connect(self._from_file)
         row.addWidget(f)
-        lay.addLayout(row)
+        pl.addLayout(row)
         self.msg = QLabel("")
         self.msg.setWordWrap(True)
         self.msg.setObjectName("muted")
-        lay.addWidget(self.msg)
+        pl.addWidget(self.msg)
+        from .standard_parts_ui import StandardPartsPane
+        self.standard = StandardPartsPane(lambda: ctl.doc, ctl.w.viewport)
+        std_page = QWidget()
+        sl = QVBoxLayout(std_page)
+        sl.setContentsMargins(0, 6, 0, 0)
+        sl.addWidget(self.standard)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("insert_tabs")
+        self.tabs.addTab(parts_page, "Parts")
+        self.tabs.addTab(std_page, "Standard parts")
+        lay.addWidget(self.tabs)
         self.fill()
         self.setFixedWidth(300)
         self.adjustSize()

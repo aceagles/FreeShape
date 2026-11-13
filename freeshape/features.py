@@ -45,7 +45,7 @@ def palette_color(n):
 
 FEATURE_LABELS = {
     "sketch": "Sketch", "extrude": "Extrude", "revolve": "Revolve", "fillet": "Fillet",
-    "chamfer": "Chamfer", "shell": "Shell", "plane": "Plane", "mirror": "Mirror",
+    "chamfer": "Chamfer", "shell": "Shell", "plane": "Plane", "axis": "Axis", "mirror": "Mirror",
     "linear_pattern": "Linear pattern", "circular_pattern": "Circular pattern",
     "boolean": "Boolean", "import": "Import", "hole": "Hole", "variable": "Variable",
     "variable_studio_ref": "Variable Studio reference",
@@ -249,12 +249,14 @@ class ModelState:
     # mate_connector feature id -> {name, part, frame {o, z, x}}: the connectors a Part Studio publishes,
     # in the coordinates of the studio (the frames are plain lists, so the mapping is JSON-ready).
     connectors: dict = field(default_factory=dict)
+    # axis feature id -> {o, d, span}: a construction axis (origin, unit direction, stretch of the source along d).
+    axes: dict = field(default_factory=dict)
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
                           set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts},
-                          dict(self.connectors))
+                          dict(self.connectors), dict(self.axes))
 
     def named(self, pid):
         """The element map of part `pid`, or None when it has none or the part's shape has since been
@@ -644,6 +646,140 @@ def build_plane(state, p):
     raise K.KernelError("Unknown plane type")
 
 
+# --------------------------------------------------------------------------- axes
+# An axis feature copies the plane feature's shape: a list of selected items, a type chosen or detected from
+# them ("auto"), and a result kept in ModelState.axes. Its types follow FreeCAD's datum line attachment modes
+# (Part/App/AttachExtension: Axis, Line / TwoPointLine / ObjectXY...); the others are built by later cards.
+
+AXIS_TYPES = [
+    ("auto", "Automatic"), ("edge", "Through edge"), ("round_face", "Through cylinder / cone / torus"),
+    ("two_points", "Through two points"), ("two_planes", "Two planes"),
+    ("point_normal", "Perpendicular to face through point"), ("face_point", "Perpendicular to face at click"),
+    ("point_parallel", "Parallel to line through point"), ("connector", "Mate connector axis"),
+]
+AXIS_TYPE_NAMES = dict(AXIS_TYPES)
+_AXIS_BUILT = ("edge", "round_face", "two_points")
+
+
+def axis_items(p):
+    """[(kind, ref)] an axis feature was built from: kind is face | edge | vertex | plane | axis | sketch_line |
+    sketch | connector."""
+    return [(r["k"], r["ref"]) for r in p.get("refs") or []]
+
+
+def axis_role(kind, ref):
+    if kind in ("vertex", "sketch"):
+        return "point"
+    if kind in ("plane", "axis", "connector"):
+        return kind
+    if kind == "sketch_line":
+        return "line"
+    if kind == "face":
+        t = ref.get("type")
+        if t == int(K.GeomAbs_Plane):
+            return "plane"
+        return "round" if t in (int(K.GeomAbs_Cylinder), int(K.GeomAbs_Cone), int(K.GeomAbs_Torus)) else "surface"
+    if kind == "edge":
+        t = ref.get("type")
+        return "line" if t == int(K.GeomAbs_Line) else "circle" if t == int(K.GeomAbs_Circle) else "curve"
+    return "?"
+
+
+def detect_axis_type(roles):
+    """The axis type that fits a selection (a list of roles from axis_role), or None."""
+    if len(roles) == 1 and roles[0] in ("line", "circle", "curve"):
+        return "edge"
+    if len(roles) == 1 and roles[0] == "round":
+        return "round_face"
+    if len(roles) == 2 and roles.count("point") == 2:
+        return "two_points"
+    return None
+
+
+def axis_type(p):
+    """The effective type of an axis feature's params (resolves 'auto'); None when the selection fits nothing."""
+    t = p.get("type") or "auto"
+    if t == "auto":
+        return detect_axis_type([axis_role(k, r) for k, r in axis_items(p)])
+    return t
+
+
+def _axis_span(o, d, ends):
+    ts = sorted(float((np.asarray(e, float) - o) @ d) for e in ends)
+    return None if ts[1] - ts[0] < 1e-9 else [ts[0], ts[1]]
+
+
+def _axis_point(state, kind, ref):
+    if kind == "vertex":
+        return resolve_point(state, ref)
+    from . import sketchref
+    res = state.sketches.get(ref["sketch"])
+    if res is None:
+        raise K.KernelError(f"Sketch {ref['sketch']} is gone: the axis has no point to pass through")
+    sk = res.sketch.to_dict() if hasattr(res.sketch, "to_dict") else res.sketch
+    sketchref.check(sk, ref)
+    plane = {"origin": res.plane.origin, "xdir": res.plane.xdir, "normal": res.plane.normal}
+    return np.array(sketchref.frame(plane, sk, ref["entity"], ref["role"])["o"], float)
+
+
+def build_axis(state, p):
+    """The construction axis an axis feature describes: {o, d, span}."""
+    t = axis_type(p)
+    if t is None:
+        raise K.KernelError("That selection does not fit an axis type")
+    if t not in AXIS_TYPE_NAMES or t == "auto":
+        raise K.KernelError("Unknown axis type")
+    if t not in _AXIS_BUILT:
+        raise K.KernelError(f"Axis type {AXIS_TYPE_NAMES[t]} is not built yet")
+    items = axis_items(p)
+    if t == "edge":
+        if len(items) != 1:
+            raise K.KernelError("Pick one edge")
+        kind, ref = items[0]
+        if kind == "sketch_line":
+            o, d = resolve_axis(state, ref)
+            sk = state.sketches[ref["sketch"]]
+            e = sk.sketch.entities[ref["line"]]
+            ends = [sk.plane.to_world(*sk.sketch.points[e[k]]) for k in ("p1", "p2")]
+        elif kind == "edge":
+            _, e = resolve(state, ref, "edge")
+            ln = K.edge_line(e)
+            info = K.edge_info(e)
+            if ln is not None:
+                o, d = ln
+                ends = [info["p0"], info["p1"]]
+            elif "axis" in info:
+                o, d, ends = np.array(info["center"]), np.array(info["axis"]), []
+            else:
+                raise K.KernelError("Pick a straight or circular edge")
+        else:
+            raise K.KernelError("Pick a straight or circular edge")
+        span = _axis_span(o, d, ends) if ends else None
+    elif t == "round_face":
+        if len(items) != 1 or items[0][0] != "face":
+            raise K.KernelError("Pick one cylindrical, conical or toroidal face")
+        _, face = resolve(state, items[0][1], "face")
+        hit = K.face_axis(face)
+        if hit is None:
+            raise K.KernelError("Pick a cylindrical, conical or toroidal face")
+        o, d, (t0, t1) = hit
+        span = None if t1 - t0 < 1e-9 else [t0, t1]
+    else:
+        if len(items) != 2 or any(k not in ("vertex", "sketch") for k, _ in items):
+            raise K.KernelError("Pick two points")
+        a, b = (_axis_point(state, k, r) for k, r in items)
+        if np.linalg.norm(b - a) < 1e-7:
+            raise K.KernelError("Those two points are in the same place")
+        o, d = a, (b - a) / np.linalg.norm(b - a)
+        span = [0.0, float(np.linalg.norm(b - a))]
+    o, d = np.asarray(o, float), np.asarray(d, float)
+    d = d / np.linalg.norm(d)
+    if p.get("flip"):
+        d = -d
+        span = None if span is None else [-span[1], -span[0]]
+    return {"o": [float(x) for x in o], "d": [float(x) for x in d], "span": span}
+
+
 def region_signature(face):
     info = K.face_info(face)
     return {"c": info["c"], "area": info["area"], "loops": K.face_loops(face), "edges": len(K.edges(face))}
@@ -732,6 +868,11 @@ def resolve_axis(state: ModelState, ref):
                 return np.array(info["center"]), np.array(info["axis"])
             raise K.KernelError("Axis edge must be straight or circular")
         return ln
+    if kind == "axis":
+        ax = state.axes.get(ref.get("fid"))
+        if ax is None:
+            raise K.KernelError("Missing axis")
+        return np.array(ax["o"], float), np.array(ax["d"], float)
     raise K.KernelError("Select an axis")
 
 
@@ -1531,6 +1672,10 @@ def run_plane(state, f):
     state.planes[f["id"]] = build_plane(state, f["params"])
 
 
+def run_axis(state, f):
+    state.axes[f["id"]] = build_axis(state, f["params"])
+
+
 def _selected_parts(state, p):
     ids = [i for i in p.get("parts", []) if i in state.parts]
     if not ids:
@@ -2065,7 +2210,7 @@ def run_sm_flange(state, f):
 
 RUNNERS = {
     "sketch": run_sketch, "extrude": run_extrude, "revolve": run_revolve, "fillet": run_fillet,
-    "chamfer": run_chamfer, "shell": run_shell, "plane": run_plane, "mirror": run_mirror,
+    "chamfer": run_chamfer, "shell": run_shell, "plane": run_plane, "axis": run_axis, "mirror": run_mirror,
     "linear_pattern": run_linear_pattern, "circular_pattern": run_circular_pattern,
     "boolean": run_boolean, "import": run_import, "hole": run_hole, "variable": run_variable,
     "variable_studio_ref": run_variable_studio_ref,
@@ -2096,6 +2241,7 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "offset_surface": {"faces": [], "distance": 2.0, "flip": False},
         "delete_part": {"parts": []},
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
+        "axis": {"type": "auto", "refs": [], "click": None, "flip": False, "connector_axis": "z"},
         "mirror": {"parts": [], "plane": {"kind": "std", "name": "Right"}, "op": "add"},
         "linear_pattern": {"parts": [], "direction": {"kind": "std", "name": "X"}, "count": 3,
                            "spacing": 30.0, "flip": False, "op": "new",

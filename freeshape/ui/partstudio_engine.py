@@ -43,7 +43,7 @@ from ..engine import process as engine_process
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
 _EMPTY = {"features": [], "rollback": None}
-_LIGHT = ("variable", "sketch", "plane")        # feature types re-run on the GUI thread (see the module doc)
+_LIGHT = ("variable", "sketch", "plane", "axis")        # feature types re-run on the GUI thread (see the module doc)
 
 
 # =========================================================================== pure helpers

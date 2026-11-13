@@ -12,6 +12,7 @@ import base64
 import math
 import os
 import tempfile
+import types
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -49,6 +50,7 @@ FEATURE_LABELS = {
     "boolean": "Boolean", "import": "Import", "hole": "Hole", "variable": "Variable",
     "variable_studio_ref": "Variable Studio reference",
     "mate_connector": "Mate connector",
+    "context": "Context",
     "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
 }
@@ -112,6 +114,7 @@ class Part:
     shape: object
     color: tuple = DEFAULT_COLOR
     face_colors: dict = None      # face index -> (r, g, b), e.g. from a coloured STEP file
+    reference: bool = False       # a stored neighbour restored by a Context feature: shown, never edited
 
 
 class PartMap(dict):
@@ -969,6 +972,70 @@ def run_mate_connector(state, f):
                                            "x": [float(a) for a in x]}}
 
 
+def context_blobs(capture):
+    """(key, {blob key: bytes}) for a capture from assembly.capture_context: one BREP blob and one names
+    blob per neighbour, and the JSON blob `key` that lists them. The feature stores only `key`."""
+    import hashlib
+    from . import blobstore as B
+    from .pyfeature import host
+    blobs, listed = {}, []
+    for n in capture["neighbours"]:
+        rec = {"id": n["id"], "name": n["name"], "hash": n["hash"], "T": n["T"]}
+        for field, data in (("brep", n["brep"]),
+                            ("names", B.dump_json(host.names_json(types.SimpleNamespace(names=n["names"]))))):
+            blobs[hashlib.sha256(data).hexdigest()] = data
+            rec[field] = hashlib.sha256(data).hexdigest()
+        listed.append(rec)
+    top = B.dump_json({"assembly": capture["assembly"], "instance": capture["instance"],
+                       "solved": capture["solved"], "neighbours": listed})
+    key = hashlib.sha256(top).hexdigest()
+    blobs[key] = top
+    return key, blobs
+
+
+def context_listing(get, key):
+    """The parsed capture listing behind blob `key`; `get(key)` returns a blob's bytes or raises
+    blobstore.BlobError. Raises ValueError when the listing is not the format `context_blobs` writes."""
+    from . import blobstore as B
+    top = B.load_json(get(key))
+    if not isinstance(top, dict) or not isinstance(top.get("neighbours"), list):
+        raise ValueError("capture listing has no neighbours")
+    for n in top["neighbours"]:
+        if not isinstance(n, dict) or not all(isinstance(n.get(k), str) for k in ("id", "name", "brep", "names")):
+            raise ValueError("bad neighbour entry")
+        T = np.asarray(n.get("T"), float)
+        if T.shape != (4, 4) or not np.isfinite(T).all():
+            raise ValueError("bad neighbour position")
+    return top
+
+
+def run_context(state, f):
+    """Restore the neighbours of a stored capture (ADR 0004) as reference parts `<fid>/<k>`, each placed as
+    captured relative to the edited instance, its element names carried with a CTX fragment. Reads only blobs
+    (Document.compute hands in `get` as params["resolved"]) and never the Assembly or its source studios."""
+    from . import blobstore as B
+    from .pyfeature import host
+    p, fid = f["params"], f["id"]
+    get = p.get("resolved")
+    if not p.get("capture") or get is None:
+        raise K.KernelError("Context has no stored capture")
+    try:
+        top = context_listing(get, p["capture"])
+        loaded = []
+        for n in top["neighbours"]:
+            shape = K.located(B.shape_from_brep(get(n["brep"])), np.asarray(n["T"], float))
+            named = N.NamedShape(shape, {})
+            host._load_names(get(n["names"]), named)
+            loaded.append((n, shape, named))
+    except Exception as e:      # BlobError, a malformed listing or names blob, or a parser failure
+        raise K.KernelError(f"Context capture is missing or damaged ({e})") from e
+    for n, shape, named in loaded:
+        part = state.new_part(shape, fid)
+        state.parts[part.id] = Part(part.id, n["name"], shape, part.color, None, True)
+        label = "".join(c for c in n["id"] if c.isalnum() or c == "_") + "_"
+        state.set_named(part.id, N.name_context(shape, named.names, fid, label))
+
+
 def run_sketch(state, f):
     p = f["params"]
     plane = resolve_plane(state, p["plane"])
@@ -1689,6 +1756,7 @@ RUNNERS = {
     "boolean": run_boolean, "import": run_import, "hole": run_hole, "variable": run_variable,
     "variable_studio_ref": run_variable_studio_ref,
     "mate_connector": run_mate_connector,
+    "context": run_context,
     "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
@@ -1722,6 +1790,7 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "variable_studio_ref": {"source": {}},
         "mate_connector": {"name": "", "ref": None, "kind": "face", "click": None, "snap": None,
                            "x_ref": None, "flip": False, "owner": None},
+        "context": {"assembly": "", "instance": "", "capture": ""},
         "thread": {"faces": [], "size": "auto", "major": 6.0, "pitch": 1.0, "length_mode": "full", "length": 10.0,
                    "left_hand": False, "clearance": 0.0},
         "hole": {"sketch": None, "standard": "clearance", "size": "M4", "fit": "normal", "diameter": 5.0,

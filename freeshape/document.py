@@ -10,7 +10,7 @@ from . import blobstore
 from . import kernel as K
 from . import migrations as M
 from .features import (RUNNERS, FEATURE_LABELS, ModelState, PartMap, default_params, Part, prepare,
-                       carry_face_colors)
+                       carry_face_colors, context_blobs, context_listing)
 from .expr import parse_number
 from . import pyfeature   # registers the bundled Python-feature plugins in any process that rebuilds
 
@@ -328,6 +328,10 @@ class Document:
         digest for the part it names goes into the key. Returns the feature to run (with what it read as
         params["resolved"]; None if the link found nothing); any other feature comes back unchanged."""
         from . import links
+        if f.get("type") == "context" and not f.get("suppressed"):
+            key = (f.get("params") or {}).get("capture")
+            h.update(b"1" if self._has_blob(key) else b"0")      # a capture blob that appears on a save rebuilds
+            return dict(f, params=dict(f["params"], resolved=self._blob_get))
         if f.get("type") not in links.SOURCE_FEATURES or f.get("suppressed"):
             return f
         if f.get("type") == "variable_studio_ref":
@@ -343,6 +347,47 @@ class Document:
                 pass
         h.update(json.dumps(None if pkg is None else pkg.digest_for(src.get("part"))).encode())
         return dict(f, params=dict(f["params"], resolved=pkg))
+
+    def _has_blob(self, key):
+        if key in self._blob_bytes:
+            return True
+        store = self._blob_store()
+        return bool(store is not None and isinstance(key, str) and store.has(key))
+
+    def _blob_get(self, key):
+        """Bytes of one blob: held in memory (a capture not yet saved), else read from the blob store
+        beside the tab file (hash-checked) and kept so a save elsewhere can write it. Raises BlobError."""
+        data = self._blob_bytes.get(key)
+        if data is None:
+            store = self._blob_store()
+            if store is None:
+                raise blobstore.BlobError("the Part Studio has no folder")
+            data = self._blob_bytes[key] = store.get(key)
+        return data
+
+    def store_context(self, capture):
+        """Keep a capture (assembly.capture_context) as blobs, written by the next save; returns the blob key
+        for a "context" feature's params["capture"]."""
+        key, blobs = context_blobs(capture)
+        self._blob_bytes.update(blobs)
+        return key
+
+    def _context_blobs(self):
+        """{key: bytes} of every blob a context feature names that can be read now (a feature whose blobs are
+        gone is red and contributes what is left)."""
+        out = {}
+        for f in self.features:
+            key = (f.get("params") or {}).get("capture") if f.get("type") == "context" else None
+            if not key:
+                continue
+            try:
+                out[key] = self._blob_get(key)
+                for n in context_listing(self._blob_get, key)["neighbours"]:
+                    for k in (n["brep"], n["names"]):
+                        out[k] = self._blob_get(k)
+            except (blobstore.BlobError, ValueError):
+                continue
+        return out
 
     @staticmethod
     def _key(prefix_json: str) -> str:
@@ -465,7 +510,7 @@ class Document:
             p = state.parts.get(pid)
             if p:
                 state.parts[pid] = Part(p.id, ov.get("name", p.name), p.shape, tuple(ov.get("color", p.color)),
-                                        None if "color" in ov else p.face_colors)
+                                        None if "color" in ov else p.face_colors, p.reference)
 
     def notify(self):
         for cb in list(self.listeners):
@@ -520,6 +565,7 @@ class Document:
         """Put the stored last build of every Python feature into the blob store beside `path` (the tab
         file about to be written), before the JSON that names the keys. Returns the builds."""
         builds, blobs = self._python_builds()
+        blobs.update(self._context_blobs())
         if blobs:
             store = blobstore.store_for(path or self.path)
             for data in blobs.values():

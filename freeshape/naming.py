@@ -45,6 +45,7 @@ MAX_DUP = 100            # how many times a duplicate name is retried
 OP_EXTRUDE, OP_REVOLVE = "XTR", "RVL"
 OP_FUSE, OP_CUT, OP_COMMON = "FUS", "CUT", "CMN"
 OP_SKETCH, OP_MIRROR, OP_MAKER = "SKT", "MIR", "MAK"
+OP_CONTEXT = "CTX"       # a Context feature restoring a stored neighbour (ADR 0004); FreeShape only
 
 OP_FOR = {
     "extrude": OP_EXTRUDE,
@@ -302,6 +303,23 @@ def seed(shape, tag, op=OP_SKETCH, labels=None) -> NamedShape:
             raise NamingError(f"seed label {label!r} cannot go in an element name")
         names[key] = _encode(label, "", op, tag, key[0])
     return NamedShape(shape, names)
+
+
+def name_context(shape, names, tag, label) -> NamedShape:
+    """The map of a neighbour a Context feature restored (ADR 0004). Each element keeps the name it had when
+    captured (`names`, by key in `shape`) and gains a CTX fragment under `tag`, the Context feature's id, so
+    the name says it came from a stored shape. An element the capture left unnamed is seeded from `label`
+    and its position, so every element of a Context body has a name."""
+    el = _Elements(shape)
+    out = {}
+    for key in el.keys():
+        base = names.get(key)
+        if not base:
+            base = f"{label}{key[0].lower()}{key[1]}"
+            if any(c in base for c in _RESERVED) or base.split() != [base]:
+                raise NamingError(f"context label {label!r} cannot go in an element name")
+        out[key] = _encode(base, "", OP_CONTEXT, tag, key[0])
+    return NamedShape(shape, out)
 
 
 # --------------------------------------------------------------------------- history reading (§ 3)

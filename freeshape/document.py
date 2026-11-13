@@ -535,12 +535,12 @@ class Document:
     def visible_parts(self):
         return [p for p in self.state.parts.values() if p.id not in self.hidden_parts]
 
-    def export(self, path, part_ids=None):
+    def export(self, path, part_ids=None, options=None):
         parts = [p for p in self.state.parts.values() if part_ids is None or p.id in part_ids]
         if not parts:
             raise K.KernelError("Nothing to export")
         shapes = [p.shape for p in parts]
         if str(path).lower().endswith((".stl",)):
-            K.export_stl(shapes, path)
+            K.export_stl(shapes, path, **(options or {}))
         else:
             return K.export_step_named([(p.shape, np.eye(4), p.name, p.color) for p in parts], path, self.name)

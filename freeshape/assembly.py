@@ -1948,13 +1948,13 @@ class AssemblyDoc:
                     pass
         return list(rows.values())
 
-    def export(self, path, ids=None):
+    def export(self, path, ids=None, options=None):
         insts = [i for i in self.instances if i["id"] in self.parts and (ids is None or i["id"] in ids)
                  and not i.get("hidden")]
         if not insts:
             raise K.KernelError("Nothing to export")
         if str(path).lower().endswith(".stl"):
-            K.export_stl([self.world_shape(i["id"]) for i in insts], path)
+            K.export_stl([self.world_shape(i["id"]) for i in insts], path, **(options or {}))
         else:
             K.export_step_named([(self.parts[i["id"]].shape, np.array(i["T"], float), i["name"],
                                   self.instance_color(i)) for i in insts], path, self.name)

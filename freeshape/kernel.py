@@ -1255,11 +1255,11 @@ def export_step(shapes, path):
         raise KernelError("STEP export failed")
 
 
-def export_stl(shapes, path, defl=0.05):
+def export_stl(shapes, path, defl=0.05, angle=0.3, ascii=False):
     shp = compound(shapes) if len(shapes) != 1 else shapes[0]
-    BRepMesh_IncrementalMesh(shp, defl, False, 0.3, True)
+    BRepMesh_IncrementalMesh(shp, defl, False, angle, True)
     w = StlAPI_Writer()
-    w.ASCIIMode = False         # binary STL: ~6x smaller than ASCII
+    w.ASCIIMode = bool(ascii)   # binary by default: ~6x smaller than ASCII
     if not w.Write(shp, str(path)):
         raise KernelError("STL export failed")
 

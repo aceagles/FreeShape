@@ -3259,6 +3259,13 @@ class MainWindow(QMainWindow):
                     return False
         return True
 
+    def _stl_options(self, path):
+        """STL options from the dialog; None for any other file type, False if cancelled."""
+        if not path.lower().endswith(".stl"):
+            return None
+        from .export_dialog import StlOptionsDialog
+        return StlOptionsDialog.ask(self, self.settings)
+
     def export(self, part_ids, fmt_=None):
         if self.is_dwg:
             self.dwg.export(fmt_ if fmt_ in ("dxf", "pdf") else None)
@@ -3276,8 +3283,11 @@ class MainWindow(QMainWindow):
             remember_dir(self.settings, "export", path)
             if not os.path.splitext(path)[1]:
                 path += ".stl" if "STL" in chosen else ".step"
+            opts = self._stl_options(path)
+            if opts is False:
+                return
             try:
-                self.doc.export(path)
+                self.doc.export(path, options=opts)
                 self.status.showMessage(f"Exported {path}", 5000)
             except Exception as e:
                 QMessageBox.critical(self, APP_NAME, f"Export failed:\n{e}")
@@ -3296,8 +3306,11 @@ class MainWindow(QMainWindow):
         remember_dir(self.settings, "export", path)
         if not os.path.splitext(path)[1]:
             path += ".stl" if "STL" in chosen else ".step"
+        opts = self._stl_options(path)
+        if opts is False:
+            return
         try:
-            self.doc.export(path, part_ids)
+            self.doc.export(path, part_ids, options=opts)
             self.status.showMessage(f"Exported {path}", 5000)
         except Exception as e:
             QMessageBox.critical(self, APP_NAME, f"Export failed:\n{e}")

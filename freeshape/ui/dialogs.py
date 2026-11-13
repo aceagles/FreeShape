@@ -800,8 +800,8 @@ def fields_to_params(ftype, fields, p):
         if sel:
             k, r = sel[0]
             p["up_to"] = {"kind": "part", "id": r} if k == "part" else {"kind": k, "ref": r}
-        elif key:
-            p.pop("up_to", None)
+        else:
+            p.pop("up_to", None)             # no target picked, or an end that has none: keep no stale reference
     if ftype in ("extrude", "revolve", "sweep"):
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
         p["faces"] = [r for k, r in fields.get("profiles", []) if k == "face"]

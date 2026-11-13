@@ -1934,7 +1934,9 @@ class DrawingDoc:
     def to_json(self, embed=True):
         d = {"format": FILE_FORMAT, "version": M.latest_version("drawing"), "name": self.name, "uid": self.uid,
              "source": copy.deepcopy(self.source), "sheet": self.sheet, "title": self.title,
-             "views": self.views, "annots": self.annots, "bom": self.bom}
+             "views": self.views, "annots": self.annots}
+        if self.bom:                  # parts list rows: written only when there is a table, so a Drawing
+            d["bom"] = self.bom       # without one saves to the bytes it saved before the upstream 2.0 merge
         if embed:
             d.update(self._saved_blobs()[0])
         if self.path and d["source"] and d["source"].get("path"):

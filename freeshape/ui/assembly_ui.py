@@ -2023,7 +2023,8 @@ class BomDialog(QDialog):
         return "\n".join(out) + "\n"
 
     def _export(self):
-        path, _ = filedlg.getSaveFileName(self, "Export bill of materials", "bom.csv", "CSV (*.csv)")
+        path, _ = filedlg.getSaveFileName(self, "Export bill of materials", "bom.csv", "CSV (*.csv)",
+                                          kind="export")
         if path:
             if not path.lower().endswith(".csv"):
                 path += ".csv"

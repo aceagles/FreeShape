@@ -1967,7 +1967,7 @@ class DrawingController:
         if fmt_ in ("pdf", "svg", "png"):
             ext = "." + fmt_
             path, _ = filedlg.getSaveFileName(self.w, f"Export {fmt_.upper()}", base + ext,
-                                              f"{fmt_.upper()} (*{ext})")
+                                              f"{fmt_.upper()} (*{ext})", kind="export")
             if not path:
                 return
             if not path.lower().endswith(ext):
@@ -2002,7 +2002,7 @@ class DrawingController:
         lay.addWidget(bb)
         if abs(sc - 1.0) > 1e-12 and dlg.exec() != QDialog.Accepted:
             return
-        path, _ = filedlg.getSaveFileName(self.w, "Export DXF", base + ".dxf", "DXF (*.dxf)")
+        path, _ = filedlg.getSaveFileName(self.w, "Export DXF", base + ".dxf", "DXF (*.dxf)", kind="export")
         if not path:
             return
         if not path.lower().endswith(".dxf"):

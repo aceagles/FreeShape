@@ -22,8 +22,8 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
 from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 
 import freeshape.kernel as K
-from freeshape.plugins.gears.bevel_geometry import bevel_gear
-from freeshape.plugins.gears.spur_geometry import spur_gear
+from freeshape.addons.gears.bevel_geometry import bevel_gear
+from freeshape.addons.gears.spur_geometry import spur_gear
 
 BOUND = 30.0                                  # seconds per call
 BEVEL_VOLUME = 432.764387014                  # bevel_gear(15, 1.0, 5.0)

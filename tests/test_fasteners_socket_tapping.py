@@ -11,7 +11,7 @@ from OCP.BRepBndLib import BRepBndLib
 from freeshape import kernel as K
 from freeshape import pyfeature
 from freeshape.pyfeature import registry  # noqa: F401  (loads the bundled plugins)
-from freeshape.plugins.fasteners import tables as tbl
+from freeshape.addons.fasteners import tables as tbl
 
 GOLDENS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "fasteners", "freecad_goldens.json")
 TYPES = ("ISO4762", "ISO7049-C", "ISO7049-F", "ISO7049-R")

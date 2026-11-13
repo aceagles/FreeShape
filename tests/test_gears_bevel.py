@@ -1,4 +1,4 @@
-"""Straight bevel gear geometry (freeshape/plugins/gears/bevel_geometry.py, ported from freecad.gears).
+"""Straight bevel gear geometry (freeshape/addons/gears/bevel_geometry.py, ported from freecad.gears).
 
 Goldens: tests/golden/gears_bevel.json, recorded on cadquery-ocp 7.9.3.1.1.
 
@@ -24,9 +24,9 @@ from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID, Top
 
 from conftest import FREEFORM, _count, assert_golden
 from freeshape import kernel as K
-from freeshape.plugins.gears.bevel_geometry import bevel_gear, cone_limit
+from freeshape.addons.gears.bevel_geometry import bevel_gear, cone_limit
 
-PYGEARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "freeshape", "plugins", "gears", "pygears")
+PYGEARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "freeshape", "addons", "gears", "pygears")
 NUM_POINTS = 8          # coarse flanks keep the suite quick; the defaults are FreeCAD's 20
 
 LABEL = re.compile(r"[A-Za-z0-9_+-]+")

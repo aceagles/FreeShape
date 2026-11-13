@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from OCP.BRepCheck import BRepCheck_Analyzer
 
 from freeshape import kernel as K
-from freeshape.plugins.fasteners import geom
+from freeshape.addons.fasteners import geom
 
 DATA = os.path.join(os.path.dirname(__file__), "data", "fasteners", "upstream", "FsData")
 

@@ -1,4 +1,4 @@
-"""I4.6: the bundled Gears plugin (freeshape/plugins/gears): SpurGear and BevelGear as Python features.
+"""I4.6: the bundled Gears plugin (freeshape/addons/gears): SpurGear and BevelGear as Python features.
 
 Bevel gears are measured with OCC's plain volume integrator (see tests/test_gears_bevel.py): K.volume and
 conftest.shape_fingerprint take minutes on them.
@@ -25,7 +25,7 @@ from freeshape.document import Document  # noqa: E402
 from freeshape.pyfeature import host  # noqa: E402
 from freeshape.pyfeature.api import Inputs  # noqa: E402
 
-GEARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "freeshape", "plugins", "gears")
+GEARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "freeshape", "addons", "gears")
 
 
 @pytest.fixture(autouse=True)

@@ -5,8 +5,8 @@ import os
 import pytest
 
 from freeshape import pyfeature
-from freeshape.plugins.fasteners import tables as T
-from freeshape.plugins.fasteners.geom import DiaStr2Num
+from freeshape.addons.fasteners import tables as T
+from freeshape.addons.fasteners.geom import DiaStr2Num
 
 UPSTREAM = os.path.join(os.path.dirname(__file__), "data", "fasteners", "upstream", "FsData")
 

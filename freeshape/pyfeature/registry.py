@@ -7,7 +7,7 @@ Each listed class (a `api.Feature` subclass) becomes the feature type "py:<plugi
 `features.RUNNERS` (runner `host.run`) and `features.FEATURE_LABELS` by mutating those dicts.
 
 Discovery ports FreeCAD's `InitApplications` (src/App/FreeCADInit.py, tag 1.0.2): two roots are scanned in
-order, the bundled root `freeshape/plugins/` and then the user root; a folder holding a file named
+order, the bundled root `freeshape/addons/` and then the user root; a folder holding a file named
 `ADDON_DISABLED` is skipped; a user plugin with the same id as a bundled one replaces it; a plugin that fails
 is recorded in `problems()` and loading continues -- the loader never raises.
 
@@ -32,10 +32,10 @@ from dataclasses import dataclass
 from .. import features as _features
 from . import api
 
-BUNDLED_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugins")
-BUNDLED_PACKAGE = "freeshape.plugins"
+BUNDLED_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "addons")
+BUNDLED_PACKAGE = "freeshape.addons"
 USER_PACKAGE = "freeshape_user_plugins"
-OTHER_BUNDLED_PACKAGE = "freeshape_bundled_plugins"   # a bundled root other than freeshape/plugins (tests)
+OTHER_BUNDLED_PACKAGE = "freeshape_bundled_plugins"   # a bundled root other than freeshape/addons (tests)
 PREFIX = "py:"
 STANDARD_PREFIX = "sp:"
 STOP_FILE = "ADDON_DISABLED"
@@ -395,7 +395,7 @@ def load_root(root, source) -> list[PluginInfo]:
 
 
 def load_bundled_plugins(root=None) -> list[PluginInfo]:
-    """Register the plugins shipped in freeshape/plugins (or `root`, for tests)."""
+    """Register the plugins shipped in freeshape/addons (or `root`, for tests)."""
     with _LOCK:
         return load_root(root or BUNDLED_ROOT, "bundled")
 

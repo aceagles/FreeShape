@@ -1,4 +1,4 @@
-"""Spur / helical gear geometry (freeshape/plugins/gears/spur_geometry.py, adapted from freecad.gears)."""
+"""Spur / helical gear geometry (freeshape/addons/gears/spur_geometry.py, adapted from freecad.gears)."""
 import functools
 import hashlib
 import math
@@ -17,8 +17,8 @@ from OCP.TopAbs import TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer
 
 from freeshape import kernel as K
-from freeshape.plugins.gears import pygears
-from freeshape.plugins.gears.spur_geometry import GearShape, spur_gear
+from freeshape.addons.gears import pygears
+from freeshape.addons.gears.spur_geometry import GearShape, spur_gear
 
 PYGEARS_DIR = os.path.dirname(pygears.__file__)
 LABEL = re.compile(r"^[A-Za-z0-9_+-]+$")
@@ -80,7 +80,7 @@ def test_pygears_files_are_verbatim_copies():
 
 
 def test_adapted_file_keeps_header_and_credit():
-    import freeshape.plugins.gears.spur_geometry as mod
+    import freeshape.addons.gears.spur_geometry as mod
     with open(mod.__file__, encoding="utf-8") as fh:
         head = fh.read(2500)
     assert "GNU General Public License as published by" in head

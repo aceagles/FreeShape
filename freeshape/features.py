@@ -1123,8 +1123,19 @@ def run_import(state, f):
         for shape, name, color, fcols in items:
             part = state.new_part(shape, f["id"], tuple(color) if color else None)
             state.parts[part.id] = Part(part.id, name or part.name, part.shape, part.color, fcols or None)
+            state.set_named(part.id, _import_names(part.shape, f["id"]))
     finally:
         os.unlink(path)
+
+
+def _import_names(shape, fid):
+    """The element map of an imported solid. A STEP file carries no history, and FreeCAD's reader
+    attaches no element map either (spec I1.7), so every element is seeded from the feature id and
+    its position in the shape's own sub-shape order, which the same bytes always reproduce."""
+    try:
+        return N.seed(shape, fid, N.OP_FOR["import"])
+    except N.NamingError:
+        return None
 
 
 def run_hole(state, f):
@@ -1328,8 +1339,9 @@ def run_sweep(state, f):
     profs = _profiles(state, p, f["id"])
     if not p.get("path"):
         raise K.KernelError("Select the path to sweep along")
-    body = K.sweep(profs, _path_wire(state, p["path"]))
-    apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"))
+    body, hist = K.sweep(profs, _path_wire(state, p["path"]), with_history=True)
+    named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "sweep")
+    apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 
 def run_loft(state, f):
@@ -1340,8 +1352,21 @@ def run_loft(state, f):
             profs += resolve_regions(state, [item["ref"]], f["id"])
         else:
             profs.append(resolve(state, item["ref"], "face")[1])
-    body = K.loft(profs, p.get("ruled", False))
-    apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"))
+    body, hist = K.loft(profs, p.get("ruled", False), with_history=True)
+    named = name_feature(state, f["id"], _loft_names(state, p), body, hist, "loft")
+    apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
+
+
+def _loft_names(state, p):
+    """What `_profile_names` gives a sweep, for a loft's profile list: the sketch of each region
+    profile and the part each face profile was picked from."""
+    regions, faces = [], []
+    for item in p.get("profiles", []):
+        if item["kind"] == "region":
+            regions.append(item["ref"])
+        else:
+            faces.append({"part": item["ref"].get("part")})
+    return _profile_names(state, {"regions": regions, "faces": faces})
 
 
 def run_draft(state, f):

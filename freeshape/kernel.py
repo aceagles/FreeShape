@@ -1437,6 +1437,11 @@ def make_wire(edge_list):
 
 
 def _pipe_shell(path_wire, wire):
+    return _pipe_maker(path_wire, wire).Shape()
+
+
+def _pipe_maker(path_wire, wire):
+    """The finished pipe-shell maker for `wire` swept along `path_wire`, already made into a solid."""
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
     from OCP.BRepBuilderAPI import BRepBuilderAPI_RightCorner
     mk = BRepOffsetAPI_MakePipeShell(path_wire)
@@ -1447,39 +1452,73 @@ def _pipe_shell(path_wire, wire):
     if not mk.IsDone():
         raise KernelError("Sweep failed — the path may be too tight for the profile")
     mk.MakeSolid()
-    return mk.Shape()
+    return mk
 
 
-def sweep(profile_faces, path_wire):
+def _pipe_history(mk, face, wire):
+    """What a pipe-shell maker did to its profile: each edge and vertex of `wire` generated its side
+    faces and edges, and (given the profile `face`) the face generated the start and end caps. The
+    maker's own FirstShape/LastShape take no argument, unlike a prism's."""
+    hist = BRepTools_History()
+    for kind in (TopAbs_EDGE, TopAbs_VERTEX):
+        for s in _sub_shapes(wire, kind):
+            try:
+                for g in mk.Generated(s):
+                    hist.AddGenerated(s, g)
+            except Exception:
+                pass            # an OCCT history failure degrades the names; it never fails the operation
+    if face is not None:
+        for cap in (mk.FirstShape, mk.LastShape):
+            try:
+                c = cap()
+                if not c.IsNull() and not c.IsSame(face):
+                    hist.AddGenerated(face, c)
+            except Exception:
+                pass
+    return hist
+
+
+def sweep(profile_faces, path_wire, with_history=False):
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_WIRE
     if not profile_faces:
         raise KernelError("Select a profile to sweep")
-    out = []
+    out, steps = [], []
     for f in profile_faces:
         outer = BRepTools.OuterWire_s(f)
         try:
-            body = _pipe_shell(path_wire, outer)
+            mk = _pipe_maker(path_wire, outer)
+            body = mk.Shape()
+            hist = _pipe_history(mk, f, outer) if with_history else None
             exp = TopExp_Explorer(f, TopAbs_WIRE)
             while exp.More():                 # holes in the profile become tunnels
                 w = TopoDS.Wire(exp.Current()) if hasattr(TopoDS, "Wire") else exp.Current()
                 if not w.IsSame(outer):
-                    body = cut(body, _pipe_shell(path_wire, w))
+                    tmk = _pipe_maker(path_wire, w)
+                    if with_history:
+                        body, cut_hist = cut(body, tmk.Shape(), with_history=True)
+                        hist = _chain(hist, _pipe_history(tmk, None, w), cut_hist)
+                    else:
+                        body = cut(body, tmk.Shape())
                 exp.Next()
         except KernelError:
             raise
         except Exception as exc:
             raise KernelError("Sweep failed — the path may be too tight for the profile") from exc
         out.append(body)
-    res = fuse_all(out)
+        steps.append(hist)
+    if with_history:
+        res, fused = fuse_all(out, with_history=True)
+    else:
+        res = fuse_all(out)
     if not solids(res):
         raise KernelError("Sweep didn't make a solid — the profile should be a closed region")
     if volume(res) < 0:
         res = res.Reversed()
-    return res
+    return (res, _chain(_chain(*steps), fused)) if with_history else res
 
 
-def loft(profile_faces, ruled=False):
+def loft(profile_faces, ruled=False, with_history=False):
     from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
     from OCP.BRepTools import BRepTools
     if len(profile_faces) < 2:
@@ -1493,7 +1532,27 @@ def loft(profile_faces, ruled=False):
         raise KernelError("Loft failed — try profiles with similar shapes") from exc
     if not mk.IsDone():
         raise KernelError("Loft failed — try profiles with similar shapes")
-    return mk.Shape()
+    if not with_history:
+        return mk.Shape()
+    # Each profile edge generated the loft face that runs from it; the first and last profile faces
+    # generated the two end caps (spec I1.7: FreeCAD's MapperThruSections).
+    hist = BRepTools_History()
+    for f in profile_faces:
+        for e in _sub_shapes(BRepTools.OuterWire_s(f), TopAbs_EDGE):
+            try:
+                g = mk.GeneratedFace(e)
+                if not g.IsNull():
+                    hist.AddGenerated(e, g)
+            except Exception:
+                pass            # an OCCT history failure degrades the names; it never fails the operation
+    for f, cap in ((profile_faces[0], mk.FirstShape), (profile_faces[-1], mk.LastShape)):
+        try:
+            c = cap()
+            if not c.IsNull() and not c.IsSame(f):
+                hist.AddGenerated(f, c)
+        except Exception:
+            pass
+    return mk.Shape(), hist
 
 
 def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=False):

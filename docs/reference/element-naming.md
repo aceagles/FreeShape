@@ -426,6 +426,38 @@ fillet `FLT` (`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:3962`), 
 * A draft modifies the drafted faces; their names keep the source face name plus the `DFT` fragment.
 * The runners name with `stamp=True` and replace the part's map with the result's, so a later
   feature referring to a blend face by name finds it after an upstream dimension change.
+### I1.7 Sweep, loft and import
+
+**FreeCAD.** A pipe sweep names through `MapperMaker` with op `PSH`
+(`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:2349`, default op at `:2359`; the `PIP`
+code at `/opt/freecad-src/src/Mod/Part/App/TopoShapeOpCode.h:54` belongs to the older sweep path at
+`:5595`). A loft names through `MapperThruSections` with op `LFT`
+(`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:4138`, naming call at `:4207`). That
+mapper asks the maker what face each profile edge generated (`GeneratedFace`), falls back to the
+plain maker query, and reports the first and last profile as generating the maker's `FirstShape()`
+and `LastShape()` caps (`:3463`). FreeCAD's STEP reader (`TopoShape::read`,
+`/opt/freecad-src/src/Mod/Part/App/TopoShape.cpp:748`) attaches no element map, so an imported
+shape has no names of its own and FreeCAD addresses its elements by index (`Face3`), which is the
+order of OCCT's sub-shape map. It defines no other order and no seed op.
+
+**FreeShape.**
+
+1. `K.sweep` and `K.loft` take `with_history=True` and return `(shape, history)`. The sweep history
+   is built per profile (the pipe-shell maker answers `Generated()` per sub-shape, and
+   `FirstShape()`/`LastShape()` without an argument, so it cannot use `_maker_history`): each edge
+   and vertex of the outer wire generates its side faces and edges, and the profile face generates
+   the two caps. A hole in the profile is swept as its own tunnel and cut out; the cut's history
+   and the tunnel's are chained in. The per-profile histories and the `fuse_all` history are then
+   chained, as for an extrude. The loft history is `GeneratedFace()` per outer-wire edge, plus the
+   first and last profile face generating the end caps.
+2. `run_sweep` and `run_loft` name the body from the sketches the profile regions came from and the
+   parts the profile faces were picked from, with ops `sweep` (`PSH`) and `loft` (`LFT`), then pass
+   it to `apply_body` as extrude does. The path is not a naming input.
+3. An import has no history. `run_import` seeds every element of each imported solid with
+   `naming.seed(shape, fid, "IMP")`: the label is the element's kind and its position in the shape's
+   sub-shape map (`f3`, `e12`, `v5`), which is FreeCAD's own index order, so the same file always
+   reads to the same names. `IMP` is a FreeShape code, since FreeCAD defines none. Each solid of one
+   import is a separate part with its own map under the same feature id.
 
 ## 5. Split and merge
 

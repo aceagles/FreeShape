@@ -58,8 +58,11 @@ OP_FOR = {
     "circular_pattern": "XFM",
     "draft": "DFT",
     "fillet": "FLT",
+    "import": "IMP",
     "linear_pattern": "XFM",
+    "loft": "LFT",
     "shell": "THK",
+    "sweep": "PSH",
 }
 
 VERTEX, EDGE, FACE = "V", "E", "F"

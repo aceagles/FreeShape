@@ -124,6 +124,12 @@ def pin_in_hole(mtype="revolute", **kw):
     return a, m, ip, ipin
 
 
+def plate_and_two_blocks():
+    """A fixed plate and two free blocks, nothing mated. Returns (asm, plate, block1, block2)."""
+    a = new_assembly()
+    return a, a.insert(src("plate")), a.insert(src("block")), a.insert(src("block"))
+
+
 def point_world(a, iid, p):
     """Where point `p` of instance `iid` (its own coordinates) is in the world."""
     T = np.asarray(a.T(iid), float)

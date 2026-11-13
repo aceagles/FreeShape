@@ -434,6 +434,31 @@ def snap_transform(m, FA, FB):
 
 # =========================================================================== the document
 
+def capture_context(asm, iid):
+    """Plain data for editing instance `iid` in context (ADR 0004): every other instance with a part, as it
+    stands now. Each neighbour has its id, name, content hash (sha256 of its BREP bytes), BREP bytes,
+    element names (as `_named` has them, {} when the part has none) and `T`, its placement relative to `iid`
+    (inverse of `iid`'s transform times the neighbour's, 4x4 nested lists). `solved` is False while any
+    mate is shown red. Reads the current state; changes nothing."""
+    import hashlib
+    from . import blobstore
+    if asm.instance(iid) is None:
+        raise K.KernelError(f"No instance {iid}")
+    inv = np.linalg.inv(asm.T(iid))
+    neighbours = []
+    for inst in asm.instances:
+        nid = inst["id"]
+        if nid == iid or nid not in asm.parts:
+            continue
+        data = blobstore.brep_bytes(asm.parts[nid].shape)
+        named = asm._named(nid)
+        neighbours.append({"id": nid, "name": inst["name"], "hash": hashlib.sha256(data).hexdigest(),
+                           "brep": data, "names": dict(named.names) if named is not None else {},
+                           "T": (inv @ asm.T(nid)).tolist()})
+    solved = not any(v.startswith("Can't be solved") for v in asm.errors.values())
+    return {"assembly": asm.uid, "instance": iid, "solved": solved, "neighbours": neighbours}
+
+
 class AssemblyDoc:
     kind = "assembly"
 

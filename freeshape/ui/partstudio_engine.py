@@ -513,7 +513,13 @@ class LiveTabs:
                 eng._drop(rec)
 
     # ------------------------------------------------------------------ the engine thread
+    def bind_document(self, eng):
+        """Tell the engine which Document its tabs belong to, so a source naming another one is a pinned input."""
+        folder = self.engine.window.folder
+        eng.use_document(getattr(folder, "id", None), getattr(folder, "registry", None))
+
     def open_new(self, eng, kind, rec, name, sources=()):
+        self.bind_document(eng)
         tid = rec.want_tab or f"L{next(self._ids)}"
         if any(t[0] == tid for t in eng.tabs()):          # a tab of a document that was dropped meanwhile
             for other in list(self.engine._recs.values()):
@@ -577,6 +583,7 @@ class LiveTabs:
             fh.write(snap["json"])
         if any(t[0] == rec.want_tab for t in eng.tabs()):
             eng.close_tab(rec.want_tab)
+        self.bind_document(eng)
         rec.tab = eng.open_tab(path, tab=rec.want_tab)
         rec.sig = snap["sig"]
 

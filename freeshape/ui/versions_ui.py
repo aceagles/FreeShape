@@ -411,6 +411,8 @@ class VersionsUI:
         for tab in fd.tabs:
             if tab.doc is not None:
                 self.w._refresh_tab_title(tab.doc)
+                if n and tab.kind in ("assembly", "drawing") and self.w.studio_engine is not None:
+                    self.w.studio_engine.live.changed(tab.doc)      # its engine copy follows the new pin
         self.w._on_doc_changed()
         if n:
             self.w.status.showMessage(f"Updated {n} link(s) to the newest version", 5000)

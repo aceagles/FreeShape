@@ -43,7 +43,9 @@ from .. import links
 from .. import migrations as M
 from . import worker as W
 from .contract import Engine, EngineError, TabErrored
+from .encode import Encoder
 from .executor import KINDS, file_kind
+from .inputs import cross_package, external_id
 from .linkgraph import lean_package, norm_key, package_digest, propagate
 
 STOP_GRACE_S = 3.0           # how long a closed tab's worker gets to finish before it is killed
@@ -160,6 +162,10 @@ class ProcessEngine(Engine):
         self.spares = spares
         self._ctx = multiprocessing.get_context("spawn")
         self.links = links.LinkResolver()      # the Link graph: edges only, nothing is resolved through it
+        self.document_id = None                # the Document these tabs belong to (`use_document`)
+        self.cross = None                      # resolves a source naming another Document, pinned to a Version
+        self._pinned = {}                      # (Document, folder path, Version, tab, kind) -> (id, package, state)
+        self._pin_enc = Encoder(meshes=False)
         self._tabs: dict[str, _Tab] = {}
         self._ids = itertools.count(1)
 
@@ -224,12 +230,38 @@ class ProcessEngine(Engine):
         return self._wait(t, self._submit(t, op, arg, seen))
 
     # ------------------------------------------------------------------ the Link graph
+    def use_document(self, document_id, registry=None):
+        """Say which Document the tabs belong to. A source naming another Document is then never matched to a
+        tab, and is resolved through `registry` at its pinned Version (`_external`)."""
+        if document_id != self.document_id or registry is not getattr(self.cross, "registry", None):
+            self.document_id = document_id
+            self.cross = links.LinkResolver(registry=registry) if registry is not None else None
+            self._pinned.clear()
+
+    def _external(self, src):
+        """(id, package, state) of the pinned view a cross-Document source names, or None when it does not
+        resolve (the consumer's worker then reports the unresolved link). Cached per Document, folder path,
+        Version and tab: a Version does not change."""
+        kind = src.get("kind")
+        if kind not in ("studio", "assembly", "variables") or self.cross is None:
+            return None
+        try:
+            key = (src.get("document"), self.cross.registry.trusted_path(src.get("document")), src.get("version"),
+                   src.get("tab"), kind)
+            hit = self._pinned.get(key)
+            if hit is None:
+                pkg = cross_package(kind, self.cross._cross_doc(src, kind), self._pin_enc)
+                hit = self._pinned[key] = (external_id(src), pkg, package_digest(kind, lean_package(pkg)))
+            return hit
+        except Exception:               # noqa: BLE001 -- an unreadable pin is the consumer's error, not ours
+            return None
+
     def _match(self, src):
         """The open tab a link source names -- by uid, then file path -- opening the file as a tab of its own
         if no tab has it. The rule of InProcessEngine.provide; worker._WorkerEngine.provide applies it again
-        to what is sent, so both sides agree."""
+        to what is sent, so both sides agree. A source of another Document names no tab of this one."""
         kind = src.get("kind")
-        if kind not in ("studio", "assembly", "variables"):
+        if kind not in ("studio", "assembly", "variables") or links.is_cross_link(src, self.document_id):
             return None
         uid, path = src.get("uid"), src.get("path")
         tabs = [t for t in self._tabs.values() if t.kind == kind]
@@ -253,6 +285,14 @@ class ProcessEngine(Engine):
         seen = seen + (t,)
         pkgs, key, wants = {}, [], {}
         for src in list(t.sources):
+            if links.is_cross_link(src, self.document_id):      # a pinned input: its package, and no live edge
+                ext = self._external(src)
+                if ext is not None:
+                    wants.setdefault(ext[0], set()).add(norm_key(src.get("part")))
+                    if ext[0] not in pkgs:
+                        pkgs[ext[0]] = ext[1]
+                        key.append((ext[0], ext[2]))
+                continue
             u = self._match(src)
             if u is None or u in seen:
                 continue

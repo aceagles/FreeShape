@@ -282,6 +282,8 @@ class Document:
     # ------------------------------------------------------------------ rebuild
     var_inputs = None   # (source dict) -> {name: value} of the Variable Studio it names, or None; the engine sets it
 
+    link_inputs = None  # (source dict) -> links.StudioPackage of the Part Studio it names; raises KernelError if none
+
     def _ref_inputs(self, f):
         """The variables a "variable_studio_ref" feature consumes (None if its link finds nothing)."""
         src = (f.get("params") or {}).get("source")
@@ -320,14 +322,27 @@ class Document:
         return rows
 
     def _with_consumed_inputs(self, h, f):
-        """Cache-key step for cross-tab inputs: mixes the variables a "variable_studio_ref" feature reads into
-        the running hash `h`, so a changed input misses from that feature on. Returns the feature to run
-        (with the values as params["resolved"]); any other feature comes back unchanged."""
-        if f.get("type") != "variable_studio_ref" or f.get("suppressed"):
+        """Cache-key step for cross-tab inputs: mixes what a feature of links.SOURCE_FEATURES reads into the
+        running hash `h`, so a changed input misses from that feature on. A "variable_studio_ref" reads the
+        variables of its Variable Studio; any other such feature reads the StudioPackage of its source, and its
+        digest for the part it names goes into the key. Returns the feature to run (with what it read as
+        params["resolved"]; None if the link found nothing); any other feature comes back unchanged."""
+        from . import links
+        if f.get("type") not in links.SOURCE_FEATURES or f.get("suppressed"):
             return f
-        ref = self._ref_inputs(f)
-        h.update(json.dumps(ref, sort_keys=True).encode())
-        return dict(f, params=dict(f["params"], resolved=ref))
+        if f.get("type") == "variable_studio_ref":
+            ref = self._ref_inputs(f)
+            h.update(json.dumps(ref, sort_keys=True).encode())
+            return dict(f, params=dict(f["params"], resolved=ref))
+        src = links.feature_source(f)
+        pkg = None
+        if src is not None and self.link_inputs is not None:
+            try:
+                pkg = self.link_inputs(src)
+            except K.KernelError:
+                pass
+        h.update(json.dumps(None if pkg is None else pkg.digest_for(src.get("part"))).encode())
+        return dict(f, params=dict(f["params"], resolved=pkg))
 
     @staticmethod
     def _key(prefix_json: str) -> str:

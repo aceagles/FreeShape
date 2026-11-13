@@ -20,6 +20,7 @@ link at any file on the machine. Loose files outside any Document keep uid + pat
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -71,6 +72,38 @@ def _default_flat_pattern_of(state, pid):
     return SM.flat_pattern(state.parts[pid].shape, state.sheet[pid], state.named(pid))
 
 
+@dataclass
+class PublishedPart:
+    """One part of a studio's published output, in the studio's own coordinates."""
+    id: str
+    name: str
+    color: tuple
+    hidden: bool
+    shape: object            # the TopoDS shape (not a copy: read-only)
+    names: dict              # {"face": {i: name}, "edge": {...}, "vertex": {...}}, 1-based i; empty if unnamed
+    hash: str                # sha256 hex of the part's BREP text
+
+
+@dataclass
+class StudioPackage:
+    """What a Part Studio publishes, as a consumer reads it: its parts, its sketches (engine.contract.SketchOut,
+    with element names) and the digest of both. See LinkResolver.resolve_studio."""
+    parts: dict              # part id -> PublishedPart
+    sketches: dict           # sketch feature id -> SketchOut
+    aliases: dict = field(default_factory=dict)
+    digest: str = ""         # of everything published: parts, their visibility, sketches
+
+    def digest_for(self, part=None):
+        """The digest of what a link reading `part` (an id, or None / "*" for the whole studio) takes."""
+        from .engine.linkgraph import package_digest
+        return package_digest("studio", self._view(), [part])
+
+    def _view(self):
+        return {"parts": {pid: p.hash for pid, p in self.parts.items()},
+                "hidden": sorted(pid for pid, p in self.parts.items() if p.hidden), "aliases": dict(self.aliases),
+                "sketches": {fid: sk.hash for fid, sk in self.sketches.items()}}
+
+
 class LinkResolver:
     """callable(src) -> features.Part for AssemblyDoc.resolver, or callable(src) -> TopoDS shape for
     DrawingDoc.resolver (use resolve_source / resolve_drawing_source directly for that)."""
@@ -88,6 +121,7 @@ class LinkResolver:
         self._load_assembly = load_assembly or self._default_load_assembly
         self._loaded = {}          # abs path -> (mtime, doc), for studios/assemblies loaded from disk
         self._shape_cache = {}     # compound cache for drawing sources, keyed by (kind, uid/id, ...)
+        self._encoder = None       # engine.encode.Encoder, made on the first resolve_studio
 
     def _default_load_assembly(self, path):
         from .assembly import AssemblyDoc
@@ -292,6 +326,36 @@ class LinkResolver:
         except K.KernelError:
             return None
         return None if studio is None else studio.state.named(_translate_part(studio, src.get("part")))
+
+    def resolve_studio(self, src):
+        """The published output of the Part Studio `src` names (a Document.link_inputs callable): a
+        StudioPackage of its parts and sketches, read from the studio's current state. Raises KernelError
+        when the studio is not found."""
+        from .engine.encode import Encoder, named_elements, sketch_out
+        studio = self._studio_for(src)
+        if studio is None:
+            raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
+        if self._encoder is None:
+            self._encoder = Encoder(meshes=False)     # caches each shape's BREP and hash across calls
+        st = studio.state
+        parts = {}
+        for p in st.parts.values():
+            named = st.named(p.id)
+            parts[str(p.id)] = PublishedPart(
+                id=str(p.id), name=str(p.name), color=tuple(float(c) for c in p.color),
+                hidden=p.id in studio.hidden_parts, shape=p.shape, names=named_elements(named),
+                hash=self._encoder.brep(p.shape)[1])
+        sketches = {str(fid): sketch_out(fid, (studio.feature(fid) or {}).get("name", fid), res)
+                    for fid, res in st.sketches.items()}
+        pkg = StudioPackage(parts, sketches, dict(getattr(studio, "part_aliases", {})))
+        pkg.digest = pkg.digest_for(None)
+        return pkg
+
+    def resolve_variables(self, src):
+        """{name: value} of the Variable Studio tab `src` names inside the open Document (a Document.var_inputs
+        callable), or None when it names no tab of the Document."""
+        vs = self._folder_doc(src, "variables")
+        return None if vs is None else dict(vs.values()[0])
 
     # ------------------------------------------------------------------ drawing sources
     def resolve_drawing_source(self, src):

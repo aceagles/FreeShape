@@ -117,8 +117,11 @@ class FolderDocument:
         self._scratch = None
 
     def _attach(self, tab):
-        """Point a tab's document at this Document's resolver (assemblies and drawings hold links)."""
-        if tab.kind == "assembly" and tab.doc is not None:
+        """Point a tab's document at this Document's resolver (studios, assemblies and drawings hold links)."""
+        if tab.kind == "studio" and tab.doc is not None:
+            tab.doc.link_inputs = self.resolver.resolve_studio
+            tab.doc.var_inputs = self.resolver.resolve_variables
+        elif tab.kind == "assembly" and tab.doc is not None:
             tab.doc.resolver = self.resolver.resolve_source
         elif tab.kind == "drawing" and tab.doc is not None:
             tab.doc.resolver = self.resolver.resolve_drawing_source
@@ -133,7 +136,22 @@ class FolderDocument:
         self.errors.pop(tab_id, None)
 
     def refresh_links(self):
-        """Re-read every assembly's and drawing's links against the current tabs."""
+        """Re-read every studio's, assembly's and drawing's links against the current tabs."""
+        done = set()
+
+        def rebuild_studio(tab):      # a source studio first, so it is read as it now stands
+            if tab.id in done:
+                return
+            done.add(tab.id)
+            for src in tab_sources("studio", tab.doc):
+                up = self.tab(src.get("tab"))
+                if up is not None and up.kind == "studio" and up.doc is not None:
+                    rebuild_studio(up)
+            tab.doc.rebuild()
+
+        for tab in self.tabs:
+            if tab.kind == "studio" and tab.doc is not None and tab_sources("studio", tab.doc):
+                rebuild_studio(tab)
         for tab in self.tabs:
             if tab.kind == "assembly" and tab.doc is not None:
                 tab.doc.refresh(solve=False, notify=False)

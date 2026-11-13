@@ -883,6 +883,7 @@ class MainWindow(QMainWindow):
             pre = list(preselect) if preselect else list(self.viewport.selection)
         self.mode = "dialog"
         self.viewport.feature_hl = None
+        self._dialog_sketches = set()        # sketches this dialog has referenced (see show_preview)
         self.dialog = FeatureDialog(self, feat, is_new, index, pre)
         self._adapt_tree(self.dialog)
         self.dialog.accepted.connect(self.commit_dialog)
@@ -901,6 +902,8 @@ class MainWindow(QMainWindow):
         ax = p.get("axis") or {}
         if ax.get("kind") == "sketch_line":
             show.add(ax["sketch"])
+        # ...and stay visible after their reference is cleared, so a lost region can be picked again
+        self._dialog_sketches = show = getattr(self, "_dialog_sketches", set()) | show
         self._show_state(st, also_show=show)
         self.viewport.overlays = overlays
         self.viewport.update()

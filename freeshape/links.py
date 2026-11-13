@@ -68,7 +68,7 @@ def is_cross_link(src, own_id=None):
 
 def _default_flat_pattern_of(state, pid):
     from . import sheetmetal as SM
-    return SM.flat_pattern(state.parts[pid].shape, state.sheet[pid])
+    return SM.flat_pattern(state.parts[pid].shape, state.sheet[pid], state.named(pid))
 
 
 class LinkResolver:

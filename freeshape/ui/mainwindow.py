@@ -34,6 +34,7 @@ from .numparse import fmt
 from .filedirs import start_dir, remember_dir
 from .assembly_ui import AssemblyController
 from .partstudio_engine import StudioEngine, element_index
+from .variable_panel import VariableTabs
 
 APP_NAME = "FreeShape"
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
@@ -88,6 +89,7 @@ class MainWindow(QMainWindow):
                                            flat_pattern_of=self.flat_pattern_of)
         self.studio_engine = StudioEngine(self) if engine else None    # Part Studio tabs rebuild in the engine
         self._build_ui()
+        self.var_tabs = VariableTabs(self)      # Variable Studio tabs (I3.8)
         self._bind_shortcuts()
         self.set_theme(str(self.settings.value("theme", "light")), save=False)
         self.set_orbit_mode(str(self.settings.value("orbit", "cursor")), save=False)
@@ -747,6 +749,9 @@ class MainWindow(QMainWindow):
 
     # ================================================================== doc → view
     def _on_doc_changed(self):
+        if self.var_tabs.is_variables(self.doc):
+            self.var_tabs.on_changed(self.doc)
+            return
         if self.is_dwg:
             self.dwg.on_changed()
             name = self.doc.name
@@ -1757,6 +1762,8 @@ class MainWindow(QMainWindow):
     def _reload_document_tabs(self, old_docs, tab_id):
         """Replace every shown tab of the open Document with the freshly loaded ones, keeping the same tab current."""
         fd = self.folder
+        if self.studio_engine is not None:
+            self.studio_engine.live.reset(old_docs)      # close the old tabs' engine tabs: the Link graph starts again
         for doc in old_docs:
             self._drop_autosave(doc)
         self._note_document_tab(fd, tab_id)
@@ -2201,7 +2208,7 @@ class MainWindow(QMainWindow):
         hit = cache.get(pid)
         if hit is not None and hit[0] is part.shape:
             return hit[1]
-        fp = SM.flat_pattern(part.shape, state.sheet[pid])
+        fp = SM.flat_pattern(part.shape, state.sheet[pid], state.named(pid))
         if len(cache) > 32:
             cache.clear()
         cache[pid] = (part.shape, fp)
@@ -2739,10 +2746,11 @@ class MainWindow(QMainWindow):
     def _add_tab(self, doc, switch=True):
         if switch and hasattr(self, "main_stack"):
             self.show_workspace()
+        self.var_tabs.prepare(doc)
         key = id(doc)
         self.docs[key] = doc
-        if self.studio_engine is not None and doc.kind == "studio":
-            self.studio_engine.attach(doc)
+        if self.studio_engine is not None:
+            self.studio_engine.attach(doc)         # Part Studio, Variable Studio, Assembly or Drawing tab
         doc.listeners.append(lambda d=doc: self._doc_changed_from(d))
         if doc.kind == "assembly" and self._folder_tab(doc) is None:
             doc.resolver = self._resolve_source
@@ -2779,24 +2787,22 @@ class MainWindow(QMainWindow):
         self._leave_modes()
         if self.section_panel is not None:
             self.toggle_section()
-        if self.doc is not None:
+        if self.doc is not None and self.doc.kind != "variables":
             self._update_thumbnail()
             if self.doc.kind != "drawing":
                 self._views[id(self.doc)] = self.viewport.cam.state()
         self.doc = doc
         self.viewport.clear_selection()
         self.measure.hide()
+        if self.var_tabs.is_variables(doc):
+            self.var_tabs.show(doc)
+            return
         asm = doc.kind == "assembly"
         if doc.kind == "drawing":
             self.tool_stack.setCurrentIndex(3)
             self.left_stack.setCurrentIndex(2)
             self.view_stack.setCurrentIndex(1)
             self.viewport.drag_handler = None
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            try:
-                doc.refresh(notify=False)          # pick up edits made to the model meanwhile
-            finally:
-                QApplication.restoreOverrideCursor()
             self.dwg.activate()
             self._on_doc_changed()
             return
@@ -2806,9 +2812,7 @@ class MainWindow(QMainWindow):
         self.viewport.drag_handler = self.asm if asm else None
         self.viewport.triads = []
         self.viewport.ghosts = []
-        if asm:
-            doc.refresh(notify=False)          # pick up edits made in the Part Studios meanwhile
-        self._on_doc_changed()
+        self._on_doc_changed()                 # (an Assembly or Drawing is refreshed when its inputs change: LiveTabs)
         saved = self._views.get(id(doc))
         if saved is not None:
             self.viewport.cam.set_state(saved)

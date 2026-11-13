@@ -20,6 +20,7 @@ import uuid
 import numpy as np
 
 from . import kernel as K
+from . import measure as MS
 from . import migrations as M
 
 MATE_TYPES = {
@@ -780,11 +781,13 @@ class AssemblyDoc:
                     continue
                 p = Part(inst["id"], inst.get("part_name") or inst["name"], shp,
                          tuple(inst.get("color") or INSTANCE_COLORS[0]), None)
+                p.material = inst.get("material")           # the saved copy keeps the material it was saved with
                 self.errors[inst["id"]] = "Linked Part Studio not found — showing the copy saved in this assembly"
             if old is None or not old.shape.IsSame(p.shape):
                 changed.add(inst["id"])
             self.parts[inst["id"]] = p
             inst["part_name"] = p.name
+            inst["material"] = getattr(p, "material", None)     # a Part Studio override; STEP and standard parts: none
         for iid in list(self.parts):
             if self.instance(iid) is None:
                 self.parts.pop(iid)
@@ -906,6 +909,7 @@ class AssemblyDoc:
             raise K.KernelError(f"Couldn't insert the part: {e}")
         self.parts[inst["id"]] = p
         inst["part_name"] = p.name
+        inst["material"] = getattr(p, "material", None)
         inst["name"] = self._unique_name(name or p.name)
         if len(self.instances) == 1:
             inst["fixed"] = True                    # like Onshape: the first instance is fixed in place
@@ -1938,7 +1942,8 @@ class AssemblyDoc:
                 where = src.get("studio_name") or os.path.basename(src.get("path") or "") or "Part Studio"
             p = self.parts.get(inst["id"])
             r = rows.setdefault(key, {"name": inst.get("part_name") or inst["name"], "source": where, "qty": 0,
-                                      "volume": None, "instances": []})
+                                      "volume": None, "instances": [],
+                                      "material": MS.material_name(inst.get("material")), "mass": None})
             r["qty"] += 1
             r["instances"].append(inst["name"])
             if r["volume"] is None and p is not None:
@@ -1946,7 +1951,33 @@ class AssemblyDoc:
                     r["volume"] = K.volume(p.shape)
                 except Exception:
                     pass
+        for r in rows.values():
+            # mass of one part; a part with no material (or none known) is weighed as PLA, as before
+            r["mass"] = None if r["volume"] is None else MS.mass_g(r["volume"], r["material"])
         return list(rows.values())
+
+    @staticmethod
+    def bom_total(rows):
+        """The total row of a bill of materials: {"qty", "mass"} (mass in g, parts with no volume left out)."""
+        return {"qty": sum(r["qty"] for r in rows),
+                "mass": sum(r["qty"] * r["mass"] for r in rows if r["mass"] is not None)}
+
+    def mass_summary(self):
+        """Mass of the visible instances: {"mass", "by_material": {name: g}, "com": (x, y, z) or None}.
+        The centre of mass is the mass-weighted mean of each instance's centroid in the assembly frame."""
+        by_mat, tot, moment = {}, 0.0, np.zeros(3)
+        for inst in self.visible_instances():
+            try:
+                mp = K.mass_props(self.world_shape(inst["id"]))
+            except Exception:
+                continue
+            mat = MS.material_name(inst.get("material"))
+            m = MS.mass_g(mp["volume"], mat)
+            key = mat or f"{MS.DEFAULT_MATERIAL} (default)"
+            by_mat[key] = by_mat.get(key, 0.0) + m
+            tot += m
+            moment += m * np.asarray(mp["centroid"], float)
+        return {"mass": tot, "by_material": by_mat, "com": tuple(moment / tot) if tot > 0 else None}
 
     def export(self, path, ids=None, options=None):
         insts = [i for i in self.instances if i["id"] in self.parts and (ids is None or i["id"] in ids)

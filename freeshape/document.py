@@ -422,6 +422,8 @@ class Document:
             if p:
                 state.parts[pid] = Part(p.id, ov.get("name", p.name), p.shape, tuple(ov.get("color", p.color)),
                                         None if "color" in ov else p.face_colors)
+                # Part (features.py) has no material field; the assembly reads it from this attribute
+                state.parts[pid].material = ov.get("material") or None
 
     def notify(self):
         for cb in list(self.listeners):

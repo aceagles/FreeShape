@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import kernel as K
+from .. import measure as M
 from .. import features as F
 from ..document import Document
 from ..assembly import AssemblyDoc
@@ -2536,6 +2537,7 @@ class MainWindow(QMainWindow):
         m = QMenu(self)
         m.addAction("Rename…", lambda: self._rename_part(pid))
         m.addAction("Change colour…", lambda: self._recolor_part(pid))
+        m.addAction("Material…", lambda: self._set_part_material(pid))
         m.addAction("Show" if pid in self.doc.hidden_parts else "Hide", lambda: self.doc.toggle_part_hidden(pid))
         m.addAction("Isolate", lambda: self._isolate(pid))
         m.addSeparator()
@@ -2575,20 +2577,55 @@ class MainWindow(QMainWindow):
 
     def _mass_props(self, pid):
         p = self.doc.state.parts[pid]
-        self._mass_props_shape(p.name, p.shape)
+        self._mass_props_shape(p.name, p.shape, self.doc.part_overrides.get(pid, {}).get("material"))
 
-    def _mass_props_shape(self, name, shape):
+    def _set_part_material(self, pid):
+        """Ask for a part's material and store it as a part override (saved with the file)."""
+        names = ["(none: weighed as PLA)"] + list(M.MATERIALS)
+        cur = M.material_name(self.doc.part_overrides.get(pid, {}).get("material"))
+        name, ok = QInputDialog.getItem(self, "Material", "Material of this part:", names,
+                                        names.index(cur) if cur else 0, False)
+        if ok:
+            self.doc.set_part_override(pid, material=None if name == names[0] else name)
+
+    def _mass_props_shape(self, name, shape, material=None):
+        """Mass properties of one shape. The mass is for `material` (PLA when none); "Other material…" gives a
+        one-off reading with another one and changes nothing in the document."""
         mp = K.mass_props(shape)
         lo, hi = K.bbox(shape)
         c = mp["centroid"]
+        while True:
+            mat = M.material_name(material) or M.DEFAULT_MATERIAL
+            box = QMessageBox(self)
+            box.setWindowTitle("Mass properties")
+            box.setText(
+                f"<b>{name}</b><br><br>Volume: {fmt(mp['volume'], 3)} mm³<br>"
+                f"Surface area: {fmt(mp['area'], 3)} mm²<br>"
+                f"Mass ({mat}, {M.MATERIALS[mat]:g} g/cm³): {fmt(M.mass_g(mp['volume'], mat), 2)} g<br>"
+                f"Centre of mass: ({fmt(c[0], 3)}, {fmt(c[1], 3)}, {fmt(c[2], 3)})<br>"
+                f"Bounding box: {fmt(hi[0] - lo[0], 3)} × {fmt(hi[1] - lo[1], 3)} × {fmt(hi[2] - lo[2], 3)} mm")
+            other = box.addButton("Other material…", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            if box.clickedButton() is not other:
+                return
+            names = list(M.MATERIALS)
+            pick, ok = QInputDialog.getItem(self, "Mass properties", "Weigh as:", names, names.index(mat), False)
+            if ok:
+                material = pick
+
+    def _mass_props_assembly(self, doc):
+        """Mass properties of the visible instances of an Assembly: mass by material, total, centre of mass."""
+        s = doc.mass_summary()
+        if not s["by_material"]:
+            QMessageBox.information(self, "Mass properties", "Nothing visible to weigh.")
+            return
+        rows = "".join(f"{k}: {fmt(v, 2)} g<br>" for k, v in sorted(s["by_material"].items()))
+        c = s["com"]
         QMessageBox.information(
             self, "Mass properties",
-            f"<b>{name}</b><br><br>Volume: {fmt(mp['volume'], 3)} mm³<br>"
-            f"Surface area: {fmt(mp['area'], 3)} mm²<br>"
-            f"Mass (PLA, 1.24 g/cm³): {fmt(mp['volume'] * 1.24e-3, 2)} g<br>"
-            f"Mass (aluminium, 2.7 g/cm³): {fmt(mp['volume'] * 2.7e-3, 2)} g<br>"
-            f"Centre of mass: ({fmt(c[0], 3)}, {fmt(c[1], 3)}, {fmt(c[2], 3)})<br>"
-            f"Bounding box: {fmt(hi[0] - lo[0], 3)} × {fmt(hi[1] - lo[1], 3)} × {fmt(hi[2] - lo[2], 3)} mm")
+            f"<b>{doc.name}</b> (visible instances)<br><br>{rows}<b>Total: {fmt(s['mass'], 2)} g</b><br>"
+            f"Centre of mass: ({fmt(c[0], 3)}, {fmt(c[1], 3)}, {fmt(c[2], 3)})")
 
     # ================================================================== viewport interactions
     def _hover_changed(self, pk):

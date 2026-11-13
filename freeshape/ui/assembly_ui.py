@@ -1550,20 +1550,29 @@ class BomDialog(QDialog):
         self.resize(720, 380)
         self.rows = doc.bom()
         lay = QVBoxLayout(self)
-        t = QTableWidget(len(self.rows), 6)
-        t.setHorizontalHeaderLabels(["Item", "Part", "Quantity", "From", "Volume (mm³)", "Mass PLA (g)"])
+        self.total = doc.bom_total(self.rows)
+        t = QTableWidget(len(self.rows) + 1, 7)
+        t.setHorizontalHeaderLabels(["Item", "Part", "Quantity", "From", "Material", "Volume (mm³)", "Mass (g)"])
         t.verticalHeader().setVisible(False)
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
         for r, row in enumerate(self.rows):
-            vals = [str(r + 1), row["name"], str(row["qty"]), row["source"],
+            vals = [str(r + 1), row["name"], str(row["qty"]), row["source"], row["material"] or "—",
                     fmt(row["volume"], 1) if row["volume"] is not None else "—",
-                    fmt(row["volume"] * 1.24e-3, 2) if row["volume"] is not None else "—"]
+                    fmt(row["mass"], 2) if row["mass"] is not None else "—"]
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(v)
-                if c in (0, 2, 4, 5):
+                if c in (0, 2, 5, 6):
                     it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 it.setToolTip(", ".join(row["instances"]))
                 t.setItem(r, c, it)
+        for c, v in enumerate(["", "Total", str(self.total["qty"]), "", "", "", fmt(self.total["mass"], 2)]):
+            it = QTableWidgetItem(v)
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+            if c in (2, 6):
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            t.setItem(len(self.rows), c, it)
         t.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         t.resizeColumnsToContents()
         t.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -1585,11 +1594,15 @@ class BomDialog(QDialog):
         lay.addLayout(row)
 
     def csv(self, sep=","):
-        out = [sep.join(["Item", "Part", "Quantity", "From", "Volume (mm3)", "Mass PLA (g)"])]
+        out = [sep.join(["Item", "Part", "Quantity", "From", "Material", "Volume (mm3)", "Mass (g)"])]
+        table = []
         for r, row in enumerate(self.rows):
             v = row["volume"]
-            cells = [str(r + 1), row["name"], str(row["qty"]), row["source"],
-                     f"{v:.1f}" if v is not None else "", f"{v * 1.24e-3:.2f}" if v is not None else ""]
+            table.append([str(r + 1), row["name"], str(row["qty"]), row["source"], row["material"] or "",
+                          f"{v:.1f}" if v is not None else "",
+                          f"{row['mass']:.2f}" if row["mass"] is not None else ""])
+        table.append(["", "Total", str(self.total["qty"]), "", "", "", f"{self.total['mass']:.2f}"])
+        for cells in table:
             if sep == ",":
                 cells = ['"%s"' % c.replace('"', '""') if ("," in c or '"' in c) else c for c in cells]
             out.append(sep.join(cells))
@@ -2200,7 +2213,8 @@ class AssemblyController:
         m.addAction("Duplicate", lambda: self.duplicate(ids))
         if inst["source"].get("kind") == "studio":
             m.addAction("Open Part Studio", lambda: self.open_source(iid))
-        m.addAction("Mass properties", lambda: self.w._mass_props_shape(inst["name"], doc.world_shape(iid)))
+        m.addAction("Mass properties", lambda: self.w._mass_props_shape(
+            inst["name"], doc.world_shape(iid), inst.get("material")))
         dof = doc.instance_dof(iid)
         a = m.addAction(f"Degrees of freedom: {dof}" + (" (fixed)" if inst.get("fixed") else ""))
         a.setEnabled(False)
@@ -2354,6 +2368,7 @@ class AssemblyController:
             return
         m = QMenu(self.w)
         m.addAction("Insert parts…", self.toggle_insert)
+        m.addAction("Mass properties", lambda: self.w._mass_props_assembly(self.doc))
         m.addAction("Zoom to fit", lambda: self.vp.fit())
         vm = m.addMenu("Views")
         for name in ("Front", "Back", "Left", "Right", "Top", "Bottom", "Isometric"):

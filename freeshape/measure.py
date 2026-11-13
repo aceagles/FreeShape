@@ -17,6 +17,36 @@ from .expr import fmt
 
 PLA, ALU, STEEL = 1.24e-3, 2.70e-3, 7.85e-3     # g / mm³
 
+# Material name -> density in g/cm³. "Aluminium" and "Steel" are the names the Mass properties dialog used
+# before the table existed; they stay so a file or a habit that uses them keeps working.
+MATERIALS = {
+    "PLA": 1.24, "PETG": 1.27, "ABS": 1.04, "Nylon": 1.14, "Acrylic": 1.18,
+    "Aluminium": 2.70, "Aluminium 6061": 2.70, "Steel": 7.85, "Mild steel": 7.85,
+    "Stainless steel 304": 8.00, "Brass": 8.50, "Copper": 8.96, "Titanium": 4.51,
+}
+DEFAULT_MATERIAL = "PLA"
+
+
+def material_name(name):
+    """The table's spelling of `name` (case-insensitive), or None when it is empty or not in the table."""
+    if not name:
+        return None
+    low = str(name).strip().lower()
+    return next((k for k in MATERIALS if k.lower() == low), None)
+
+
+def density(name=None):
+    """Density in g/mm³ of material `name`; PLA when `name` is empty or unknown."""
+    key = material_name(name)
+    if key is None or key == DEFAULT_MATERIAL:
+        return PLA
+    return MATERIALS[key] * 1e-3
+
+
+def mass_g(volume, name=None):
+    """Mass in grams of `volume` mm³ of material `name` (PLA when none is set)."""
+    return volume * density(name)
+
 
 def _v(p):
     return np.array([p.X(), p.Y(), p.Z()])

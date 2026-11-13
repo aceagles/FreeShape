@@ -1686,7 +1686,8 @@ def cone(base, direction, r1, r2, height):
 
 # ISO 261 coarse pitches
 ISO_PITCH = {"M1.6": 0.35, "M2": 0.4, "M2.5": 0.45, "M3": 0.5, "M4": 0.7, "M5": 0.8, "M6": 1.0, "M8": 1.25,
-             "M10": 1.5, "M12": 1.75, "M14": 2.0, "M16": 2.0, "M20": 2.5, "M24": 3.0}
+             "M10": 1.5, "M12": 1.75, "M14": 2.0, "M16": 2.0, "M18": 2.5, "M20": 2.5, "M22": 2.5,
+             "M24": 3.0}
 THREAD_H = 0.5413   # thread depth (5H/8) as a fraction of the pitch, ISO 68-1
 
 

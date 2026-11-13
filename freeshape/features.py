@@ -53,16 +53,19 @@ FEATURE_LABELS = {
 }
 
 # ISO metric screw data (coarse threads).  clearance: close / normal / loose (ISO 273)
-HOLE_SIZES = ["M2", "M2.5", "M3", "M4", "M5", "M6", "M8", "M10", "M12"]
-CLEARANCE = {"M2": (2.2, 2.4, 2.6), "M2.5": (2.7, 2.9, 3.1), "M3": (3.2, 3.4, 3.6), "M4": (4.3, 4.5, 4.8),
+HOLE_SIZES = ["M1.6", "M2", "M2.5", "M3", "M4", "M5", "M6", "M8", "M10", "M12", "M14", "M16", "M18", "M20", "M22", "M24"]
+CLEARANCE = {"M1.6": (1.7, 1.8, 2.0), "M2": (2.2, 2.4, 2.6), "M2.5": (2.7, 2.9, 3.1), "M3": (3.2, 3.4, 3.6), "M4": (4.3, 4.5, 4.8),
              "M5": (5.3, 5.5, 5.8), "M6": (6.4, 6.6, 7.0), "M8": (8.4, 9.0, 10.0), "M10": (10.5, 11.0, 12.0),
-             "M12": (13.0, 13.5, 14.5)}
-TAP_DRILL = {"M2": 1.6, "M2.5": 2.05, "M3": 2.5, "M4": 3.3, "M5": 4.2, "M6": 5.0, "M8": 6.8, "M10": 8.5,
-             "M12": 10.2}
-COUNTERBORE = {"M2": (4.4, 2.2), "M2.5": (5.5, 2.7), "M3": (6.5, 3.3), "M4": (8.0, 4.4), "M5": (10.0, 5.4),
-               "M6": (11.0, 6.4), "M8": (15.0, 8.6), "M10": (18.0, 10.8), "M12": (20.0, 13.0)}  # socket head
-COUNTERSINK = {"M2": 4.4, "M2.5": 5.5, "M3": 6.3, "M4": 9.4, "M5": 10.4, "M6": 12.6, "M8": 17.3, "M10": 20.0,
-               "M12": 24.0}  # 90° flat head
+             "M12": (13.0, 13.5, 14.5), "M14": (15.0, 15.5, 16.5), "M16": (17.0, 17.5, 18.5),
+             "M18": (19.0, 20.0, 21.0), "M20": (21.0, 22.0, 24.0), "M22": (23.0, 24.0, 26.0),
+             "M24": (25.0, 26.0, 28.0)}
+TAP_DRILL = {"M1.6": 1.25, "M2": 1.6, "M2.5": 2.05, "M3": 2.5, "M4": 3.3, "M5": 4.2, "M6": 5.0, "M8": 6.8, "M10": 8.5,
+             "M12": 10.2, "M14": 12.0, "M16": 14.0, "M18": 15.5, "M20": 17.5, "M22": 19.5, "M24": 21.0}
+COUNTERBORE = {"M1.6": (3.5, 1.7), "M2": (4.4, 2.2), "M2.5": (5.5, 2.7), "M3": (6.5, 3.3), "M4": (8.0, 4.4), "M5": (10.0, 5.4),
+               "M6": (11.0, 6.4), "M8": (15.0, 8.6), "M10": (18.0, 10.8), "M12": (20.0, 13.0), "M14": (24.0, 14.6), "M16": (26.0, 16.6), "M18": (30.0, 18.6),
+               "M20": (33.0, 20.6), "M22": (36.0, 22.8), "M24": (40.0, 24.8)}  # socket head
+COUNTERSINK = {"M1.6": 3.6, "M2": 4.4, "M2.5": 5.5, "M3": 6.3, "M4": 9.4, "M5": 10.4, "M6": 12.6, "M8": 17.3, "M10": 20.0,
+               "M12": 24.0, "M14": 30.8, "M16": 33.6, "M20": 40.3}  # 90° flat head; no standard value above M20 (ISO 10642)
 
 
 def hole_centres(sketch):
@@ -100,7 +103,11 @@ def hole_dims(p):
         d = CLEARANCE[size][{"close": 0, "normal": 1, "loose": 2}.get(p.get("fit", "normal"), 1)]
         label = f"{size} clearance"
     cb = COUNTERBORE[size] if style == "counterbore" else None
-    cs = COUNTERSINK[size] if style == "countersink" else None
+    cs = None
+    if style == "countersink":
+        if size not in COUNTERSINK:
+            raise K.KernelError(f"No standard countersink for {size}: use a counterbore or a custom size")
+        cs = COUNTERSINK[size]
     return d, cb, cs, label
 
 

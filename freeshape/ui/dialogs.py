@@ -9,7 +9,7 @@ from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QBoxLayout, QLabel, QToolButton, QLineEdit, QComboBox, QCheckBox,
-    QListWidget, QListWidgetItem, QWidget, QButtonGroup, QSizePolicy, QGraphicsDropShadowEffect,
+    QListWidget, QListWidgetItem, QWidget, QButtonGroup, QSizePolicy, QGraphicsDropShadowEffect, QTabWidget,
 )
 
 from .. import kernel as K
@@ -609,14 +609,17 @@ SCHEMAS = {
     ],
     # Derived: one row per control group, top to bottom. Add a row here and a `_make_derived_*` builder below.
     #   Document chooser and Version pin: before `derived_source` (they decide which Part Studio list it shows).
-    #   Mate connectors tick list: after `derived_sketches`, key "connectors".
+    #   Parts, Sketches and Mate connectors tick lists: the tabs of the one `derived_tabs` row. Add a tick list
+    #   by adding its spec to "tabs".
     #   Location and Placement base: after that.
     "derived": [
         {"t": "derived_document", "key": "source", "label": "Document"},
         {"t": "derived_source", "key": "source", "label": "Part Studio"},
-        {"t": "derived_checks", "key": "parts", "label": "Parts"},
-        {"t": "derived_checks", "key": "sketches", "label": "Sketches"},
-        {"t": "derived_connectors", "key": "connectors", "label": "Mate connectors"},
+        {"t": "derived_tabs", "tabs": [
+            {"t": "derived_checks", "key": "parts", "label": "Parts"},
+            {"t": "derived_checks", "key": "sketches", "label": "Sketches"},
+            {"t": "derived_connectors", "key": "connectors", "label": "Mate connectors"},
+        ]},
         {"t": "derived_location", "key": "placement", "label": "Location"},
         {"t": "derived_base", "key": "placement", "label": "Placement base"},
     ],
@@ -1011,6 +1014,8 @@ class FeatureDialog(_ResizableFrame):
             f.changed.connect(self._fields_changed)
             self.fields[spec["key"]] = f
             return f
+        if t == "derived_tabs":
+            return self._make_derived_tabs(spec, p)
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
@@ -1294,6 +1299,51 @@ class FeatureDialog(_ResizableFrame):
         h.addWidget(self._derived_note)
         self.widgets[key] = cb
         return row
+
+    DERIVED_TABS_STYLE = """
+    QTabWidget::pane { border: none; }
+    QTabBar::tab {
+        background: transparent; color: #4b5563; border: none; border-bottom: 2px solid #e3e6ea;
+        padding: 4px 8px; margin: 0;
+    }
+    QTabBar::tab:hover:!selected { color: #1f2328; }
+    QTabBar::tab:selected { color: #1f2328; font-weight: 600; border-bottom: 2px solid #1f6fd1; }
+    """
+
+    def _make_derived_tabs(self, spec, p):
+        """Parts, Sketches and Mate connectors as the tabs of one row, so one tick list shows at a time. Each tab is
+        built by its own `_make_derived_*` builder. A tab's title carries how many of its rows are ticked, so a
+        hidden list still says what it brings in; the dialog opens on the first tab with a tick."""
+        tabs = QTabWidget()
+        tabs.setObjectName("derived_tabs")
+        tabs.setDocumentMode(True)
+        tabs.tabBar().setUsesScrollButtons(False)
+        tabs.tabBar().setExpanding(True)
+        tabs.setStyleSheet(self.DERIVED_TABS_STYLE)
+        lists = []
+        for sub in spec["tabs"]:
+            page = QWidget()
+            v = QVBoxLayout(page)
+            v.setContentsMargins(0, 4, 0, 0)
+            make = self._make_derived_connectors if sub["t"] == "derived_connectors" else self._make_derived_checks
+            make(sub, p, page, v)
+            tabs.addTab(page, sub["label"])
+            lists.append((sub["label"], self.widgets[sub["key"]]))
+
+        def ticked(lst):
+            return sum(lst.item(i).checkState() == Qt.Checked for i in range(lst.count()))
+
+        def titles(*_):
+            for i, (label, lst) in enumerate(lists):
+                n = ticked(lst)
+                tabs.setTabText(i, f"{label} ({n})" if n else label)
+        for _label, lst in lists:               # connected after the lists' own handlers, which may untick rows
+            lst.itemChanged.connect(titles)
+        self._derived_fills.append(titles)
+        titles()
+        tabs.setCurrentIndex(next((i for i, (_l, lst) in enumerate(lists) if ticked(lst)), 0))
+        self.widgets["derived_tabs"] = tabs
+        return tabs
 
     def _make_derived_checks(self, spec, p, row, h):
         """A tick list of what the source publishes under `spec["key"]` ("parts" or "sketches"): the ticked ids are

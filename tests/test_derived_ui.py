@@ -164,6 +164,59 @@ def test_changing_the_source_clears_the_ticks(win):
     w.cancel_dialog()
 
 
+def test_the_three_tick_lists_are_tabs_whose_titles_count_the_ticks(win):
+    w = win
+    w.start_feature("derived")
+    d = w.dialog
+    tabs = d.widgets["derived_tabs"]
+    titles = lambda: [tabs.tabText(i) for i in range(tabs.count())]
+    assert titles() == ["Parts", "Sketches", "Mate connectors"] and tabs.currentIndex() == 0
+    for i, key in enumerate(("parts", "sketches", "connectors")):
+        assert tabs.widget(i).isAncestorOf(d.widgets[key])
+    _choose(w, w.src_tab)
+    _tick_all(d.widgets["parts"])
+    _tick_all(d.widgets["sketches"])
+    assert titles() == ["Parts (1)", "Sketches (1)", "Mate connectors"]
+    d.widgets["parts"].item(0).setCheckState(Qt.Unchecked)
+    assert titles() == ["Parts", "Sketches (1)", "Mate connectors"]
+    _choose(w, w.spare_tab)                                          # another source: no ticks, so no counts
+    assert titles() == ["Parts", "Sketches", "Mate connectors"]
+    w.cancel_dialog()
+
+
+def test_editing_opens_on_the_first_tab_with_a_tick(win):
+    w = win
+    w.start_feature("derived")
+    _choose(w, w.src_tab)
+    _tick_all(w.dialog.widgets["sketches"])
+    w.commit_dialog()
+    assert w.studio_engine.settle(120)
+    w.start_feature("derived", _derived(w)[0]["id"])
+    tabs = w.dialog.widgets["derived_tabs"]
+    assert tabs.currentIndex() == 1 and tabs.tabText(1) == "Sketches (1)"
+    w.cancel_dialog()
+    _undo_all(w)
+
+
+def test_the_delete_key_on_a_selected_part_opens_delete_part_with_it_picked(win):
+    from freeshape.ui.viewport import Pick
+    w = win
+    w.start_feature("derived")
+    _choose(w, w.src_tab)
+    _tick_all(w.dialog.widgets["parts"])
+    w.commit_dialog()
+    assert w.studio_engine.settle(120)
+    pid = f"{_derived(w)[0]['id']}/1"
+    assert pid in w.doc.state.parts
+    w.left.features.clearSelection()
+    w.viewport.set_selection([Pick("part", (pid,))])
+    w._delete_key()
+    assert w.dialog is not None and w.dialog.ftype == "delete_part"
+    assert [it[1] for it in w.dialog.fields["parts"].items] == [pid]
+    w.cancel_dialog()
+    _undo_all(w)
+
+
 def test_the_command_search_has_a_command_and_the_toolbar_a_button(win):
     w = win
     c = next(c for c in w._palette_commands() if c.key == "derived")

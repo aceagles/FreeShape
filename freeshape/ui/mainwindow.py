@@ -2541,6 +2541,14 @@ class MainWindow(QMainWindow):
         ids = self.left.features.selected_feature_ids()
         if ids:
             self._delete_features(ids)
+            return
+        pids = [pk.key[0] for pk in self.viewport.selection if pk.kind == "part"]
+        if pids:
+            self._delete_parts(pids)
+
+    def _delete_parts(self, pids):
+        """Open the Delete part dialog with these parts picked: a part is removed by a feature, not erased."""
+        self.start_feature("delete_part", preselect=[Pick("part", (pid,)) for pid in pids])
 
     def _delete_features(self, ids):
         names = ", ".join(self.doc.feature(i)["name"] for i in ids)
@@ -2802,6 +2810,8 @@ class MainWindow(QMainWindow):
                 self.studio_link(self.doc, pid, flat=True)))
         m.addAction("Export STEP…", lambda: self.export([pid], "step"))
         m.addAction("Export STL…", lambda: self.export([pid], "stl"))
+        m.addSeparator()
+        m.addAction(icon("delete_part", 16), "Delete part…", lambda: self._delete_parts([pid]))
         m.exec(gpos)
 
     def _rename_part(self, pid):
@@ -2953,6 +2963,7 @@ class MainWindow(QMainWindow):
                 m.addAction("Isolate part", lambda: self._isolate(pid))
                 m.addAction("Select part", lambda: self.viewport.set_selection([Pick("part", (pid,))]))
                 m.addAction("Mass properties", lambda: self._mass_props(pid))
+                m.addAction(icon("delete_part", 16), "Delete part…", lambda: self._delete_parts([pid]))
             if pk.kind in ("region", "sketch_line"):
                 fid = pk.key[0]
                 m.addAction("Edit sketch", lambda: self.edit_feature(fid))

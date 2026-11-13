@@ -11,7 +11,7 @@ from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QImage, QPageLa
                            QPainterPath, QPdfWriter, QPen, QPolygonF, QTransform)
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTreeWidget,
+                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTreeWidget, QDoubleSpinBox,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import drawing as DW
@@ -717,11 +717,48 @@ class DimDialog(QDialog):
             self.orient = _combo([("Aligned with the points", "a"), ("Horizontal", "h"), ("Vertical", "v")],
                                  a.get("orient", "a"))
             f.addRow("Direction", self.orient)
+        tol = a.get("tol") or {}
+        unit = "°" if a["type"] == "ang" else "mm"
+        self.tol_type = _combo([("None", "none"), ("Symmetric  ±", "sym"), ("Deviations  + / −", "dev"),
+                                ("Limits", "lim")], tol.get("type", "none"))
+        self.tol_up = QDoubleSpinBox()
+        self.tol_lo = QDoubleSpinBox()
+        for sp in (self.tol_up, self.tol_lo):
+            sp.setRange(-1000.0, 1000.0)
+            sp.setDecimals(4)
+            sp.setSuffix(f" {unit}")
+        self.tol_up.setValue(float(tol.get("up") or 0.0))
+        self.tol_lo.setValue(float(tol.get("lo") or 0.0))
+        self.tol_dp = _combo([("Automatic", None)] + [(str(i), i) for i in range(0, 5)], tol.get("dp"))
+        f.addRow("Tolerance", self.tol_type)
+        f.addRow("Upper / ±", self.tol_up)
+        f.addRow("Lower", self.tol_lo)
+        f.addRow("Tolerance decimals", self.tol_dp)
+        self.tol_type.currentIndexChanged.connect(self._tol_enable)
+        self._tol_enable()
         lay.addLayout(f)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+    def _tol_enable(self):
+        t = self.tol_type.currentData()
+        self.tol_up.setEnabled(t != "none")
+        self.tol_lo.setEnabled(t in ("dev", "lim"))
+        self.tol_dp.setEnabled(t != "none")
+
+    def tol_value(self):
+        """The tolerance entry for the annotation, or None for none."""
+        t = self.tol_type.currentData()
+        if t == "none":
+            return None
+        tol = {"type": t, "up": self.tol_up.value()}
+        if t in ("dev", "lim"):
+            tol["lo"] = self.tol_lo.value()
+        if self.tol_dp.currentData() is not None:
+            tol["dp"] = self.tol_dp.currentData()
+        return tol
 
 
 # =========================================================================== controller
@@ -1382,6 +1419,11 @@ class DrawingController:
                 a.pop(k, None)
         if a["type"] == "lin":
             a["orient"] = dlg.orient.currentData()
+        tol = dlg.tol_value()
+        if tol:
+            a["tol"] = tol
+        else:
+            a.pop("tol", None)
         doc.changed()
 
     def _panel_clicked(self, oid):

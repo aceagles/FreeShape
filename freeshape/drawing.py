@@ -936,12 +936,60 @@ class DrawingDoc:
         R = float(np.linalg.norm(q))
         return ("ang", (V, r1, r2, R, (p1, p2), (p3, p4)), val)
 
-    def dim_text(self, a, value):
+    def dim_parts(self, a, value):
+        """(main, upper, lower): the dimension text split for drawing. `upper` and `lower` are None unless the
+        tolerance is stacked (deviations or limits); then `main` is the value with its prefix and suffix, or for
+        limits an empty string. A typed override text, or no tolerance, gives (text, None, None)."""
         if a.get("text"):
-            return a["text"]
+            return a["text"], None, None
         pre = {"dia": "Ø", "rad": "R"}.get(a["type"], "")
         post = "°" if a["type"] == "ang" else ""
-        return f"{a.get('prefix', '')}{pre}{fmt_value(value, a.get('dp'))}{post}{a.get('suffix', '')}"
+        dp = a.get("dp")
+        p0, s0 = a.get("prefix", ""), a.get("suffix", "")
+        tol = a.get("tol") or {}
+        t = tol.get("type", "none")
+        tdp = tol.get("dp")
+        up, lo = float(tol.get("up") or 0.0), float(tol.get("lo") or 0.0)
+        plain = f"{p0}{pre}{fmt_value(value, dp)}{post}"
+        if t == "sym":
+            return f"{plain} ±{fmt_value(abs(up), tdp)}{s0}", None, None
+        if t == "dev":
+            sg = lambda v: ("+" if v > 0 else "") + fmt_value(v, tdp)
+            return plain + s0, sg(up), sg(lo)
+        if t == "lim":
+            ldp = tdp if tdp is not None else dp
+            return "", f"{p0}{pre}{fmt_value(value + up, ldp)}{post}{s0}", f"{p0}{pre}{fmt_value(value + lo, ldp)}{post}{s0}"
+        return plain + s0, None, None
+
+    def dim_text(self, a, value):
+        main, upper, lower = self.dim_parts(a, value)
+        if upper is None:
+            return main
+        return f"{upper}/{lower}" if not main else f"{main} {upper}/{lower}"
+
+    def _dim_text_out(self, out, layer, own, at, a, value, ang, ha, va):
+        """Add the text of a dimension at `at`. Plain and symmetric text is one item, as always; deviations and
+        limits are stacked in two lines (deviations in smaller text to the right of the value)."""
+        main, upper, lower = self.dim_parts(a, value)
+        if upper is None:
+            out.append(("text", layer, own, tuple(at), main, TEXT_H, ang, ha, va))
+            return
+        at = np.asarray(at, float)
+        rd = np.array([math.cos(math.radians(ang)), math.sin(math.radians(ang))])
+        up = np.array([-rd[1], rd[0]])
+        sz = TEXT_H * (0.85 if not main else 0.6)
+        stack_h = 2 * sz + 0.6
+        base = at - up * (stack_h / 2 - 0.2) if va == "center" else at     # bottom line of the stack
+        if not main:
+            c = base
+        else:
+            wm = len(main) * TEXT_H * 0.62
+            ws = max(len(upper), len(lower)) * sz * 0.62
+            total = wm + ws + 1.0
+            out.append(("text", layer, own, tuple(at - rd * (total / 2 - wm / 2)), main, TEXT_H, ang, ha, va))
+            c = base + rd * (total / 2 - ws / 2)
+        out.append(("text", layer, own, tuple(c), lower, sz, ang, "center", "bottom"))
+        out.append(("text", layer, own, tuple(c + up * (sz + 0.6)), upper, sz, ang, "center", "bottom"))
 
     # ------------------------------------------------------------------ building the picture
     def items(self):
@@ -1235,10 +1283,10 @@ class DrawingDoc:
             else:
                 at = A2 + sd * t
             at = at + up * 0.8
-            out.append(("text", layer, own, tuple(at), text, TEXT_H, ang, "center", "bottom"))
+            self._dim_text_out(out, layer, own, at, a, value, ang, "center", "bottom")
             return
         if kind == "ang":
-            self._ang_items(out, layer, own, data, text, a)
+            self._ang_items(out, layer, own, data, text, a, value)
             return
         C, R = data
         C = np.asarray(C, float)
@@ -1260,8 +1308,8 @@ class DrawingDoc:
             right = 1.0 if u[0] >= 0 else -1.0
             sh_end = pos + np.array([right * (tw + 2), 0.0])
             out.append(("line", layer, own, tuple(pos), tuple(sh_end)))
-            out.append(("text", layer, own, (pos[0] + right * (tw / 2 + 1), pos[1] + 0.8), text, TEXT_H, 0.0,
-                        "center", "bottom"))
+            self._dim_text_out(out, layer, own, (pos[0] + right * (tw / 2 + 1), pos[1] + 0.8), a, value, 0.0,
+                               "center", "bottom")
         else:
             if kind == "dia":
                 E2 = C - u * R
@@ -1274,9 +1322,9 @@ class DrawingDoc:
             ang = self._reading_angle(u)
             rd = np.array([math.cos(math.radians(ang)), math.sin(math.radians(ang))])
             up = np.array([-rd[1], rd[0]])
-            out.append(("text", layer, own, tuple(pos + up * 0.8), text, TEXT_H, ang, "center", "bottom"))
+            self._dim_text_out(out, layer, own, pos + up * 0.8, a, value, ang, "center", "bottom")
 
-    def _ang_items(self, out, layer, own, data, text, a):
+    def _ang_items(self, out, layer, own, data, text, a, value):
         """Angular dimension: an arc about the vertex with an arrowhead at each end, extension lines where the
         arc runs past an edge, and the text just outside the arc on the bisector."""
         V, r1, r2, R, ends1, ends2 = data
@@ -1305,7 +1353,7 @@ class DrawingDoc:
         bis = r1 + r2
         bis = _unit(bis) if np.linalg.norm(bis) > 1e-9 else ccw(r1)
         at = V + bis * (R + 0.8 + TEXT_H / 2)
-        out.append(("text", layer, own, tuple(at), text, TEXT_H, 0.0, "center", "center"))
+        self._dim_text_out(out, layer, own, at, a, value, 0.0, "center", "center")
 
     # ------------------------------------------------------------------ files
     def to_json(self, embed=True):
@@ -1524,6 +1572,20 @@ def _ezdxf_dim(doc, msp, a, k, sc):
         text = a["text"]
     else:
         text = f"{a.get('prefix', '')}<>{a.get('suffix', '')}"
+    tol = a.get("tol") or {}
+    if tol.get("type", "none") != "none" and not a.get("text"):
+        # tolerance values are written as typed: AutoCAD applies dimlfac to the measurement, not to dimtp/dimtm
+        up, lo = float(tol.get("up") or 0.0), float(tol.get("lo") or 0.0)
+        if tol["type"] == "sym":
+            ov.update(dimtol=1, dimlim=0, dimtp=abs(up), dimtm=abs(up), dimtfac=1.0)
+        elif tol["type"] == "dev":
+            ov.update(dimtol=1, dimlim=0, dimtp=up, dimtm=-lo, dimtfac=0.6, dimtolj=1)
+        else:
+            ov.update(dimtol=0, dimlim=1, dimtp=up, dimtm=-lo, dimtfac=1.0)
+        if tol.get("dp") is None:
+            ov.update(dimtdec=3, dimtzin=8)
+        else:
+            ov.update(dimtdec=int(tol["dp"]), dimtzin=0)
     at = {"layer": "DIM_LOST" if lost else "DIM"}
     pos = np.asarray(a.get("pos", [0, 0]), float)
     if kind == "ang":

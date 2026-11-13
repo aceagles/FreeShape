@@ -161,7 +161,7 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
         return ("sketch_line", {"kind": "sketch_line", "sketch": fid, "line": eid})
     if k == "sketch_point" and "sketch_point" in want:
         return _sketch_point_item(vp, pick)
-    if k == "axis" and "axis_feature" in want:
+    if k == "axis" and ("axis_feature" in want or "axis" in want):
         return ("axis", {"kind": "axis", "fid": pick.key[0]})
     if k == "connector" and "connector" in want:
         return ("connector", {"fid": pick.key[0]})
@@ -509,7 +509,7 @@ SCHEMAS = {
     "revolve": [
         _ops(),
         _sel("profiles", "Faces and sketch regions to revolve", {"region", "face"}),
-        _sel("axis_sel", "Revolve axis (sketch line or edge)", {"axis"}, multi=False),
+        _sel("axis_sel", "Revolve axis (axis, sketch line or edge)", {"axis"}, multi=False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _choice("end", "Revolve type", [("full", "Full"), ("one", "One direction"), ("symmetric", "Symmetric")]),
         _num("angle", "Revolve angle", unit="deg", visible=lambda p: p.get("end") != "full", signed=True),
@@ -568,7 +568,7 @@ SCHEMAS = {
     ],
     "plane": [
         _choice("type", "Plane type", F.PLANE_TYPES),
-        _sel("refs_sel", "Planes, faces, edges and vertices", {"plane", "face", "edge", "vertex"}),
+        _sel("refs_sel", "Planes, faces, edges, axes and vertices", {"plane", "face", "edge", "vertex", "axis_feature"}),
         {"t": "info", "key": "_info", "text": lambda p: _plane_info(p)},
         _num("offset", "Offset distance", visible=lambda p: F.plane_type(p) == "offset"),
         _num("angle", "Angle", unit="deg", visible=lambda p: F.plane_type(p) == "line_angle"),
@@ -582,13 +582,13 @@ SCHEMAS = {
     "linear_pattern": [
         _ops([("new", "New"), ("add", "Add")]),
         _sel("parts", "Parts to pattern", {"part"}),
-        _sel("dir_sel", "Direction (edge or sketch line)", {"axis"}, multi=False),
+        _sel("dir_sel", "Direction (axis, edge or sketch line)", {"axis"}, multi=False),
         _choice("dir_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _num("spacing", "Distance"),
         _num("count", "Instance count", unit=""),
         _check("flip", "Opposite direction"),
         _check("dir2_on", "Second direction"),
-        _sel("dir2_sel", "Second direction (edge or sketch line)", {"axis"}, multi=False,
+        _sel("dir2_sel", "Second direction (axis, edge or sketch line)", {"axis"}, multi=False,
              visible=lambda p: p.get("dir2_on")),
         _choice("dir2_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")],
                 visible=lambda p: p.get("dir2_on")),
@@ -599,7 +599,7 @@ SCHEMAS = {
     "circular_pattern": [
         _ops([("new", "New"), ("add", "Add")]),
         _sel("parts", "Parts to pattern", {"part"}),
-        _sel("axis_sel", "Axis of pattern (edge or sketch line)", {"axis"}, multi=False),
+        _sel("axis_sel", "Axis of pattern (axis, edge or sketch line)", {"axis"}, multi=False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _num("angle", "Angle", unit="deg"),
         _num("count", "Instance count", unit=""),
@@ -639,7 +639,7 @@ SCHEMAS = {
         _num("dy", "Move Y"),
         _num("dz", "Move Z"),
         _num("rotate", "Rotate", unit="deg"),
-        _sel("axis_sel", "Rotate about (edge or sketch line)", {"axis"}, multi=False,
+        _sel("axis_sel", "Rotate about (axis, edge or sketch line)", {"axis"}, multi=False,
              visible=lambda p: _isnum(p.get("rotate")) is not False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")],
                 visible=lambda p: _isnum(p.get("rotate")) is not False),
@@ -1901,7 +1901,7 @@ class FeatureDialog(_ResizableFrame):
             kinds.add("sketch_line")
         if "sketch_point" in want:
             kinds.add("sketch_point")
-        if "axis_feature" in want:
+        if "axis_feature" in want or "axis" in want:
             kinds.add("axis")
         if "connector" in want:
             kinds.add("connector")

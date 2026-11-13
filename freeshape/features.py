@@ -502,6 +502,8 @@ def plane_role(kind, ref):
         return "point"
     if kind == "plane":
         return "plane"
+    if kind == "axis":              # an axis feature stands where a straight edge does
+        return "line"
     if kind == "face":
         return "plane" if ref.get("type") == int(K.GeomAbs_Plane) else "surface"
     if kind == "edge":
@@ -591,8 +593,10 @@ def build_plane(state, p):
         pt = resolve_point(state, one("point", "a vertex for the plane to pass through")[0][1])
         return done(K.Plane(pt, base.xdir, base.normal))
     if typ in ("point_normal", "curve_point"):
-        _, eref = one(("line", "curve"), "an edge")[0]
+        ek, eref = one(("line", "curve"), "an edge")[0]
         pt = resolve_point(state, one("point", "a vertex")[0][1])
+        if ek == "axis":                                       # perpendicular to the axis, through the point
+            return done(_frame(pt, resolve_axis(state, eref)[1]))
         _, e = resolve(state, eref, "edge")
         if typ == "point_normal" and eref.get("type") == int(K.GeomAbs_Line):
             n = np.array(K.edge_info(e)["d"], float)          # perpendicular to a straight edge, through the point
@@ -618,10 +622,13 @@ def build_plane(state, p):
         o = np.linalg.solve(M, np.array([na @ a.origin, nb @ b.origin, 0.0]))
         return done(_frame(o, nm))
     if typ == "line_angle":
-        _, eref = one("line", "a straight edge")[0]
-        _, e = resolve(state, eref, "edge")
-        info = K.edge_info(e)
-        a, d = np.array(info["p0"], float), np.array(info["d"], float)
+        ek, eref = one("line", "a straight edge")[0]
+        if ek == "axis":
+            a, d = resolve_axis(state, eref)
+        else:
+            _, e = resolve(state, eref, "edge")
+            info = K.edge_info(e)
+            a, d = np.array(info["p0"], float), np.array(info["d"], float)
         d = d / np.linalg.norm(d)
         u0 = None
         if by["plane"]:                                       # zero degrees: parallel to the chosen plane

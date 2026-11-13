@@ -13,7 +13,8 @@ from . import blobstore
 from . import kernel as K
 from . import migrations as M
 from .features import (RUNNERS, FEATURE_LABELS, ModelState, PartMap, default_params, Part, prepare,
-                       carry_face_colors)
+                       carry_face_colors, context_blobs, context_listing, check_reference_parts, REFERENCE_ONLY)
+from .expr import parse_number
 from . import pyfeature   # registers the bundled Python-feature plugins in any process that rebuilds
 
 
@@ -60,6 +61,52 @@ def _migrate_part_ids(data):
 
 
 M.register("document", _migrate_part_ids)
+
+
+CONTEXT_CURRENT, CONTEXT_OUT_OF_DATE, CONTEXT_ASSEMBLY_MISSING = "current", "out of date", "assembly missing"
+
+
+def context_status(doc, fid, asm):
+    """Whether the "context" feature `fid` of studio `doc` still matches the Assembly `asm` (the live
+    AssemblyDoc, or None): "current", "out of date" or "assembly missing" (ADR 0004). Out of date means a
+    captured neighbour's hash differs, its position relative to the edited instance moves by more than 1e-6,
+    or a neighbour was added or removed. The edited instance's own shape is not compared. A query only:
+    nothing is rebuilt, changed or acted on. A capture that cannot be read counts as out of date."""
+    import numpy as np
+    from .assembly import capture_context
+    f = doc.feature(fid)
+    if f is None or f.get("type") != "context":
+        raise K.KernelError(f"No Context feature {fid}")
+    p = f.get("params") or {}
+    if asm is None or asm.instance(p.get("instance")) is None:
+        return CONTEXT_ASSEMBLY_MISSING
+    try:
+        stored = {n["id"]: n for n in context_listing(doc._blob_get, p.get("capture"))["neighbours"]}
+    except (blobstore.BlobError, ValueError):
+        return CONTEXT_OUT_OF_DATE
+    now = {n["id"]: n for n in capture_context(asm, p["instance"])["neighbours"]}
+    if set(now) != set(stored):
+        return CONTEXT_OUT_OF_DATE
+    for k, n in now.items():
+        if n["hash"] != stored[k]["hash"] or not np.allclose(n["T"], stored[k]["T"], rtol=0, atol=1e-6):
+            return CONTEXT_OUT_OF_DATE
+    return CONTEXT_CURRENT
+
+
+def update_context(doc, fid, asm):
+    """Recapture the "context" feature `fid` from the Assembly `asm`: new blobs, a new capture key, one undoable
+    param edit that rebuilds the studio. Raises KernelError when the Assembly or the instance is missing."""
+    from .assembly import capture_context
+    f = doc.feature(fid)
+    if f is None or f.get("type") != "context":
+        raise K.KernelError(f"No Context feature {fid}")
+    p = f.get("params") or {}
+    if asm is None or asm.instance(p.get("instance")) is None:
+        raise K.KernelError("Can't update the Context: its Assembly or instance is missing")
+    key = doc.store_context(capture_context(asm, p["instance"]))
+    new = copy.deepcopy(f)
+    new["params"]["capture"] = key
+    doc.replace_feature(new)
 
 
 class Document:
@@ -284,21 +331,112 @@ class Document:
     # ------------------------------------------------------------------ rebuild
     var_inputs = None   # (source dict) -> {name: value} of the Variable Studio it names, or None; the engine sets it
 
+    link_inputs = None  # (source dict) -> links.StudioPackage of the Part Studio it names; raises KernelError if none
+
     def _ref_inputs(self, f):
         """The variables a "variable_studio_ref" feature consumes (None if its link finds nothing)."""
         src = (f.get("params") or {}).get("source")
         vals = self.var_inputs(src) if self.var_inputs is not None and isinstance(src, dict) else None
+        names = (f.get("params") or {}).get("names")
+        if vals is not None and names is not None:     # a subset: unticked names never reach the cache key
+            vals = {k: v for k, v in vals.items() if k in names}
         return None if vals is None else {str(k): float(v) for k, v in vals.items()}
 
+    def variable_table(self):
+        """One row per variable definition in history order (suppressed and rolled-back features skipped):
+        {"name", "value", "feature" (id of the defining feature), "overridden"}. A definition is overridden
+        when a later "variable" feature or Variable Studio reference defines the same name; the last one is
+        the value the model uses."""
+        rows, running = [], {}
+        for f in self.features[:self.active_count()]:
+            if f.get("suppressed"):
+                continue
+            p = f.get("params") or {}
+            if f.get("type") == "variable":
+                name = str(p.get("name", "")).strip().lstrip("#")
+                val = parse_number(p.get("expr", ""), variables=running)
+                defs = {name: val} if name and val is not None else {}
+            elif f.get("type") == "variable_studio_ref":
+                defs = self._ref_inputs(f) or {}
+                if p.get("names") is not None:
+                    defs = {n: defs[n] for n in p["names"] if n in defs}
+            else:
+                continue
+            for name, val in defs.items():
+                for r in rows:
+                    if r["name"] == name:
+                        r["overridden"] = True
+                rows.append({"name": name, "value": val, "feature": f["id"], "overridden": False})
+                running[name] = val
+        return rows
+
     def _with_consumed_inputs(self, h, f):
-        """Cache-key step for cross-tab inputs: mixes the variables a "variable_studio_ref" feature reads into
-        the running hash `h`, so a changed input misses from that feature on. Returns the feature to run
-        (with the values as params["resolved"]); any other feature comes back unchanged."""
-        if f.get("type") != "variable_studio_ref" or f.get("suppressed"):
+        """Cache-key step for cross-tab inputs: mixes what a feature of links.SOURCE_FEATURES reads into the
+        running hash `h`, so a changed input misses from that feature on. A "variable_studio_ref" reads the
+        variables of its Variable Studio; any other such feature reads the StudioPackage of its source, and its
+        digest for the part it names goes into the key. Returns the feature to run (with what it read as
+        params["resolved"]; None if the link found nothing); any other feature comes back unchanged."""
+        from . import links
+        if f.get("type") == "context" and not f.get("suppressed"):
+            key = (f.get("params") or {}).get("capture")
+            h.update(b"1" if self._has_blob(key) else b"0")      # a capture blob that appears on a save rebuilds
+            return dict(f, params=dict(f["params"], resolved=self._blob_get))
+        if f.get("type") not in links.SOURCE_FEATURES or f.get("suppressed"):
             return f
-        ref = self._ref_inputs(f)
-        h.update(json.dumps(ref, sort_keys=True).encode())
-        return dict(f, params=dict(f["params"], resolved=ref))
+        if f.get("type") == "variable_studio_ref":
+            ref = self._ref_inputs(f)
+            h.update(json.dumps(ref, sort_keys=True).encode())
+            return dict(f, params=dict(f["params"], resolved=ref))
+        src = links.feature_source(f)
+        pkg = None
+        if src is not None and self.link_inputs is not None:
+            try:
+                pkg = self.link_inputs(src)
+            except K.KernelError:
+                pass
+        h.update(json.dumps(None if pkg is None else pkg.digest_for(src.get("part"))).encode())
+        return dict(f, params=dict(f["params"], resolved=pkg))
+
+    def _has_blob(self, key):
+        if key in self._blob_bytes:
+            return True
+        store = self._blob_store()
+        return bool(store is not None and isinstance(key, str) and store.has(key))
+
+    def _blob_get(self, key):
+        """Bytes of one blob: held in memory (a capture not yet saved), else read from the blob store
+        beside the tab file (hash-checked) and kept so a save elsewhere can write it. Raises BlobError."""
+        data = self._blob_bytes.get(key)
+        if data is None:
+            store = self._blob_store()
+            if store is None:
+                raise blobstore.BlobError("the Part Studio has no folder")
+            data = self._blob_bytes[key] = store.get(key)
+        return data
+
+    def store_context(self, capture):
+        """Keep a capture (assembly.capture_context) as blobs, written by the next save; returns the blob key
+        for a "context" feature's params["capture"]."""
+        key, blobs = context_blobs(capture)
+        self._blob_bytes.update(blobs)
+        return key
+
+    def _context_blobs(self):
+        """{key: bytes} of every blob a context feature names that can be read now (a feature whose blobs are
+        gone is red and contributes what is left)."""
+        out = {}
+        for f in self.features:
+            key = (f.get("params") or {}).get("capture") if f.get("type") == "context" else None
+            if not key:
+                continue
+            try:
+                out[key] = self._blob_get(key)
+                for n in context_listing(self._blob_get, key)["neighbours"]:
+                    for k in (n["brep"], n["names"]):
+                        out[k] = self._blob_get(k)
+            except (blobstore.BlobError, ValueError):
+                continue
+        return out
 
     @staticmethod
     def _key(prefix_json: str) -> str:
@@ -319,6 +457,7 @@ class Document:
             if key in self._cache:
                 state, err = self._cache[key]
             else:
+                prior = state
                 state = state.copy()
                 err = None
                 if not f.get("suppressed"):
@@ -336,6 +475,7 @@ class Document:
                                 pyfeature.host.run(state, f)
                         else:
                             RUNNERS[f["type"]](state, prepare(f, state))
+                        check_reference_parts(before, state)
                         for pid, part in list(state.parts.items()):
                             old = before.get(pid) or before.get(pid.split(".")[0])
                             if old is not None and old.face_colors and part.shape is not old.shape \
@@ -344,6 +484,8 @@ class Document:
                                                         carry_face_colors(old, part.shape))
                     except K.KernelError as e:
                         err = str(e)
+                        if err == REFERENCE_ONLY:
+                            state = prior.copy()      # nothing the feature did to a Context body stays
                     except Exception as e:  # never let one feature kill the model
                         traceback.print_exc()
                         err = f"{type(e).__name__}: {e}"
@@ -421,7 +563,7 @@ class Document:
             p = state.parts.get(pid)
             if p:
                 state.parts[pid] = Part(p.id, ov.get("name", p.name), p.shape, tuple(ov.get("color", p.color)),
-                                        None if "color" in ov else p.face_colors)
+                                        None if "color" in ov else p.face_colors, p.reference)
                 # Part (features.py) has no material field; the assembly reads it from this attribute
                 state.parts[pid].material = ov.get("material") or None
 
@@ -478,6 +620,7 @@ class Document:
         """Put the stored last build of every Python feature into the blob store beside `path` (the tab
         file about to be written), before the JSON that names the keys. Returns the builds."""
         builds, blobs = self._python_builds()
+        blobs.update(self._context_blobs())
         if blobs:
             store = blobstore.store_for(path or self.path)
             for data in blobs.values():
@@ -535,10 +678,10 @@ class Document:
         return doc
 
     def visible_parts(self):
-        return [p for p in self.state.parts.values() if p.id not in self.hidden_parts]
+        return [p for p in self.state.parts.values() if p.id not in self.hidden_parts and not p.reference]
 
     def export(self, path, part_ids=None, options=None):
-        parts = [p for p in self.state.parts.values() if part_ids is None or p.id in part_ids]
+        parts = [p for p in self.state.parts.values() if (part_ids is None or p.id in part_ids) and not p.reference]
         if not parts:
             raise K.KernelError("Nothing to export")
         shapes = [p.shape for p in parts]

@@ -2,18 +2,21 @@
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QComboBox, QCheckBox,
+    QFrame, QVBoxLayout, QHBoxLayout, QBoxLayout, QLabel, QToolButton, QLineEdit, QComboBox, QCheckBox,
     QListWidget, QListWidgetItem, QWidget, QButtonGroup, QSizePolicy, QGraphicsDropShadowEffect,
 )
 
 from .. import kernel as K
 from .. import features as F
+from .. import assembly as AS
 from .icons import icon
+from . import preview_rows as PR
 from . import theme
 from .numparse import parse_number, fmt, has_vars
 from .viewport import Pick
@@ -73,6 +76,13 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
         if n:
             ref["name"] = n
         return ref
+    if "element" in want and k in ("face", "edge"):      # a Mate connector: one face or one edge, never a face's edges
+        pid, i = pick.key
+        shape = vp.part_shapes.get(pid)
+        if shape is None:
+            return None
+        sub = (K.faces if k == "face" else K.edges)(shape)[i]
+        return (k, engine_named(F.make_ref(pid, sub, k, shape, names(pid)), pid, k, i))
     if k == "region" and "region" in want:
         fid, ri = pick.key
         for sfid, sr, _ in vp.sketches:
@@ -575,9 +585,33 @@ SCHEMAS = {
                                                        "thread, shafts an external one. For 3D printing, add "
                                                        "about 0.1–0.2 mm clearance."},
     ],
+    "mate_connector": [
+        {"t": "text", "key": "name", "label": "Name", "placeholder": "e.g. Hinge pin"},
+        _sel("element", "Face or edge (hover for snap points)", {"element"}, multi=False),
+        {"t": "owner_part", "key": "owner", "label": "Owner part", "visible": lambda p: (p.get("ref") or {}).get("origin")},
+        _check("flip", "Flip (reverse the Z axis)"),
+    ],
     "variable": [
         {"t": "text", "key": "name", "label": "Name   #", "placeholder": "e.g. wall"},
         {"t": "text", "key": "expr", "label": "Value", "placeholder": "e.g. 3 or #wall * 2", "expr": True},
+    ],
+    "variable_studio_ref": [
+        {"t": "variable_document", "key": "source", "label": "Document"},
+        {"t": "studio_choice", "key": "source", "label": "Variable Studio"},
+        {"t": "studio_names", "key": "names", "label": "Variables"},
+    ],
+    # Derived: one row per control group, top to bottom. Add a row here and a `_make_derived_*` builder below.
+    #   Document chooser and Version pin: before `derived_source` (they decide which Part Studio list it shows).
+    #   Mate connectors tick list: after `derived_sketches`, key "connectors".
+    #   Location and Placement base: after that.
+    "derived": [
+        {"t": "derived_document", "key": "source", "label": "Document"},
+        {"t": "derived_source", "key": "source", "label": "Part Studio"},
+        {"t": "derived_checks", "key": "parts", "label": "Parts"},
+        {"t": "derived_checks", "key": "sketches", "label": "Sketches"},
+        {"t": "derived_connectors", "key": "connectors", "label": "Mate connectors"},
+        {"t": "derived_location", "key": "placement", "label": "Location"},
+        {"t": "derived_base", "key": "placement", "label": "Placement base"},
     ],
     "hole": [
         {"t": "sketch_choice", "key": "sketch", "label": "Sketch with hole centres"},
@@ -630,6 +664,9 @@ def params_to_fields(ftype, p):
         f["neutral_sel"] = [("plane", p["neutral"])] if p.get("neutral") else []
     if ftype in ("split", "move", "delete_part"):
         f["parts"] = [("part", i) for i in p.get("parts", [])]
+    if ftype == "mate_connector":
+        ref = p.get("ref")
+        f["element"] = [(p.get("kind", "face"), ref)] if ref and not ref.get("origin") else []
     if ftype == "split":
         f["plane_sel"] = [("plane", p["plane"])] if p.get("plane") else []
     if ftype == "move":
@@ -690,6 +727,12 @@ def fields_to_params(ftype, fields, p):
         p["neutral"] = sel[0][1] if sel else {"kind": "std", "name": "Top"}
     if ftype in ("split", "move", "delete_part"):
         p["parts"] = [r for k, r in fields.get("parts", [])]
+    if ftype == "mate_connector" and "element" in fields:
+        sel = fields["element"]
+        if sel:
+            p["kind"], p["ref"] = sel[0]
+        elif not (p.get("ref") or {}).get("origin"):
+            p.update(ref=None, click=None, snap=None, x_ref=None)
     if ftype == "split":
         sel = fields.get("plane_sel", [])
         p["plane"] = sel[0][1] if sel else {"kind": "std", "name": "Right"}
@@ -878,6 +921,8 @@ class FeatureDialog(_ResizableFrame):
                 self.fields[k].items = list(items)
         if is_new and preselection:
             self._apply_preselection(preselection)
+        if self.ftype == "mate_connector":       # hover a face or edge: the same snap points the Assembly offers
+            main.viewport.snap_provider = self.snap_candidates
         self._sync_visibility()              # also picks the field that takes the first click
         self.schedule_preview()
         self.adjustSize()
@@ -902,6 +947,7 @@ class FeatureDialog(_ResizableFrame):
         ok.setText("✓")
         ok.setToolTip("Accept (Enter)")
         ok.clicked.connect(self.accept)
+        self.ok_button = ok
         cancel = QToolButton()
         cancel.setObjectName("cancelButton")
         cancel.setText("✕")
@@ -1046,7 +1092,619 @@ class FeatureDialog(_ResizableFrame):
             self._sketch_cb = cb
             h.addWidget(cb)
             return row
+        if t == "owner_part":
+            cb = QComboBox()
+            cb.addItem("— select —", None)
+            for pid, part in self.base_state.parts.items():
+                cb.addItem(getattr(part, "name", pid), pid)
+            cb.setCurrentIndex(max(0, cb.findData(p.get(spec["key"]))))
+            cb.currentIndexChanged.connect(lambda i, cb=cb, k=spec["key"]: self._set(k, cb.itemData(i)))
+            cb.setToolTip("The part the origin connector belongs to. Assemblies mate it as that part's own connector.")
+            self.widgets[spec["key"]] = cb
+            h.addWidget(cb)
+            return row
+        if t == "studio_choice":
+            return self._make_studio_choice(spec, p, row, h)
+        if t == "studio_names":
+            return self._make_studio_names(spec, p, row, h)
+        if t == "variable_document":
+            return self._make_variable_document(spec, p, row, h)
+        if t == "derived_document":
+            return self._make_derived_document(spec, p, row, h)
+        if t == "derived_source":
+            return self._make_derived_source(spec, p, row, h)
+        if t == "derived_checks":
+            return self._make_derived_checks(spec, p, row, h)
+        if t == "derived_connectors":
+            return self._make_derived_connectors(spec, p, row, h)
+        if t == "derived_location":
+            return self._make_derived_location(spec, p, row, h)
+        if t == "derived_base":
+            return self._make_derived_base(spec, p, row, h)
         return None
+
+    # ------------------------------------------------------------------ Derived rows (I1.9)
+    # Shared state: `self._derived_fills` holds one refill callback per tick list; a change of source clears the
+    # params the lists own and calls each. A later row that lists the source's output (Mate connectors) appends
+    # its own callback and registers its params key in `_derived_owned`.
+    def _derived_tabs(self):
+        """The Part Studio tabs of the open Document's manifest other than this one, open or not; with another
+        Document chosen (`_derived_scope` = (document id, Version)), the Part Studio tabs of that Version."""
+        scope = getattr(self, "_derived_scope", None)
+        if scope is not None:
+            if scope[1] is None:
+                return []
+            try:
+                tabs = self.main.folder.registry.describe(scope[0], scope[1])["tabs"]
+            except K.KernelError:
+                return []
+            return [SimpleNamespace(id=t["id"], name=t["name"], kind=t["kind"]) for t in tabs
+                    if t.get("kind") == "studio"]
+        fd = getattr(self.main, "folder", None)
+        pin = getattr(self, "_derived_pin", None)
+        if pin and fd is not None:                      # pinned to a Version of this Document: that Version's tabs
+            try:
+                tabs = fd.registry.describe(fd.id, pin)["tabs"]
+                return [SimpleNamespace(id=t["id"], name=t["name"], kind=t["kind"]) for t in tabs
+                        if t.get("kind") == "studio"]
+            except (K.KernelError, AttributeError):
+                pass
+        mine = self.main._folder_tab(self.doc) if hasattr(self.main, "_folder_tab") else None
+        return [t for t in (fd.tabs if fd is not None else []) if t.kind == "studio" and t is not mine]
+
+    def _derived_package(self):
+        """(links.StudioPackage of the chosen source, "") or (None, why not): read from the source's current state."""
+        src = self.feature["params"].get("source") or {}
+        if not src.get("tab"):
+            return None, ""
+        try:
+            return self.main.folder.resolver.resolve_studio(src), ""
+        except Exception as e:          # source not found, in error, or not loadable: the list stays empty
+            return None, str(e)
+
+    def _derived_pending(self):
+        """Another Document is chosen but no Version yet: the Derived cannot be committed (a link to another
+        Document is always pinned)."""
+        scope = getattr(self, "_derived_scope", None)
+        return scope is not None and scope[1] is None
+
+    def _derived_gate(self):
+        pending = self._derived_pending()
+        self.ok_button.setEnabled(not pending)
+        self.ok_button.setToolTip("Choose a Version of the Document first" if pending else "Accept (Enter)")
+
+    def _make_derived_document(self, spec, p, row, h):
+        """`This Document`, or another Document and one of its Versions (ui.document_picker). The chosen scope decides
+        which Part Studio tabs `derived_source` lists; the source is re-read when it changes."""
+        from .document_picker import DocumentVersionPicker
+        fd = self.main.folder
+        def local_versions():                   # I1.11: newest first; none for a Document without Versions
+            try:
+                return [v["name"] for v in reversed(fd.versions())]
+            except K.KernelError:
+                return []
+        pk = DocumentVersionPicker(fd.registry, exclude_id=getattr(fd, "id", None), local_label="This Document",
+                                   local_versions=local_versions)
+        pk.setObjectName("derived_document")
+        src = p.get(spec["key"]) or {}
+        self._derived_scope = None
+        self._derived_pin = None                # the Version of This Document the source is pinned to, if any
+        if src.get("document") and src["document"] != getattr(fd, "id", None):
+            pk.select(src["document"], src.get("version"))
+            self._derived_scope = (src["document"], src.get("version"))
+        elif src.get("version"):
+            pk.set_local_pin(src["version"])
+            self._derived_pin = src["version"]
+        self._derived_picker = pk
+
+        def scope_changed():
+            was_local = self._derived_scope is None
+            self._derived_scope = None if pk.is_local() else (pk.doc_combo.currentData(), pk.version_combo.currentData())
+            self._derived_pin = pk.local_pin()
+            refill = getattr(self, "_derived_refill_tabs", None)
+            if refill is not None:
+                refill(keep=was_local and pk.is_local())        # only the pin changed: keep the source and parts
+            self._derived_gate()
+        pk.changed.connect(scope_changed)
+        h.setDirection(QBoxLayout.TopToBottom)
+        h.addWidget(pk)
+        self.widgets["document"] = pk
+        return row
+
+    def _make_derived_source(self, spec, p, row, h):
+        from .. import links as L
+        self._derived_fills = []
+        self._derived_owned = ["parts", "sketches", "connectors"]      # params keys that belong to the source and are cleared with it
+        cb = QComboBox()
+        key = spec["key"]
+        cur = (p.get(key) or {}).get("tab")
+
+        def fill_tabs(keep=None):
+            cb.blockSignals(True)
+            cb.clear()
+            cb.addItem("— choose a Part Studio —", None)
+            for t_ in self._derived_tabs():
+                cb.addItem(t_.name, t_.id)
+            if keep and cb.findData(keep) < 0:     # the source tab is gone: say so instead of silently changing it
+                cb.addItem(f"{(p[key].get('studio_name') or keep)} (not in this Document)", keep)
+            cb.setCurrentIndex(max(0, cb.findData(keep)))
+            cb.blockSignals(False)
+        fill_tabs(cur)
+        self._derived_note = QLabel("")
+        self._derived_note.setWordWrap(True)
+        self._derived_note.setStyleSheet("color:#8a94a3;")
+        if not self._derived_tabs():
+            self._derived_note.setText("This Document has no other Part Studio to derive from.")
+
+        def chosen(i, cb=cb):
+            tid = cb.itemData(i)
+            tab = next((x for x in self._derived_tabs() if x.id == tid), None)
+            for k_ in self._derived_owned:
+                self.feature["params"][k_] = []          # another source: its own parts and sketches
+            scope = getattr(self, "_derived_scope", None)
+            if tab is not None:
+                self.feature["params"][key] = (L.studio_source(tab) if scope is None else
+                                               L.studio_source(tab, document=scope[0], version=scope[1]))
+                if scope is None and getattr(self, "_derived_pin", None):
+                    self.feature["params"][key]["version"] = self._derived_pin
+            elif tid is None:
+                self.feature["params"][key] = {}
+            for fill in self._derived_fills:
+                fill()
+            self._set_unlisted()
+        cb.currentIndexChanged.connect(chosen)
+
+        def scope_changed(keep=False):
+            """Another Document or Version: its own tabs, so no source, parts or sketches carry over. `keep`: only the
+            pin of This Document changed, so the source stays on the same tab and takes the new pin (or none)."""
+            cur_src = self.feature["params"].get(key) or {}
+            if keep and cur_src.get("tab"):
+                if self._derived_pin:
+                    cur_src["version"] = self._derived_pin
+                else:
+                    cur_src.pop("version", None)
+                fill_tabs(cur_src["tab"])
+                for fill in self._derived_fills:
+                    fill()
+                self._set_unlisted()
+                return
+            for k_ in self._derived_owned:
+                self.feature["params"][k_] = []
+            self.feature["params"][key] = {}
+            fill_tabs()
+            for fill in self._derived_fills:
+                fill()
+            self._set_unlisted()
+        self._derived_refill_tabs = scope_changed
+        self._derived_gate()
+        h.addWidget(cb)
+        h.setDirection(QBoxLayout.TopToBottom)
+        h.addWidget(self._derived_note)
+        self.widgets[key] = cb
+        return row
+
+    def _make_derived_checks(self, spec, p, row, h):
+        """A tick list of what the source publishes under `spec["key"]` ("parts" or "sketches"): the ticked ids are
+        the params list. Rows are the published part ids / sketch ids, shown by name."""
+        h.setDirection(QBoxLayout.TopToBottom)
+        key = spec["key"]
+        lst = QListWidget()
+        lst.setMaximumHeight(240)
+        h.addWidget(lst)
+        self.widgets[key] = lst
+        previews = self._derived_previews(lst)
+
+        def read():
+            self.feature["params"][key] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
+                                           if lst.item(i).checkState() == Qt.Checked]
+            self._set_unlisted()
+
+        def fill():
+            pkg, why = self._derived_package()
+            err = why or (pkg.error if pkg is not None else "")
+            self._derived_note.setText("⚠ " + err if err else "" if self._derived_tabs()
+                                       else "This Document has no other Part Studio to derive from.")
+            published = ({} if pkg is None else
+                         {i: v for i, v in (pkg.parts if key == "parts" else pkg.sketches).items()})
+            ticked = list(self.feature["params"].get(key) or [])
+            lst.blockSignals(True)
+            lst.clear()
+            previews.reset()
+            for i, v in list(published.items()) + [(i, None) for i in ticked if i not in published]:
+                it = QListWidgetItem(v.name if v is not None else f"{i}  (no longer published)")
+                it.setData(Qt.UserRole, i)
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Checked if i in ticked else Qt.Unchecked)
+                lst.addItem(it)
+                if v is None or err:                  # nothing published to draw, or the source is in error
+                    it.setIcon(PR.placeholder_icon(PR.DERIVED_SIZE))
+                    it.setToolTip(err or "no longer published")
+                else:
+                    jk, jm = (PR.part_job if key == "parts" else PR.sketch_job)(v, PR.DERIVED_SIZE)
+                    previews.add(it.setIcon, jk, jm)
+            lst.blockSignals(False)
+        lst.itemChanged.connect(lambda _it: read())
+        self._derived_fills.append(fill)
+        fill()
+        return row
+
+    def _make_derived_connectors(self, spec, p, row, h):
+        """The Mate connectors tick list (I3.6): the source's published connectors, shown "name (part)". A connector
+        arrives on its part, so ticking one whose part is not ticked is refused, and unticking a part unticks its
+        connectors; the note under the source says which."""
+        h.setDirection(QBoxLayout.TopToBottom)
+        key = spec["key"]
+        lst = QListWidget()
+        lst.setMaximumHeight(240)
+        h.addWidget(lst)
+        self.widgets[key] = lst
+        previews = self._derived_previews(lst)
+        owner = {}                      # connector id -> its source part id (resolved through aliases)
+
+        def part_ticked(cid):
+            pkg_ids = self.feature["params"].get("parts") or []
+            return owner.get(cid) is None or owner[cid] in [self._derived_alias(i) for i in pkg_ids]
+
+        def read():
+            self.feature["params"][key] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
+                                           if lst.item(i).checkState() == Qt.Checked]
+            self._set_unlisted()
+
+        def changed(it):
+            cid = it.data(Qt.UserRole)
+            if it.checkState() == Qt.Checked and not part_ticked(cid):
+                lst.blockSignals(True)
+                it.setCheckState(Qt.Unchecked)
+                lst.blockSignals(False)
+                self._derived_note.setText(f"⚠ Tick part {owner[cid]} first: a connector comes in with its part.")
+                return
+            read()
+
+        def parts_changed(_it=None):
+            dropped = False
+            lst.blockSignals(True)
+            for i in range(lst.count()):
+                it = lst.item(i)
+                if it.checkState() == Qt.Checked and not part_ticked(it.data(Qt.UserRole)):
+                    it.setCheckState(Qt.Unchecked)
+                    dropped = True
+            lst.blockSignals(False)
+            if dropped:
+                self._derived_note.setText("⚠ Connectors on a part you unticked were unticked too.")
+                read()
+
+        def fill():
+            pkg, _why = self._derived_package()
+            err = _why or (pkg.error if pkg is not None else "")
+            self._derived_aliases = dict(pkg.aliases) if pkg is not None else {}
+            published = {} if pkg is None else dict(pkg.connectors)
+            owner.clear()
+            owner.update({i: self._derived_alias(c["part"]) for i, c in published.items()})
+            ticked = list(self.feature["params"].get(key) or [])
+            lst.blockSignals(True)
+            lst.clear()
+            previews.reset()
+            parts = {} if pkg is None else {i: v.name for i, v in pkg.parts.items()}
+            for i, c in list(published.items()) + [(i, None) for i in ticked if i not in published]:
+                it = QListWidgetItem(f"{c['name']}  ({parts.get(c['part'], c['part'])})" if c is not None
+                                     else f"{i}  (no longer published)")
+                it.setData(Qt.UserRole, i)
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Checked if i in ticked else Qt.Unchecked)
+                lst.addItem(it)
+                if c is None or err:
+                    it.setIcon(PR.placeholder_icon(PR.DERIVED_SIZE))
+                    it.setToolTip(err or "no longer published")
+                else:
+                    jk, jm = PR.connector_job(pkg, c, PR.DERIVED_SIZE)
+                    previews.add(it.setIcon, jk, jm)
+            lst.blockSignals(False)
+        lst.itemChanged.connect(changed)
+        if "parts" in self.widgets:
+            self.widgets["parts"].itemChanged.connect(parts_changed)
+        self._derived_fills.append(fill)
+        fill()
+        return row
+
+    def _derived_previews(self, lst):
+        """A PreviewFiller for one Derived tick list (previews drawn once the list is shown; see ui.preview_rows)."""
+        lst.setIconSize(QSize(PR.DERIVED_SIZE, PR.DERIVED_SIZE))
+        pf = PR.PreviewFiller(lst, PR.DERIVED_SIZE)
+        self._derived_fillers = getattr(self, "_derived_fillers", []) + [pf]
+        return pf
+
+    def drain_previews(self):
+        """Draw every pending Derived preview now (they are otherwise drawn one row per event-loop turn)."""
+        for pf in getattr(self, "_derived_fillers", []):
+            pf.drain()
+
+    def _derived_alias(self, pid):
+        return getattr(self, "_derived_aliases", {}).get(pid, pid)
+
+    # Location and Placement base (I4.2): both write params["placement"] = {"location", "base"} through
+    # `_derived_write_placement`; no Location means no `placement` key at all.
+    def _derived_write_placement(self):
+        p = self.feature["params"]
+        loc = self._derived_loc.currentData()
+        if loc is None:
+            p.pop("placement", None)
+        else:
+            p["placement"] = {"location": loc, "base": self._derived_base.currentData() or "origin"}
+        self._derived_base.setEnabled(loc is not None)
+        self._set_unlisted()
+
+    def _derived_location_candidates(self):
+        """{connector id: connector} of this studio defined above the Derived (state.connectors of the state
+        before it), in feature order."""
+        return dict(getattr(self.base_state, "connectors", {}) or {})
+
+    def _make_derived_location(self, spec, p, row, h):
+        """Location: a mate connector of this studio defined above the Derived, from a list or by clicking its
+        axes in the viewport (`overlays` draws them pickable, `_pick_location` takes the click)."""
+        h.setDirection(QBoxLayout.TopToBottom)
+        cb = QComboBox()
+        cb.setObjectName("derived_location")
+        cb.addItem("— not placed —", None)
+        cands = self._derived_location_candidates()
+        want = (p.get(spec["key"]) or {}).get("location")
+        for cid, c in cands.items():
+            cb.addItem(str(c.get("name") or cid), cid)
+        if want and want not in cands:      # defined below the Derived now, or gone: say so, the build reports it
+            cb.addItem(f"{want}  (not defined above this feature)", want)
+        cb.setCurrentIndex(max(0, cb.findData(want)))
+        cb.setToolTip("Put everything this Derived brings in so that its Placement base lands on this Mate connector.")
+        hint = QLabel("Pick from the list, or click a connector's axes in the viewport.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#8a94a3;")
+        self._derived_loc = cb
+        cb.currentIndexChanged.connect(lambda _i: self._derived_write_placement())
+        h.addWidget(cb)
+        h.addWidget(hint)
+        self.widgets["location"] = cb
+        return row
+
+    def _pick_location(self, pick):
+        """A click on a connector's axes (an overlay keyed ("placement_loc", id)) sets the Location."""
+        if self.ftype != "derived" or pick.kind != "overlay" or pick.key[0] != "placement_loc":
+            return False
+        i = self._derived_loc.findData(pick.key[1])
+        if i >= 0:
+            self._derived_loc.setCurrentIndex(i)
+        return True
+
+    def _derived_location_overlays(self):
+        """One short polyline (X axis end, origin, Z axis end) per candidate Location, pickable in the viewport."""
+        scale = self.main.viewport.cam.scale * 34
+        out = []
+        for cid, c in self._derived_location_candidates().items():
+            fr = c["frame"]
+            o, z, x = (np.asarray(fr[k], float) for k in ("o", "z", "x"))
+            out.append((("placement_loc", cid), ("poly", np.array([o + x * scale * 0.8, o, o + z * scale * 1.25]))))
+        return out
+
+    def _make_derived_base(self, spec, p, row, h):
+        """Placement base: Base origin, or one of the source's TICKED mate connectors. It refills when the source
+        or the connector ticks change; a base that is no longer ticked goes back to Base origin."""
+        cb = QComboBox()
+        cb.setObjectName("derived_base")
+        want = [(p.get(spec["key"]) or {}).get("base") or "origin"]
+        self._derived_base = cb
+
+        def fill():
+            pkg, _why = self._derived_package()
+            ticked = list(self.feature["params"].get("connectors") or [])
+            keep = want[0]
+            parts = {} if pkg is None else {i: v.name for i, v in pkg.parts.items()}
+            cb.blockSignals(True)
+            cb.clear()
+            cb.addItem("Base origin", "origin")
+            for cid in ticked:
+                c = None if pkg is None else pkg.connectors.get(cid)
+                cb.addItem(f"{c['name']}  ({parts.get(c['part'], c['part'])})" if c is not None
+                           else f"{cid}  (no longer published)", cid)
+            i = cb.findData(keep)
+            cb.setCurrentIndex(max(0, i))
+            cb.blockSignals(False)
+            want[0] = cb.currentData()
+            if hasattr(self, "_derived_loc"):
+                self._derived_write_placement()
+
+        def chosen(_i):
+            want[0] = cb.currentData()
+            self._derived_write_placement()
+        cb.currentIndexChanged.connect(chosen)
+        self._derived_fills.append(fill)
+        for k_ in ("connectors", "parts"):
+            if k_ in self.widgets:      # runs after the tick list's own handler, so params already hold the ticks
+                self.widgets[k_].itemChanged.connect(lambda _it: fill())
+        cb.setEnabled(bool((p.get("placement") or {}).get("location")))
+        h.addWidget(cb)
+        self.widgets["base"] = cb
+        fill()
+        return row
+
+    # ------------------------------------------------------------------ Variable Studio reference rows
+    def _variable_tabs(self):
+        """The Variable Studio tabs of the open Document's manifest (none for a loose file); with another Document
+        chosen (`_ref_scope` = (document id, Version)), the Variable Studio tabs of that Version."""
+        scope = getattr(self, "_ref_scope", None)
+        if scope is not None:
+            if scope[1] is None:
+                return []
+            try:
+                tabs = self.main.folder.registry.describe(scope[0], scope[1])["tabs"]
+            except K.KernelError:
+                return []
+            return [SimpleNamespace(id=t["id"], name=t["name"], kind=t["kind"]) for t in tabs
+                    if t.get("kind") == "variables"]
+        fd = getattr(self.main, "folder", None)
+        return [t for t in (fd.tabs if fd is not None else []) if t.kind == "variables"]
+
+    def _ref_pending(self):
+        """Another Document is chosen but no Version yet: the reference cannot be committed (a link to another
+        Document is always pinned)."""
+        scope = getattr(self, "_ref_scope", None)
+        return scope is not None and scope[1] is None
+
+    def _ref_gate(self):
+        pending = self._ref_pending()
+        self.ok_button.setEnabled(not pending)
+        self.ok_button.setToolTip("Choose a Version of the Document first" if pending else "Accept (Enter)")
+
+    def _ref_source(self, tab):
+        """The source dict of a Variable Studio tab of the chosen scope (pinned when it is another Document's)."""
+        src = {"kind": "variables", "tab": tab.id, "name": tab.name}
+        scope = getattr(self, "_ref_scope", None)
+        if scope is not None:
+            src.update(document=scope[0], version=scope[1])
+        return src
+
+    def _studio_variable_names(self):
+        """The names the chosen Variable Studio defines now, in table order (empty if it is not found)."""
+        src = self.feature["params"].get("source") or {}
+        if src.get("document") and src.get("version"):          # a pinned Version of another Document, read-only
+            try:
+                vs = self.main.folder.resolver._cross_doc(src, "variables")
+            except K.KernelError:
+                return []
+            values, rows = vs.values()[0], vs.rows
+        else:
+            tab = next((t for t in self._variable_tabs() if t.id == src.get("tab")), None)
+            if tab is None or getattr(tab, "doc", None) is None:
+                return []
+            values, rows = tab.doc.values()[0], tab.doc.rows
+        return [n for n in dict.fromkeys(str(r.get("name") or "").strip() for r in rows) if n in values]
+
+    def _make_variable_document(self, spec, p, row, h):
+        """`This Document`, or another Document and one of its Versions (ui.document_picker). The chosen scope decides
+        which Variable Studios `studio_choice` lists; changing it clears the source and the ticked names."""
+        from .document_picker import DocumentVersionPicker
+        fd = self.main.folder
+        pk = DocumentVersionPicker(fd.registry, exclude_id=getattr(fd, "id", None), local_label="This Document")
+        pk.setObjectName("variable_document")
+        src = p.get(spec["key"]) or {}
+        self._ref_scope = None
+        if src.get("document") and src["document"] != getattr(fd, "id", None):
+            pk.select(src["document"], src.get("version"))
+            self._ref_scope = (src["document"], src.get("version"))
+
+        def scope_changed():
+            self._ref_scope = None if pk.is_local() else (pk.doc_combo.currentData(), pk.version_combo.currentData())
+            refill = getattr(self, "_ref_refill_tabs", None)
+            if refill is not None:
+                refill()
+            self._ref_gate()
+        pk.changed.connect(scope_changed)
+        h.setDirection(QBoxLayout.TopToBottom)
+        h.addWidget(pk)
+        self.widgets["document"] = pk
+        return row
+
+    def _make_studio_choice(self, spec, p, row, h):
+        cb = QComboBox()                 # the row's label is already in `h`
+        key = spec["key"]
+
+        def fill_tabs():
+            tabs = self._variable_tabs()
+            cb.blockSignals(True)
+            cb.clear()
+            for t_ in tabs:
+                cb.addItem(t_.name, t_.id)
+            if not tabs:
+                cb.addItem("— no Variable Studio in this Document —" if getattr(self, "_ref_scope", None) is None
+                           else "— choose a Version first —" if self._ref_pending()
+                           else "— no Variable Studio in this Version —", None)
+            cb.blockSignals(False)
+            return tabs
+
+        tabs = fill_tabs()
+        cur = (p.get(key) or {}).get("tab")
+        if cur is None and tabs:
+            p[key] = self._ref_source(tabs[0])
+        cb.setCurrentIndex(max(0, cb.findData((p.get(key) or {}).get("tab"))))
+
+        def chosen(i, cb=cb):
+            tid = cb.itemData(i)
+            t_ = next((x for x in self._variable_tabs() if x.id == tid), None)
+            if t_ is not None:
+                self.feature["params"].pop("names", None)           # another Studio: its own names
+                self._set(key, self._ref_source(t_))
+                self._fill_names()
+        cb.currentIndexChanged.connect(chosen)
+
+        def scope_changed():
+            """Another Document or Version: its own Variable Studios, so no source and no names carry over."""
+            self.feature["params"].pop("names", None)
+            tabs = fill_tabs()
+            self.feature["params"][key] = self._ref_source(tabs[0]) if tabs else {}
+            cb.setCurrentIndex(0)
+            self._fill_names()
+            self._set_unlisted()
+        self._ref_refill_tabs = scope_changed
+        self._ref_gate()
+        h.addWidget(cb)
+        self.widgets[key] = cb
+        return row
+
+    def _make_studio_names(self, spec, p, row, h):
+        """"All variables" (no names key) or a tick list of the Studio's variables (a names list)."""
+        h.setDirection(QBoxLayout.TopToBottom)
+        all_cb = QCheckBox("All variables")
+        lst = QListWidget()
+        lst.setMaximumHeight(140)
+        h.addWidget(all_cb)
+        h.addWidget(lst)
+        self.widgets["names_all"], self.widgets["names"] = all_cb, lst
+        key = spec["key"]
+        busy = []
+
+        def read():
+            ticked = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
+                      if lst.item(i).checkState() == Qt.Checked]
+            if len(ticked) == lst.count():
+                self.feature["params"].pop(key, None)
+            else:
+                self.feature["params"][key] = ticked
+            self._set_unlisted()
+            busy.append(1)
+            all_cb.setChecked(key not in self.feature["params"])
+            busy.pop()
+
+        def fill():
+            names = self._studio_variable_names()
+            listed = self.feature["params"].get(key)
+            lst.blockSignals(True)
+            lst.clear()
+            for n in names + [n for n in (listed or []) if n not in names]:
+                it = QListWidgetItem(n if n in names else f"{n}  (not in the Studio)")
+                it.setData(Qt.UserRole, n)
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Checked if listed is None or n in listed else Qt.Unchecked)
+                lst.addItem(it)
+            lst.blockSignals(False)
+            busy.append(1)
+            all_cb.setChecked(listed is None)
+            busy.pop()
+
+        def all_toggled(on):
+            if busy:
+                return
+            lst.blockSignals(True)
+            for i in range(lst.count()):
+                lst.item(i).setCheckState(Qt.Checked if on else Qt.Unchecked)
+            lst.blockSignals(False)
+            read()
+
+        lst.itemChanged.connect(lambda _it: None if busy else read())
+        all_cb.toggled.connect(all_toggled)
+        self._fill_names = fill
+        fill()
+        return row
+
+    def _set_unlisted(self):
+        """The names key changed (or was dropped): refresh the dialog and the preview."""
+        self._sync_visibility()
+        self.schedule_preview()
 
     def _sync_visibility(self):
         p = self.feature["params"]
@@ -1091,6 +1749,8 @@ class FeatureDialog(_ResizableFrame):
             kinds |= {"region", "sketch_line"}
         if "face" in want or "plane" in want:
             kinds.add("face")
+        if "element" in want:
+            kinds |= {"face", "edge"}
         if "edge" in want:
             kinds |= {"edge", "face"}
         if "axis" in want or "path" in want:
@@ -1142,7 +1802,10 @@ class FeatureDialog(_ResizableFrame):
 
     def handle_pick(self, pick: Pick):
         """Called by the main window when the user clicks in the viewport."""
-        if self._pick_sketch(pick):
+        if self._pick_sketch(pick) or self._pick_location(pick):
+            return
+        if self.ftype == "mate_connector" and pick.kind != "overlay":
+            self._pick_connector(pick)
             return
         if pick.kind == "overlay":
             key, i = pick.key
@@ -1166,6 +1829,69 @@ class FeatureDialog(_ResizableFrame):
             return
         fld.toggle(item)
 
+    # ------------------------------------------------------------------ mate connector
+    def snap_candidates(self, pick: Pick):
+        """Snap points the viewport draws while hovering a face or edge (assembly.snap_candidates, as in the
+        Assembly); the studio's coordinates are the world's, so "pw" is the point itself."""
+        shape = self.main.viewport.part_shapes.get(pick.key[0]) if pick.kind in ("face", "edge") else None
+        if shape is None:
+            return []
+        return [dict(c, pw=np.asarray(c["p"], float)) for c in AS.snap_candidates(shape, pick.kind, pick.key[1])]
+
+    def _pick_connector(self, pick: Pick):
+        """A click on a face or edge: a highlighted snap point wins over whatever is under the cursor (the
+        Assembly's rule). The click point and the snap are stored with the reference, as the Assembly stores them."""
+        vp = self.main.viewport
+        snap, base = vp.snap_hi, vp.snap_base
+        if snap is not None and base is not None and base.kind in ("face", "edge"):
+            pick = base
+        else:
+            snap = None
+        vp.clear_snaps()
+        if pick.kind not in ("face", "edge"):
+            return
+        item = pick_to_item(vp, pick, {"element"}, self.base_state)
+        if item is None:
+            return
+        click = None
+        if pick.kind == "face" and vp.last_click:
+            click = vp.surface_point(*vp.last_click)
+        fld = self.fields["element"]
+        fld.items = [item]
+        self._fields_changed()
+        self._stamp_connector(item, pick, click, snap)
+
+    def _stamp_connector(self, item, pick, click, snap):
+        """Store click, snap and the frame's X reference (the run rebuilds the frame from them)."""
+        p = self.feature["params"]
+        kind, ref = item
+        try:
+            pid, sub = F.resolve(self.base_state, ref, kind)
+            shape = self.base_state.parts[pid].shape
+            subs = K.faces(shape) if kind == "face" else K.edges(shape)
+            index = next(i for i, s in enumerate(subs) if s.IsSame(sub))
+            named = self.base_state.named(pid)
+            st = None
+            if snap is not None:
+                vshape = self.main.viewport.part_shapes.get(pick.key[0], shape)
+                edge_ref = None
+                if snap.get("edge") is not None:
+                    edge_ref = AS._ref_signature(vshape, "edge", snap["edge"], named)
+                    nm = ((getattr(self.base_state, "engine_names", None) or {}).get(pick.key[0]) or {}) \
+                        .get("edge", {}).get(snap["edge"] + 1)
+                    if nm:
+                        edge_ref["name"] = nm
+                st = {"type": snap["type"], "p": [float(a) for a in snap["p"]], "edge_ref": edge_ref}
+                fr = AS.snap_frame(shape, kind, index, st, named)
+            else:
+                fr = AS.connector_frame(shape, kind, index, click)
+            p["click"] = [float(a) for a in click] if click is not None else None
+            p["snap"] = st
+            p["x_ref"] = AS.connector_x_ref(fr)
+        except Exception:       # the preview shows why the connector is red; the picked reference is kept
+            p["click"], p["snap"], p["x_ref"] = None, None, None
+        self.schedule_preview()
+
     def _apply_preselection(self, picks):
         for pk in picks:
             if self._pick_sketch(pk):
@@ -1180,6 +1906,8 @@ class FeatureDialog(_ResizableFrame):
                     continue
                 used.add(i)
                 fld.toggle(item)
+                if self.ftype == "mate_connector":
+                    self._stamp_connector(item, pk, None, None)
         self.main.viewport.clear_selection()
 
     def _fields_changed(self):
@@ -1210,6 +1938,8 @@ class FeatureDialog(_ResizableFrame):
                 g = item_geometry(self.base_state, item, half)
                 if g is not None:
                     out.append(((key, i), g))
+        if self.ftype == "derived":
+            out += self._derived_location_overlays()
         return out
 
     # ------------------------------------------------------------------ drag arrows
@@ -1313,8 +2043,29 @@ class FeatureDialog(_ResizableFrame):
             self.err.hide()
         self.adjustSize()
 
+    def use_origin(self):
+        """Mate connector at origin: the reference is the studio origin; one part is the owner without asking."""
+        p = self.feature["params"]
+        p["ref"], p["kind"], p["click"], p["snap"], p["x_ref"] = {"origin": True}, "origin", None, None, None
+        cb = self.widgets.get("owner")
+        if cb is not None and p.get("owner") is None and len(self.base_state.parts) == 1:
+            p["owner"] = next(iter(self.base_state.parts))
+        if cb is not None:
+            cb.setCurrentIndex(max(0, cb.findData(p.get("owner"))))
+        self._sync_visibility()
+        self.schedule_preview()
+
     def accept(self):
+        if self.ftype == "derived" and self._derived_pending():
+            return                              # another Document without a Version: nothing to pin yet
+        if self.ftype == "variable_studio_ref" and self._ref_pending():
+            return                              # likewise a Variable Studio reference
         self._timer.stop()
+        if self.ftype == "mate_connector" and (self.feature["params"].get("ref") or {}).get("origin") \
+                and self.feature["params"].get("owner") not in self.base_state.parts:
+            self.err.setText("⚠ Pick the part that owns the origin connector")
+            self.err.show()
+            return
         self.feature["name"] = self.title.text().strip() or self.feature["name"]
         if self.ftype == "hole":
             import re as _re

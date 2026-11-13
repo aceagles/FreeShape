@@ -45,6 +45,8 @@ MAX_DUP = 100            # how many times a duplicate name is retried
 OP_EXTRUDE, OP_REVOLVE = "XTR", "RVL"
 OP_FUSE, OP_CUT, OP_COMMON = "FUS", "CUT", "CMN"
 OP_SKETCH, OP_MIRROR, OP_MAKER = "SKT", "MIR", "MAK"
+OP_CONTEXT = "CTX"       # a Context feature restoring a stored neighbour (ADR 0004); FreeShape only
+OP_DERIVED = "DRV"       # a Derived feature bringing a part or sketch from another Part Studio; FreeShape only
 
 OP_FOR = {
     "extrude": OP_EXTRUDE,
@@ -57,6 +59,7 @@ OP_FOR = {
     "chamfer": "CHF",
     "circular_pattern": "XFM",
     "delete_face": OP_MAKER,
+    "derived": OP_DERIVED,
     "draft": "DFT",
     "fillet": "FLT",
     "flat_pattern": "UNF",
@@ -240,6 +243,8 @@ class NamedShape:
 
     shape: object
     names: dict = field(default_factory=dict)
+    # (tag, the map before `stamp_all` stamped it with that tag, or None): this map is already stamped with `tag`
+    stamped_from: object = None
 
     def __post_init__(self):
         self.el = _Elements(self.shape)
@@ -277,6 +282,8 @@ class NamedShape:
                 key = out.el.key(s)
                 if key is not None:
                     out.names[key] = name
+        if self.stamped_from is not None:
+            out.stamped_from = (self.stamped_from[0], None)
         return out
 
     def unnamed(self):
@@ -298,6 +305,46 @@ def seed(shape, tag, op=OP_SKETCH, labels=None) -> NamedShape:
             raise NamingError(f"seed label {label!r} cannot go in an element name")
         names[key] = _encode(label, "", op, tag, key[0])
     return NamedShape(shape, names)
+
+
+def name_context(shape, names, tag, label) -> NamedShape:
+    """The map of a neighbour a Context feature restored (ADR 0004). Each element keeps the name it had when
+    captured (`names`, by key in `shape`) and gains a CTX fragment under `tag`, the Context feature's id, so
+    the name says it came from a stored shape. An element the capture left unnamed is seeded from `label`
+    and its position, so every element of a Context body has a name."""
+    el = _Elements(shape)
+    out = {}
+    for key in el.keys():
+        base = names.get(key)
+        if not base:
+            base = f"{label}{key[0].lower()}{key[1]}"
+            if any(c in base for c in _RESERVED) or base.split() != [base]:
+                raise NamingError(f"context label {label!r} cannot go in an element name")
+        out[key] = _encode(base, "", OP_CONTEXT, tag, key[0])
+    return NamedShape(shape, out)
+
+
+def name_derived(shape, names, tag) -> NamedShape:
+    """The map of a part or sketch a Derived feature brought in. `names` is the source's map as a package
+    publishes it ({"face": {i: name}, "edge": ..., "vertex": ...}, 1-based i into `shape`, which is the very
+    shape the source named). Each element keeps its name one to one and gains a DRV fragment under `tag`, the
+    Derived feature's id. The fragment is appended as it is, never folded into a same-tag fragment: feature
+    ids repeat from studio to studio, so the source may hold an "F3" of its own. A source with no names at all
+    gives a map with none (its references stay signature-only); an element a named source left unnamed is
+    seeded from its position."""
+    el = _Elements(shape)
+    letter_of = {"face": FACE, "edge": EDGE, "vertex": VERTEX}
+    given = {(letter_of[kind], int(i)): n for kind, per in (names or {}).items() if kind in letter_of
+             for i, n in per.items() if n}
+    if not given:
+        return NamedShape(shape, {})
+    text = PREFIX + OP_DERIVED
+    tagtext = _tag_text(tag)
+    out = {}
+    for key in el.keys():
+        base = given.get(key) or f"{key[0].lower()}{key[1]}"
+        out[key] = f"{base}{text}{TAG}{tagtext}:{len(text):x},{key[0]}"
+    return NamedShape(shape, out)
 
 
 # --------------------------------------------------------------------------- history reading (§ 3)
@@ -509,6 +556,16 @@ class _Naming:
             if not unnamed or delayed or not any(claims.values()):
                 return self.out
             delayed = True
+
+
+def stamp_all(named: NamedShape, tag, op) -> NamedShape:
+    """`named` with the pass-through stamp of operation `op` and feature `tag` on every name, as `name_result`
+    gives an element the operation left alone (§ 2). A name that already ends in this tag stays as it is.
+    The result remembers the unstamped map in `stamped_from`: if the same feature then runs on this piece too,
+    `features.name_feature` names from that map, so the piece is stamped once, as a part the feature ran on."""
+    op = OP_FOR.get(op, op)
+    return NamedShape(named.shape, {k: _encode(v, "", op, tag, k[0]) for k, v in named.names.items()},
+                      (tag, named))
 
 
 def name_result(shape, history, sources, tag, op=OP_MAKER, stamp=True) -> NamedShape:

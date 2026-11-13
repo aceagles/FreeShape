@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import zlib
 
 import numpy as np
@@ -25,7 +26,7 @@ from OCP.BRepTools import BRepTools
 from OCP.TopTools import TopTools_FormatVersion
 
 from .. import kernel as K
-from .contract import MeshOut, PartOut, SketchOut, plain
+from .contract import MateConnectorOut, MeshOut, PartOut, SketchOut, plain
 
 _BREP_VERSION = TopTools_FormatVersion.TopTools_FormatVersion_VERSION_1
 _KIND_OF_LETTER = {"F": "face", "E": "edge", "V": "vertex"}
@@ -56,6 +57,16 @@ def element_names(part) -> dict:
     if not names or shape is None or not shape.IsSame(part.shape):
         return out
     for (letter, index), name in names.items():
+        kind = _KIND_OF_LETTER.get(letter)
+        if kind is not None:
+            out[kind][int(index)] = str(name)
+    return out
+
+
+def named_elements(named) -> dict:
+    """The element-name map of a naming.NamedShape (a sketch's regions), by kind and 1-based index."""
+    out = empty_names()
+    for (letter, index), name in (getattr(named, "names", None) or {}).items():
         kind = _KIND_OF_LETTER.get(letter)
         if kind is not None:
             out[kind][int(index)] = str(name)
@@ -125,5 +136,19 @@ def sketch_out(fid, name, result) -> SketchOut:
     plane = {"origin": [float(v) for v in pl.origin], "xdir": [float(v) for v in pl.xdir],
              "normal": [float(v) for v in pl.normal]}
     sk = result.sketch.to_dict() if hasattr(result.sketch, "to_dict") else {}
-    return SketchOut(id=str(fid), name=str(name), plane=plane, sketch=plain(sk),
-                     regions=plain(list(result.region_info or [])))
+    regions = plain(list(result.region_info or []))
+    names = named_elements(result.named)
+    region_names = [None if n is None else str(n) for n in (result.region_names or [])]
+    body = {"plane": plane, "sketch": plain(sk), "regions": regions, "names": names, "region_names": region_names}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+    return SketchOut(id=str(fid), name=str(name), plane=plane, sketch=plain(sk), regions=regions,
+                     names=names, region_names=region_names, hash=digest)
+
+
+def connector_out(fid, entry) -> MateConnectorOut:
+    """A studio's mate_connector (ModelState.connectors[fid]) as published output."""
+    fr = entry["frame"]
+    frame = {k: [float(v) for v in fr[k]] for k in ("o", "z", "x")}
+    body = {"name": str(entry["name"]), "part": str(entry["part"]), "frame": frame}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+    return MateConnectorOut(id=str(fid), name=body["name"], part=body["part"], frame=frame, hash=digest)

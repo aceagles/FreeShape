@@ -19,7 +19,9 @@ link at any file on the machine. Loose files outside any Document keep uid + pat
 """
 from __future__ import annotations
 
+import hashlib
 import os
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
@@ -66,9 +68,61 @@ def is_cross_link(src, own_id=None):
     return bool(doc) and doc != own_id
 
 
+def is_pinned(src, own_id=None):
+    """Whether a source reads a Version: it names another Document (a cross-Document link), or carries a `version` and
+    no `document` (I1.11: a source pinned to a Version of its own Document). A pinned source is read from
+    open_version, so the Link graph holds no live edge for it."""
+    return is_cross_link(src, own_id) or (bool(src.get("version")) and not src.get("document"))
+
+
 def _default_flat_pattern_of(state, pid):
     from . import sheetmetal as SM
     return SM.flat_pattern(state.parts[pid].shape, state.sheet[pid], state.named(pid))
+
+
+@dataclass
+class PublishedPart:
+    """One part of a studio's published output, in the studio's own coordinates."""
+    id: str
+    name: str
+    color: tuple
+    hidden: bool
+    shape: object            # the TopoDS shape (not a copy: read-only)
+    names: dict              # {"face": {i: name}, "edge": {...}, "vertex": {...}}, 1-based i; empty if unnamed
+    hash: str                # sha256 hex of the part's BREP text
+
+
+@dataclass
+class StudioPackage:
+    """What a Part Studio publishes, as a consumer reads it: its parts, its sketches (engine.contract.SketchOut,
+    with element names) and the digest of both. See LinkResolver.resolve_studio."""
+    parts: dict              # part id -> PublishedPart
+    sketches: dict           # sketch feature id -> SketchOut
+    aliases: dict = field(default_factory=dict)
+    digest: str = ""         # of everything published: parts, their visibility, sketches
+    error: str = ""          # why the studio is in error (its red features), "" when it builds clean
+    connectors: dict = field(default_factory=dict)   # mate_connector feature id -> {name, part, frame, hash}
+
+    def digest_for(self, part=None):
+        """The digest of what a link reading `part` (an id, or None / "*" for the whole studio) takes."""
+        from .engine.linkgraph import package_digest
+        digest = package_digest("studio", self._view(), [part])
+        if self.error:      # a studio that turns red (or changes why) rekeys its consumers, parts unchanged
+            digest = hashlib.sha1(f"{digest}|{self.error}".encode()).hexdigest()
+        return digest
+
+    def _view(self):
+        return {"parts": {pid: p.hash for pid, p in self.parts.items()},
+                "hidden": sorted(pid for pid, p in self.parts.items() if p.hidden), "aliases": dict(self.aliases),
+                "sketches": {fid: sk.hash for fid, sk in self.sketches.items()},
+                "connectors": {fid: c["hash"] for fid, c in self.connectors.items()}}
+
+
+def _studio_error(studio):
+    """One line naming the red features of a studio ("Fillet: <message>"), "" when none is red."""
+    errors = getattr(studio, "errors", None) or {}
+    by_id = {f["id"]: f for f in getattr(studio, "features", ())}
+    return "; ".join(f"{by_id.get(fid, {}).get('name', fid)}: {msg}" for fid, msg in errors.items())
 
 
 class LinkResolver:
@@ -78,6 +132,7 @@ class LinkResolver:
     def __init__(self, find_open_studio=None, find_open_assembly=None, flat_pattern_of=None, load_document=None,
                  load_assembly=None, folder=None, registry=None):
         self.folder = folder       # the open FolderDocument whose manifest resolves tab ids, if any
+        self.own_id = None         # the id of the Document the tabs belong to, when there is no `folder` (the engine)
         self._registry = registry  # finds another Document by id; default: the open folder's registry
         self._others = {}          # Document id -> (folder path, trusted FolderDocument opened in place)
         self._views = {}           # (Document id, folder path, version name) -> read-only version view
@@ -88,6 +143,7 @@ class LinkResolver:
         self._load_assembly = load_assembly or self._default_load_assembly
         self._loaded = {}          # abs path -> (mtime, doc), for studios/assemblies loaded from disk
         self._shape_cache = {}     # compound cache for drawing sources, keyed by (kind, uid/id, ...)
+        self._encoder = None       # engine.encode.Encoder, made on the first resolve_studio
 
     def _default_load_assembly(self, path):
         from .assembly import AssemblyDoc
@@ -131,6 +187,11 @@ class LinkResolver:
         """The trusted folder Document registered under `doc_id`. Found through the registry only: the link holds
         no path, and a registry record the app did not make trusted (or whose folder is gone) is not opened.
         Raises KernelError naming the id."""
+        own = self.folder
+        own_id = getattr(own, "id", None) or self.own_id
+        doc_id = doc_id or own_id          # no Document named: a Version of the Document itself (I1.11)
+        if own is not None and own.trusted and own.path and doc_id == own.id:
+            return own.path, own
         reg = self.registry
         if not isinstance(doc_id, str) or reg is None:
             raise K.KernelError(f"Document “{doc_id}” is not in the Document registry")
@@ -141,7 +202,14 @@ class LinkResolver:
         hit = self._others.get(doc_id)
         if hit is None or hit[0] != path:
             from .doc_folder import FolderDocument
-            other = FolderDocument.open_document(path, registry=reg)     # trusted: opens in place, no clone
+            if doc_id == own_id:
+                # The Document itself, read only for its Versions: not opened as a Document, which would load its tabs
+                # and resolve this very pin again without end (a view and a Document still opening are not trusted).
+                other = FolderDocument()
+                other.id, other.path, other.trusted, other.registry = doc_id, path, True, reg
+                other.name = getattr(own, "name", None) or other.name
+            else:
+                other = FolderDocument.open_document(path, registry=reg)     # trusted: opens in place, no clone
             if other.id != doc_id:
                 raise K.KernelError(f"The folder registered for Document “{doc_id}” holds a different Document")
             hit = self._others[doc_id] = (path, other)
@@ -182,7 +250,8 @@ class LinkResolver:
         """Where a cross-Document source stands: {document, pinned, latest, update_available, error}. `latest` is the
         newest Version of the other Document as the registry's folder has it now; a received Document changes only
         when it is imported again. Never raises."""
-        st = {"document": src.get("document"), "pinned": src.get("version"), "latest": None,
+        own = getattr(self.folder, "id", None)
+        st = {"document": src.get("document") or own, "pinned": src.get("version"), "latest": None,
               "update_available": False, "error": None}
         try:
             names = [v["name"] for v in self.link_versions(src)]
@@ -191,7 +260,8 @@ class LinkResolver:
             return st
         st["latest"] = names[-1] if names else None
         if st["pinned"] not in names:
-            st["error"] = f"Version “{st['pinned']}” of Document “{st['document']}” does not exist"
+            st["error"] = (f"Version “{st['pinned']}” of this Document does not exist" if not is_cross_link(src, own) else
+                           f"Version “{st['pinned']}” of Document “{st['document']}” does not exist")
         else:
             st["update_available"] = names[-1] != st["pinned"]
         return st
@@ -213,7 +283,7 @@ class LinkResolver:
         lies inside its folder -- the old uid/path flow then applies). Raises KernelError for a tab id the
         manifest doesn't have, a tab that failed to open, and a legacy path outside the Document folder,
         which is refused before any file is touched."""
-        if is_cross_link(src, getattr(self.folder, "id", None)):
+        if is_pinned(src, getattr(self.folder, "id", None)):
             return self._cross_doc(src, kind)
         folder = self.folder
         if folder is None:
@@ -280,7 +350,7 @@ class LinkResolver:
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
         p = studio.state.parts.get(_translate_part(studio, src.get("part")))
-        if p is None:
+        if p is None or getattr(p, "reference", False):
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         return p
 
@@ -292,6 +362,58 @@ class LinkResolver:
         except K.KernelError:
             return None
         return None if studio is None else studio.state.named(_translate_part(studio, src.get("part")))
+
+    def resolve_studio(self, src):
+        """The published output of the Part Studio `src` names (a Document.link_inputs callable): a
+        StudioPackage of its parts and sketches, read from the studio's current state. Raises KernelError
+        when the studio is not found."""
+        from .engine.contract import plain
+        from .engine.encode import Encoder, connector_out, named_elements, sketch_out
+        studio = self._studio_for(src)
+        if studio is None:
+            raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
+        if self._encoder is None:
+            self._encoder = Encoder(meshes=False)     # caches each shape's BREP and hash across calls
+        st = studio.state
+        parts = {}
+        for p in st.parts.values():
+            named = st.named(p.id)
+            parts[str(p.id)] = PublishedPart(
+                id=str(p.id), name=str(p.name), color=tuple(float(c) for c in p.color),
+                hidden=p.id in studio.hidden_parts, shape=p.shape, names=named_elements(named),
+                hash=self._encoder.brep(p.shape)[1])
+        sketches = {str(fid): sketch_out(fid, (studio.feature(fid) or {}).get("name", fid), res)
+                    for fid, res in st.sketches.items()}
+        pkg = StudioPackage(parts, sketches, dict(getattr(studio, "part_aliases", {})),
+                            error=_studio_error(studio),
+                            connectors={str(fid): plain(asdict(connector_out(fid, c))) for fid, c in st.connectors.items()})
+        pkg.digest = pkg.digest_for(None)
+        return pkg
+
+    def resolve_variables(self, src):
+        """{name: value} of the Variable Studio tab `src` names inside the open Document (a Document.var_inputs
+        callable), or None when it names no tab of the Document. A source of another Document that cannot be read
+        (no Version pinned, Document, Version or tab not found) is None too: the feature then says which."""
+        try:
+            vs = self._folder_doc(src, "variables")
+        except K.KernelError:
+            if is_cross_link(src, getattr(self.folder, "id", None)):
+                return None
+            raise
+        return None if vs is None else dict(vs.values()[0])
+
+    def resolve_connectors(self, src):
+        """The mate connectors the Part Studio publishes for the part `src` links to, as [{"id", "name", "frame"}]
+        (frames in the studio's coordinates, which are the part's), or None when the studio is not found."""
+        try:
+            studio = self._studio_for(src)
+        except K.KernelError:
+            return None
+        if studio is None:
+            return None
+        pid = _translate_part(studio, src.get("part"))
+        return [{"id": str(fid), "name": c["name"], "frame": {k: [float(v) for v in c["frame"][k]] for k in ("o", "z", "x")}}
+                for fid, c in studio.state.connectors.items() if c["part"] == pid]
 
     # ------------------------------------------------------------------ drawing sources
     def resolve_drawing_source(self, src):
@@ -326,7 +448,8 @@ class LinkResolver:
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
         if src.get("part") in (None, "*"):
-            parts = [p for p in studio.state.parts.values() if p.id not in studio.hidden_parts]
+            parts = [p for p in studio.state.parts.values() if p.id not in studio.hidden_parts
+                     and not getattr(p, "reference", False)]
             if not parts:
                 raise K.KernelError(f"“{studio.name}” has no parts")
             if len(parts) == 1:
@@ -336,7 +459,7 @@ class LinkResolver:
                 self._shape_cache[key] = K.compound([p.shape for p in parts])
             return self._shape_cache[key]
         p = studio.state.parts.get(_translate_part(studio, src["part"]))
-        if p is None:
+        if p is None or getattr(p, "reference", False):
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         if src.get("flat"):
             if p.id not in getattr(studio.state, "sheet", {}):
@@ -352,6 +475,134 @@ class LinkResolver:
         return p.shape
 
 
+# ------------------------------------------------------------------ what a tab consumes
+SOURCE_FEATURES = {"variable_studio_ref": "source", "derived": "source"}     # feature type -> the params key holding its source
+
+
+def feature_source(feature):
+    """The source dict a studio feature consumes, or None (a feature type outside SOURCE_FEATURES, no source)."""
+    key = SOURCE_FEATURES.get(feature.get("type")) if isinstance(feature, dict) else None
+    src = (feature.get("params") or {}).get(key) if key else None
+    return src if isinstance(src, dict) else None
+
+
+def source_edit(edit):
+    """The source dict an engine edit hands a tab (add_feature, replace_feature, set_source, or a set_param
+    that sets a whole source key), else None."""
+    if not isinstance(edit, dict):
+        return None
+    op = edit.get("op")
+    if op in ("add_feature", "replace_feature"):
+        return feature_source(edit.get("feature"))
+    if op == "set_source":
+        return edit.get("source") if isinstance(edit.get("source"), dict) else None
+    if op == "set_param":
+        key = edit.get("key")
+        key = key[0] if isinstance(key, (list, tuple)) and len(key) == 1 else key
+        if key in SOURCE_FEATURES.values() and isinstance(edit.get("value"), dict):
+            return edit["value"]
+    return None
+
+
+def tab_sources(kind, data):
+    """Every source dict of a tab's JSON (or of a loaded document, which has the same attributes): an
+    assembly's instances, a drawing's source, a studio's features listed in SOURCE_FEATURES."""
+    def get(name, default):
+        v = data.get(name, default) if isinstance(data, dict) else getattr(data, name, default)
+        return default if v is None else v
+    if kind == "assembly":
+        srcs = [i.get("source") for i in get("instances", [])]
+    elif kind == "drawing":
+        srcs = [get("source", None)]
+    elif kind == "studio":
+        srcs = [feature_source(f) for f in get("features", [])]
+    else:
+        srcs = []
+    return [s for s in srcs if isinstance(s, dict)]
+
+
+# ------------------------------------------------------------------ the dependency view
+# Display label of each kind of link, keyed by the SOURCE_FEATURES type that holds it. A new source feature type
+# (the Derived feature) gets its label with one line here; a type with no line shows under its own type name.
+SOURCE_FEATURE_LABELS = {"variable_studio_ref": "Variable Studio reference", "derived": "Derived"}
+ASSEMBLY_INSTANCE, DRAWING_SOURCE, CONTEXT_KIND = "Assembly instance", "Drawing source", "Context"
+
+
+def _tab_uses(folder, tab):
+    """What `tab` reads, as dependency entries with a `target` tab id (None for another Document), built from
+    tab_sources' kinds: assembly instances, a drawing's source, the SOURCE_FEATURES features of a studio. A Part
+    Studio's Context features (reference only, never in SOURCE_FEATURES) are listed too."""
+    found = []                                            # (kind label, source dict, feature id)
+    doc = tab.doc
+    if doc is not None and tab.kind == "studio":
+        for f in doc.features:
+            src = feature_source(f)
+            if src is not None:
+                found.append((SOURCE_FEATURE_LABELS.get(f["type"], f["type"]), src, f["id"]))
+    elif doc is not None:
+        label = ASSEMBLY_INSTANCE if tab.kind == "assembly" else DRAWING_SOURCE
+        found = [(label, s, None) for s in tab_sources(tab.kind, doc)]
+    out = []
+    for label, src, fid in found:
+        e = {"kind": label, "feature": fid, "document": None, "document_name": None, "target": src.get("tab"),
+             "name": src.get("studio_name") or src.get("name") or "?", "pinned": None, "latest": None}
+        if is_pinned(src, folder.id):
+            st = folder.resolver.link_status(src)
+            e.update(document=src.get("document"), pinned=st["pinned"], latest=st["latest"])
+            try:
+                e["document_name"] = folder.resolver._other_document(src.get("document"))[1].name
+            except (K.KernelError, AttributeError):
+                pass
+            e["state"] = "error" if st["error"] else "update available" if st["update_available"] else "pinned"
+            e["error"] = st["error"]
+        else:
+            other = folder.tab(src.get("tab")) if src.get("tab") is not None else None
+            if other is not None:
+                e["name"] = other.name
+            e["state"] = "missing" if other is None else "error" if other.doc is None else "live"
+            e["error"] = folder.errors.get(src.get("tab")) if e["state"] == "error" else None
+        out.append(e)
+    if doc is not None and tab.kind == "studio":
+        for f in doc.features:
+            if f.get("type") != "context":
+                continue
+            want = (f.get("params") or {}).get("assembly")
+            asm = next((t for t in folder.tabs if t.kind == "assembly"
+                        and want and want in (t.id, getattr(t.doc, "uid", None))), None)
+            try:
+                state = folder.context_status(tab.id, f["id"])
+            except K.KernelError:
+                state = "assembly missing"
+            out.append({"kind": CONTEXT_KIND, "feature": f["id"], "document": None, "document_name": None,
+                        "target": asm.id if asm else None, "name": asm.name if asm else "?", "pinned": None,
+                        "latest": None, "state": state, "error": None})
+    return out
+
+
+def dependency_view(folder, tab_id):
+    """{uses: [...], used_by: [...]} for a tab of the Document: every entry names the other tab (`tab`, `name`;
+    `document` and `document_name` too for another Document, with its `pinned` Version), the `kind` of link and its
+    `state`: live, pinned, update available (`latest` is the newer Version), missing or error for a Link; current,
+    out of date or assembly missing for a Context. `label` is the state as shown ("pinned v1", "update available
+    v2"). A query: nothing is rebuilt or changed. Another Document's tabs never appear under used_by."""
+    tab = folder.tab(tab_id)
+    if tab is None:
+        raise K.KernelError(f"No tab {tab_id!r} in the Document")
+    def shown(e, tab_id, name):
+        e = dict(e, tab=tab_id, name=name)
+        e.pop("target", None)
+        s = e["state"]
+        e["label"] = (f"pinned {e['pinned']}" if s == "pinned" else
+                      f"update available {e['latest']}" if s == "update available" else s)
+        return e
+    uses = [shown(e, e["target"], e["name"]) for e in _tab_uses(folder, tab)]
+    used_by = []
+    for other in folder.tabs:
+        if other is not tab:
+            used_by += [shown(e, other.id, other.name) for e in _tab_uses(folder, other) if e["target"] == tab_id and not e["document"]]
+    return {"uses": uses, "used_by": used_by}
+
+
 # ------------------------------------------------------------------ cross-Document pins
 def cross_sources(folder):
     """Every cross-Document source the Document's assemblies and drawings hold: (tab, source) pairs."""
@@ -359,22 +610,20 @@ def cross_sources(folder):
     for tab in folder.tabs:
         if tab.doc is None:
             continue
-        srcs = [i["source"] for i in tab.doc.instances] if tab.kind == "assembly" else \
-            [tab.doc.source] if tab.kind == "drawing" and tab.doc.source is not None else []
-        out += [(tab, s) for s in srcs if is_cross_link(s, folder.id)]
+        out += [(tab, s) for s in tab_sources(tab.kind, tab.doc) if is_pinned(s, folder.id)]
     return out
 
 
 def cross_link_updates(folder):
     """The cross-Document pins that have a newer Version: a list of status dicts (see LinkResolver.link_status)
-    each with the `tab` id that holds it. One entry per distinct (Document, pinned Version)."""
+    each with the `tab` id that holds it and `local`: a pin to a Version of the Document itself. One entry per distinct (Document, pinned Version)."""
     seen, out = set(), []
     for tab, src in cross_sources(folder):
         st = folder.resolver.link_status(src)
         key = (st["document"], st["pinned"])
         if st["update_available"] and key not in seen:
             seen.add(key)
-            out.append(dict(st, tab=tab.id))
+            out.append(dict(st, tab=tab.id, local=not is_cross_link(src, folder.id)))
     return out
 
 
@@ -383,7 +632,7 @@ def update_cross_links(folder, document=None):
     mark the holding tabs dirty and rebuild. Returns the number of sources re-pinned."""
     n = 0
     for tab, src in cross_sources(folder):
-        if document is not None and src.get("document") != document:
+        if document is not None and (src.get("document") or folder.id) != document:
             continue
         st = folder.resolver.link_status(src)
         if st["update_available"]:
@@ -443,13 +692,7 @@ def migrate_links_to_tab_ids(folder):
         doc = tab.doc
         if doc is None:
             continue
-        if tab.kind == "assembly":
-            sources = [i["source"] for i in doc.instances]
-        elif tab.kind == "drawing" and doc.source is not None:
-            sources = [doc.source]
-        else:
-            continue
-        changed = sum(_to_tab_link(folder, s) for s in sources)
+        changed = sum(_to_tab_link(folder, s) for s in tab_sources(tab.kind, doc))
         if changed:
             doc.dirty = True
             n += changed
@@ -507,8 +750,8 @@ def _repair_assembly_link(resolver, src):
 def repair_source(resolver, src, part_name=False):
     """Write back one source's current uid/path/display name, repairing a stale link the way resolving used
     to (for either an assembly instance's source or a drawing's source). Call this only right before saving."""
-    if is_cross_link(src, getattr(resolver.folder, "id", None)):
-        return            # names a tab of another Document: the pin is the link, nothing in this folder to repair
+    if is_pinned(src, getattr(resolver.folder, "id", None)):
+        return            # names a tab of another Document, or of a Version: the pin is the link, nothing in this folder to repair
     kind = src.get("kind")
     if kind == "studio":
         _repair_studio_link(resolver, src, part_name=part_name)
@@ -519,11 +762,8 @@ def repair_source(resolver, src, part_name=False):
 def repair_links(resolver, doc):
     """repair_source for every source a document holds -- every instance of an AssemblyDoc, or the single
     source of a DrawingDoc. Called from MainWindow's save path (and autosave), never from resolving."""
-    if doc.kind == "assembly":
-        for inst in doc.instances:
-            repair_source(resolver, inst["source"])
-    elif doc.kind == "drawing" and doc.source is not None:
-        repair_source(resolver, doc.source, part_name=True)
+    for src in tab_sources(doc.kind, doc):
+        repair_source(resolver, src, part_name=doc.kind == "drawing")
 
 
 # ------------------------------------------------------------------ the Link graph

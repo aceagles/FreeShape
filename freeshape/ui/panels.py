@@ -14,6 +14,7 @@ from . import theme, pyfeature_ui
 ROLE_KIND = Qt.UserRole
 ROLE_ID = Qt.UserRole + 1
 ROLE_EYE = Qt.UserRole + 2        # None (no eye), "shown" or "hidden"
+ROLE_MARK = Qt.UserRole + 3       # a feature row's dependency state ("live", "update available v2", ...), or None
 STD_PLANES = ("Top", "Front", "Right")
 
 
@@ -146,6 +147,20 @@ def _warning_icon(size=32):
     return ic
 
 
+ROLE_STATUS = Qt.UserRole + 3     # a Context row's status: "current", "out of date" or "assembly missing"
+
+
+def _mark_context_row(it, status):
+    """A Context feature's row: the status goes after the name unless it is current."""
+    it.setData(ROLE_STATUS, status)
+    if status and status != "current":
+        it.setText(f"{it.text()} ({status})")
+        it.setToolTip(f"Context {status}: use Update context to recapture it from the Assembly"
+                      if status == "out of date" else "The Assembly or instance this Context came from is missing")
+        if it.foreground().color() != QColor("#d93025"):
+            it.setForeground(QColor("#b06000"))
+
+
 class FeatureList(_EyeMixin, QListWidget):
     eyeClicked = Signal(str)                 # "std_plane:Top" / "feature:F3"
     editRequested = Signal(str)
@@ -168,9 +183,10 @@ class FeatureList(_EyeMixin, QListWidget):
         self.itemDoubleClicked.connect(self._dbl)
         self.itemClicked.connect(self._clicked)
         self._filter = ""
+        self.context_status = None       # callable(fid) -> status text of a Context feature (the main window sets it)
         self._eye_setup()
 
-    def populate(self, doc, editing_id=None):
+    def populate(self, doc, editing_id=None, marks=None):
         self.blockSignals(True)
         self.clear()
         bold = QFont()
@@ -225,9 +241,15 @@ class FeatureList(_EyeMixin, QListWidget):
             if f["id"] in notices and not it.toolTip():      # plugin notice: not errored, suppressed or rolled back
                 it.setForeground(QColor(pyfeature_ui.NOTICE_COLOR))
                 it.setToolTip(notices[f["id"]])
+            if f["type"] == "context" and self.context_status is not None and not err:
+                _mark_context_row(it, self.context_status(f["id"]))
             if f["id"] == editing_id:
                 it.setBackground(QColor(theme.SELECTED_ROW))
                 it.setFont(bold)
+            mark = (marks or {}).get(f["id"])           # I6.3: the state of a Derived, reference or Context row
+            if mark:
+                it.setData(ROLE_MARK, mark)
+                it.setText(f"{f['name']}   [{mark}]")
             self.addItem(it)
         if active >= len(doc.features):
             self._add_rollback()
@@ -307,7 +329,7 @@ class FeatureList(_EyeMixin, QListWidget):
         if it is None:
             return
         k = it.data(ROLE_KIND)
-        if k in ("feature", "std_plane"):
+        if k in ("feature", "std_plane", "origin"):
             self.contextRequested.emit(f"{k}:{it.data(ROLE_ID)}", self.viewport().mapToGlobal(pos))
 
     def selected_feature_ids(self):
@@ -427,3 +449,61 @@ class DocTabBar(QTabBar):
                 self.middleClicked.emit(i)
                 return
         super().mouseReleaseEvent(e)
+
+
+# ------------------------------------------------------------------ Dependencies panel (I6.3)
+DEP_BAD_STATES = ("missing", "error", "out of date", "assembly missing")
+DEP_ATTENTION_STATES = ("update available",)
+
+
+class DependenciesPanel(QWidget):
+    """What the current tab uses and what uses it, from links.dependency_view. Clicking an entry in this Document
+    emits `tabRequested(tab id)`."""
+    tabRequested = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("dependencies")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.header = QLabel("Dependencies")
+        self.header.setObjectName("sectionHeader")
+        lay.addWidget(self.header)
+        self.uses_list = QListWidget()
+        self.used_by_list = QListWidget()
+        for title, lst in (("Uses", self.uses_list), ("Used by", self.used_by_list)):
+            lab = QLabel(title)
+            lab.setObjectName("sectionHeader")
+            lay.addWidget(lab)
+            lst.setMaximumHeight(110)
+            lst.itemClicked.connect(self._clicked)
+            lay.addWidget(lst)
+
+    def populate(self, view):
+        """`view` is links.dependency_view's {uses, used_by}, or None (no tab of a Document)."""
+        view = view or {"uses": [], "used_by": []}
+        for lst, entries in ((self.uses_list, view["uses"]), (self.used_by_list, view["used_by"])):
+            lst.clear()
+            for e in entries:
+                where = f"{e['document_name'] or e['document']} / " if e.get("document") else ""
+                it = QListWidgetItem(f"{where}{e['name']}  ·  {e['kind']}  ·  {e['label']}")
+                it.setData(ROLE_ID, e["tab"] if not e.get("document") else None)
+                tip = e.get("error")
+                if tip:
+                    it.setToolTip(tip)
+                if e["state"] in DEP_BAD_STATES:
+                    it.setForeground(QColor("#d93025"))
+                elif e["state"] in DEP_ATTENTION_STATES:
+                    it.setForeground(QColor("#b06000"))
+                lst.addItem(it)
+
+    def entries(self):
+        """The rows as text: (uses, used_by)."""
+        return ([self.uses_list.item(i).text() for i in range(self.uses_list.count())],
+                [self.used_by_list.item(i).text() for i in range(self.used_by_list.count())])
+
+    def _clicked(self, it):
+        tab_id = it.data(ROLE_ID)
+        if tab_id:
+            self.tabRequested.emit(tab_id)

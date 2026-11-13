@@ -27,7 +27,7 @@ from ..sketch import Sketch
 from . import theme, navstyles
 from .icons import icon
 from .viewport import Viewport, Pick
-from .panels import LeftPanel, STD_PLANES, DocTabBar
+from .panels import LeftPanel, STD_PLANES, DocTabBar, DependenciesPanel
 from .dialogs import FeatureDialog, SketchDialog, pick_to_item
 from .section import SectionPanel
 from .sketcher import Sketcher, CONSTRAINT_TOOLS
@@ -35,9 +35,10 @@ from .numparse import fmt
 from .filedirs import start_dir, remember_dir
 from .assembly_ui import AssemblyController
 from .partstudio_engine import StudioEngine, element_index
-from .variable_panel import VariableTabs
+from .variable_panel import VariableTabs, DefinedVariables
 
 APP_NAME = "FreeShape"
+DERIVED_LOOSE = "Add this Part Studio to a Document to use Derived for a loose .fshape."
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 
 
@@ -139,11 +140,25 @@ class MainWindow(QMainWindow):
         split = QSplitter(Qt.Horizontal)
         split.setHandleWidth(1)
         self.left = LeftPanel()
+        self.defined_vars_header = QLabel("Variables")          # a Part Studio's variables, overridden ones marked
+        self.defined_vars_header.setObjectName("sectionHeader")
+        self.defined_vars = DefinedVariables()
+        self.defined_vars.setMaximumHeight(150)
+        self.left.layout().addWidget(self.defined_vars_header)
+        self.left.layout().addWidget(self.defined_vars)
         self.left_stack = QStackedWidget()
         self.left_stack.addWidget(self.left)
         self.left_stack.addWidget(self.asm.panel)
         self.left_stack.addWidget(self.dwg.panel)
-        split.addWidget(self.left_stack)
+        self.dependencies = DependenciesPanel()                 # I6.3: what this tab uses / what uses it
+        self.dependencies.tabRequested.connect(self._open_dependency_tab)
+        left_col = QWidget()
+        lcl = QVBoxLayout(left_col)
+        lcl.setContentsMargins(0, 0, 0, 0)
+        lcl.setSpacing(0)
+        lcl.addWidget(self.left_stack, 1)
+        lcl.addWidget(self.dependencies)
+        split.addWidget(left_col)
         center = QWidget()
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -219,6 +234,7 @@ class MainWindow(QMainWindow):
         lp = self.left
         lp.features.editRequested.connect(self.edit_feature)
         lp.features.contextRequested.connect(self._tree_context)
+        lp.features.context_status = self._context_status_of
         lp.features.orderChanged.connect(self._tree_reordered)
         lp.features.planeClicked.connect(self._tree_plane_clicked)
         lp.features.featureHovered.connect(self._feature_hovered)
@@ -460,8 +476,20 @@ class MainWindow(QMainWindow):
               "union subtract intersect combine merge"),
             C("split", "Split", "Cut a part in two with a plane or a flat face.", lambda: F_("split"), "cut"),
             C("move", "Move", "Move, rotate or copy parts by exact amounts.", lambda: F_("move"), "translate"),
+            C("mate_connector", "Mate connector", "Put a named frame (origin, Z and X) on a face or edge, with the "
+              "same snap points as an Assembly. Assemblies can mate to it.", lambda: F_("mate_connector"),
+              "mate connector frame triad origin snap mate"),
+            C("update_context", "Update context", "Recapture the selected Context feature from its Assembly, so "
+              "the neighbouring parts match the Assembly again.", lambda: self.update_context(),
+              "context assembly refresh recapture out of date"),
             C("variable", "Variable", "Define #name values to use in any dimension.", lambda: F_("variable"),
               "parameter"),
+            C("variable_studio_ref", "Variable Studio reference", "Use the variables of a Variable Studio tab "
+              "of this Document: all of them or the ones you tick.", lambda: F_("variable_studio_ref"),
+              "variables studio link import parameter"),
+            Command("derived", "Derived", "Bring parts and sketches from another Part Studio of this Document into "
+                    "this one; they follow the source when it changes.", self._start_derived,
+                    "link import reference skeleton master", "Feature", self._derived_blocked() or ""),
             C("import", "Import STEP", "Open a STEP file in a new tab.", lambda: self.import_step(), "open file",
               "File"),
             C("export", "Export", "Export the model as STEP or STL.", lambda: self.export(None, None),
@@ -538,6 +566,20 @@ class MainWindow(QMainWindow):
               "keys help hotkeys", "Help"),
         ]
 
+    def _derived_blocked(self):
+        """Why Derived cannot start in the current tab (None when it can): a Part Studio outside a Document has
+        no other tab to read from (decision d-i1-7-loose)."""
+        if self._folder_tab(self.doc) is None:
+            return DERIVED_LOOSE
+        return None
+
+    def _start_derived(self):
+        why = self._derived_blocked()
+        if why:
+            self.status.showMessage(why, 6000)
+            return
+        self.start_feature("derived")
+
     def open_command_search(self):
         if self.mode == "dialog":
             self.status.showMessage("Finish or cancel the open tool first, then search tools.", 5000)
@@ -607,6 +649,8 @@ class MainWindow(QMainWindow):
         self.btn_redo = self._tb(h, "redo", "Redo (Ctrl+Y)", self.redo)
         h.addWidget(_sep())
         self._tb(h, "variable", "Variable — define #name values to use in any dimension", lambda: self.start_feature("variable"))
+        self._tb(h, "variable_studio_ref", "Variable Studio reference — use the variables of a Variable Studio tab", lambda: self.start_feature("variable_studio_ref"))
+        self._tb(h, "derived", "Derived — parts and sketches from another Part Studio of this Document", self._start_derived)
         h.addWidget(_sep())
         self._tb(h, "sketch", "Sketch (Shift+S)", lambda: self.start_sketch())
         h.addWidget(_sep())
@@ -637,7 +681,9 @@ class MainWindow(QMainWindow):
         h.addWidget(_sep())
         for name, tip in (("mirror", "Mirror"), ("linear_pattern", "Linear pattern"),
                           ("circular_pattern", "Circular pattern"), ("boolean", "Boolean"),
-                          ("split", "Split a part with a plane"), ("move", "Move / rotate / copy parts")):
+                          ("split", "Split a part with a plane"), ("move", "Move / rotate / copy parts"),
+                          ("mate_connector", "Mate connector — a named frame on a face or edge, for Assemblies "
+                                             "to mate to")):
             self._tb(h, name, tip, lambda _=False, n=name: self.start_feature(n))
         h.addWidget(_sep())
         self._tb(h, "import", "Import STEP (opens in a new tab)", lambda: self.import_step())
@@ -840,7 +886,29 @@ class MainWindow(QMainWindow):
         sc("Escape", self._escape)
 
     # ================================================================== doc → view
+    def _dependency_view(self):
+        """links.dependency_view of the current tab, or None (a loose file, no Document)."""
+        tab = self._folder_tab(self.doc) if self.doc is not None else None
+        if tab is None:
+            return None
+        try:
+            return links.dependency_view(self.folder, tab.id)
+        except K.KernelError:
+            return None
+
+    def _dependency_marks(self):
+        """{feature id: state label} for the Derived, Variable Studio reference and Context rows of this studio."""
+        view = self._dependency_view()
+        return {e["feature"]: e["label"] for e in view["uses"] if e.get("feature")} if view else {}
+
+    def _open_dependency_tab(self, tab_id):
+        tab = self.folder.tab(tab_id) if self.folder is not None else None
+        i = self._tab_index(tab.doc) if tab is not None and tab.doc is not None else -1
+        if i >= 0:
+            self.tabs.setCurrentIndex(i)
+
     def _on_doc_changed(self):
+        self.dependencies.populate(self._dependency_view())
         if self.var_tabs.is_variables(self.doc):
             self.var_tabs.on_changed(self.doc)
             return
@@ -892,8 +960,34 @@ class MainWindow(QMainWindow):
             editing = self.dialog.feature["id"]
         if self.mode == "sketch" and self.sk_ctx and not self.sk_ctx["is_new"]:
             editing = self.sk_ctx["feature"]["id"]
-        self.left.features.populate(self.doc, editing)
+        self.left.features.populate(self.doc, editing, self._dependency_marks())
         self.left.parts.populate(self.doc)
+        self.defined_vars.populate(self.doc, self._studio_variables)
+        self.defined_vars_header.setVisible(self.defined_vars.rowCount() > 0)
+        self.defined_vars.setVisible(self.defined_vars.rowCount() > 0)
+
+    def _studio_variables(self, src):
+        """{name: value} of the Variable Studio tab a reference's source names (live, as the table shows it)."""
+        tab = self.folder.tab(src.get("tab")) if self.folder is not None and src.get("tab") else None
+        return None if tab is None or tab.doc is None or not hasattr(tab.doc, "values") else dict(tab.doc.values()[0])
+
+    def _connector_triads(self, state):
+        """The Part Studio's mate connectors as the triads the Assembly draws (viewport.triads); a connector
+        whose feature row is selected or hovered in the feature list is drawn larger and thicker."""
+        picked = set(self.left.features.selected_feature_ids())
+        if self._hl_hover:
+            picked.add(self._hl_hover)
+        out = []
+        for fid, c in getattr(state, "connectors", {}).items():
+            if fid in self.doc.hidden_features or c["part"] in self.doc.hidden_parts:
+                continue
+            fr = c["frame"]
+            z, x = np.asarray(fr["z"], float), np.asarray(fr["x"], float)
+            tri = {"o": np.asarray(fr["o"], float), "x": x, "y": np.cross(z, x), "z": z, "id": fid}
+            if fid in picked:
+                tri.update(size_px=56, width=5.0)
+            out.append(tri)
+        return out
 
     def _planes_for(self, state):
         half = self.viewport.plane_half()
@@ -915,7 +1009,7 @@ class MainWindow(QMainWindow):
             self.asm.show_scene()
             return
         parts = [(p.id, self._flat_or_folded(state, p), p.color,
-                  None if self._flat_on(state, p) else p.face_colors)
+                  None if self._flat_on(state, p) else p.face_colors, None, None, p.reference)
                  for p in state.parts.values() if p.id not in self.doc.hidden_parts]
         sketches = []
         for fid, sr in state.sketches.items():
@@ -923,6 +1017,7 @@ class MainWindow(QMainWindow):
                 continue
             sketches.append((fid, sr))
         self.viewport.set_scene(parts, self._planes_for(state), sketches)
+        self.viewport.triads = self._connector_triads(state)
 
     # ================================================================== feature dialogs
     def finish_sketch_and_start(self, ftype):
@@ -1022,6 +1117,8 @@ class MainWindow(QMainWindow):
         vp = self.viewport
         vp.pick_handler = None
         vp.select_filter = None
+        vp.snap_provider = None
+        vp.clear_snaps()
         vp.overlays = []
         vp.manipulators = []
         vp._manip_drag = None
@@ -2467,6 +2564,7 @@ class MainWindow(QMainWindow):
             if shp is not None:
                 edges[pid] = K.face_edge_indices(shp, fis)
         vp.feature_hl = {"faces": faces, "edges": edges, "polys": polys} if (faces or polys) else None
+        vp.triads = self._connector_triads(getattr(self.doc, "state", None))
         vp.update()
 
     def _feature_geometry(self, fid):
@@ -2495,6 +2593,8 @@ class MainWindow(QMainWindow):
             if pl is not None:
                 h = self.viewport.plane_half() * 0.6
                 polys.append(np.array([pl.to_world(u, v) for u, v in ((-h, -h), (h, -h), (h, h), (-h, h), (-h, -h))]))
+        elif f["type"] == "mate_connector":
+            pass                              # its triad is drawn by _connector_triads
         elif f["type"] != "variable":
             before = doc.state_before(idx)
             after = doc.state_before(idx + 1)
@@ -2553,6 +2653,11 @@ class MainWindow(QMainWindow):
     def _tree_context(self, key, gpos):
         kind, fid = key.split(":", 1)
         m = QMenu(self)
+        if kind == "origin":
+            if self.mode == "idle":
+                self._add_origin_connector_action(m)
+                m.exec(gpos)
+            return
         if kind == "std_plane":
             m.addAction("New sketch", lambda: (self.viewport.set_selection([Pick("plane", ("std", fid))]),
                                                self.start_sketch()))
@@ -2566,6 +2671,8 @@ class MainWindow(QMainWindow):
             return
         m.addAction("Edit…", lambda: self.edit_feature(fid))
         m.addAction("Rename…", lambda: self._rename_feature(fid))
+        if f["type"] == "context":
+            m.addAction("Update context", lambda: self.update_context(fid))
         if f["type"] in ("sketch", "plane"):
             m.addAction("Show" if fid in self.doc.hidden_features else "Hide",
                         lambda: self.doc.toggle_feature_hidden(fid))
@@ -2590,6 +2697,47 @@ class MainWindow(QMainWindow):
             a = m.addAction("⚠ " + err)
             a.setEnabled(False)
         m.exec(gpos)
+
+    # ------------------------------------------------------------------ Context features (ADR 0004)
+    def _context_status_of(self, fid):
+        """context_status of Context feature `fid` of the current studio, or None outside a Document."""
+        tab = self._folder_tab(self.doc)
+        if tab is None:
+            return None
+        try:
+            return self.folder.context_status(tab.id, fid)
+        except K.KernelError:
+            return None
+
+    def update_context(self, fid=None):
+        """Recapture a Context feature of the current studio from its Assembly (one undoable edit). Acts on `fid`,
+        else the selected Context row, else the studio's only Context feature."""
+        tab = self._folder_tab(self.doc)
+        if self.is_asm or self.is_dwg or tab is None:
+            return
+        ctxs = [f["id"] for f in self.doc.features if f["type"] == "context"]
+        if fid is None:
+            sel = [i for i in self.left.features.selected_feature_ids() if i in ctxs]
+            fid = sel[0] if sel else (ctxs[0] if len(ctxs) == 1 else None)
+        if fid is None:
+            self.status.showMessage("Select a Context feature to update", 5000)
+            return
+        try:
+            self.folder.update_context(tab.id, fid)
+        except K.KernelError as e:
+            self.status.showMessage(str(e), 6000)
+        self._populate_lists()              # the row's status text
+
+    def _add_origin_connector_action(self, m):
+        a = m.addAction("Mate connector at origin", self.mate_connector_at_origin)
+        a.setObjectName("mate_connector_at_origin")
+        return a
+
+    def mate_connector_at_origin(self):
+        """Open the Mate connector dialog with the origin preselected and an Owner part row."""
+        self.start_feature("mate_connector")
+        if self.mode == "dialog" and self.dialog is not None and self.dialog.ftype == "mate_connector":
+            self.dialog.use_origin()
 
     def _rename_feature(self, fid):
         f = self.doc.feature(fid)
@@ -2731,6 +2879,11 @@ class MainWindow(QMainWindow):
             return
         if self.mode != "idle":
             return
+        lp = self.viewport.mapFromGlobal(gpos)
+        osp = self.viewport.cam.to_screen(np.zeros(3))
+        if abs(osp[0] - lp.x()) <= 10 and abs(osp[1] - lp.y()) <= 10:      # right-click on the Origin
+            self._add_origin_connector_action(m)
+            m.addSeparator()
         if pk is not None:
             if pk.kind in ("plane", "face"):
                 item = pick_to_item(self.viewport, pk, {"plane"}, getattr(self.doc, "state", None))
@@ -3065,12 +3218,12 @@ class MainWindow(QMainWindow):
             d = self.docs.get(self.tabs.tabData(i))
             if d is None:
                 continue
-            if d.kind == "studio" and d.state.parts:
+            if d.kind == "studio" and any(not p.reference for p in d.state.parts.values()):
                 base = self.studio_link(d)
                 entries = []
-                if len(d.state.parts) > 1:
+                if sum(not p.reference for p in d.state.parts.values()) > 1:
                     entries.append(("All parts", {**base, "part": "*"}))
-                for p in d.state.parts.values():
+                for p in (p for p in d.state.parts.values() if not p.reference):
                     entries.append((p.name, {**base, "part": p.id, "part_name": p.name}))
                     if p.id in getattr(d.state, "sheet", {}):
                         entries.append((p.name + " — flat pattern", {**base, "part": p.id, "part_name": p.name,
@@ -3091,7 +3244,8 @@ class MainWindow(QMainWindow):
             return
         if preselect is None and self.doc is not None and self.doc.kind in ("studio", "assembly"):
             if self.doc.kind == "studio":
-                only = next(iter(self.doc.state.parts)) if len(self.doc.state.parts) == 1 else "*"
+                own = [i for i, p in self.doc.state.parts.items() if not p.reference]
+                only = own[0] if len(own) == 1 else "*"
                 preselect = self.studio_link(self.doc, only)
             else:
                 preselect = self.assembly_link(self.doc)

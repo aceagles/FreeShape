@@ -18,12 +18,51 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+from .. import kernel as K
 from .. import links
 from .linkgraph import norm_key
 
 
 def _refuse_load(path):
     raise RuntimeError("the engine opens upstream tabs itself")
+
+
+def external_id(src):
+    """The id a cross-Document source's package goes by in the Link graph and in the consumer's worker: the
+    Document (empty for a Version of this Document), the pinned Version and the tab. Never a tab id of this
+    Document, so it cannot match a local tab."""
+    return f"{src.get('document') or ''}@{src.get('version')}:{src.get('tab')}"
+
+
+def cross_package(kind, doc, enc):
+    """The package (worker._Worker.upstream's shape) of a tab document of a pinned Version, read by the parent
+    from the resolver's read-only view. It carries no uid and no path, so the worker cannot match it by either."""
+    from dataclasses import asdict
+    from .contract import plain
+    from .encode import sketch_out
+    from .worker import lean_part
+    pkg = {"kind": kind, "uid": None, "name": str(doc.name), "path": None}
+    if kind == "studio":
+        st = doc.state
+        pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(st.vars)),
+                   parts=[lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()],
+                   sketches=[plain(asdict(sketch_out(fid, (doc.feature(fid) or {}).get("name", fid), res)))
+                             for fid, res in st.sketches.items()])
+    elif kind == "variables":
+        pkg.update(vars=plain(dict(doc.values()[0])))
+    else:
+        parts, insts = {}, []
+        for inst in doc.instances:
+            p = doc.parts.get(inst["id"])
+            key = None
+            if p is not None:
+                lp = lean_part(enc, p)
+                parts.setdefault(lp["hash"], lp)
+                key = lp["hash"]
+            insts.append({"id": inst["id"], "T": plain(inst.get("T")), "hidden": bool(inst.get("hidden")),
+                          "part": key})
+        pkg.update(parts=parts, instances=insts)
+    return pkg
 
 
 class _Used(list):
@@ -46,6 +85,15 @@ class CrossTabInputs:
             find_open_studio=lambda uid, path: self._provide("studio", uid, path, self._cur().get("tab")),
             find_open_assembly=lambda uid, path: self._provide("assembly", uid, path, self._cur().get("tab")),
             load_document=_refuse_load, load_assembly=_refuse_load)
+        self.resolver._cross_doc = self._external_doc       # a pinned Version arrives as a package, never a file
+
+    def _external_doc(self, src, kind):
+        """The view of the package the parent sent for a cross-Document source (see `external_id`)."""
+        hit = self._tabs.provide(kind, tab=external_id(src))
+        if hit is None:
+            raise K.KernelError(f"Document “{src.get('document')}” at Version “{src.get('version')}” "
+                                f"was not handed to this tab")
+        return hit[1]
 
     def _cur(self):
         return self._srcs[-1] if self._srcs else {}
@@ -68,10 +116,30 @@ class CrossTabInputs:
 
     def variables(self, src):
         """{name: value} of the Variable Studio tab a "variable_studio_ref" source names (by tab id, uid, then
-        file path), live and unsaved; None if no tab matches. A Document.var_inputs callable."""
+        file path), live and unsaved; None if no tab matches. A Document.var_inputs callable. A pinned Version of
+        another Document is the package the parent sent (None if it was not sent)."""
         with self._resolving(src):
+            if links.is_cross_link(src):
+                try:
+                    return dict(self._external_doc(src, "variables").values()[0])
+                except K.KernelError:
+                    return None
             doc = self._provide("variables", src.get("uid"), src.get("path"), src.get("tab"))
         return None if doc is None else dict(doc.values()[0])
+
+    def studio(self, src):
+        """The StudioPackage of the Part Studio tab `src` names (by tab id, uid, then file path), live and
+        unsaved: its parts and sketches as the parent publishes them. A Document.link_inputs callable. A worker
+        view carries the package the parent sent (`package`); otherwise it is read from the open tab. Raises
+        KernelError when no tab matches."""
+        with self._resolving(src):
+            if links.is_pinned(src):         # a pinned Version of another Document: the package the parent sent
+                return self._external_doc(src, "studio").package
+            doc = self._provide("studio", src.get("uid"), src.get("path"), src.get("tab"))
+            if doc is None:
+                raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
+            pkg = getattr(doc, "package", None)
+            return pkg if pkg is not None else self.resolver.resolve_studio(src)
 
     def repair(self, doc):
         """Write back drifted link uid / path / names -- the save-time step MainWindow runs before saving."""

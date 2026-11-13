@@ -482,6 +482,14 @@ def draw(name: str, p: QPainter):
         p.drawEllipse(QRectF(9, 11, 9, 9))
         _arrow(p, 20, 7, 28, 7, BLUE, 1.5)
         _arrow(p, 12, 7, 4, 7, BLUE, 1.5)
+    elif name == "m_parallel":
+        p.setPen(_pen(INK, 1.4))
+        p.setBrush(FACE_DARK)
+        p.drawRect(QRectF(5, 8, 5, 18))
+        p.setBrush(FACE)
+        p.drawRect(QRectF(21, 6, 5, 18))
+        _arrow(p, 7.5, 6, 7.5, 1.5, BLUE, 1.4)
+        _arrow(p, 23.5, 4, 23.5, 0.5, BLUE, 1.4)
     elif name == "m_ball":
         p.setPen(_pen(INK, 1.4))
         p.setBrush(FACE_DARK)

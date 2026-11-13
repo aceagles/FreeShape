@@ -29,9 +29,10 @@ MATE_TYPES = {
     "cylindrical": ("Cylindrical", "Slides along and rotates about the Z axis, like a shaft in a bearing"),
     "planar": ("Planar", "Slides and rotates on a plane, like a block on a table"),
     "pin_slot": ("Pin slot", "A pin in a slot: slides along the first connector's X axis and rotates about Z"),
+    "parallel": ("Parallel", "Keeps the two Z axes parallel; the part moves and turns freely otherwise"),
     "ball": ("Ball", "Rotates in every direction about a point"),
 }
-MATE_DOF = {"fastened": 0, "revolute": 1, "slider": 1, "cylindrical": 2, "pin_slot": 2, "planar": 3, "ball": 3}
+MATE_DOF = {"fastened": 0, "revolute": 1, "slider": 1, "cylindrical": 2, "pin_slot": 2, "planar": 3, "parallel": 4, "ball": 3}
 # The named free degrees of freedom of each mate type: its Mate values (translations in mm, rotations in degrees).
 MATE_VALUE_DOFS = {
     "fastened": (),
@@ -40,6 +41,7 @@ MATE_VALUE_DOFS = {
     "cylindrical": ("tz", "rz"),
     "planar": ("tx", "ty", "rz"),
     "pin_slot": ("tx", "rz"),
+    "parallel": ("tx", "ty", "tz", "rz"),
     "ball": (),
 }
 FILE_FORMAT = "freeshape-assembly"
@@ -427,7 +429,7 @@ def mate_residuals(m, FA, FB, L):
     if t in ("fastened", "revolute", "ball"):
         out.append(oB - (oA + d * zA))
     if t != "ball":
-        out.append((zB - s * zA) * L)
+        out.append((zB - s * zA) * L)               # parallel holds only this (opposed, or aligned with flip)
     if t in ("fastened", "slider"):
         out.append((xB - xt) * L)
     if t in ("slider", "cylindrical"):
@@ -452,6 +454,17 @@ def snap_transform(m, FA, FB):
     yA = np.cross(zA, xA)
     xt = np.cos(ang) * xA + np.sin(ang) * yA
     zt = s * zA
+    if m["type"] == "parallel":
+        # turn B about its own origin by the smallest rotation that makes the Z axes parallel; no translation
+        zB = unit(FB["z"])
+        axis = np.cross(zB, zt)
+        sn, cs = float(np.linalg.norm(axis)), float(zB @ zt)
+        if sn < 1e-12:
+            if cs > 0:
+                return np.eye(4)
+            xb = unit(FB["x"])
+            axis, sn = xb, 1.0                      # already antiparallel: half a turn about any axis across Z
+        return rot_about(axis / sn, np.arctan2(sn, cs), FB["o"])
     target = frame_matrix({"o": FA["o"] + d * zA, "z": zt, "x": xt})
     if m["type"] in ("slider", "cylindrical", "planar", "pin_slot"):
         # keep B where it is along the free directions: only fix what the mate fixes
@@ -493,7 +506,7 @@ def mate_values(m, FA, FB):
     if not names:
         return {}
     ang = np.radians(float(m.get("angle", 0.0) or 0.0))
-    if m["type"] == "pin_slot":
+    if m["type"] in ("pin_slot", "parallel"):
         ang = 0.0                                   # the slot runs along A's X whatever `angle` says
     zA, xA = unit(FA["z"]), unit(FA["x"])
     yA = np.cross(zA, xA)

@@ -345,6 +345,41 @@ def _has_freeform(shape) -> bool:
     return False
 
 
+def _gk_shape(shape):
+    """`shape` as the adaptive volume integrator should get it: itself, or a compound of it and one free vertex.
+
+    OpenCascade sums each face's volume about one reference point, the mean of the shape's vertex positions
+    (roughBaryCenter in BRepGProp.cxx: every occurrence counts). A plane face through that point adds exactly
+    nothing; the integrator computes rounding noise for it and its stopping test, relative to that value, is
+    never met, so it refines for minutes. A bevel gear has 30 such faces (the flat strips containing the gear
+    axis). The extra vertex moves the mean off every plane face; a closed solid's volume and centre of mass do
+    not depend on the reference point. Shapes with no plane face through the point are returned as they are."""
+    pts = []
+    exp = TopExp_Explorer(shape, TopAbs_VERTEX)
+    while exp.More():
+        pts.append(_np(BRep_Tool.Pnt_s(_as_vertex(exp.Current()))))
+        exp.Next()
+    if not pts:
+        return shape
+    pts = np.array(pts)
+    ref, size = pts.mean(axis=0), float(np.linalg.norm(np.ptp(pts, axis=0)))
+    planes = [ad.Plane() for ad in map(BRepAdaptor_Surface, faces(shape)) if ad.GetType() == GeomAbs_Plane]
+
+    def degenerate(p):
+        p = gp_Pnt(*p)
+        return any(pl.Distance(p) < 1e-6 * size for pl in planes)
+
+    if size <= 0 or not degenerate(ref):
+        return shape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    for k in range(1, 9):
+        shift = k * size * np.array([0.0371, 0.0263, 0.0197])
+        if not degenerate(ref + shift):
+            far = ref + shift * (len(pts) + 1)          # one more point in the mean moves it by `shift`
+            return compound([shape, BRepBuilderAPI_MakeVertex(gp_Pnt(*far)).Vertex()])
+    return shape
+
+
 def volume(shape) -> float:
     """Exact volume. Uses the adaptive (Gauss-Kronrod) integrator, which is right on swept and ruled
     surfaces such as threads where the quick method can be badly wrong. Free-form (e.g. thread)
@@ -355,7 +390,7 @@ def volume(shape) -> float:
     if hit is not None and hit[0].IsSame(shape) and hit[0].IsEqual(shape):
         return hit[1]
     g = GProp_GProps()
-    BRepGProp.VolumePropertiesGK_s(shape, g, 1e-4 if _has_freeform(shape) else 1e-6)
+    BRepGProp.VolumePropertiesGK_s(_gk_shape(shape), g, 1e-4 if _has_freeform(shape) else 1e-6)
     v = g.Mass()
     if len(_VOLUME_CACHE) > 2000:
         _VOLUME_CACHE.clear()
@@ -373,7 +408,7 @@ def rough_volume(shape) -> float:
 def mass_props(shape):
     g = GProp_GProps()
     # CGFlag: the adaptive integrator only computes the centre of mass when asked to
-    BRepGProp.VolumePropertiesGK_s(shape, g, 1e-4 if _has_freeform(shape) else 1e-6, False, False, True)
+    BRepGProp.VolumePropertiesGK_s(_gk_shape(shape), g, 1e-4 if _has_freeform(shape) else 1e-6, False, False, True)
     sa = GProp_GProps()
     BRepGProp.SurfaceProperties_s(shape, sa)
     return {"volume": g.Mass(), "area": sa.Mass(), "centroid": _np(g.CentreOfMass())}

@@ -17,7 +17,7 @@ from .icons import CONSTRAINT_GLYPHS
 from .numparse import parse_number, fmt, has_vars
 from .. import sketch_ops as OPS
 
-DRAW_TOOLS = {"line", "rect", "center_rect", "circle", "arc3", "arc_center", "point"}
+DRAW_TOOLS = {"line", "rect", "center_rect", "circle", "polygon", "arc3", "arc_center", "point"}
 
 # constraint tool -> (description, list of acceptable selection signatures)
 CONSTRAINT_TOOLS = {
@@ -41,6 +41,7 @@ TOOL_HINTS = {
     "rect": "Click two opposite corners.",
     "center_rect": "Click the centre, then a corner.",
     "circle": "Click the centre, then click to set the radius.",
+    "polygon": "Click the centre, then a corner (hold Shift for a polygon around the circle), then type the sides.",
     "arc3": "Click the start point, the end point, then a point on the arc.",
     "arc_center": "Click the centre, the start point, then sweep to the end point.",
     "point": "Click to place a point (used by Hole).",
@@ -88,6 +89,7 @@ class Sketcher:
 
     # ================================================================== state
     def _reset_tool_state(self):
+        self.polygon_sides = 6   # last polygon side count, offered as the next default
         self.temp = []          # clicked positions / ids for the active tool
         self.chain_anchor = None
         self.arc_sweep = 0.0
@@ -565,7 +567,7 @@ class Sketcher:
             elif d.get("toggle") and not moved:
                 if d["id"] in self.selection:
                     self.selection.remove(d["id"])
-        if self.tool in DRAW_TOOLS and moved and self.temp and self.tool in ("circle", "rect", "center_rect", "line"):
+        if self.tool in DRAW_TOOLS and moved and self.temp and self.tool in ("circle", "polygon", "rect", "center_rect", "line"):
             # click-drag-release drawing
             self._draw_click(vp, x, y)
 
@@ -838,6 +840,11 @@ class Sketcher:
             menu.addAction(label, lambda cid=c["id"]: (self.toggle_radius_diameter(cid), vp.update()))
 
     # ------------------------------------------------------------------ drawing tools
+    def _polygon_mode(self):
+        from PySide6.QtGui import QGuiApplication
+        shift = bool(QGuiApplication.keyboardModifiers() & Qt.ShiftModifier)
+        return "circumscribed" if shift else "inscribed"
+
     def _draw_click(self, vp, x, y):
         t = self.tool
         anchor = None
@@ -949,6 +956,25 @@ class Sketcher:
             self.changed(True)
             ctr = sk.P(c)
             self._offer_dims(vp, [("diameter", [cid], 2 * sk.radius(cid), ctr + np.array([r, r]) * 0.9)])
+            return True
+        if t == "polygon":
+            if not self.temp:
+                self.temp = [(uv, snap)]
+                self._first_cons = icons
+                return True
+            c_uv, cs = self.temp[0]
+            if float(np.linalg.norm(uv - c_uv)) < 1e-6:
+                return True
+            self.temp = []
+            mode = self._polygon_mode()
+            first_cons = self._first_cons
+
+            def make(n, c_uv=c_uv, cs=cs, corner=uv, mode=mode, cons=cons):
+                pid = self._point_at(c_uv, cs, first_cons)
+                OPS.polygon(self.sk, c_uv, corner, n, mode, cons, centre_pid=pid)
+                self.polygon_sides = int(n)
+            label = "Polygon sides (3 to 30, " + mode + ")"
+            self._prompt(vp, uv, label, self.polygon_sides, make, integer=True, minimum=OPS.POLYGON_MIN_SIDES)
             return True
         if t == "arc3":
             self.temp.append((uv, snap))
@@ -1692,6 +1718,16 @@ class Sketcher:
             r = np.linalg.norm(cur - c)
             a = np.linspace(0, 2 * math.pi, 97)
             strip(c + r * np.c_[np.cos(a), np.sin(a)])
+        elif t == "polygon" and self.temp:
+            c = self.temp[0][0]
+            v = cur - c
+            r = float(np.linalg.norm(v))
+            n = self.polygon_sides
+            if r > 1e-9:
+                a0, step = math.atan2(v[1], v[0]), 2 * math.pi / n
+                if self._polygon_mode() == "circumscribed":
+                    a0, r = a0 - step / 2, r / math.cos(step / 2)
+                strip([c + r * np.array([math.cos(a0 + k * step), math.sin(a0 + k * step)]) for k in range(n)], True)
         elif t == "slot" and self.temp:
             a = self.temp[0][0]
             strip([a, cur])
@@ -1812,7 +1848,7 @@ class Sketcher:
             txt = None
             if self.tool == "line" and self.chain_anchor is not None:
                 txt = fmt(np.linalg.norm(self.cursor_uv - self.sk.P(self.chain_anchor)))
-            elif self.tool in ("circle",) and self.temp:
+            elif self.tool in ("circle", "polygon") and self.temp:
                 txt = "Ø" + fmt(2 * np.linalg.norm(self.cursor_uv - self.temp[0][0]))
             elif self.tool in ("rect", "center_rect") and self.temp:
                 d = np.abs(self.cursor_uv - self.temp[0][0]) * (2 if self.tool == "center_rect" else 1)

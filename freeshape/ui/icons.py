@@ -352,6 +352,12 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(INK, 2))
         p.drawEllipse(QPointF(16, 16), 10, 10)
         _dot(p, 16, 16)
+    elif name == "polygon":
+        p.setPen(_pen(INK, 2))
+        pts = [QPointF(16 + 11 * math.cos(math.pi / 6 + k * math.pi / 3),
+                       16 - 11 * math.sin(math.pi / 6 + k * math.pi / 3)) for k in range(6)]
+        p.drawPolygon(QPolygonF(pts))
+        _dot(p, 16, 16)
     elif name == "arc3":
         p.setPen(_pen(INK, 2))
         p.drawArc(QRectF(5, 8, 22, 22), 20 * 16, 140 * 16)

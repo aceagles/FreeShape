@@ -684,6 +684,7 @@ class MainWindow(QMainWindow):
         tools = [("select", "Select (S)", "point"),
                  ("line", "Line (L)", None), ("rect", "Corner rectangle (R)", None),
                  ("center_rect", "Center rectangle", None), ("circle", "Circle (C)", None),
+                 ("polygon", "Polygon — centre, corner, then sides (Shift: circumscribed)", None),
                  ("arc3", "3-point arc (A)", None), ("arc_center", "Center-point arc", None),
                  ("point", "Point (P)", None)]
         for name, tip, ic in tools:

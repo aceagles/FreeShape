@@ -276,6 +276,57 @@ def slot(sk: Sketch, a, b, width: float, construction=False, a_pid=None, b_pid=N
     return [top, bot, end_a, end_b, centre]
 
 
+# --------------------------------------------------------------------------- polygon
+
+POLYGON_MIN_SIDES, POLYGON_MAX_SIDES = 3, 30
+
+
+def polygon(sk: Sketch, centre, corner, sides: int, mode: str = "inscribed", construction=False, centre_pid=None):
+    """Regular polygon about `centre` (sketch coords). Returns (line ids, construction circle id).
+
+    mode "inscribed": `corner` is a vertex; every vertex is point_on the circle through it.
+    mode "circumscribed": `corner` is where the circle meets the first side's mid-point; the circle
+    (radius = |corner - centre|) is tangent to every side; a second construction circle through the corners
+    keeps the polygon regular.
+    One point per corner, shared by the two lines that meet there, so the region closes. Inscribed: n
+    point_on plus n-1 `equal` constraints. The circle's centre point is `centre_pid` when given."""
+    if mode not in ("inscribed", "circumscribed"):
+        raise ValueError("Polygon mode must be inscribed or circumscribed")
+    if isinstance(sides, bool) or int(sides) != sides:
+        raise ValueError("Sides must be a whole number")
+    sides = int(sides)
+    if not POLYGON_MIN_SIDES <= sides <= POLYGON_MAX_SIDES:
+        raise ValueError(f"Polygon needs {POLYGON_MIN_SIDES} to {POLYGON_MAX_SIDES} sides")
+    c = np.asarray(centre, float)
+    v = np.asarray(corner, float) - c
+    r = float(np.linalg.norm(v))
+    if r < TOL:
+        raise ValueError("Polygon corner is at the centre")
+    a0 = math.atan2(v[1], v[0])
+    step = 2 * math.pi / sides
+    if mode == "inscribed":
+        ang, R = [a0 + k * step for k in range(sides)], r
+    else:
+        ang, R = [a0 - step / 2 + k * step for k in range(sides)], r / math.cos(step / 2)
+    C = centre_pid or sk.add_point(*c)
+    circ = sk.add_circle(C, r, True)
+    pids = [sk.add_point(*(c + R * np.array([math.cos(a), math.sin(a)]))) for a in ang]
+    lines = [sk.add_line(pids[i], pids[(i + 1) % sides], construction) for i in range(sides)]
+    outer = circ
+    if mode == "circumscribed":
+        # tangent sides + equal sides leave a free shape for even n (a rhombus-like family), so the corners
+        # also sit on a second construction circle about the same centre; that fixes the polygon as regular
+        outer = sk.add_circle(C, R, True)
+    for i in range(sides):
+        if mode == "circumscribed":
+            sk.add_constraint("tangent", lines[i], circ)
+        sk.add_constraint("point_on", pids[i], outer)
+        if i and mode == "inscribed":
+            sk.add_constraint("equal", lines[i - 1], lines[i])
+    sk.solve()
+    return lines, circ
+
+
 # --------------------------------------------------------------------------- mirror & patterns
 
 def _geometry(sk: Sketch, ids):

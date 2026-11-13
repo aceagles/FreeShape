@@ -1,7 +1,9 @@
 """2.0 stage 3 in this fork: exploded views and instance patterns from upstream, on our Standard parts, groups,
 suppression and relations. Upstream's own standard parts (`std` sources) and relations were not taken: ours are
-covered by tests/test_assembly_standard*.py, tests/test_fasteners_*.py and tests/test_relations*.py. The four
-part families only upstream had wait in freeshape/addons/hardware/shapes.py; their recipes are checked here."""
+covered by tests/test_assembly_standard*.py, tests/test_fasteners_*.py and tests/test_relations*.py. The two
+part families only upstream had that are still to port (bearings, heat-set inserts) wait in
+freeshape/addons/hardware/shapes.py; their recipes are checked here. Countersunk screws and dowel pins are
+Standard parts now: tests/test_fasteners_countersunk_pins.py."""
 import os
 import sys
 
@@ -23,12 +25,8 @@ def T(x, y, z):
     return M
 
 
-# ------------------------------------------------------------------ the four families waiting for their port
-def _build(fam, size, length):
-    if fam == "iso10642":
-        return HW.build_iso10642(size, length)
-    if fam == "iso8734":
-        return HW.build_iso8734(size, length)
+# ------------------------------------------------------------------ the two families waiting for their port
+def _build(fam, size):
     return HW.build_bearing(size) if fam == "bearing" else HW.build_insert(size)
 
 
@@ -36,25 +34,17 @@ def test_every_hardware_recipe_builds_one_valid_solid():
     n = 0
     for fam, (_label, sizes, _lens, _col) in HW.FAMILIES.items():
         for size in sizes:
-            lens = HW.lengths_for(fam, size) or [None]
-            for L in {lens[0], lens[-1]}:
-                shp = _build(fam, size, L)
-                assert K.is_valid(shp) and len(K.solids(shp)) == 1, (fam, size, L)
-                n += 1
-    assert n > 45
+            shp = _build(fam, size)
+            assert K.is_valid(shp) and len(K.solids(shp)) == 1, (fam, size)
+            n += 1
+    assert n == 23
 
 
 def test_hardware_sizes_and_placement():
     d, D, B = HW.BEARINGS["608"]
     lo, hi = K.bbox(HW.build_bearing("608"))
     assert abs(hi[0] - D / 2) < 1e-5 and abs(lo[2]) < 1e-5 and abs(hi[2] - B) < 1e-5
-    lo, hi = K.bbox(HW.build_iso10642("M5", 16))
-    assert abs(hi[2]) < 1e-5 and abs(lo[2] + 16) < 1e-5 and abs(hi[0] - 11.2 / 2) < 1e-5   # head top flush on z = 0
-    lo, hi = K.bbox(HW.build_iso8734("4", 20))
-    assert abs(hi[0] - 2.0) < 1e-5 and abs(hi[2] - 20) < 1e-5
     assert HW.designation("bearing", "608") == "Bearing 608 (8×22×7)"
-    assert HW.designation("iso10642", "M5", 16) == "ISO 10642 M5 × 16"
-    assert all(1.5 * 3 <= L <= 36 for L in HW.lengths_for("iso10642", "M3"))
 
 
 # ------------------------------------------------------------------ exploded view

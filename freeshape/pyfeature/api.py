@@ -241,7 +241,7 @@ def declaration_problems(cls) -> list[str]:
     return out
 
 
-CATEGORIES = ("Screws", "Nuts", "Washers")
+CATEGORIES = ("Screws", "Nuts", "Washers", "Pins")
 
 
 class StandardPart:

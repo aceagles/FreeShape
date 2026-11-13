@@ -42,6 +42,9 @@ Classes:
 - `ScrewPart`  base of a bolt or screw with connectors `under_head` and `tip`. A subclass sets `type_key`,
                `standard` ("ISO 4017"), `id`, `label` and implements `build_solid(size, length)`. The head's
                bearing face is at z = 0 and the shank runs toward -Z, as in the workbench.
+- `PinPart`    base of a pin with connectors `top` and `tip`. A subclass sets the same attributes as a
+               `ScrewPart` and implements `build_solid(size, length)` and `nominal_diameter(size)`. The top end is at
+               z = 0 and the pin runs toward -Z.
 - `FlatPart`   base of a nut or washer with connectors `bottom` and `top`. A subclass implements
                `build_solid(size)` and `thickness(size)`; the part spans z = 0 .. thickness.
 
@@ -228,6 +231,20 @@ class ScrewPart(StandardPart):
     def match_hole(self, diameter):
         """The size whose clearance hole or tap drill is `diameter` within 0.05 mm (see hole_match), or None."""
         return hole_match.match_metric(self.sizes(), diameter)
+
+
+class PinPart(ScrewPart):
+    """A pin: `top` and `tip` connectors, parameters `size` and `length`. It inserts into a hole by its top end."""
+    category = "Pins"
+    insert_connector = "top"
+
+    def connectors(self, params):
+        """top: on the axis at the top end, Z toward the tip. tip: at the other end, Z away from the top."""
+        frames = super().connectors(params)
+        return {"top": frames["under_head"], "tip": frames["tip"]}
+
+    def nominal_diameter(self, size) -> float:
+        raise NotImplementedError
 
 
 class FlatPart(StandardPart):

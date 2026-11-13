@@ -40,7 +40,7 @@ def test_tree_groups_by_category():
     _app()
     pane = StandardPartsPane(A.AssemblyDoc())
     items = pane.type_items()
-    assert list(items) == ["Screws", "Nuts", "Washers"]
+    assert list(items) == ["Screws", "Nuts", "Washers", "Pins"]
     assert SCREW in items["Screws"] and WASHER in items["Washers"]
     assert pane.tree.objectName() == "sp_tree"
 

@@ -9,6 +9,8 @@
   "hex_nut:Iso4032",
   "washer:Iso7089",
   "socket_screw:Iso4762",
-  "tapping_screw:Iso7049"
+  "tapping_screw:Iso7049",
+  "countersunk_screw:Iso10642",
+  "dowel_pin:Iso8734"
  ]
 }

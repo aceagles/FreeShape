@@ -81,3 +81,39 @@ def run_smoke(tag, tmp, body):
         sys.exit(1)
     say(f"{tag} OK")
     shutil.rmtree(tmp, ignore_errors=True)
+
+
+# --- added for ST3 (I3.7) ---
+def run_menu_action(open_menu, name, modules=()):
+    """Open a context menu with `open_menu()`, find its action with objectName `name` and trigger it, as a click would.
+    A real QMenu.exec blocks forever offscreen, so each module in `modules` (the ones that look QMenu up by name)
+    and QtWidgets get a recording QMenu whose exec/popup return at once; they are restored afterwards."""
+    from PySide6 import QtWidgets
+    from PySide6.QtWidgets import QMenu
+    seen, keep = [], []
+
+    class RecMenu(QMenu):
+        def exec(self, *a, **k):
+            keep.append(self)
+            seen.extend(self.actions())
+
+        def exec_(self, *a, **k):
+            return self.exec(*a, **k)
+
+        def popup(self, *a, **k):
+            keep.append(self)
+            seen.extend(self.actions())
+
+    targets = [QtWidgets, *modules]
+    old = [getattr(m, "QMenu", None) for m in targets]
+    for m in targets:
+        m.QMenu = RecMenu
+    try:
+        open_menu()
+    finally:
+        for m, o in zip(targets, old):
+            m.QMenu = o
+    act = next((a for a in seen if a.objectName() == name), None)
+    check(act is not None, f"the menu has no action named {name!r}")
+    act.trigger()
+    return act

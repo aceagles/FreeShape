@@ -8,12 +8,12 @@ import math
 import os
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal, QSize
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QListWidget, QListWidgetItem, QWidget,
     QGraphicsDropShadowEffect, QTreeWidget, QTreeWidgetItem, QPushButton, QDialog, QTableWidget,
-    QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QFileDialog, QMessageBox, QCheckBox,
+    QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QFileDialog, QMessageBox, QCheckBox, QTabWidget,
 )
 
 from .. import kernel as K
@@ -22,12 +22,15 @@ from .icons import icon
 from . import preview_rows as PR
 from .numparse import parse_number, fmt
 from .panels import swatch
+from .pyfeature_ui import NOTICE_COLOR
 from .viewport import Pick
 
 ROLE_ID = Qt.UserRole + 1
 ROLE_KIND = Qt.UserRole
 SKETCH_ROLE_WORD = {"point": "point", "centre": "centre", "end1": "end 1", "end2": "end 2", "mid": "middle"}
 SKETCH_SNAP_KIND = {"end1": "vertex", "end2": "vertex", "point": "vertex", "mid": "mid", "centre": "center"}
+ROLE_NOTICE = Qt.UserRole + 2        # a Standard part instance's version notice text (marker in the list)
+NOTICE_MARK = "   ↻"
 
 
 def _floating(frame: QFrame):
@@ -433,23 +436,39 @@ class AssemblyPanel(QWidget):
         sel_i = set(self.selected_instances())
         sel_m = set(self.selected_mates())
         self.instances.clear()
+        notices = doc.standard_notices()
         for inst in doc.instances:
-            label = inst["name"] + ("   ⚓" if inst.get("fixed") else "")
+            label = inst["name"] + ("   ⚓" if inst.get("fixed") else "") + (NOTICE_MARK if inst["id"] in notices else "")
             it = QListWidgetItem(swatch(doc.instance_color(inst)), label)
             it.setData(ROLE_ID, inst["id"])
             tips = []
             if inst.get("fixed"):
                 tips.append("Fixed — it won't move (right-click → Unfix to let it move)")
             err = doc.errors.get(inst["id"])
-            if err:
+            if inst.get("suppressed"):
+                it.setForeground(QColor("#9aa3ae"))
+                f = QFont()
+                f.setStrikeOut(True)
+                it.setFont(f)
+                tips.append("Suppressed — left out of the model (right-click → Unsuppress)")
+            elif err:
                 it.setForeground(QColor("#d93025") if inst["id"] not in doc.parts else QColor("#b26a00"))
                 tips.append(err)
             elif inst.get("hidden"):
                 it.setForeground(QColor("#9aa3ae"))
                 tips.append("Hidden")
             src = inst["source"]
-            tips.append("From " + (src.get("filename") or "STEP") if src.get("kind") == "step" else
-                        "From Part Studio “%s”" % (src.get("studio_name") or "?"))
+            if src.get("kind") == "standard":
+                tips.append("Standard part " + str(src.get("type")))
+            else:
+                tips.append("From " + (src.get("filename") or "STEP") if src.get("kind") == "step" else
+                            "From Part Studio “%s”" % (src.get("studio_name") or "?"))
+            note = notices.get(inst["id"])
+            if note:
+                it.setData(ROLE_NOTICE, note["text"])
+                if not err:
+                    it.setForeground(QColor(NOTICE_COLOR))
+                tips.insert(0, note["text"] + " (right-click → Accept plugin update)")
             it.setToolTip("\n".join(tips))
             g = doc.group_of(inst["id"])
             if g is not None:
@@ -489,6 +508,12 @@ class AssemblyPanel(QWidget):
                 f.setStrikeOut(True)
                 it.setFont(f)
                 tip += "\nSuppressed"
+            elif doc.mate_inactive(m):
+                it.setForeground(QColor("#9aa3ae"))
+                f = QFont()
+                f.setStrikeOut(True)
+                it.setFont(f)
+                tip += "\nInactive: an instance it connects is suppressed"
             elif err:
                 it.setForeground(QColor("#d93025"))
                 it.setIcon(icon("error"))
@@ -590,18 +615,22 @@ class InsertPanel(QFrame):
         self.title.setReadOnly(True)
         lay.addLayout(head)
         lay.addWidget(_hline())
+        parts_page = QWidget()
+        pl = QVBoxLayout(parts_page)
+        pl.setContentsMargins(0, 6, 0, 0)
+        pl.setSpacing(6)
         hint = QLabel("Double-click a part to insert it. Pick a Part Studio to insert all its parts as they "
                       "sit there. Inserted parts stay linked: edit them in their tab and the assembly updates.")
         hint.setWordWrap(True)
         hint.setObjectName("muted")
-        lay.addWidget(hint)
+        pl.addWidget(hint)
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setIconSize(QSize(PR.INSERT_SIZE, PR.INSERT_SIZE))
         self.previews = PR.PreviewFiller(self.tree, PR.INSERT_SIZE)
         self.tree.setMinimumHeight(220)
         self.tree.itemDoubleClicked.connect(lambda it, _c: self._insert_item(it))
-        lay.addWidget(self.tree)
+        pl.addWidget(self.tree)
         row = QHBoxLayout()
         b = QPushButton("Insert")
         b.setDefault(True)
@@ -619,11 +648,22 @@ class InsertPanel(QFrame):
         od.setToolTip(self.other_doc_action.toolTip())
         od.clicked.connect(self.other_doc_action.trigger)
         row.addWidget(od)
-        lay.addLayout(row)
+        pl.addLayout(row)
         self.msg = QLabel("")
         self.msg.setWordWrap(True)
         self.msg.setObjectName("muted")
-        lay.addWidget(self.msg)
+        pl.addWidget(self.msg)
+        from .standard_parts_ui import StandardPartsPane
+        self.standard = StandardPartsPane(lambda: ctl.doc, ctl.w.viewport)
+        std_page = QWidget()
+        sl = QVBoxLayout(std_page)
+        sl.setContentsMargins(0, 6, 0, 0)
+        sl.addWidget(self.standard)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("insert_tabs")
+        self.tabs.addTab(parts_page, "Parts")
+        self.tabs.addTab(std_page, "Standard parts")
+        lay.addWidget(self.tabs)
         self.fill()
         self.setFixedWidth(300)
         self.adjustSize()
@@ -1734,20 +1774,29 @@ class BomDialog(QDialog):
         self.resize(720, 380)
         self.rows = doc.bom()
         lay = QVBoxLayout(self)
-        t = QTableWidget(len(self.rows), 6)
-        t.setHorizontalHeaderLabels(["Item", "Part", "Quantity", "From", "Volume (mm³)", "Mass PLA (g)"])
+        self.total = doc.bom_total(self.rows)
+        t = QTableWidget(len(self.rows) + 1, 7)
+        t.setHorizontalHeaderLabels(["Item", "Part", "Quantity", "From", "Material", "Volume (mm³)", "Mass (g)"])
         t.verticalHeader().setVisible(False)
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
         for r, row in enumerate(self.rows):
-            vals = [str(r + 1), row["name"], str(row["qty"]), row["source"],
+            vals = [str(r + 1), row["name"], str(row["qty"]), row["source"], row["material"] or "—",
                     fmt(row["volume"], 1) if row["volume"] is not None else "—",
-                    fmt(row["volume"] * 1.24e-3, 2) if row["volume"] is not None else "—"]
+                    fmt(row["mass"], 2) if row["mass"] is not None else "—"]
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(v)
-                if c in (0, 2, 4, 5):
+                if c in (0, 2, 5, 6):
                     it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 it.setToolTip(", ".join(row["instances"]))
                 t.setItem(r, c, it)
+        for c, v in enumerate(["", "Total", str(self.total["qty"]), "", "", "", fmt(self.total["mass"], 2)]):
+            it = QTableWidgetItem(v)
+            f = it.font()
+            f.setBold(True)
+            it.setFont(f)
+            if c in (2, 6):
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            t.setItem(len(self.rows), c, it)
         t.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         t.resizeColumnsToContents()
         t.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -1769,11 +1818,15 @@ class BomDialog(QDialog):
         lay.addLayout(row)
 
     def csv(self, sep=","):
-        out = [sep.join(["Item", "Part", "Quantity", "From", "Volume (mm3)", "Mass PLA (g)"])]
+        out = [sep.join(["Item", "Part", "Quantity", "From", "Material", "Volume (mm3)", "Mass (g)"])]
+        table = []
         for r, row in enumerate(self.rows):
             v = row["volume"]
-            cells = [str(r + 1), row["name"], str(row["qty"]), row["source"],
-                     f"{v:.1f}" if v is not None else "", f"{v * 1.24e-3:.2f}" if v is not None else ""]
+            table.append([str(r + 1), row["name"], str(row["qty"]), row["source"], row["material"] or "",
+                          f"{v:.1f}" if v is not None else "",
+                          f"{row['mass']:.2f}" if row["mass"] is not None else ""])
+        table.append(["", "Total", str(self.total["qty"]), "", "", "", f"{self.total['mass']:.2f}"])
+        for cells in table:
             if sep == ",":
                 cells = ['"%s"' % c.replace('"', '""') if ("," in c or '"' in c) else c for c in cells]
             out.append(sep.join(cells))
@@ -2454,8 +2507,11 @@ class AssemblyController:
         m = QMenu(self.w)
         m.addAction("Rename…", lambda: self.rename(iid))
         m.addAction("Unfix" if inst.get("fixed") else "Fix", lambda: doc.set_fixed(iid, not inst.get("fixed")))
-        m.addAction("Show" if inst.get("hidden") else "Hide", lambda: doc.set_hidden(iid, not inst.get("hidden")))
+        m.addAction("Show" if inst.get("hidden") else "Hide",
+                    lambda: self.hide_instances([iid], not inst.get("hidden")))
         m.addAction("Isolate", lambda: self.isolate(iid))
+        sup = bool(inst.get("suppressed"))
+        m.addAction("Unsuppress" if sup else "Suppress", lambda: self.suppress_instances([iid], not sup))
         m.addAction("Change colour…", lambda: self.recolor(iid))
         if inst.get("color"):
             m.addAction("Use the part's colour", lambda: doc.set_color(iid, None))
@@ -2471,7 +2527,9 @@ class AssemblyController:
             if ids != [iid]:
                 self.vp.set_selection([Pick("part", (iid,))])    # Edit in context acts on the selection
             m.addAction(self.act_edit_in_context)
-        a = m.addAction("Mass properties", lambda: self.w._mass_props_shape(inst["name"], doc.world_shape(iid)))
+        self.add_standard_actions(m, ids)
+        a = m.addAction("Mass properties", lambda: self.w._mass_props_shape(
+            inst["name"], doc.world_shape(iid), inst.get("material")))
         a.setObjectName("mass_properties")
         if doc.is_sketch_instance(iid):
             a.setEnabled(False)                              # a sketch has no mass
@@ -2531,6 +2589,34 @@ class AssemblyController:
         m.addAction("Rename…", lambda: self.rename_group(gid))
         m.addAction("Delete (ungroup)", lambda: self.ungroup(gid))
         m.exec(gpos)
+
+    def add_standard_actions(self, menu, ids):
+        """`Edit standard part…` and `Accept plugin update` for the Standard parts among `ids`. Returns the actions."""
+        doc = self.doc
+        std = [i for i in ids if (doc.instance(i) or {}).get("source", {}).get("kind") == "standard"]
+        out = []
+        if not std:
+            return out
+        out.append(menu.addAction("Edit standard part…", lambda: self.edit_standard_parts(std)))
+        marked = [i for i in std if i in doc.standard_notices()]
+        if marked:
+            out.append(menu.addAction("Accept plugin update", lambda: self.accept_plugin_update(marked)))
+        return out
+
+    def standard_dialog(self, ids):
+        """A StandardPartEditDialog for `ids` whose result is reported in the status bar (not shown or run)."""
+        from .standard_parts_ui import StandardPartEditDialog
+        dlg = StandardPartEditDialog(self.doc, ids, parent=self.w)
+        dlg.applied.connect(lambda res, d=dlg: self.w.status.showMessage(d.message, 8000))
+        return dlg
+
+    def edit_standard_parts(self, ids):
+        dlg = self.standard_dialog(ids)
+        dlg.exec()
+
+    def accept_plugin_update(self, ids):
+        done = self.doc.acknowledge_standard_versions(ids)
+        self.w.status.showMessage(f"Accepted the plugin update on {len(done)} standard part(s)", 5000)
 
     def mate_menu(self, mid, gpos):
         from PySide6.QtWidgets import QMenu
@@ -2629,6 +2715,7 @@ class AssemblyController:
             return
         m = QMenu(self.w)
         m.addAction("Insert parts…", self.toggle_insert)
+        m.addAction("Mass properties", lambda: self.w._mass_props_assembly(self.doc))
         m.addAction("Zoom to fit", lambda: self.vp.fit())
         vm = m.addMenu("Views")
         for name in ("Front", "Back", "Left", "Right", "Top", "Bottom", "Isometric"):
@@ -2652,14 +2739,114 @@ class AssemblyController:
             self.doc.set_color(iid, [c.redF(), c.greenF(), c.blueF()])
 
     def isolate(self, iid):
-        for i in self.doc.instances:
-            i["hidden"] = i["id"] != iid
+        self.doc.isolate(iid)
+
+    def _need_selection(self):
+        """The selected instance ids, or [] with the usual status message when nothing is selected."""
+        ids = self.selected_instance_ids()
+        if not ids:
+            self.w.status.showMessage("Select a part first (in the list or the graphics area)", 4000)
+        return ids
+
+    def suppress_instances(self, ids, flag):
+        """Suppress (flag True) or unsuppress instances; the menu and Search tools both call this."""
+        for iid in ids:
+            if self.doc.instance(iid) is not None:
+                self.doc.set_instance_suppressed(iid, flag)
+
+    def suppress_selected(self, flag=True):
+        ids = [i for i in self._need_selection() if bool(self.doc.instance(i).get("suppressed")) != flag]
+        if ids:
+            self.suppress_instances(ids, flag)
+
+    def hide_instances(self, ids, flag=True):
+        """Hide (or show) instances as one undo step; the menu and Search tools both call this."""
+        ids = [i for i in ids if self.doc.instance(i) is not None]
+        if not ids:
+            return
+        self.doc.checkpoint()
+        for iid in ids:
+            self.doc.instance(iid)["hidden"] = bool(flag)
         self.doc.notify()
 
+    def hide_selected(self):
+        ids = self._need_selection()
+        if ids:
+            self.hide_instances(ids, True)
+
+    def isolate_selected(self):
+        ids = self._need_selection()
+        if len(ids) == 1:
+            self.isolate(ids[0])
+        elif ids:
+            self.doc.checkpoint()
+            for i in self.doc.instances:
+                i["hidden"] = i["id"] not in ids
+            self.doc.notify()
+
+    def animate_selected(self):
+        """Animate the selected mate; with none selected, the only mate that has a value to drive."""
+        doc = self.doc
+        ok = [m["id"] for m in doc.mates if A.MATE_VALUE_DOFS.get(m["type"])]
+        pick = [i for i in self.panel.selected_mates() if i in ok] or (ok if len(ok) == 1 else [])
+        if not pick:
+            self.w.status.showMessage("Select a mate that has a value to animate (in the Mates list)", 4000)
+            return
+        self.start_animate(pick[0])
+
+    def palette_commands(self, C):
+        """Search tools entries for an Assembly tab; each calls what its toolbar button or menu item calls."""
+        w = self.w
+        cmds = [C("insert", "Insert", "Add parts from your Part Studios or a file (I).", self.toggle_insert,
+                  "add part import component")]
+        kw = {"fastened": "joint rigid weld lock", "revolute": "joint hinge axle pin", "slider": "joint prismatic",
+              "cylindrical": "joint shaft bearing", "planar": "joint plane", "pin_slot": "joint pinslot pin slot",
+              "parallel": "joint axis", "ball": "joint spherical"}
+        for t, (label, tip) in A.MATE_TYPES.items():
+            cmds.append(C("m_" + t, label, f"Add a {label} mate — {tip}.", lambda tt=t: self.start_mate(tt),
+                          "mate " + kw.get(t, "joint"), "Mate"))
+        for t, spec in A.RELATION_TYPES.items():
+            cmds.append(C("r_" + t, f"{spec['label']} relation", f"{spec['help']}.",
+                          lambda tt=t: self.start_relation(tt), "relation mate connector link", "Relation"))
+        cmds += [
+            C("move", "Move", "Move or rotate the selected parts by exact amounts.", lambda: self.start_move(),
+              "translate rotate transform triad"),
+            C("fix", "Fix", "Fix or unfix the selected parts so they do not move.", w._asm_toggle_fix,
+              "unfix ground lock anchor"),
+            C("group", "Group", "Group the selected parts so they move as one body.", w._asm_group,
+              "subassembly rigid"),
+            C("animate", "Animate", "Drive the selected mate through a range and play it back.",
+              self.animate_selected, "motion drive play simulate"),
+            C("suppress", "Suppress", "Leave the selected parts out of the model without deleting them.",
+              lambda: self.suppress_selected(True), "disable deactivate exclude"),
+            C("suppress", "Unsuppress", "Put the selected suppressed parts back.",
+              lambda: self.suppress_selected(False), "enable activate include restore"),
+            C("hide", "Hide", "Hide the selected parts.", self.hide_selected, "visibility"),
+            C("hide", "Isolate", "Hide every part but the selected ones.", self.isolate_selected, "only visibility"),
+            C("hide", "Show all", "Show every hidden part.", self.show_all, "unhide visibility"),
+            C("interference", "Interference", "Show where parts overlap.", w.btn_interf.click,
+              "clash collision overlap check"),
+            C("bom", "Bill of materials", "List the parts with quantities and mass.", self.show_bom,
+              "bom parts list table"),
+            C("bom", "Mass properties", "Mass by material, total mass and centre of mass of the whole assembly.",
+              lambda: w._mass_props_assembly(self.doc), "weight centre of mass volume density"),
+            C("section", "Section view", "Cut the assembly open with a plane to see inside (Ctrl+Shift+X).",
+              w.toggle_section, "cross cut", "View"),
+            C("fit", "Zoom to fit", "Fit the whole assembly in the view (F).", lambda: self.vp.fit(), "", "View"),
+            C("iso", "Isometric view", "Look from the isometric corner (Shift+7).",
+              lambda: self.vp.set_standard_view("Isometric"), "", "View"),
+        ]
+        for i, name in enumerate(("Front", "Back", "Left", "Right", "Top", "Bottom"), 1):
+            cmds.append(C("iso", f"{name} view", f"Look at the assembly from the {name.lower()} (Shift+{i}).",
+                          lambda n=name: self.vp.set_standard_view(n), "", "View"))
+        cmds += [C("export", "Export", "Export the assembly (STEP keeps the parts, names and colours).",
+                   lambda: w.export(None, None), "save step stl", "File"),
+                 C("undo", "Undo", "Undo the last change (Ctrl+Z).", w.undo, "", "Edit"),
+                 C("redo", "Redo", "Redo what was undone (Ctrl+Y).", w.redo, "", "Edit")]
+        return cmds
+
     def show_all(self):
-        for i in self.doc.instances:
-            i["hidden"] = False
-        self.doc.notify()
+        self.doc.show_all()
 
     def duplicate(self, ids):
         doc = self.doc

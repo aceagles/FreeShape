@@ -1,4 +1,4 @@
-"""File-version migration chains for the .fshape / .fasm / .fdwg formats.
+"""File-version migration chains for the .fshape / .fasm / .fdwg / Variable Studio formats.
 
 Each format owns an ordered list of migration steps; step i (0-based) upgrades a loaded file dict from
 version i + 1 to version i + 2. `latest_version` is simply "1 + however many steps exist", so it's always
@@ -7,8 +7,10 @@ from the file's own version up to that latest version and stamps the result with
 is already past the latest fails outright, before anything else is read from it, instead of loading some
 of it and silently dropping the rest.
 
-Version 1 is today's identity step for every format -- nothing has needed a migration yet. I1.4 (part ids)
-and I2.2 (tab-id links) append their steps here, in order, once they need one.
+Version 1 is the identity baseline of every chain. A format that changes shape appends a step here (through
+`register`, from the module that owns the format), and `latest_version` moves up with it: the document,
+assembly and drawing chains already carry such steps. The "variables" chain (Variable Studio, .fvars) has none
+yet, so its files stay at version 1. Tab-id links are converted on Document open (see links.py), not here.
 
 (FreeCAD gates old data inline at each read site with `if reader.FileVersion > N: ...`, rather than through
 a shared chain of named steps -- there's no equivalent ordered-migration-list module in its sources to port;
@@ -22,6 +24,7 @@ _CHAINS: dict[str, list] = {
     "document": [],
     "assembly": [],
     "drawing": [],
+    "variables": [],
 }
 
 

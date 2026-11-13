@@ -435,6 +435,21 @@ def face_info(face) -> dict:
     return info
 
 
+def face_outward_normal(face):
+    """The unit normal of a face at its middle, pointing out of the material.
+
+    `face_info(face)["n"]` is the plane axis flipped for a reversed face. That is the outward normal only when
+    the plane's coordinate system is right-handed; on a left-handed plane (some STEP-imported and revolved
+    faces) it points into the part. This takes the surface's own normal and flips it for a reversed face."""
+    from OCP.BRepLProp import BRepLProp_SLProps
+    ad = BRepAdaptor_Surface(face)
+    u = (ad.FirstUParameter() + ad.LastUParameter()) / 2
+    v = (ad.FirstVParameter() + ad.LastVParameter()) / 2
+    n = _np(BRepLProp_SLProps(ad, u, v, 1, 1e-7).Normal())
+    n = n / np.linalg.norm(n)
+    return -n if face.Orientation() == TopAbs_REVERSED else n
+
+
 def face_loops(face) -> int:
     from OCP.TopAbs import TopAbs_WIRE
     n = 0
@@ -937,11 +952,39 @@ def _blend_ok(before, after):
         return False
 
 
-def _try_blend(make, shape, edge_list, size, with_history=False):
-    """The blended shape, or None. with_history=True returns (shape, history of this maker) or None."""
+try:
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+except ImportError:  # OCP >= 8
+    from OCP.OCP.collections import (IndexedDataMap_TopoDS_Shape_List_TopoDS_Shape_TopTools_ShapeMapHasher
+                                     as TopTools_IndexedDataMapOfShapeListOfShape)
+
+
+def edge_faces(shape, edge):
+    """The distinct faces of `shape` that share `edge` (a seam shows one face twice and counts once)."""
+    m = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, m)
+    if not m.Contains(edge):
+        return []
+    out = []
+    for f in m.FindFromKey(edge):
+        if not any(f.IsSame(o) for o in out):
+            out.append(f)
+    return out
+
+
+def _try_blend(make, shape, edge_list, size, with_history=False, two=None):
+    """The blended shape, or None. with_history=True returns (shape, history of this maker) or None.
+    `two` is (kind, second, faces) for a chamfer with two distances ("two": second is the other
+    distance) or a distance and an angle ("angle": second is the angle in radians); faces[i] is the
+    face of edge_list[i] on which `size` is measured."""
     mk = make(shape)
-    for e in edge_list:
-        mk.Add(float(size), e)
+    for i, e in enumerate(edge_list):
+        if two is None:
+            mk.Add(float(size), e)
+        elif two[0] == "two":
+            mk.Add(float(size), float(two[1]), e, _as_face(two[2][i]))
+        else:
+            mk.AddDA(float(size), float(two[1]), e, _as_face(two[2][i]))
     try:
         mk.Build()
     except Exception:
@@ -954,14 +997,17 @@ def _try_blend(make, shape, edge_list, size, with_history=False):
     return (out, _maker_history(mk, [shape])) if with_history else out
 
 
-def _largest_blend(make, shape, edge_list, size):
+def _largest_blend(make, shape, edge_list, size, two=None):
     """The largest size below `size` that works (binary search), or None — for a helpful error message."""
     if len(edge_list) > 24:
         return None
     lo, hi = 0.0, float(size)
     for _ in range(9):
         mid = (lo + hi) / 2
-        if _try_blend(make, shape, edge_list, mid) is not None:
+        t = two
+        if two is not None and two[0] == "two":     # keep the ratio of the two distances while searching
+            t = ("two", two[1] * mid / float(size), two[2])
+        if _try_blend(make, shape, edge_list, mid, two=t) is not None:
             lo = mid
         else:
             hi = mid
@@ -988,15 +1034,28 @@ def fillet(shape, edge_list, radius: float, with_history=False):
     return out
 
 
-def chamfer(shape, edge_list, dist: float, with_history=False):
-    """with_history=True returns (shape, history of the maker whose result is used)."""
+def chamfer(shape, edge_list, dist: float, with_history=False, kind="equal", second=None, faces=None):
+    """with_history=True returns (shape, history of the maker whose result is used).
+    kind "two": `second` is the other distance; "angle": `second` is the angle in degrees. Both measure
+    `dist` on faces[i], the face chosen for edge_list[i]. "equal" is the plain one-distance chamfer."""
     if not edge_list:
         raise KernelError("Select edges to chamfer")
     if dist <= 0:
         raise KernelError("Distance must be positive")
-    out = _try_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist, with_history)
+    two = None
+    if kind == "two":
+        if second is None or second <= 0:
+            raise KernelError("Distance 2 must be positive")
+        two = ("two", float(second), faces)
+    elif kind == "angle":
+        if second is None or not 0 < second < 90:
+            raise KernelError("Angle must be between 0 and 90 degrees")
+        two = ("angle", math.radians(second), faces)
+    elif kind != "equal":
+        raise KernelError(f"Unknown chamfer type '{kind}'")
+    out = _try_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist, with_history, two)
     if out is None:
-        best = _largest_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist)
+        best = _largest_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist, two)
         hint = f" — the largest that works here is about {_nice_down(best):g} mm" if best else ""
         raise KernelError(f"Chamfer too large for these edges (the cuts would overlap or not fit){hint}")
     return out
@@ -1166,7 +1225,8 @@ class Mesh:
     vertices: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))   # shape vertices, in order
 
 
-def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.3) -> Mesh:
+def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.3, edges_too: bool = True) -> Mesh:
+    """Triangulate every face. edges_too=False skips the edge polylines (mesh export does not need them)."""
     if lin_defl is None:
         lo, hi = bbox(shape)
         lin_defl = max(np.linalg.norm(hi - lo) * 0.001, 1e-3)
@@ -1216,9 +1276,9 @@ def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.3) -> M
         TF.append(np.full(nt, fi, dtype=np.int32))
         ranges.append((start, start + nt))
         base += nb
-    seams = seam_edge_indices(shape)
+    seams = seam_edge_indices(shape) if edges_too else set()
     polys = []
-    for i, e in enumerate(edges(shape)):
+    for i, e in enumerate(edges(shape) if edges_too else []):
         # seam edges (where a cylinder closes on itself) aren't shown or pickable, as in Onshape
         polys.append(np.zeros((0, 3), np.float32) if i in seams else discretize_edge(e, lin_defl))
     vpts = np.array(_vertices_np(shape), np.float32).reshape(-1, 3)
@@ -1272,11 +1332,11 @@ def export_step(shapes, path):
         raise KernelError("STEP export failed")
 
 
-def export_stl(shapes, path, defl=0.05):
+def export_stl(shapes, path, defl=0.05, angle=0.3, ascii=False):
     shp = compound(shapes) if len(shapes) != 1 else shapes[0]
-    BRepMesh_IncrementalMesh(shp, defl, False, 0.3, True)
+    BRepMesh_IncrementalMesh(shp, defl, False, angle, True)
     w = StlAPI_Writer()
-    w.ASCIIMode = False         # binary STL: ~6x smaller than ASCII
+    w.ASCIIMode = bool(ascii)   # binary by default: ~6x smaller than ASCII
     if not w.Write(shp, str(path)):
         raise KernelError("STL export failed")
 
@@ -1597,41 +1657,111 @@ def sweep(profile_faces, path_wire, with_history=False):
     return (res, _chain(_chain(*steps), fused)) if with_history else res
 
 
-def loft(profile_faces, ruled=False, with_history=False):
-    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+def _wire_centre(w) -> np.ndarray:
+    g = GProp_GProps()
+    BRepGProp.LinearProperties_s(w, g)
+    return _np(g.CentreOfMass())
+
+
+def _loft_hole_sets(profile_faces):
+    """The inner wires of the profiles grouped into one list per hole, each list in profile order;
+    [] when a profile has no hole or the profiles differ in hole count (then a loft is outer only).
+
+    A hole is matched to the hole of the next profile whose centre is nearest once both are projected
+    onto the plane normal to the line between the two profiles' centres, so the sketch order of the
+    circles does not matter and an offset between the profiles does not either."""
     from OCP.BRepTools import BRepTools
-    if len(profile_faces) < 2:
-        raise KernelError("Select at least two profiles, in order")
-    mk = BRepOffsetAPI_ThruSections(True, bool(ruled), 1e-6)
+    from OCP.TopAbs import TopAbs_WIRE
+    holes = []
     for f in profile_faces:
-        mk.AddWire(BRepTools.OuterWire_s(f))
+        outer = BRepTools.OuterWire_s(f)
+        holes.append([_as_wire(w) for w in _sub_shapes(f, TopAbs_WIRE) if not w.IsSame(outer)])
+    n = len(holes[0])
+    if n == 0 or any(len(h) != n for h in holes):
+        return []
+    sets = [[w] for w in holes[0]]
+    for i in range(1, len(profile_faces)):
+        c0, c1 = face_info(profile_faces[i - 1])["c"], face_info(profile_faces[i])["c"]
+        d = np.asarray(c1, float) - np.asarray(c0, float)
+        if np.linalg.norm(d) < 1e-9:
+            d = np.asarray(face_info(profile_faces[i])["n"], float)
+        d = d / np.linalg.norm(d)
+
+        def flat(w):
+            p = _wire_centre(w)
+            return p - np.dot(p, d) * d
+        prev = [flat(s[-1]) for s in sets]
+        nxt = [flat(w) for w in holes[i]]
+        pairs = sorted((float(np.linalg.norm(a - b)), j, k) for j, a in enumerate(prev) for k, b in enumerate(nxt))
+        used_j, used_k = set(), set()
+        for _dist, j, k in pairs:          # nearest pairs first; each hole is taken once
+            if j not in used_j and k not in used_k:
+                sets[j].append(holes[i][k])
+                used_j.add(j)
+                used_k.add(k)
+    return sets
+
+
+def _thru_sections(wires, ruled):
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    mk = BRepOffsetAPI_ThruSections(True, bool(ruled), 1e-6)
+    for w in wires:
+        mk.AddWire(w)
     try:
         mk.Build()
     except Exception as exc:
         raise KernelError("Loft failed — try profiles with similar shapes") from exc
     if not mk.IsDone():
         raise KernelError("Loft failed — try profiles with similar shapes")
-    if not with_history:
-        return mk.Shape()
-    # Each profile edge generated the loft face that runs from it; the first and last profile faces
-    # generated the two end caps (spec I1.7: FreeCAD's MapperThruSections).
+    return mk
+
+
+def _thru_sections_history(mk, wires, faces=None) -> BRepTools_History:
+    """Each profile edge generated the loft face that runs from it; with `faces`, the first and last
+    profile faces generated the two end caps (spec I1.7: FreeCAD's MapperThruSections)."""
     hist = BRepTools_History()
-    for f in profile_faces:
-        for e in _sub_shapes(BRepTools.OuterWire_s(f), TopAbs_EDGE):
+    for w in wires:
+        for e in _sub_shapes(w, TopAbs_EDGE):
             try:
                 g = mk.GeneratedFace(e)
                 if not g.IsNull():
                     hist.AddGenerated(e, g)
             except Exception:
                 pass            # an OCCT history failure degrades the names; it never fails the operation
-    for f, cap in ((profile_faces[0], mk.FirstShape), (profile_faces[-1], mk.LastShape)):
-        try:
-            c = cap()
-            if not c.IsNull() and not c.IsSame(f):
-                hist.AddGenerated(f, c)
-        except Exception:
-            pass
-    return mk.Shape(), hist
+    if faces:
+        for f, cap in ((faces[0], mk.FirstShape), (faces[-1], mk.LastShape)):
+            try:
+                c = cap()
+                if not c.IsNull() and not c.IsSame(f):
+                    hist.AddGenerated(f, c)
+            except Exception:
+                pass
+    return hist
+
+
+def loft(profile_faces, ruled=False, with_history=False):
+    """A loft through the profiles' outer wires. When every profile has the same number of holes,
+    each matched set of hole wires is lofted the same way and cut out, as sweep cuts its tunnels."""
+    from OCP.BRepTools import BRepTools
+    if len(profile_faces) < 2:
+        raise KernelError("Select at least two profiles, in order")
+    outers = [BRepTools.OuterWire_s(f) for f in profile_faces]
+    mk = _thru_sections(outers, ruled)
+    body = mk.Shape()
+    hist = _thru_sections_history(mk, outers, profile_faces) if with_history else None
+    for wires in _loft_hole_sets(profile_faces):
+        tool = _thru_sections(wires, ruled)
+        core = tool.Shape()
+        if volume(core) < 0:
+            core = core.Reversed()
+        if with_history:
+            body, cut_hist = cut(body, core, with_history=True)
+            hist = _chain(hist, _thru_sections_history(tool, wires), cut_hist)
+        else:
+            body = cut(body, core)
+        if len(solids(body)) != 1 or not is_valid(body):
+            raise KernelError("Loft failed — a hole runs out through the side of the loft")
+    return (body, hist) if with_history else body
 
 
 def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=False):
@@ -1676,10 +1806,19 @@ def split_by_plane(shape, plane: Plane, with_history=False):
     return (pieces, _maker_history(sp, [shape, tool]), tool) if with_history else pieces
 
 
-def transform(shape, translate_v=(0, 0, 0), axis_p=(0, 0, 0), axis_d=(0, 0, 1), angle_deg=0.0, with_history=False):
+def transform(shape, translate_v=(0, 0, 0), axis_p=(0, 0, 0), axis_d=(0, 0, 1), angle_deg=0.0, with_history=False,
+              scale=1.0, scale_center=(0, 0, 0)):
+    """Scale about `scale_center` first, then rotate, then translate. A scale of 1 is the plain move."""
+    scale = float(scale)
+    if not scale > 0:
+        raise KernelError("The scale must be more than 0")
     t = gp_Trsf()
     if abs(angle_deg) > 1e-12:
         t.SetRotation(gp_Ax1(_pnt(axis_p), _dir(axis_d)), math.radians(angle_deg))
+    if scale != 1.0:
+        sc = gp_Trsf()
+        sc.SetScale(_pnt(scale_center), scale)
+        t = t.Multiplied(sc)
     m = gp_Trsf()
     m.SetTranslation(_vec(translate_v))
     t = m.Multiplied(t)
@@ -1703,7 +1842,8 @@ def cone(base, direction, r1, r2, height):
 
 # ISO 261 coarse pitches
 ISO_PITCH = {"M1.6": 0.35, "M2": 0.4, "M2.5": 0.45, "M3": 0.5, "M4": 0.7, "M5": 0.8, "M6": 1.0, "M8": 1.25,
-             "M10": 1.5, "M12": 1.75, "M14": 2.0, "M16": 2.0, "M20": 2.5, "M24": 3.0}
+             "M10": 1.5, "M12": 1.75, "M14": 2.0, "M16": 2.0, "M18": 2.5, "M20": 2.5, "M22": 2.5,
+             "M24": 3.0}
 THREAD_H = 0.5413   # thread depth (5H/8) as a fraction of the pitch, ISO 68-1
 
 
@@ -1970,7 +2110,8 @@ def shape_from_brep(data: bytes):
 
 def export_step_named(items, path, assembly_name="Assembly"):
     """STEP export as a real assembly: one product per distinct part, placed once per instance, keeping
-    names and colours. items: [(local shape, 4x4 transform, instance name, (r, g, b) or None)]."""
+    names and colours. items: [(local shape, 4x4 transform, instance name, (r, g, b) or None)].
+    Returns "named", or "flat" when the named writer failed and a plain file was written instead."""
     try:
         from OCP.STEPCAFControl import STEPCAFControl_Writer
         from OCP.TDocStd import TDocStd_Document
@@ -2005,8 +2146,12 @@ def export_step_named(items, path, assembly_name="Assembly"):
             raise KernelError("transfer failed")
         if w.Write(str(path)) != IFSelect_RetDone:
             raise KernelError("write failed")
-    except Exception:
+        return "named"
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("named STEP export failed (%s); wrote a flat file", e)
         export_step([located(s, M) for s, M, _n, _c in items], path)
+        return "flat"
 
 
 def save_step_result(result, prefix):

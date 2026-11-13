@@ -11,7 +11,7 @@ from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QImage, QPageLa
                            QPainterPath, QPdfWriter, QPen, QPolygonF, QTransform)
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTreeWidget,
+                               QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTreeWidget, QDoubleSpinBox,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import drawing as DW
@@ -190,6 +190,63 @@ def export_pdf(doc, path, groups=None):
     p.setTransform(QTransform(dpmm, 0, 0, -dpmm, 0, H * dpmm))
     paint_groups(p, groups, dpmm, print_mode=True)
     p.end()
+
+def export_svg(doc, path, groups=None):
+    """SVG at true size: width/height in mm and a viewBox in the same units (1 user unit = 1 mm)."""
+    from PySide6.QtSvg import QSvgGenerator
+    groups = groups or build_groups(doc.items())
+    W, H = doc.sheet_size()
+    dpi = 960  # internal resolution; the mm width/height below make it independent of this
+    wpx, hpx = round(W / 25.4 * dpi), round(H / 25.4 * dpi)
+    gen = QSvgGenerator()
+    gen.setFileName(path)
+    gen.setSize(QSize(wpx, hpx))
+    gen.setViewBox(QRectF(0, 0, wpx, hpx))
+    gen.setResolution(dpi)
+    gen.setTitle(doc.title_value("title"))
+    gen.setDescription("FreeShape drawing")
+    p = QPainter(gen)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    k = wpx / W
+    p.setTransform(QTransform(k, 0, 0, -k, 0, H * k))
+    p.fillRect(QRectF(0, 0, W, H), QColor("white"))
+    paint_groups(p, groups, k, print_mode=True)
+    p.end()
+    _svg_set_mm_size(path, W, H)
+
+
+def _svg_set_mm_size(path, W, H):
+    """Rewrite the root element's size to millimetres and the viewBox to the sheet in mm."""
+    import re
+    with open(path, encoding="utf-8") as f:
+        txt = f.read()
+    m = re.search(r"<svg\b[^>]*>", txt)
+    head = m.group(0)
+    vb = re.search(r'viewBox="([^"]*)"', head)
+    new = re.sub(r'\s(width|height)="[^"]*"', "", head)
+    new = re.sub(r'\sviewBox="[^"]*"', "", new)
+    new = new[:-1] + f' width="{W:g}mm" height="{H:g}mm" viewBox="{vb.group(1) if vb else "0 0 %g %g" % (W, H)}">'
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(txt.replace(head, new, 1))
+
+
+def export_png(doc, path, dpi=200, groups=None):
+    """The sheet only (no margin), white, at `dpi`; the pixel size is the sheet size at that resolution."""
+    groups = groups or build_groups(doc.items())
+    W, H = doc.sheet_size()
+    k = dpi / 25.4
+    img = QImage(max(1, round(W * k)), max(1, round(H * k)), QImage.Format_ARGB32)
+    img.fill(QColor("white"))
+    dpm = round(dpi / 25.4 * 1000)
+    img.setDotsPerMeterX(dpm)
+    img.setDotsPerMeterY(dpm)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setTransform(QTransform(img.width() / W, 0, 0, -img.height() / H, 0, img.height()))
+    paint_groups(p, groups, img.width() / W, print_mode=True)
+    p.end()
+    if not img.save(path, "PNG"):
+        raise OSError(f"could not write {path}")
 
 
 # =========================================================================== the canvas
@@ -507,7 +564,7 @@ class DrawingPanel(QWidget):
             else:
                 g = doc.dim_geometry(a)
                 label = doc.dim_text(a, g[2]) if g else "?"
-                if any(isinstance(a.get(k), dict) and a[k].get("lost") for k in ("a", "b", "b2")):
+                if any(isinstance(a.get(k), dict) and a[k].get("lost") for k in DW.DIM_END_KEYS):
                     label += "  (lost its edge)"
                 ic = "dim"
             it = QTreeWidgetItem([label])
@@ -700,7 +757,7 @@ class DimDialog(QDialog):
         self.setWindowTitle("Dimension")
         g = doc.dim_geometry(a)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel(f"Measured: <b>{DW.fmt_value(g[2], 4) if g else '?'}</b> mm"))
+        lay.addWidget(QLabel(f"Measured: <b>{DW.fmt_value(g[2], 4) if g else '?'}</b> {'°' if a['type'] == 'ang' else 'mm'}"))
         f = QFormLayout()
         self.dp = _combo([("Automatic", None)] + [(str(i), i) for i in range(0, 5)], a.get("dp"))
         self.prefix = QLineEdit(a.get("prefix", ""))
@@ -717,11 +774,48 @@ class DimDialog(QDialog):
             self.orient = _combo([("Aligned with the points", "a"), ("Horizontal", "h"), ("Vertical", "v")],
                                  a.get("orient", "a"))
             f.addRow("Direction", self.orient)
+        tol = a.get("tol") or {}
+        unit = "°" if a["type"] == "ang" else "mm"
+        self.tol_type = _combo([("None", "none"), ("Symmetric  ±", "sym"), ("Deviations  + / −", "dev"),
+                                ("Limits", "lim")], tol.get("type", "none"))
+        self.tol_up = QDoubleSpinBox()
+        self.tol_lo = QDoubleSpinBox()
+        for sp in (self.tol_up, self.tol_lo):
+            sp.setRange(-1000.0, 1000.0)
+            sp.setDecimals(4)
+            sp.setSuffix(f" {unit}")
+        self.tol_up.setValue(float(tol.get("up") or 0.0))
+        self.tol_lo.setValue(float(tol.get("lo") or 0.0))
+        self.tol_dp = _combo([("Automatic", None)] + [(str(i), i) for i in range(0, 5)], tol.get("dp"))
+        f.addRow("Tolerance", self.tol_type)
+        f.addRow("Upper / ±", self.tol_up)
+        f.addRow("Lower", self.tol_lo)
+        f.addRow("Tolerance decimals", self.tol_dp)
+        self.tol_type.currentIndexChanged.connect(self._tol_enable)
+        self._tol_enable()
         lay.addLayout(f)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+    def _tol_enable(self):
+        t = self.tol_type.currentData()
+        self.tol_up.setEnabled(t != "none")
+        self.tol_lo.setEnabled(t in ("dev", "lim"))
+        self.tol_dp.setEnabled(t != "none")
+
+    def tol_value(self):
+        """The tolerance entry for the annotation, or None for none."""
+        t = self.tol_type.currentData()
+        if t == "none":
+            return None
+        tol = {"type": t, "up": self.tol_up.value()}
+        if t in ("dev", "lim"):
+            tol["lo"] = self.tol_lo.value()
+        if self.tol_dp.currentData() is not None:
+            tol["dp"] = self.tol_dp.currentData()
+        return tol
 
 
 # =========================================================================== controller
@@ -918,11 +1012,13 @@ class DrawingController:
         self.hint = "⚠ " + msg
         self.canvas.update()
 
-    def insert_view(self):
+    def insert_view(self, direction=None):
         doc = self.doc
         if doc is None:
             return
         dlg = ViewDialog(self.w, doc, None, new=True)
+        if direction is not None and dlg.dir.findData(direction) >= 0:
+            dlg.dir.setCurrentIndex(dlg.dir.findData(direction))
         if dlg.exec() != QDialog.Accepted:
             return
         name = dlg.dir.currentData() or "Front"
@@ -931,6 +1027,31 @@ class DrawingController:
                                       "scale": dlg.scale.currentData(), "hidden": dlg.hidden.isChecked(),
                                       "tangent": dlg.tangent.isChecked(), "marks": dlg.marks.isChecked(),
                                       "label": dlg.label.text().strip()})
+
+    def palette_commands(self, C):
+        """Search tools entries for a Drawing tab; each calls what its toolbar button calls."""
+        cmds = [
+            C("base_view", "Add view", "Insert a view of a Part Studio or Assembly: front, top, side, isometric.",
+              lambda: self.insert_view(), "insert base view model"),
+            C("proj_view", "Projected view", "Pick a view, then click beside it to project a new view from it.",
+              lambda: self.set_tool("projected"), "view auxiliary"),
+            C("base_view", "Isometric view", "Insert an isometric view.", lambda: self.insert_view("Isometric"),
+              "add view 3d"),
+            C("dim", "Dimension", "Click an edge, a circle, or two points, then where the dimension goes (D).",
+              lambda: self.set_tool("dim"), "measure smart dimension size"),
+            C("note", "Note", "Click where a text note should go (N).", lambda: self.set_tool("note"),
+              "text annotation label"),
+            C("sheet", "Sheet settings", "Sheet size, scale, projection and title block.", self.sheet_setup,
+              "sheet size scale title block paper format"),
+        ]
+        for fmt_, label in (("dxf", "DXF (opens in AutoCAD)"), ("pdf", "PDF"), ("svg", "SVG"), ("png", "PNG")):
+            cmds.append(C("dxf" if fmt_ == "dxf" else "pdf", f"Export {fmt_.upper()}", f"Export the sheet as {label}.",
+                          lambda f=fmt_: self.export(f), "save drawing " + fmt_, "File"))
+        cmds += [C("fit", "Zoom to fit", "Fit the whole sheet in the view (F).", lambda: self.canvas.fit(), "",
+                   "View"),
+                 C("undo", "Undo", "Undo the last change (Ctrl+Z).", self.w.undo, "", "Edit"),
+                 C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.w.redo, "", "Edit")]
+        return cmds
 
     def sheet_setup(self):
         doc = self.doc
@@ -1382,6 +1503,11 @@ class DrawingController:
                 a.pop(k, None)
         if a["type"] == "lin":
             a["orient"] = dlg.orient.currentData()
+        tol = dlg.tol_value()
+        if tol:
+            a["tol"] = tol
+        else:
+            a.pop("tol", None)
         doc.changed()
 
     def _panel_clicked(self, oid):
@@ -1490,14 +1616,8 @@ class DrawingController:
                 self.hint = "Click where the length should go — or click another edge (distance between them) " \
                             "or a point."
             else:
-                if picks[0]["type"] == "line":
-                    d1 = DW._unit(np.asarray(picks[0]["b"]) - picks[0]["a"])
-                    d2 = DW._unit(np.asarray(s["b"]) - s["a"])
-                    if abs(d1[0] * d2[1] - d1[1] * d2[0]) > 1e-3:
-                        self.flash("Those edges aren't parallel — pick parallel edges (angles aren't supported yet)")
-                        return
                 picks.append({**s, "ready": True})
-                self.hint = place
+                self.hint = "Click where the angle should go." if self._is_angle(picks[0], s) else place
         else:   # a point
             if not picks:
                 picks.append(s)
@@ -1532,6 +1652,11 @@ class DrawingController:
             a.update(type="lin", a=A, b=B, orient=self._orient(xa, xb, P))
             return a
         second = picks[1]
+        if self._is_angle(first, second):
+            # two edges that cross: the angle between them, in the quadrant the position lies in
+            a.update(type="ang", a=dict(first["p3"][0]), b=dict(first["p3"][1]),
+                     c=dict(second["p3"][0]), d=dict(second["p3"][1]))
+            return a
         if "line" in (first["type"], second["type"]):
             # a point (or the end of the other edge) and an edge: the square distance to that edge
             line, other = (second, first) if second["type"] == "line" else (first, second)
@@ -1543,6 +1668,15 @@ class DrawingController:
         a.update(type="lin", a=end(first), b=end(second),
                  orient=self._orient(np.asarray(first["xy"]), np.asarray(second["xy"]), P))
         return a
+
+    @staticmethod
+    def _is_angle(p, q):
+        """Are two picks edges that are not parallel (so they get an angular dimension)?"""
+        if p["type"] != "line" or q["type"] != "line":
+            return False
+        d1 = DW._unit(np.asarray(p["b"]) - p["a"])
+        d2 = DW._unit(np.asarray(q["b"]) - q["a"])
+        return abs(d1[0] * d2[1] - d1[1] * d2[0]) > 1e-3
 
     def _is_cylinder_width(self, v, l1, l2):
         """Are two parallel edges in a view the two sides of the same cylinder (seen from the side)?"""
@@ -1664,19 +1798,24 @@ class DrawingController:
             m = QMenu(self.w)
             m.addAction(icon("dxf", 16), "DXF (AutoCAD)…", lambda: self.export("dxf"))
             m.addAction(icon("pdf", 16), "PDF…", lambda: self.export("pdf"))
+            m.addAction(icon("pdf", 16), "SVG…", lambda: self.export("svg"))
+            m.addAction(icon("pdf", 16), "PNG (200 dpi)…", lambda: self.export("png"))
             from PySide6.QtGui import QCursor
             m.exec(QCursor.pos())
             return
         if not self.wait_exact():
             return
-        if fmt_ == "pdf":
-            path, _ = QFileDialog.getSaveFileName(self.w, "Export PDF", base + ".pdf", "PDF (*.pdf)")
+        if fmt_ in ("pdf", "svg", "png"):
+            ext = "." + fmt_
+            path, _ = QFileDialog.getSaveFileName(self.w, f"Export {fmt_.upper()}", base + ext,
+                                                  f"{fmt_.upper()} (*{ext})")
             if not path:
                 return
-            if not path.lower().endswith(".pdf"):
-                path += ".pdf"
+            if not path.lower().endswith(ext):
+                path += ext
             try:
-                export_pdf(doc, path, self.canvas.groups())
+                fn = {"pdf": export_pdf, "svg": export_svg, "png": export_png}[fmt_]
+                fn(doc, path, groups=self.canvas.groups())
                 self.w.status.showMessage(f"Exported {path}", 5000)
             except Exception as e:
                 QMessageBox.critical(self.w, "FreeShape", f"Export failed:\n{e}")

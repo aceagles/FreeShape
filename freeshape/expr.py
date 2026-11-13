@@ -8,12 +8,33 @@ import operator
 import re
 
 _UNITS = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "inch": 25.4, '"': 25.4, "ft": 304.8,
-          "deg": 1.0, "°": 1.0, "rad": 180.0 / math.pi}
+          "deg": 1.0, "°": 1.0, "rad": 180.0 / math.pi, "um": 0.001}
 
 _OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
         ast.Pow: operator.pow, ast.USub: operator.neg, ast.UAdd: operator.pos, ast.Mod: operator.mod}
 _FUNCS = {"sqrt": math.sqrt, "sin": lambda d: math.sin(math.radians(d)), "cos": lambda d: math.cos(math.radians(d)),
           "tan": lambda d: math.tan(math.radians(d)), "abs": abs, "min": min, "max": max, "round": round}
+
+
+def _domain(name, fn, ok):
+    """Wrap a math function so an argument outside its domain raises a plain ExprError."""
+    def call(*args):
+        if not ok(*args):
+            raise ExprError(f"{name}() is not defined for {', '.join(f'{a:g}' for a in args)}")
+        return fn(*args)
+    return call
+
+
+_FUNCS.update({
+    "asin": _domain("asin", lambda x: math.degrees(math.asin(x)), lambda x: -1 <= x <= 1),
+    "acos": _domain("acos", lambda x: math.degrees(math.acos(x)), lambda x: -1 <= x <= 1),
+    "atan": lambda x: math.degrees(math.atan(x)),
+    "atan2": lambda y, x: math.degrees(math.atan2(y, x)),
+    "floor": math.floor, "ceil": math.ceil,
+    "log": _domain("log", math.log, lambda x: x > 0),
+    "log10": _domain("log10", math.log10, lambda x: x > 0),
+    "exp": math.exp,
+})
 _CONST = {"pi": math.pi, "e": math.e}
 
 
@@ -98,6 +119,20 @@ def _split_terms(t):
     return [(sg, term.strip()) for sg, term in out if term.strip()] if len(out) > 1 else [(1, t)]
 
 
+def _decimal_commas(t):
+    """A comma is a decimal separator ("1,5 mm") except inside a function call's parentheses, where it
+    separates arguments ("atan2(1, 1)")."""
+    out, stack = [], []
+    for i, ch in enumerate(t):
+        if ch == "(":
+            prev = t[:i].rstrip()
+            stack.append(bool(prev) and (prev[-1].isalnum() or prev[-1] == "_"))
+        elif ch == ")" and stack:
+            stack.pop()
+        out.append("." if ch == "," and not any(stack) else ch)
+    return "".join(out)
+
+
 def _parse(text, angle=False, variables=None):
     """Raising core of parse_number: returns a float in mm (or degrees), or raises ExprError (including
     ExprLimitError for the cost caps above) naming why."""
@@ -105,7 +140,7 @@ def _parse(text, angle=False, variables=None):
         return float(text)
     if text is None or not str(text).strip():
         raise ExprError("enter a value or expression")
-    t = str(text).strip().replace(",", ".").replace("×", "*")
+    t = _decimal_commas(str(text).strip()).replace("×", "*")
     if "#" in t:
         missing = []
 

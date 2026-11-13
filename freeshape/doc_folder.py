@@ -8,8 +8,8 @@ see freeshape/migrations.py); this module's class is called `FolderDocument` to 
 
 document.json is `{format, version, id, name, tabs: [{id, kind, file, name}, ...]}`. A tab's `id` is
 generated once and never changes; it is also stamped into the tab's own file (as `_tab_id`) so it
-survives a rename of that file on disk, even though this card doesn't yet reconcile a drifted `file`
-entry back to its tab (that is I2.2's job, per freeshape/migrations.py).
+survives a rename of that file on disk. Open does not reconcile a drifted `file` entry back to its tab; it
+only adds a warning when a tab file's `_tab_id` differs from its manifest id (see document_warnings).
 
 A Document folder may have come from someone else, so document.json is untrusted input: every tab's
 `file` is checked to resolve to a real path inside the folder (no absolute path, no `..` segment, and no
@@ -34,20 +34,20 @@ import weakref
 from . import doc_registry as R
 from . import gitstore as G
 from . import kernel as K
-from .assembly import AssemblyDoc
-from .document import Document
-from .drawing import DrawingDoc
+from . import tabkinds as TK
 from .links import LinkResolver, migrate_links_to_tab_ids, tab_sources
-from .variable_studio import VariableStudioDoc
 
 MANIFEST_NAME = "document.json"
 FORMAT = "freeshape-document"
 FORMAT_VERSION = 1
 
-EXTENSIONS = {"studio": ".fshape", "assembly": ".fasm", "drawing": ".fdwg", "variables": ".fvars"}
-FACTORIES = {"studio": Document, "assembly": AssemblyDoc, "drawing": DrawingDoc, "variables": VariableStudioDoc}
-LOADERS = {"studio": Document.load, "assembly": AssemblyDoc.load, "drawing": DrawingDoc.load,
-           "variables": VariableStudioDoc.load}
+_MANIFEST_KEYS = {"format", "version", "id", "name", "tabs"}
+_TAB_KEYS = {"id", "kind", "file", "name"}
+
+# live views over the tab-kind registry (freeshape/tabkinds.py), kept for the callers that import them
+EXTENSIONS = TK.EXTENSIONS
+FACTORIES = TK.FACTORIES
+LOADERS = TK.LOADERS
 
 
 def _atomic_write(path, text):
@@ -76,7 +76,7 @@ def _peek_id(folder):
 
 def _attribute_lines():
     """`.gitattributes` for a new Document: no automatic merge of the manifest or any tab file."""
-    return [f"{MANIFEST_NAME} -merge"] + [f"*{ext} -merge" for ext in EXTENSIONS.values()]
+    return [f"{MANIFEST_NAME} -merge"] + [f"*{ext} -merge" for ext in TK.extensions()]
 
 
 class DirtyWorkspaceError(K.KernelError):
@@ -97,6 +97,7 @@ class Tab:
         self.file = file
         self.name = name
         self.doc = None
+        self.extra = {}      # unknown keys on this tab's manifest entry, written back unchanged
 
 
 class FolderDocument:
@@ -106,6 +107,7 @@ class FolderDocument:
         self.path = None
         self.tabs: list[Tab] = []
         self.errors: dict[str, str] = {}
+        self.extra = {}      # unknown top-level manifest keys, written back unchanged
         self.warnings: list[dict] = []   # problems found on open: see document_warnings
         self._counter = 0
         self.resolver = LinkResolver(folder=self)    # resolves tab-id links through this manifest
@@ -185,12 +187,23 @@ class FolderDocument:
             elif tab.kind == "drawing" and tab.doc is not None:
                 tab.doc.refresh(notify=False)
 
+    @staticmethod
+    def _stamped_tab_id(full):
+        """The `_tab_id` a tab file carries, or None when it has none or cannot be read."""
+        try:
+            with open(full) as fh:
+                v = json.load(fh).get("_tab_id")
+        except (OSError, ValueError, AttributeError):
+            return None
+        return v if isinstance(v, str) else None
+
     def document_warnings(self):
         """Check the Document as it stands without refusing it: the manifest against the folder (a tab file that
         is not in the manifest, a manifest entry whose file is missing or will not open) and every link inside it
         (a link to a tab id that is not in the manifest, judged by the resolver itself). Run on every open, since a
         merge done with plain git never passes the app's merge preview. Returns dicts {problem, tab, tab_name,
-        target, message}; `problem` is "missing-file", "unreadable", "not-in-manifest" or "dangling-link"."""
+        target, message}; `problem` is "missing-file", "unreadable", "not-in-manifest", "tab-id-mismatch" (a tab file stamped with a
+        different tab's id than its manifest entry) or "dangling-link"."""
         out = []
 
         def warn(problem, message, tab=None, target=None):
@@ -206,12 +219,16 @@ class FolderDocument:
             except K.KernelError:
                 full = None
             if tab.doc is not None:
+                stamped = self._stamped_tab_id(full)
+                if stamped is not None and stamped != tab.id:
+                    warn("tab-id-mismatch", f"{label}: its file “{tab.file}” is stamped with another tab's id "
+                                            f"({stamped}), not {tab.id}", tab, stamped)
                 continue
             if full is not None and not os.path.lexists(full):
                 warn("missing-file", f"{label}: its file “{tab.file}” is missing from the Document folder", tab)
             else:
                 warn("unreadable", f"{label} could not be opened: {self.errors.get(tab.id, 'unknown error')}", tab)
-        exts = tuple(EXTENSIONS.values())
+        exts = TK.extensions()
         for root, dirs, files in os.walk(self.path or "."):
             dirs[:] = sorted(d for d in dirs if not d.startswith("."))
             for f in sorted(files):
@@ -249,12 +266,12 @@ class FolderDocument:
         return name
 
     def add_tab(self, kind, name=None):
-        """Create a new, empty tab of the given kind ("studio" / "assembly" / "drawing") and return it."""
+        """Create a new, empty tab of the given registered kind and return it."""
         self._check_writable()
-        doc = FACTORIES[kind]()
+        doc = TK.get(kind).make()
         if name:
             doc.name = name
-        tab = Tab(self.new_tab_id(), kind, self._unique_filename(doc.name, EXTENSIONS[kind]), doc.name)
+        tab = Tab(self.new_tab_id(), kind, self._unique_filename(doc.name, TK.get(kind).ext), doc.name)
         tab.doc = doc
         self.tabs.append(tab)
         self._attach(tab)
@@ -269,7 +286,7 @@ class FolderDocument:
         if tab_id is not None and self.tab(tab_id) is not None:
             raise K.KernelError(f"Tab {tab_id!r} already exists in the Document")
         name = name or doc.name
-        tab = Tab(tab_id or self.new_tab_id(), kind, file or self._unique_filename(name, EXTENSIONS[kind]), name)
+        tab = Tab(tab_id or self.new_tab_id(), kind, file or self._unique_filename(name, TK.get(kind).ext), name)
         self._resolve_tab_path(tab.file, f"tab {tab.id!r}")     # the file name comes from an autosave: check it
         tab.doc = doc
         self.tabs.append(tab)
@@ -277,18 +294,17 @@ class FolderDocument:
         return tab
 
     def add_files(self, paths):
-        """Add loose .fshape / .fasm / .fdwg files to the Document as new tabs. Each is copied into the folder
+        """Add loose tab files (any registered kind) to the Document as new tabs. Each is copied into the folder
         (the original is only read, never changed, since loose files outside may still link to it by uid and
         path), then every legacy uid + path link in the copies is rewritten to tab ids. All the files go in
         before the links are converted, so an assembly added with its Part Studios finds them. Returns the
         new tabs."""
-        kinds = {ext: kind for kind, ext in EXTENSIONS.items() if kind != "variables"}
         added = []
         for src in paths:
             ext = os.path.splitext(src)[1].lower()
-            kind = kinds.get(ext)
+            kind = TK.kind_for_ext(ext)
             if kind is None:
-                raise K.KernelError(f"Can't add {os.path.basename(src)}: only .fshape, .fasm and .fdwg files")
+                raise K.KernelError(f"Can't add {os.path.basename(src)}: only {TK.extension_list()} files")
             with open(src) as fh:
                 data = json.load(fh)
             name = os.path.splitext(os.path.basename(src))[0]
@@ -300,7 +316,7 @@ class FolderDocument:
             data["_tab_id"] = tab_id
             _atomic_write(os.path.join(self.path, file), json.dumps(data, indent=1))
             tab = Tab(tab_id, kind, file, name)
-            tab.doc = LOADERS[kind](os.path.join(self.path, file))
+            tab.doc = TK.get(kind).load(os.path.join(self.path, file))
             tab.doc.name = name
             self.tabs.append(tab)
             self._attach(tab)
@@ -434,10 +450,7 @@ class FolderDocument:
         manifest_path = os.path.join(path, MANIFEST_NAME)
         if os.path.islink(manifest_path):
             raise K.KernelError(f"{MANIFEST_NAME}: refusing to open a symlink")
-        with open(manifest_path) as fh:
-            data = json.load(fh)
-        if data.get("format") != FORMAT:
-            raise K.KernelError("Not a FreeShape Document")
+        data = cls._read_manifest(manifest_path)
         version = data.get("version", 1)
         if version > FORMAT_VERSION:
             raise K.KernelError(f"{MANIFEST_NAME} was saved with file version {version}, but this build "
@@ -448,24 +461,28 @@ class FolderDocument:
         doc.registry = registry
         doc.id = data.get("id") or doc.id
         doc.name = data.get("name", doc.name)
+        doc.extra = {k: v for k, v in data.items() if k not in _MANIFEST_KEYS}
         doc.tabs = []
         doc.errors = {}
         for entry in data.get("tabs", []):
             tab_id, kind, file = entry.get("id"), entry.get("kind"), entry.get("file")
             label = f"tab {tab_id!r}"
             tab = Tab(tab_id, kind, file, entry.get("name") or kind or "")
+            tab.extra = {k: v for k, v in entry.items() if k not in _TAB_KEYS}
             doc.tabs.append(tab)
             try:
-                if kind not in LOADERS:
+                if kind not in TK.KINDS:
                     raise K.KernelError(f"{label}: unknown tab kind {kind!r}")
                 full = doc._safe_tab_path(file, label)
                 if not os.path.lexists(full):
                     raise K.KernelError(f"{label}: its file {file!r} is missing from the Document folder")
                 if os.path.islink(full):
                     raise K.KernelError(f"{label}: refusing to open a symlink ({file!r})")
-                tab.doc = LOADERS[kind](full)
+                tab.doc = TK.get(kind).load(full)
             except K.KernelError as e:
                 doc.errors[tab_id] = str(e)
+            except Exception as e:      # a damaged tab file (bad JSON, a missing key...) must not stop the rest
+                doc.errors[tab_id] = f"{label}: could not be read ({type(e).__name__}: {e})"
         nums = [int("".join(c for c in (t.id or "") if c.isdigit()) or 0) for t in doc.tabs]
         doc._counter = max(nums + [0])
         for tab in doc.tabs:
@@ -475,6 +492,37 @@ class FolderDocument:
         doc.refresh_links()
         doc.warnings = doc.document_warnings()
         return doc
+
+    @staticmethod
+    def _read_manifest(manifest_path):
+        """Parse document.json and check its shape; raise K.KernelError naming the first fault."""
+        try:
+            with open(manifest_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except ValueError as e:
+            raise K.KernelError(f"{MANIFEST_NAME} is not valid JSON ({e})") from e
+        if not isinstance(data, dict):
+            raise K.KernelError(f"{MANIFEST_NAME}: the top level must be an object, not {type(data).__name__}")
+        if data.get("format") != FORMAT:
+            raise K.KernelError("Not a FreeShape Document")
+        version = data.get("version", 1)
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise K.KernelError(f"{MANIFEST_NAME}: version must be an integer, not {version!r}")
+        tabs = data.get("tabs", [])
+        if not isinstance(tabs, list):
+            raise K.KernelError(f"{MANIFEST_NAME}: tabs must be a list, not {type(tabs).__name__}")
+        seen = set()
+        for i, entry in enumerate(tabs):
+            if not isinstance(entry, dict):
+                raise K.KernelError(f"{MANIFEST_NAME}: tab entry {i} must be an object, "
+                                    f"not {type(entry).__name__}")
+            tab_id = entry.get("id")
+            if not isinstance(tab_id, str) or not tab_id:
+                raise K.KernelError(f"{MANIFEST_NAME}: tab entry {i} has an empty or non-string id ({tab_id!r})")
+            if tab_id in seen:
+                raise K.KernelError(f"{MANIFEST_NAME}: duplicate tab id {tab_id!r}")
+            seen.add(tab_id)
+        return data
 
     def _check_writable(self):
         if self.read_only:
@@ -501,8 +549,9 @@ class FolderDocument:
         self._write_manifest()
 
     def _write_manifest(self):
-        data = {"format": FORMAT, "version": FORMAT_VERSION, "id": self.id, "name": self.name,
-                "tabs": [{"id": t.id, "kind": t.kind, "file": t.file, "name": t.name} for t in self.tabs]}
+        data = {**self.extra, "format": FORMAT, "version": FORMAT_VERSION, "id": self.id, "name": self.name,
+                "tabs": [{**t.extra, "id": t.id, "kind": t.kind, "file": t.file, "name": t.name}
+                         for t in self.tabs]}
         _atomic_write(os.path.join(self.path, MANIFEST_NAME), json.dumps(data, indent=1))
 
     # ------------------------------------------------------------------ versions (git; see gitstore.py)

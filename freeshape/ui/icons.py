@@ -156,6 +156,11 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(ORANGE, 2.2))
         p.drawLine(QPointF(8, 9), QPointF(22, 9))
         p.drawLine(QPointF(22, 9), QPointF(27, 6))
+    elif name == "delete_part":
+        _box(p, 4, 10, 18, 16, 6)
+        p.setPen(_pen(RED, 2.8))
+        p.drawLine(QPointF(14, 14), QPointF(27, 27))
+        p.drawLine(QPointF(27, 14), QPointF(14, 27))
     elif name == "search":
         p.setPen(_pen(INK, 2.2))
         p.setBrush(Qt.NoBrush)
@@ -368,6 +373,12 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(INK, 2))
         p.drawEllipse(QPointF(16, 16), 10, 10)
         _dot(p, 16, 16)
+    elif name == "polygon":
+        p.setPen(_pen(INK, 2))
+        pts = [QPointF(16 + 11 * math.cos(math.pi / 6 + k * math.pi / 3),
+                       16 - 11 * math.sin(math.pi / 6 + k * math.pi / 3)) for k in range(6)]
+        p.drawPolygon(QPolygonF(pts))
+        _dot(p, 16, 16)
     elif name == "arc3":
         p.setPen(_pen(INK, 2))
         p.drawArc(QRectF(5, 8, 22, 22), 20 * 16, 140 * 16)
@@ -408,6 +419,14 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(RED, 1.5))
         p.drawLine(QPointF(19, 11), QPointF(27, 21))
         p.drawLine(QPointF(27, 11), QPointF(19, 21))
+    elif name == "extend":
+        p.setPen(_pen(INK, 1.8))
+        p.drawLine(QPointF(24, 4), QPointF(24, 28))
+        p.drawLine(QPointF(4, 16), QPointF(14, 16))
+        p.setPen(_pen(ORANGE, 1.8))
+        p.drawLine(QPointF(14, 16), QPointF(24, 16))
+        p.drawLine(QPointF(19, 11), QPointF(24, 16))
+        p.drawLine(QPointF(19, 21), QPointF(24, 16))
     elif name == "delete":
         p.setPen(_pen(RED, 2.2))
         p.drawLine(QPointF(8, 8), QPointF(24, 24))
@@ -719,7 +738,7 @@ def draw(name: str, p: QPainter):
 CONSTRAINT_GLYPHS = {
     "coincident": "●", "horizontal": "H", "vertical": "V", "parallel": "∥", "perpendicular": "⊥",
     "tangent": "◡", "equal": "=", "midpoint": "M", "concentric": "◎", "fix": "⚓", "point_on": "●",
-    "symmetric": "⋈",
+    "symmetric": "⋈", "normal": "N",
 }
 
 

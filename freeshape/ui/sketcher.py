@@ -17,7 +17,7 @@ from .icons import CONSTRAINT_GLYPHS
 from .numparse import parse_number, fmt, has_vars
 from .. import sketch_ops as OPS
 
-DRAW_TOOLS = {"line", "rect", "center_rect", "circle", "arc3", "arc_center", "point"}
+DRAW_TOOLS = {"line", "rect", "center_rect", "circle", "polygon", "arc3", "arc_center", "point"}
 
 # constraint tool -> (description, list of acceptable selection signatures)
 CONSTRAINT_TOOLS = {
@@ -32,6 +32,7 @@ CONSTRAINT_TOOLS = {
     "concentric": "Select two arcs/circles",
     "symmetric": "Select two points (or two circles/lines) and the line they're symmetric about",
     "fix": "Select points or curves to fix in place",
+    "normal": "Select a line and an arc/circle: the line passes through the curve's centre",
 }
 
 TOOL_HINTS = {
@@ -40,12 +41,14 @@ TOOL_HINTS = {
     "rect": "Click two opposite corners.",
     "center_rect": "Click the centre, then a corner.",
     "circle": "Click the centre, then click to set the radius.",
+    "polygon": "Click the centre, then a corner (hold Shift for a polygon around the circle), then type the sides.",
     "arc3": "Click the start point, the end point, then a point on the arc.",
     "arc_center": "Click the centre, the start point, then sweep to the end point.",
     "point": "Click to place a point (used by Hole).",
     "dimension": "Click a line, circle or two items, then click to place the dimension.",
     "use": "Click part edges to project them into the sketch.",
     "trim": "Click a segment of a line to remove it up to the nearest intersections.",
+    "extend": "Click near one end of a line to lengthen it to the nearest line, circle or arc beyond it.",
     "sk_fillet": "Click a corner where two lines meet, then type the radius.",
     "offset": "Click a line, arc or circle to offset its whole chain; type the distance (negative = other side).",
     "slot": "Click the two end centres of the slot, then type its width.",
@@ -87,6 +90,7 @@ class Sketcher:
 
     # ================================================================== state
     def _reset_tool_state(self):
+        self.polygon_sides = 6   # last polygon side count, offered as the next default
         self.temp = []          # clicked positions / ids for the active tool
         self.chain_anchor = None
         self.arc_sweep = 0.0
@@ -456,6 +460,11 @@ class Sketcher:
             if h:
                 self._trim(h[1], self.uv(vp, x, y))
             return True
+        if t == "extend":
+            h = self.hit(vp, x, y, kinds=("entity",))
+            if h:
+                self._extend(vp, h[1], self.uv(vp, x, y))
+            return True
         if t in DRAW_TOOLS:
             return self._draw_click(vp, x, y)
         if t in ("sk_fillet", "offset", "slot", "sk_mirror", "sk_lpattern", "sk_cpattern"):
@@ -564,7 +573,7 @@ class Sketcher:
             elif d.get("toggle") and not moved:
                 if d["id"] in self.selection:
                     self.selection.remove(d["id"])
-        if self.tool in DRAW_TOOLS and moved and self.temp and self.tool in ("circle", "rect", "center_rect", "line"):
+        if self.tool in DRAW_TOOLS and moved and self.temp and self.tool in ("circle", "polygon", "rect", "center_rect", "line"):
             # click-drag-release drawing
             self._draw_click(vp, x, y)
 
@@ -767,6 +776,16 @@ class Sketcher:
                         internal = d < max(sk.radius(a), sk.radius(b))
                         val = -1.0 if internal else 1.0
                     made.append(("tangent", [a, b], val))
+        if tool == "normal" and len(picks) == 2:
+            a, b = picks
+            ta, tb = types
+            if ta == "line" and tb in curves:
+                a, b = b, a
+            elif not (tb == "line" and ta in curves):
+                a = None
+            if a is not None:
+                # point-on-line residual on the curve's centre, flagged so the badge reads "normal"
+                made.append(("point_on", [sk.entities[a]["c"], b], None))
         if tool == "symmetric" and len(picks) == 3:
             lines_ = [p for p, t in zip(picks, types) if t == "line"]
             axis = picks[2] if types[2] == "line" else (lines_[-1] if lines_ else None)
@@ -797,11 +816,41 @@ class Sketcher:
             return False
         self.push_undo()
         for t, refs, val in made:
-            sk.add_constraint(t, *refs, value=val)
+            c = sk.add_constraint(t, *refs, value=val)
+            if tool == "normal":
+                c["normal"] = True
         self.changed(True)
         return True
 
+    def toggle_radius_diameter(self, cid) -> bool:
+        """Switch a radius dimension to a diameter one (or back): same references, value doubled or halved.
+        An expression is wrapped, not evaluated, so variables keep working. One undo step."""
+        c = self._constraint(cid)
+        if c is None or c["type"] not in ("radius", "diameter"):
+            return False
+        to_dia = c["type"] == "radius"
+        self.push_undo()
+        c["type"] = "diameter" if to_dia else "radius"
+        c["value"] = float(c["value"]) * (2.0 if to_dia else 0.5)
+        if isinstance(c.get("expr"), str) and c["expr"].strip():
+            c["expr"] = f"({c['expr']})*2" if to_dia else f"({c['expr']})/2"
+        self.changed(True)
+        return True
+
+    def add_context_actions(self, menu, vp, x, y):
+        """Add right-click actions for whatever sits under (x, y) in the viewport."""
+        h = self.hit(vp, x, y, kinds=("constraint",))
+        c = self._constraint(h[1]) if h else None
+        if c and c["type"] in ("radius", "diameter"):
+            label = "Show as diameter" if c["type"] == "radius" else "Show as radius"
+            menu.addAction(label, lambda cid=c["id"]: (self.toggle_radius_diameter(cid), vp.update()))
+
     # ------------------------------------------------------------------ drawing tools
+    def _polygon_mode(self):
+        from PySide6.QtGui import QGuiApplication
+        shift = bool(QGuiApplication.keyboardModifiers() & Qt.ShiftModifier)
+        return "circumscribed" if shift else "inscribed"
+
     def _draw_click(self, vp, x, y):
         t = self.tool
         anchor = None
@@ -913,6 +962,25 @@ class Sketcher:
             self.changed(True)
             ctr = sk.P(c)
             self._offer_dims(vp, [("diameter", [cid], 2 * sk.radius(cid), ctr + np.array([r, r]) * 0.9)])
+            return True
+        if t == "polygon":
+            if not self.temp:
+                self.temp = [(uv, snap)]
+                self._first_cons = icons
+                return True
+            c_uv, cs = self.temp[0]
+            if float(np.linalg.norm(uv - c_uv)) < 1e-6:
+                return True
+            self.temp = []
+            mode = self._polygon_mode()
+            first_cons = self._first_cons
+
+            def make(n, c_uv=c_uv, cs=cs, corner=uv, mode=mode, cons=cons):
+                pid = self._point_at(c_uv, cs, first_cons)
+                OPS.polygon(self.sk, c_uv, corner, n, mode, cons, centre_pid=pid)
+                self.polygon_sides = int(n)
+            label = "Polygon sides (3 to 30, " + mode + ")"
+            self._prompt(vp, uv, label, self.polygon_sides, make, integer=True, minimum=OPS.POLYGON_MIN_SIDES)
             return True
         if t == "arc3":
             self.temp.append((uv, snap))
@@ -1538,6 +1606,28 @@ class Sketcher:
             sk.add_line(q, p2, cons)
         self.changed(True)
 
+    def _extend(self, vp, eid, uv):
+        """Lengthen the end of line `eid` nearest the click to the next curve beyond it."""
+        sk = self.sk
+        e = sk.entities[eid]
+        if e["type"] != "line":
+            self._flash(vp, "Extend works on lines")
+            return
+        a, b = sk.P(e["p1"]), sk.P(e["p2"])
+        end = "p1" if np.linalg.norm(uv - a) <= np.linalg.norm(uv - b) else "p2"
+        self.push_undo()
+        try:
+            res = OPS.extend(sk, eid, end)
+        except ValueError as err:
+            self.undo_stack.pop()
+            self._flash(vp, str(err))
+            return
+        if res is None:
+            self.undo_stack.pop()
+            self._flash(vp, "Nothing to extend to")
+            return
+        self.changed(True)
+
     # ================================================================== drawing
     def _color(self, i):
         st = self.sk.status
@@ -1656,6 +1746,16 @@ class Sketcher:
             r = np.linalg.norm(cur - c)
             a = np.linspace(0, 2 * math.pi, 97)
             strip(c + r * np.c_[np.cos(a), np.sin(a)])
+        elif t == "polygon" and self.temp:
+            c = self.temp[0][0]
+            v = cur - c
+            r = float(np.linalg.norm(v))
+            n = self.polygon_sides
+            if r > 1e-9:
+                a0, step = math.atan2(v[1], v[0]), 2 * math.pi / n
+                if self._polygon_mode() == "circumscribed":
+                    a0, r = a0 - step / 2, r / math.cos(step / 2)
+                strip([c + r * np.array([math.cos(a0 + k * step), math.sin(a0 + k * step)]) for k in range(n)], True)
         elif t == "slot" and self.temp:
             a = self.temp[0][0]
             strip([a, cur])
@@ -1743,8 +1843,10 @@ class Sketcher:
             slots = {}
             for c in sk.constraints:
                 t = c["type"]
-                if t in DIMENSIONS or t in ("coincident", "point_on", "normal_at"):
+                if t in DIMENSIONS or t in ("coincident", "normal_at") or (t == "point_on" and not c.get("normal")):
                     continue
+                if t == "point_on":
+                    t = "normal"
                 for ref in c["refs"][:2]:
                     anchor = self._anchor_screen(vp, ref)
                     if anchor is None:
@@ -1774,7 +1876,7 @@ class Sketcher:
             txt = None
             if self.tool == "line" and self.chain_anchor is not None:
                 txt = fmt(np.linalg.norm(self.cursor_uv - self.sk.P(self.chain_anchor)))
-            elif self.tool in ("circle",) and self.temp:
+            elif self.tool in ("circle", "polygon") and self.temp:
                 txt = "Ø" + fmt(2 * np.linalg.norm(self.cursor_uv - self.temp[0][0]))
             elif self.tool in ("rect", "center_rect") and self.temp:
                 d = np.abs(self.cursor_uv - self.temp[0][0]) * (2 if self.tool == "center_rect" else 1)

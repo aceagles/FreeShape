@@ -54,8 +54,8 @@ def test_sketch_plane_on_chamfer_faces_out():
     assert np.dot(K.planar_face_plane(face).normal, _true_outward(face)) > 0.99
 
 
-@pytest.mark.xfail(strict=True, reason=NORMAL_BUG + " — a mate connector on a chamfer face points into the part")
 def test_mate_connector_on_chamfer_points_out():
+    # Fixed: connector_frame takes Z from K.face_outward_normal, not face_info["n"].
     part, face = _chamfered()
     idx = next(i for i, f in enumerate(K.faces(part.shape)) if f.IsSame(face))
     fr = A.connector_frame(part.shape, "face", idx)

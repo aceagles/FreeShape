@@ -54,19 +54,23 @@ FEATURE_LABELS = {
     "context": "Context",
     "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
+    "delete_part": "Delete part",
 }
 
 # ISO metric screw data (coarse threads).  clearance: close / normal / loose (ISO 273)
-HOLE_SIZES = ["M2", "M2.5", "M3", "M4", "M5", "M6", "M8", "M10", "M12"]
-CLEARANCE = {"M2": (2.2, 2.4, 2.6), "M2.5": (2.7, 2.9, 3.1), "M3": (3.2, 3.4, 3.6), "M4": (4.3, 4.5, 4.8),
+HOLE_SIZES = ["M1.6", "M2", "M2.5", "M3", "M4", "M5", "M6", "M8", "M10", "M12", "M14", "M16", "M18", "M20", "M22", "M24"]
+CLEARANCE = {"M1.6": (1.7, 1.8, 2.0), "M2": (2.2, 2.4, 2.6), "M2.5": (2.7, 2.9, 3.1), "M3": (3.2, 3.4, 3.6), "M4": (4.3, 4.5, 4.8),
              "M5": (5.3, 5.5, 5.8), "M6": (6.4, 6.6, 7.0), "M8": (8.4, 9.0, 10.0), "M10": (10.5, 11.0, 12.0),
-             "M12": (13.0, 13.5, 14.5)}
-TAP_DRILL = {"M2": 1.6, "M2.5": 2.05, "M3": 2.5, "M4": 3.3, "M5": 4.2, "M6": 5.0, "M8": 6.8, "M10": 8.5,
-             "M12": 10.2}
-COUNTERBORE = {"M2": (4.4, 2.2), "M2.5": (5.5, 2.7), "M3": (6.5, 3.3), "M4": (8.0, 4.4), "M5": (10.0, 5.4),
-               "M6": (11.0, 6.4), "M8": (15.0, 8.6), "M10": (18.0, 10.8), "M12": (20.0, 13.0)}  # socket head
-COUNTERSINK = {"M2": 4.4, "M2.5": 5.5, "M3": 6.3, "M4": 9.4, "M5": 10.4, "M6": 12.6, "M8": 17.3, "M10": 20.0,
-               "M12": 24.0}  # 90° flat head
+             "M12": (13.0, 13.5, 14.5), "M14": (15.0, 15.5, 16.5), "M16": (17.0, 17.5, 18.5),
+             "M18": (19.0, 20.0, 21.0), "M20": (21.0, 22.0, 24.0), "M22": (23.0, 24.0, 26.0),
+             "M24": (25.0, 26.0, 28.0)}
+TAP_DRILL = {"M1.6": 1.25, "M2": 1.6, "M2.5": 2.05, "M3": 2.5, "M4": 3.3, "M5": 4.2, "M6": 5.0, "M8": 6.8, "M10": 8.5,
+             "M12": 10.2, "M14": 12.0, "M16": 14.0, "M18": 15.5, "M20": 17.5, "M22": 19.5, "M24": 21.0}
+COUNTERBORE = {"M1.6": (3.5, 1.7), "M2": (4.4, 2.2), "M2.5": (5.5, 2.7), "M3": (6.5, 3.3), "M4": (8.0, 4.4), "M5": (10.0, 5.4),
+               "M6": (11.0, 6.4), "M8": (15.0, 8.6), "M10": (18.0, 10.8), "M12": (20.0, 13.0), "M14": (24.0, 14.6), "M16": (26.0, 16.6), "M18": (30.0, 18.6),
+               "M20": (33.0, 20.6), "M22": (36.0, 22.8), "M24": (40.0, 24.8)}  # socket head
+COUNTERSINK = {"M1.6": 3.6, "M2": 4.4, "M2.5": 5.5, "M3": 6.3, "M4": 9.4, "M5": 10.4, "M6": 12.6, "M8": 17.3, "M10": 20.0,
+               "M12": 24.0, "M14": 30.8, "M16": 33.6, "M20": 40.3}  # 90° flat head; no standard value above M20 (ISO 10642)
 
 
 def hole_centres(sketch):
@@ -104,7 +108,11 @@ def hole_dims(p):
         d = CLEARANCE[size][{"close": 0, "normal": 1, "loose": 2}.get(p.get("fit", "normal"), 1)]
         label = f"{size} clearance"
     cb = COUNTERBORE[size] if style == "counterbore" else None
-    cs = COUNTERSINK[size] if style == "countersink" else None
+    cs = None
+    if style == "countersink":
+        if size not in COUNTERSINK:
+            raise K.KernelError(f"No standard countersink for {size}: use a counterbore or a custom size")
+        cs = COUNTERSINK[size]
     return d, cb, cs, label
 
 
@@ -900,7 +908,10 @@ def _piece(tool, solid):
 NUMERIC_KEYS = {"depth", "depth2", "angle", "radius", "distance", "thickness", "offset", "count", "spacing",
                 "diameter", "counterbore_dia", "counterbore_depth", "dx", "dy", "dz", "rotate",
                 "draft", "pitch", "twist", "scale_end", "major", "length", "clearance", "thread_clearance",
-                "countersink_dia", "k", "relief_scale"}
+                "countersink_dia", "k", "relief_scale",
+                "scale",
+                "count2", "spacing2",
+                "distance2"}
 
 
 def prepare(f, state):
@@ -1283,6 +1294,30 @@ def signed_extent(value, flip=False):
     return v, flip
 
 
+def _upto_distance(state, p, profs, n):
+    """Signed distance from the profile plane to the `upto` target along the profile normal `n`. The
+    target is a vertex reference (`resolve_point`) or a plane / planar-face reference (`resolve_plane`);
+    a plane that is not parallel to the profile is refused."""
+    ref = p.get("upto")
+    if not ref:
+        raise K.KernelError("Select a vertex, or a face or plane parallel to the sketch")
+    if p.get("regions"):
+        origin = state.sketches[p["regions"][0]["sketch"]].plane.origin
+    else:
+        origin = K.planar_face_plane(profs[0]).origin
+    if ref.get("kind") == "vertex":
+        target = resolve_point(state, ref)
+    else:
+        pl = resolve_plane(state, ref)
+        if abs(float(np.dot(pl.normal, n))) < 1 - 1e-9:
+            raise K.KernelError("Up to needs a vertex, or a face or plane parallel to the sketch")
+        target = pl.origin
+    dist = float(np.dot(np.asarray(target, float) - np.asarray(origin, float), n))
+    if abs(dist) < 1e-9:
+        raise K.KernelError("Up to target is in the sketch plane: the distance is zero")
+    return dist
+
+
 def run_extrude(state, f):
     p = f["params"]
     profs = _profiles(state, p, f["id"])
@@ -1294,7 +1329,13 @@ def run_extrude(state, f):
     depth, flip = signed_extent(p.get("depth", 10), p.get("flip", False))
     symmetric = end == "symmetric"
     cutting = op in ("remove", "intersect")
-    if cutting and not p.get("regions"):
+    upto = end == "upto"
+    if upto:
+        # up to a target is a blind extrude of the signed distance; Flip, symmetric and second depth do not apply
+        dist = _upto_distance(state, p, profs, n)
+        depth, flip = abs(dist), dist < 0
+        end = "blind"
+    elif cutting and not p.get("regions"):
         # cutting from a face goes into the part by default
         flip = not flip
 
@@ -1317,14 +1358,14 @@ def run_extrude(state, f):
             dd = float(np.linalg.norm(hi - lo)) * 2 + 10 if state.parts else depth
             both = p.get("both", False) or (cutting and p.get("regions"))
             return K.extrude(profs, direction, dd, depth2=dd if both else 0.0, with_history=True)
-        depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric else 0.0
+        depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric and not upto else 0.0
         if depth + depth2 <= 0 and depth2:
             raise K.KernelError("The second depth cancels the first")
         return K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
 
     d = -n if flip else n
     body, hist = make(d)
-    if cutting and end == "blind" and not p.get("second") and state.parts:
+    if cutting and end == "blind" and not upto and not p.get("second") and state.parts:
         # like Onshape, a cut that misses everything is tried in the other direction
         targets = [state.parts[i] for i in (p.get("scope") or state.parts) if i in state.parts]
         if not any(K.intersects(t.shape, body) for t in targets):
@@ -1369,14 +1410,40 @@ def run_fillet(state, f):
         state.set_named(pid, named)
 
 
+def _chamfer_faces(state, pid, edges, flip):
+    """For each edge, the adjacent face the first chamfer distance is measured on: the face whose element
+    name sorts first (second when `flip`), so a rebuild keeps the same side. Without a name map the
+    face centres decide."""
+    part = state.parts[pid]
+    nm = state.named(pid)
+    out = []
+    for e in edges:
+        fs = K.edge_faces(part.shape, e)
+        if len(fs) < 2:
+            raise K.KernelError("A chamfer with two distances or an angle needs an edge between two faces; "
+                                "this edge has only one (a seam or an open edge)")
+        def key(fc):
+            name = nm.name_of(fc) if nm is not None else None
+            return (0, name, ()) if name else (1, "", tuple(round(float(x), 6) for x in K.face_info(fc)["c"]))
+        fs = sorted(fs, key=key)[:2]
+        out.append(fs[1] if flip else fs[0])
+    return out
+
+
 def run_chamfer(state, f):
     p = f["params"]
     groups = _group_by_part(state, p.get("edges", []), "edge")
     if not groups:
         raise K.KernelError("Select edges to chamfer")
+    kind = p.get("chamfer_type") or "equal"
     for pid, es in groups.items():
         part = state.parts[pid]
-        res, hist = K.chamfer(part.shape, es, float(p.get("distance", 1)), with_history=True)
+        if kind == "equal":
+            res, hist = K.chamfer(part.shape, es, float(p.get("distance", 1)), with_history=True)
+        else:
+            second = float(p.get("distance2", 1)) if kind == "two" else float(p.get("angle", 45))
+            res, hist = K.chamfer(part.shape, es, float(p.get("distance", 1)), with_history=True, kind=kind,
+                                  second=second, faces=_chamfer_faces(state, pid, es, bool(p.get("flip"))))
         named = name_feature(state, f["id"], [pid], res, hist, "chamfer")
         state.parts[pid] = Part(pid, part.name, res, part.color)
         state.set_named(pid, named)
@@ -1443,6 +1510,14 @@ def run_offset_surface(state, f):
         state.set_named(state.new_part(res, f["id"]).id, named)
 
 
+def run_delete_part(state, f):
+    ids = _selected_parts(state, f["params"])
+    for i in ids:
+        state.parts.pop(i, None)
+        state.names.pop(i, None)
+        state.sheet.pop(i, None)
+
+
 def run_plane(state, f):
     state.planes[f["id"]] = build_plane(state, f["params"])
 
@@ -1471,8 +1546,11 @@ def _pattern_instance_name(state, fid, pid, copy, history, op, k):
     """The names of instance k (1-based; 0 is the source) of a pattern. The instance index goes in
     the tag ("F5_2"), so it is part of every name of that copy and a change of count leaves the
     other instances' names alone. FreeCAD's `;:C<n>` disambiguator (spec section 7) is not an index
-    to read back; this keeps the same one-name-per-instance effect with an index that is stable."""
-    return name_feature(state, f"{fid}_{k}", [pid], copy, history, op)
+    to read back; this keeps the same one-name-per-instance effect with an index that is stable.
+    k may be a pair (k1, k2) for a two-direction grid: the tag is then "F5_1_2". A single index
+    keeps the tag exactly as before."""
+    tag = "_".join(str(i) for i in k) if isinstance(k, tuple) else str(k)
+    return name_feature(state, f"{fid}_{tag}", [pid], copy, history, op)
 
 
 def run_linear_pattern(state, f):
@@ -1484,6 +1562,24 @@ def run_linear_pattern(state, f):
         d = -d
     n = int(p.get("count", 3))
     sp = float(p.get("spacing", 20))
+    n2 = int(p.get("count2", 1))
+    if n2 > 1 and p.get("dir2_on", True):
+        _, d2 = resolve_axis(state, p.get("dir2") or {"kind": "std", "name": "Y"})
+        if p.get("flip2"):
+            d2 = -d2
+        sp2 = float(p.get("spacing2", sp))
+        copies, named = [], []
+        for i in ids:
+            for k1 in range(n):
+                for k2 in range(n2):
+                    if k1 == 0 and k2 == 0:
+                        continue      # the seed is instance (0, 0)
+                    c, h = K.pattern_translate(state.parts[i].shape, d * sp * k1 + d2 * sp2 * k2,
+                                               with_history=True)
+                    named.append(_pattern_instance_name(state, f["id"], i, c, h, "linear_pattern", (k1, k2)))
+                    copies.append(c)
+        apply_body(state, K.compound(copies), p.get("op", "add"), f["id"], None, named)
+        return
     copies, named = [], []
     for i in ids:
         for k in range(1, n):
@@ -1873,9 +1969,17 @@ def run_move(state, f):
     a, d = (np.zeros(3), np.array([0, 0, 1.0]))
     if abs(ang) > 1e-12:
         a, d = resolve_axis(state, p.get("axis") or {"kind": "std", "name": "Z"})
+    sc, c = float(p.get("scale", 1)), (0.0, 0.0, 0.0)
+    if not sc > 0:
+        raise K.KernelError("The scale must be more than 0")
+    if sc != 1.0 and p.get("center"):
+        c = tuple(resolve_point(state, p["center"], f["id"]))
     for pid in ids:
         part = state.parts[pid]
-        moved, hist = K.transform(part.shape, v, a, d, ang, with_history=True)
+        if sc == 1.0:
+            moved, hist = K.transform(part.shape, v, a, d, ang, with_history=True)
+        else:
+            moved, hist = K.transform(part.shape, v, a, d, ang, with_history=True, scale=sc, scale_center=c)
         named = name_feature(state, f["id"], [pid], moved, hist, "move")
         if p.get("copy"):
             np_ = state.new_part(moved, f["id"], part.color)
@@ -1955,6 +2059,7 @@ RUNNERS = {
     "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
+    "delete_part": run_delete_part,
 }
 
 
@@ -1973,10 +2078,12 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "delete_face": {"faces": [], "mode": "heal"},
         "move_face": {"faces": [], "distance": 2.0, "flip": False},
         "offset_surface": {"faces": [], "distance": 2.0, "flip": False},
+        "delete_part": {"parts": []},
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
         "mirror": {"parts": [], "plane": {"kind": "std", "name": "Right"}, "op": "add"},
         "linear_pattern": {"parts": [], "direction": {"kind": "std", "name": "X"}, "count": 3,
-                           "spacing": 30.0, "flip": False, "op": "new"},
+                           "spacing": 30.0, "flip": False, "op": "new",
+                           "dir2_on": False, "count2": 2, "spacing2": 30.0},
         "circular_pattern": {"parts": [], "axis": {"kind": "std", "name": "Z"}, "count": 6,
                              "angle": 360.0, "op": "new"},
         "boolean": {"op": "union", "tools": [], "targets": [], "keep_tools": False},

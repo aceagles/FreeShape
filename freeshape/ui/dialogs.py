@@ -431,9 +431,12 @@ SCHEMAS = {
     "extrude": [
         _ops(),
         _sel("profiles", "Faces and sketch regions to extrude", {"region", "face"}),
-        _choice("end", "End type", [("blind", "Blind"), ("symmetric", "Symmetric"), ("through", "Through all")]),
-        _num("depth", "Depth", visible=lambda p: p.get("end") != "through", signed=True),
-        _check("flip", "Opposite direction", visible=lambda p: p.get("end") != "symmetric"),
+        _choice("end", "End type", [("blind", "Blind"), ("symmetric", "Symmetric"), ("through", "Through all"),
+                                   ("upto", "Up to a vertex, face or plane")]),
+        _sel("upto_sel", "Vertex, or face or plane parallel to the sketch", {"vertex", "plane"}, multi=False,
+             visible=lambda p: p.get("end") == "upto"),
+        _num("depth", "Depth", visible=lambda p: p.get("end") not in ("through", "upto"), signed=True),
+        _check("flip", "Opposite direction", visible=lambda p: p.get("end") not in ("symmetric", "upto")),
         _check("second", "Second end position", visible=lambda p: p.get("end") == "blind"),
         _num("depth2", "Second depth", visible=lambda p: p.get("end") == "blind" and p.get("second")),
         _check("both", "Both directions", visible=lambda p: p.get("end") == "through"),
@@ -455,7 +458,12 @@ SCHEMAS = {
     ],
     "chamfer": [
         _sel("edges", "Edges or faces to chamfer", {"edge"}),
+        _choice("chamfer_type", "Type", [("equal", "Equal distance"), ("two", "Two distances"),
+                                         ("angle", "Distance and angle")]),
         _num("distance", "Distance", minimum=1e-6),
+        _num("distance2", "Distance 2", minimum=1e-6, visible=lambda p: p.get("chamfer_type") == "two"),
+        _num("angle", "Angle", unit="deg", visible=lambda p: p.get("chamfer_type") == "angle"),
+        _check("flip", "Flip (swap the faces)", visible=lambda p: p.get("chamfer_type") in ("two", "angle")),
     ],
     "shell": [
         _sel("faces", "Faces to remove", {"face"}),
@@ -482,6 +490,9 @@ SCHEMAS = {
         _num("distance", "Distance (outwards)"),
         _check("flip", "Flip direction"),
     ],
+    "delete_part": [
+        _sel("parts", "Parts to delete", {"part"}),
+    ],
     "plane": [
         _choice("type", "Plane type", F.PLANE_TYPES),
         _sel("refs_sel", "Planes, faces, edges and vertices", {"plane", "face", "edge", "vertex"}),
@@ -503,6 +514,14 @@ SCHEMAS = {
         _num("spacing", "Distance"),
         _num("count", "Instance count", unit=""),
         _check("flip", "Opposite direction"),
+        _check("dir2_on", "Second direction"),
+        _sel("dir2_sel", "Second direction (edge or sketch line)", {"axis"}, multi=False,
+             visible=lambda p: p.get("dir2_on")),
+        _choice("dir2_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")],
+                visible=lambda p: p.get("dir2_on")),
+        _num("spacing2", "Distance 2", visible=lambda p: p.get("dir2_on")),
+        _num("count2", "Instance count 2", unit="", visible=lambda p: p.get("dir2_on")),
+        _check("flip2", "Opposite second direction", visible=lambda p: p.get("dir2_on")),
     ],
     "circular_pattern": [
         _ops([("new", "New"), ("add", "Add")]),
@@ -551,6 +570,9 @@ SCHEMAS = {
              visible=lambda p: _isnum(p.get("rotate")) is not False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")],
                 visible=lambda p: _isnum(p.get("rotate")) is not False),
+        _num("scale", "Scale", unit="", minimum=1e-6),
+        _sel("center", "Scale about (vertex, default the origin)", {"vertex"}, multi=False,
+             visible=lambda p: _isnum(p.get("scale")) is not False and p.get("scale") not in (None, "", 1, 1.0, "1")),
         _check("copy", "Keep the original (make a copy)"),
     ],
     "thread": [
@@ -628,6 +650,9 @@ def params_to_fields(ftype, p):
     f = {}
     if ftype in ("extrude", "revolve", "sweep"):
         f["profiles"] = [("region", r) for r in p.get("regions", [])] + [("face", r) for r in p.get("faces", [])]
+    if ftype == "extrude":
+        u = p.get("upto")
+        f["upto_sel"] = [("vertex" if u.get("kind") == "vertex" else "plane", u)] if u else []
     if ftype in SCOPE_FEATURES:
         f["scope"] = [("part", i) for i in p.get("scope", [])]
     if ftype == "sm_base":
@@ -641,7 +666,7 @@ def params_to_fields(ftype, p):
     if ftype == "draft":
         f["faces"] = [("face", r) for r in p.get("faces", [])]
         f["neutral_sel"] = [("plane", p["neutral"])] if p.get("neutral") else []
-    if ftype in ("split", "move"):
+    if ftype in ("split", "move", "delete_part"):
         f["parts"] = [("part", i) for i in p.get("parts", [])]
     if ftype == "mate_connector":
         ref = p.get("ref")
@@ -651,6 +676,7 @@ def params_to_fields(ftype, p):
     if ftype == "move":
         a = p.get("axis") or {}
         f["axis_sel"] = [("axis", a)] if a and a.get("kind") != "std" else []
+        f["center"] = [("vertex", p["center"])] if p.get("center") else []
     if ftype == "revolve":
         ax = p.get("axis") or {}
         f["axis_sel"] = [("axis", ax)] if ax and ax.get("kind") != "std" else []
@@ -667,6 +693,8 @@ def params_to_fields(ftype, p):
         f["parts"] = [("part", i) for i in p.get("parts", [])]
         d = p.get("direction") or {}
         f["dir_sel"] = [("axis", d)] if d and d.get("kind") != "std" else []
+        d2 = p.get("dir2") or {}
+        f["dir2_sel"] = [("axis", d2)] if d2 and d2.get("kind") != "std" else []
     if ftype == "circular_pattern":
         f["parts"] = [("part", i) for i in p.get("parts", [])]
         a = p.get("axis") or {}
@@ -684,6 +712,12 @@ def fields_to_params(ftype, fields, p):
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
     if ftype == "sm_flange":
         p["edges"] = [r for k, r in fields.get("edges", []) if k == "edge"]
+    if ftype == "extrude":
+        sel = fields.get("upto_sel", [])
+        if sel and p.get("end") == "upto":
+            p["upto"] = sel[0][1]
+        else:
+            p.pop("upto", None)
     if ftype in ("extrude", "revolve", "sweep"):
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
         p["faces"] = [r for k, r in fields.get("profiles", []) if k == "face"]
@@ -695,7 +729,7 @@ def fields_to_params(ftype, fields, p):
         p["faces"] = [r for k, r in fields.get("faces", [])]
         sel = fields.get("neutral_sel", [])
         p["neutral"] = sel[0][1] if sel else {"kind": "std", "name": "Top"}
-    if ftype in ("split", "move"):
+    if ftype in ("split", "move", "delete_part"):
         p["parts"] = [r for k, r in fields.get("parts", [])]
     if ftype == "mate_connector" and "element" in fields:
         sel = fields["element"]
@@ -713,6 +747,11 @@ def fields_to_params(ftype, fields, p):
             p["axis_std"] = ""
         else:
             p["axis"] = {"kind": "std", "name": p.get("axis_std") or "Z"}
+        sel = fields.get("center", [])
+        if sel:
+            p["center"] = sel[0][1]
+        else:
+            p.pop("center", None)
     if ftype == "revolve":
         sel = fields.get("axis_sel", [])
         if sel:
@@ -741,6 +780,12 @@ def fields_to_params(ftype, fields, p):
             p["dir_std"] = ""
         else:
             p["direction"] = {"kind": "std", "name": p.get("dir_std") or "X"}
+        sel2 = fields.get("dir2_sel", [])
+        if sel2:
+            p["dir2"] = sel2[0][1]
+            p["dir2_std"] = ""
+        else:
+            p["dir2"] = {"kind": "std", "name": p.get("dir2_std") or "Y"}
     if ftype == "circular_pattern":
         sel = fields.get("axis_sel", [])
         if sel:
@@ -996,7 +1041,7 @@ class FeatureDialog(_ResizableFrame):
                     if has_vars(txt):
                         self._set(k, txt.strip())        # keep the expression so it follows the variable
                     else:
-                        self._set(k, int(round(v)) if k == "count" else v)
+                        self._set(k, int(round(v)) if k in ("count", "count2") else v)
             self.widgets[spec["key"]] = ed
             ed.textEdited.connect(lambda _t, f=done: f())
             ed.editingFinished.connect(lambda ed=ed, k=spec["key"]: ed.setText(_show(self.feature["params"].get(k, 0))))
@@ -1951,9 +1996,9 @@ class FeatureDialog(_ResizableFrame):
     def _set(self, key, value):
         p = self.feature["params"]
         p[key] = value
-        if key in ("axis_std", "dir_std") and value:
+        if key in ("axis_std", "dir_std", "dir2_std") and value:
             # choosing a world axis replaces a picked axis
-            fk = "axis_sel" if key == "axis_std" else "dir_sel"
+            fk = {"axis_std": "axis_sel", "dir_std": "dir_sel", "dir2_std": "dir2_sel"}[key]
             if fk in self.fields:
                 self.fields[fk].items = []
         fields = {k: f.items for k, f in self.fields.items()}

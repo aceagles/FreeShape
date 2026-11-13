@@ -4,7 +4,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import traceback
+
+import numpy as np
 
 from . import blobstore
 from . import kernel as K
@@ -561,6 +564,8 @@ class Document:
             if p:
                 state.parts[pid] = Part(p.id, ov.get("name", p.name), p.shape, tuple(ov.get("color", p.color)),
                                         None if "color" in ov else p.face_colors, p.reference)
+                # Part (features.py) has no material field; the assembly reads it from this attribute
+                state.parts[pid].material = ov.get("material") or None
 
     def notify(self):
         for cb in list(self.listeners):
@@ -626,8 +631,18 @@ class Document:
     def save(self, path=None):
         path = path or self.path
         self.write_blobs(path)
-        with open(path, "w") as fh:
-            fh.write(self.to_json())
+        txt = self.to_json()
+        tmp = str(path) + ".tmp"
+        try:
+            with open(tmp, "w") as fh:
+                fh.write(txt)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
         self.path = path
         self.dirty = False
 
@@ -635,6 +650,15 @@ class Document:
     def load(path) -> "Document":
         with open(path) as fh:
             d = json.load(fh)
+        fmt = d.get("format") if isinstance(d, dict) else None
+        kinds = {"freeshape-assembly": "an Assembly", "freeshape-drawing": "a Drawing",
+                 "freeshape-variables": "a Variable Studio"}
+        if fmt in kinds:
+            raise K.KernelError(f"This file is {kinds[fmt]}, not a FreeShape Part Studio")
+        if fmt is not None and fmt != "freeshape":
+            raise K.KernelError("Not a FreeShape Part Studio")
+        if not isinstance(d, dict) or not isinstance(d.get("features"), list):
+            raise K.KernelError("Not a FreeShape Part Studio (no features list)")
         d = M.migrate("document", d, path)
         doc = Document()
         doc.name = d.get("name", "Part Studio 1")
@@ -656,12 +680,15 @@ class Document:
     def visible_parts(self):
         return [p for p in self.state.parts.values() if p.id not in self.hidden_parts and not p.reference]
 
-    def export(self, path, part_ids=None):
+    def export(self, path, part_ids=None, options=None):
         parts = [p for p in self.state.parts.values() if (part_ids is None or p.id in part_ids) and not p.reference]
         if not parts:
             raise K.KernelError("Nothing to export")
         shapes = [p.shape for p in parts]
         if str(path).lower().endswith((".stl",)):
-            K.export_stl(shapes, path)
+            K.export_stl(shapes, path, **(options or {}))
+        elif str(path).lower().endswith((".3mf", ".obj")):
+            from . import meshexport as ME
+            ME.export_parts([(p.shape, p.name, p.color) for p in parts], path, **(options or {}))
         else:
-            K.export_step(shapes, path)
+            return K.export_step_named([(p.shape, np.eye(4), p.name, p.color) for p in parts], path, self.name)

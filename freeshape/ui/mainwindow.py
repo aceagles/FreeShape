@@ -15,12 +15,14 @@ from PySide6.QtWidgets import (
 )
 
 from .. import kernel as K
+from .. import measure as M
 from .. import features as F
 from ..document import Document
 from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
 from .. import doc_folder
 from .. import doc_registry
+from .. import tabkinds as TK
 from .. import links
 from ..sketch import Sketch
 from . import theme, navstyles
@@ -423,6 +425,14 @@ class MainWindow(QMainWindow):
         from .palette import Command
         F_ = self.start_feature
         C = lambda key, name, desc, fn, kw="", grp="Feature": Command(key, name, desc, fn, kw, grp)
+        if self.var_tabs.is_variables(self.doc):
+            return self._palette_variable_commands(C)
+        if self.is_dwg:
+            return self.dwg.palette_commands(C)
+        if self.is_asm:
+            return self.asm.palette_commands(C)
+        if self.mode == "sketch":
+            return self._palette_sketch_commands(C)
         cmds = [
             C("sketch", "Sketch", "Draw 2D profiles on a plane or a flat face. With vertices, edges or faces selected "
               "that define a plane, the plane is made for you.", lambda: self.start_sketch(), "draw 2d profile"),
@@ -451,6 +461,8 @@ class MainWindow(QMainWindow):
             C("offset_surface", "Offset surface", "Make a new surface a set distance from selected faces (flat or "
               "curved). The result is a surface body you can use as a reference or delete faces from.",
               lambda: F_("offset_surface"), "offset face surface copy shell skin"),
+            C("delete_part", "Delete part", "Remove the selected parts from the model from this point on.",
+              lambda: F_("delete_part"), "remove erase discard body"),
             C("sm_base", "Sheet metal", "A flat sheet from a sketch with thickness, bend radius and K-factor.",
               lambda: F_("sm_base"), "bracket enclosure"),
             C("sm_flange", "Flange", "Bend the sheet up along edges.", lambda: F_("sm_flange"), "sheet metal bend"),
@@ -497,6 +509,64 @@ class MainWindow(QMainWindow):
         from . import pyfeature_ui
         return cmds + pyfeature_ui.palette_commands(self)
 
+    # the sketch toolbar's tools and constraints, in toolbar order: (key, name, extra match words)
+    SKETCH_PALETTE = (
+        ("select", "Select", "pointer arrow"), ("line", "Line", "segment"), ("rect", "Corner rectangle", "box"),
+        ("center_rect", "Center rectangle", "centre box"), ("circle", "Circle", "round"),
+        ("polygon", "Polygon", "hexagon pentagon regular sides"), ("arc3", "3-point arc", "three point"),
+        ("arc_center", "Center-point arc", "centre point"), ("point", "Point", "vertex"),
+        ("dimension", "Dimension", "smart dimension size measure"),
+        ("sk_fillet", "Sketch fillet", "round corner radius"), ("offset", "Offset", "parallel copy"),
+        ("slot", "Slot", "obround stadium"), ("sk_mirror", "Mirror", "symmetry"),
+        ("sk_lpattern", "Linear pattern", "array copies"), ("sk_cpattern", "Circular pattern", "array copies polar"),
+        ("use", "Use", "project convert intersect part edges"), ("trim", "Trim", "cut remove"),
+        ("extend", "Extend", "lengthen"))
+
+    def _palette_sketch_commands(self, C):
+        """Search tools entries while a sketch is open: the sketch toolbar's tools, constraints and view commands."""
+        from .sketcher import CONSTRAINT_TOOLS, TOOL_HINTS
+        grp = "Sketch"
+        cmds = [C("undo", "Undo", "Undo the last sketch change (Ctrl+Z).", self.undo, "", "Edit"),
+                C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.redo, "", "Edit")]
+        for key, name, kw in self.SKETCH_PALETTE:
+            cmds.append(C("point" if key == "select" else key, name,
+                          TOOL_HINTS.get(key) or f"{name} — sketch tool.", lambda k=key: self._sk_tool(k), kw, grp))
+        cmds.append(C("construction", "Construction", "Turn the selected geometry into construction geometry, or "
+                      "back (Q).", lambda: self._sk("toggle_construction"), "toggle reference helper", grp))
+        for name, tip in CONSTRAINT_TOOLS.items():
+            cmds.append(C(name, name.capitalize(), tip + ".", lambda n=name: self._sk_tool(n), "constraint relation",
+                          "Constraint"))
+        cmds += [C("delete", "Delete selected", "Delete the selected sketch geometry (Del).",
+                   lambda: self._sk("delete_selection"), "remove erase", grp),
+                 C("normal_to", "Normal to sketch", "Turn the view to look straight at the sketch plane (N).",
+                   self._normal_to_sketch, "view perpendicular plane", "View"),
+                 C("fit", "Zoom to fit", "Fit the whole model in the view (F).", lambda: self.viewport.fit(), "",
+                   "View"),
+                 C("iso", "Isometric view", "Look at the model from the isometric corner (Shift+7).",
+                   lambda: self.viewport.set_standard_view("Isometric"), "", "View")]
+        for i, name in enumerate(("Front", "Back", "Left", "Right", "Top", "Bottom"), 1):
+            cmds.append(C("iso", f"{name} view", f"Look at the model from the {name.lower()} (Shift+{i}).",
+                          lambda n=name: self.viewport.set_standard_view(n), "", "View"))
+        cmds.append(C("sketch", "Finish sketch", "Save the sketch and leave sketch mode.", self.finish_sketch,
+                      "done accept exit close ok", grp))
+        return cmds
+
+    def _palette_variable_commands(self, C):
+        """Search tools entries for a Variable Studio tab: only what needs no 3D view."""
+        return [
+            C("part", "New Part Studio", "Create a Part Studio tab (Ctrl+N).", self.new_doc, "create tab", "File"),
+            C("assembly", "New Assembly", "Create an Assembly tab (Ctrl+Shift+N).", self.new_assembly,
+              "create tab", "File"),
+            C("drawing", "New Drawing", "Create a Drawing tab.", lambda: self.new_drawing(), "create tab", "File"),
+            C("import", "Import STEP", "Open a STEP file in a new tab.", lambda: self.import_step(), "open file",
+              "File"),
+            C("export", "Save", "Save this tab (Ctrl+S).", self.save, "write store", "File"),
+            C("export", "Save as", "Save this tab under a new name (Ctrl+Shift+S).", self.save_as, "write store",
+              "File"),
+            C("export", "Keyboard shortcuts", "List the keyboard shortcuts.", self.show_shortcuts,
+              "keys help hotkeys", "Help"),
+        ]
+
     def _derived_blocked(self):
         """Why Derived cannot start in the current tab (None when it can): a Part Studio outside a Document has
         no other tab to read from (decision d-i1-7-loose)."""
@@ -512,13 +582,15 @@ class MainWindow(QMainWindow):
         self.start_feature("derived")
 
     def open_command_search(self):
-        if self.is_asm or self.is_dwg or self.mode != "idle":
-            self.status.showMessage("Search tools works in a Part Studio while no tool is open — finish or cancel "
-                                    "the current one first.", 5000)
+        if self.mode == "dialog":
+            self.status.showMessage("Finish or cancel the open tool first, then search tools.", 5000)
             return
+        host = self.view_stack.currentWidget()      # the 3D view, the drawing sheet or the variables table
         if getattr(self, "_palette", None) is None:
             from .palette import CommandPalette
-            self._palette = CommandPalette(self.viewport, self._palette_commands)
+            self._palette = CommandPalette(host, self._palette_commands)
+        elif self._palette.parentWidget() is not host:
+            self._palette.setParent(host)
         self._palette.open()
 
     SELECT_DEFAULTS = {"vertex": False, "edge": True, "face": True, "part": False, "sketch": True, "plane": True}
@@ -591,7 +663,8 @@ class MainWindow(QMainWindow):
                           ("delete_face", "Delete face — remove fillets, chamfers, bosses and holes from "
                                           "imported parts (heal, cap or leave open)"),
                           ("move_face", "Move face — push or pull flat faces"),
-                          ("offset_surface", "Offset surface — a new surface a set distance from faces")):
+                          ("offset_surface", "Offset surface — a new surface a set distance from faces"),
+                          ("delete_part", "Delete part — remove parts from the model from here on")):
             self._tb(h, name, tip, lambda _=False, n=name: self.start_feature(n))
         h.addWidget(_sep())
         self._tb(h, "sm_base", "Sheet metal — a flat sheet from a sketch (thickness, bend radius, K-factor)",
@@ -726,6 +799,7 @@ class MainWindow(QMainWindow):
         tools = [("select", "Select (S)", "point"),
                  ("line", "Line (L)", None), ("rect", "Corner rectangle (R)", None),
                  ("center_rect", "Center rectangle", None), ("circle", "Circle (C)", None),
+                 ("polygon", "Polygon — centre, corner, then sides (Shift: circumscribed)", None),
                  ("arc3", "3-point arc (A)", None), ("arc_center", "Center-point arc", None),
                  ("point", "Point (P)", None)]
         for name, tip, ic in tools:
@@ -741,7 +815,7 @@ class MainWindow(QMainWindow):
         self._sketch_buttons["dimension"] = b
         h.addWidget(_sep())
         for name in ("coincident", "horizontal", "vertical", "parallel", "perpendicular", "tangent",
-                     "equal", "midpoint", "concentric", "symmetric", "fix"):
+                     "equal", "midpoint", "concentric", "symmetric", "fix", "normal"):
             label = name.capitalize()
             keys = {"coincident": " (I)", "horizontal": " (H)", "vertical": " (V)", "equal": " (E)", "tangent": " (T)"}
             b = self._tb(h, name, label + keys.get(name, "") + " — " + CONSTRAINT_TOOLS[name],
@@ -759,6 +833,8 @@ class MainWindow(QMainWindow):
         self._sketch_buttons["use"] = b
         b = self._tb(h, "trim", "Trim", lambda: self._sk_tool("trim"), checkable=True)
         self._sketch_buttons["trim"] = b
+        b = self._tb(h, "extend", "Extend", lambda: self._sk_tool("extend"), checkable=True)
+        self._sketch_buttons["extend"] = b
         self._tb(h, "delete", "Delete selected (Del)", lambda: self._sk("delete_selection"))
         h.addStretch(1)
         self._tb(h, "normal_to", "Normal to sketch (N)", self._normal_to_sketch)
@@ -1456,10 +1532,10 @@ class MainWindow(QMainWindow):
             if self.mode != "idle":
                 self._leave_modes()
             self.import_step_file(path)
-        elif ext in (".fshape", ".fcad", ".fasm", ".fdwg"):
+        elif TK.kind_for_ext(ext) is not None or ext == ".fcad":
             self.open_file(path)
         else:
-            QMessageBox.information(self, APP_NAME, "FreeShape opens .fshape, .fasm and .fdwg documents and STEP files.")
+            QMessageBox.information(self, APP_NAME, f"FreeShape opens {TK.extension_list()} documents and STEP files.")
             return
         self.show_workspace()
 
@@ -1611,7 +1687,7 @@ class MainWindow(QMainWindow):
 
     def _pick_files_to_add(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "Add to Document", self._dialog_dir("doc"),
-                                                "FreeShape files (*.fshape *.fasm *.fdwg)")
+                                                "FreeShape files (" + " ".join(TK.glob(k) for k in TK.kinds()) + ")")
         return paths
 
     def _home_new_document(self):
@@ -1722,7 +1798,7 @@ class MainWindow(QMainWindow):
         self._views.pop(id(doc), None)
 
     def add_to_document(self, paths=None):
-        """Copy loose .fshape / .fasm / .fdwg files into the open Document and rewrite the links in the copies
+        """Copy loose tab files (see tabkinds) into the open Document and rewrite the links in the copies
         to tab ids. The originals are not touched. Saves the Document, since the copies are new files."""
         if self.folder is None:
             QMessageBox.information(self, APP_NAME, "Open or create a Document first, then add files to it.")
@@ -2180,10 +2256,10 @@ class MainWindow(QMainWindow):
         out = []
         for name in os.listdir(root):
             full = os.path.join(root, name)
-            if name.endswith((".fshape", ".fasm", ".fdwg")) and os.path.isfile(full):
+            if name.endswith(TK.extensions()) and os.path.isfile(full):
                 out.append(full)                                          # older single-folder layout
             elif os.path.isdir(full) and name.isdigit() and not self._process_alive(int(name)):
-                out += [os.path.join(full, f) for f in os.listdir(full) if f.endswith((".fshape", ".fasm", ".fdwg"))]
+                out += [os.path.join(full, f) for f in os.listdir(full) if f.endswith(TK.extensions())]
                 if not os.listdir(full):
                     try:
                         os.rmdir(full)
@@ -2199,7 +2275,7 @@ class MainWindow(QMainWindow):
             doc._autosave_id = ".".join(re.sub(r"[^A-Za-z0-9_-]", "_", str(k)) for k in key)
         elif not getattr(doc, "_autosave_id", None):
             doc._autosave_id = uuid.uuid4().hex
-        ext = {"assembly": ".fasm", "drawing": ".fdwg"}.get(doc.kind, ".fshape")
+        ext = (TK.find(doc.kind) or TK.get("studio")).ext
         return os.path.join(self.autosave_dir(), doc._autosave_id + ext)
 
     def autosave(self):
@@ -2257,10 +2333,11 @@ class MainWindow(QMainWindow):
                     if meta.get("document") and self._recover_document_tab(f, meta):
                         os.remove(f)
                         continue
-                    doc = AssemblyDoc.load(f, resolver=self._resolve_source) if f.endswith(".fasm") \
+                    kind = TK.kind_for_path(f)
+                    doc = AssemblyDoc.load(f, resolver=self._resolve_source) if kind == "assembly" \
                         else DrawingDoc.load(f, resolver=self._resolve_drawing_source,
-                                                      hlr_async=self.dwg.request_exact) if f.endswith(".fdwg") \
-                        else Document.load(f)
+                                                      hlr_async=self.dwg.request_exact) if kind == "drawing" \
+                        else TK.get(kind or "studio").load(f)
                     doc.path = meta.get("path")
                     doc.name = (meta.get("name") or "Recovered") + " (recovered)"
                     doc.dirty = True
@@ -2686,6 +2763,7 @@ class MainWindow(QMainWindow):
         m = QMenu(self)
         m.addAction("Rename…", lambda: self._rename_part(pid))
         m.addAction("Change colour…", lambda: self._recolor_part(pid))
+        m.addAction("Material…", lambda: self._set_part_material(pid))
         m.addAction("Show" if pid in self.doc.hidden_parts else "Hide", lambda: self.doc.toggle_part_hidden(pid))
         m.addAction("Isolate", lambda: self._isolate(pid))
         m.addSeparator()
@@ -2725,20 +2803,55 @@ class MainWindow(QMainWindow):
 
     def _mass_props(self, pid):
         p = self.doc.state.parts[pid]
-        self._mass_props_shape(p.name, p.shape)
+        self._mass_props_shape(p.name, p.shape, self.doc.part_overrides.get(pid, {}).get("material"))
 
-    def _mass_props_shape(self, name, shape):
+    def _set_part_material(self, pid):
+        """Ask for a part's material and store it as a part override (saved with the file)."""
+        names = ["(none: weighed as PLA)"] + list(M.MATERIALS)
+        cur = M.material_name(self.doc.part_overrides.get(pid, {}).get("material"))
+        name, ok = QInputDialog.getItem(self, "Material", "Material of this part:", names,
+                                        names.index(cur) if cur else 0, False)
+        if ok:
+            self.doc.set_part_override(pid, material=None if name == names[0] else name)
+
+    def _mass_props_shape(self, name, shape, material=None):
+        """Mass properties of one shape. The mass is for `material` (PLA when none); "Other material…" gives a
+        one-off reading with another one and changes nothing in the document."""
         mp = K.mass_props(shape)
         lo, hi = K.bbox(shape)
         c = mp["centroid"]
+        while True:
+            mat = M.material_name(material) or M.DEFAULT_MATERIAL
+            box = QMessageBox(self)
+            box.setWindowTitle("Mass properties")
+            box.setText(
+                f"<b>{name}</b><br><br>Volume: {fmt(mp['volume'], 3)} mm³<br>"
+                f"Surface area: {fmt(mp['area'], 3)} mm²<br>"
+                f"Mass ({mat}, {M.MATERIALS[mat]:g} g/cm³): {fmt(M.mass_g(mp['volume'], mat), 2)} g<br>"
+                f"Centre of mass: ({fmt(c[0], 3)}, {fmt(c[1], 3)}, {fmt(c[2], 3)})<br>"
+                f"Bounding box: {fmt(hi[0] - lo[0], 3)} × {fmt(hi[1] - lo[1], 3)} × {fmt(hi[2] - lo[2], 3)} mm")
+            other = box.addButton("Other material…", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            if box.clickedButton() is not other:
+                return
+            names = list(M.MATERIALS)
+            pick, ok = QInputDialog.getItem(self, "Mass properties", "Weigh as:", names, names.index(mat), False)
+            if ok:
+                material = pick
+
+    def _mass_props_assembly(self, doc):
+        """Mass properties of the visible instances of an Assembly: mass by material, total, centre of mass."""
+        s = doc.mass_summary()
+        if not s["by_material"]:
+            QMessageBox.information(self, "Mass properties", "Nothing visible to weigh.")
+            return
+        rows = "".join(f"{k}: {fmt(v, 2)} g<br>" for k, v in sorted(s["by_material"].items()))
+        c = s["com"]
         QMessageBox.information(
             self, "Mass properties",
-            f"<b>{name}</b><br><br>Volume: {fmt(mp['volume'], 3)} mm³<br>"
-            f"Surface area: {fmt(mp['area'], 3)} mm²<br>"
-            f"Mass (PLA, 1.24 g/cm³): {fmt(mp['volume'] * 1.24e-3, 2)} g<br>"
-            f"Mass (aluminium, 2.7 g/cm³): {fmt(mp['volume'] * 2.7e-3, 2)} g<br>"
-            f"Centre of mass: ({fmt(c[0], 3)}, {fmt(c[1], 3)}, {fmt(c[2], 3)})<br>"
-            f"Bounding box: {fmt(hi[0] - lo[0], 3)} × {fmt(hi[1] - lo[1], 3)} × {fmt(hi[2] - lo[2], 3)} mm")
+            f"<b>{doc.name}</b> (visible instances)<br><br>{rows}<b>Total: {fmt(s['mass'], 2)} g</b><br>"
+            f"Centre of mass: ({fmt(c[0], 3)}, {fmt(c[1], 3)}, {fmt(c[2], 3)})")
 
     # ================================================================== viewport interactions
     def _hover_changed(self, pk):
@@ -2760,6 +2873,9 @@ class MainWindow(QMainWindow):
             return
         m = QMenu(self)
         if self.mode == "sketch":
+            if self.viewport.sketcher:
+                lp_ = self.viewport.mapFromGlobal(gpos)
+                self.viewport.sketcher.add_context_actions(m, self.viewport, lp_.x(), lp_.y())
             m.addAction("Normal to sketch", self._normal_to_sketch)
             m.addAction("Finish sketch", self.finish_sketch)
             m.addAction("Cancel sketch", self.cancel_sketch)
@@ -3240,10 +3356,8 @@ class MainWindow(QMainWindow):
 
     def open_dialog(self):
         self._leave_modes()
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open", self._dialog_dir("doc"), "FreeShape documents and STEP files (*.fshape *.fasm *.fdwg *.fcad *.step *.stp);;"
-            "Part Studios (*.fshape *.fcad);;Assemblies (*.fasm);;Drawings (*.fdwg);;STEP files (*.step *.stp);;"
-            "All files (*)")
+        from .home import open_dialog_filter
+        path, _ = QFileDialog.getOpenFileName(self, "Open", self._dialog_dir("doc"), open_dialog_filter())
         if path:
             remember_dir(self.settings, "doc", path)
             self.open_any(path)
@@ -3262,20 +3376,21 @@ class MainWindow(QMainWindow):
         from .progress import ImportProgress
         prog = ImportProgress(self, f"Opening {os.path.basename(path)}")
         try:
-            if not path.lower().endswith((".fasm", ".fdwg")) and not self._prefetch_imports(path, prog):
+            kind = TK.kind_for_path(path)
+            if kind in (None, "studio") and not self._prefetch_imports(path, prog):
                 self.status.showMessage("Opening cancelled", 5000)
                 return
             prog.stage("Rebuilding the model…")
             self.viewport.progress_cb = prog.step
             try:
-                if path.lower().endswith(".fasm"):
+                if kind == "assembly":
                     doc = AssemblyDoc.load(path, resolver=self._resolve_source)
-                elif path.lower().endswith(".fdwg"):
+                elif kind == "drawing":
                     prog.stage("Working out the views…")
                     doc = DrawingDoc.load(path, resolver=self._resolve_drawing_source,
                                           hlr_async=self.dwg.request_exact)
                 else:
-                    doc = Document.load(path)
+                    doc = TK.get(kind or "studio").load(path)
             except Exception as e:
                 prog.close()
                 prog = None
@@ -3335,9 +3450,9 @@ class MainWindow(QMainWindow):
             return False
         if self._folder_tab(self.doc) is not None:       # a Document's tabs save with the Document
             return self._save_document()
-        ext = ".fdwg" if self.is_dwg else ".fasm" if self.is_asm else ".fshape"
-        filt = "FreeShape drawings (*.fdwg)" if self.is_dwg else "FreeShape assemblies (*.fasm)" if self.is_asm \
-            else "FreeShape documents (*.fshape)"
+        rec = TK.find(getattr(self.doc, "kind", "studio")) or TK.get("studio")
+        ext = rec.ext
+        filt = f"FreeShape {rec.plural.lower() if rec.kind != 'studio' else 'documents'} (*{ext})"
         path, _ = QFileDialog.getSaveFileName(
             self, "Save as", self.doc.path or self._dialog_dir("doc", f"{self.doc.name}{ext}"), filt)
         if not path:
@@ -3418,9 +3533,18 @@ class MainWindow(QMainWindow):
                     return False
         return True
 
+    def _stl_options(self, path):
+        """Mesh options from the dialog for STL, 3MF and OBJ (no ASCII choice for the last two); None for any
+        other file type, False if cancelled."""
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in (".stl", ".3mf", ".obj"):
+            return None
+        from .export_dialog import StlOptionsDialog
+        return StlOptionsDialog.ask(self, self.settings, ext[1:].upper())
+
     def export(self, part_ids, fmt_=None):
         if self.is_dwg:
-            self.dwg.export(fmt_ if fmt_ in ("dxf", "pdf") else None)
+            self.dwg.export(fmt_ if fmt_ in ("dxf", "pdf", "svg", "png") else None)
             return
         if self.is_asm:
             if not self.doc.instances:
@@ -3429,14 +3553,17 @@ class MainWindow(QMainWindow):
             sel = "STL (*.stl)" if fmt_ == "stl" else "STEP (*.step *.stp)"
             default = self.doc.name.replace(" ", "_") + (".stl" if fmt_ == "stl" else ".step")
             path, chosen = QFileDialog.getSaveFileName(self, "Export assembly", self._dialog_dir("export", default),
-                                                       "STEP (*.step *.stp);;STL (*.stl)", sel)
+                                                       "STEP (*.step *.stp);;STL (*.stl);;3MF (*.3mf);;OBJ (*.obj)", sel)
             if not path:
                 return
             remember_dir(self.settings, "export", path)
             if not os.path.splitext(path)[1]:
-                path += ".stl" if "STL" in chosen else ".step"
+                path += ".stl" if "STL" in chosen else ".3mf" if "3MF" in chosen else ".obj" if "OBJ" in chosen else ".step"
+            opts = self._stl_options(path)
+            if opts is False:
+                return
             try:
-                self.doc.export(path)
+                self.doc.export(path, options=opts)
                 self.status.showMessage(f"Exported {path}", 5000)
             except Exception as e:
                 QMessageBox.critical(self, APP_NAME, f"Export failed:\n{e}")
@@ -3444,7 +3571,7 @@ class MainWindow(QMainWindow):
         if not self.doc.state.parts:
             QMessageBox.information(self, APP_NAME, "There are no parts to export yet.")
             return
-        filters = "STEP (*.step *.stp);;STL (*.stl)"
+        filters = "STEP (*.step *.stp);;STL (*.stl);;3MF (*.3mf);;OBJ (*.obj)"
         default = "part.stl" if fmt_ == "stl" else "part.step"
         if part_ids and len(part_ids) == 1:
             default = self.doc.state.parts[part_ids[0]].name.replace(" ", "_") + (".stl" if fmt_ == "stl" else ".step")
@@ -3454,9 +3581,12 @@ class MainWindow(QMainWindow):
             return
         remember_dir(self.settings, "export", path)
         if not os.path.splitext(path)[1]:
-            path += ".stl" if "STL" in chosen else ".step"
+            path += ".stl" if "STL" in chosen else ".3mf" if "3MF" in chosen else ".obj" if "OBJ" in chosen else ".step"
+        opts = self._stl_options(path)
+        if opts is False:
+            return
         try:
-            self.doc.export(path, part_ids)
+            self.doc.export(path, part_ids, options=opts)
             self.status.showMessage(f"Exported {path}", 5000)
         except Exception as e:
             QMessageBox.critical(self, APP_NAME, f"Export failed:\n{e}")

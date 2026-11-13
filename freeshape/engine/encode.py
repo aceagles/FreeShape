@@ -47,9 +47,8 @@ def empty_names() -> dict:
 
 
 def element_names(part) -> dict:
-    """The part's element-name map, keyed by kind and 1-based MapShapes index. Parts carry no map yet;
-    once one is attached as a naming.NamedShape (`named` attribute) of this very shape, its names come
-    through here. A map built for a different shape (a moved or re-made one) would index the wrong
+    """The part's element-name map, keyed by kind and 1-based MapShapes index. The engine attaches each
+    part's naming.NamedShape as its `named` attribute before encoding; a part without one has no names. A map built for a different shape (a moved or re-made one) would index the wrong
     elements, so it is dropped rather than passed on."""
     named = getattr(part, "named", None)
     names = getattr(named, "names", None)

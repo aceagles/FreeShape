@@ -28,9 +28,58 @@ MATE_TYPES = {
     "slider": ("Slider", "Slides along the Z axis without rotating"),
     "cylindrical": ("Cylindrical", "Slides along and rotates about the Z axis, like a shaft in a bearing"),
     "planar": ("Planar", "Slides and rotates on a plane, like a block on a table"),
+    "pin_slot": ("Pin slot", "A pin in a slot: slides along the first connector's X axis and rotates about Z"),
+    "parallel": ("Parallel", "Keeps the two Z axes parallel; the part moves and turns freely otherwise"),
     "ball": ("Ball", "Rotates in every direction about a point"),
 }
-MATE_DOF = {"fastened": 0, "revolute": 1, "slider": 1, "cylindrical": 2, "planar": 3, "ball": 3}
+MATE_DOF = {"fastened": 0, "revolute": 1, "slider": 1, "cylindrical": 2, "pin_slot": 2, "planar": 3, "parallel": 4, "ball": 3}
+# The named free degrees of freedom of each mate type: its Mate values (translations in mm, rotations in degrees).
+MATE_VALUE_DOFS = {
+    "fastened": (),
+    "revolute": ("rz",),
+    "slider": ("tz",),
+    "cylindrical": ("tz", "rz"),
+    "planar": ("tx", "ty", "rz"),
+    "pin_slot": ("tx", "rz"),
+    "parallel": ("tx", "ty", "tz", "rz"),
+    "ball": (),
+}
+# The kind of each freedom (from its name: r* turns, t* slides), its stored unit, and how a residual in that
+# unit is scaled to mm like the mate residuals: a rotation as mm of arc at the part's size L, a translation as is.
+DOF_KINDS = {
+    "rotation": {"unit": "deg", "scale": lambda L: np.radians(1.0) * L, "ui_unit": "rev", "per_ui_unit": 360.0},
+    "translation": {"unit": "mm", "scale": lambda L: 1.0, "ui_unit": "mm", "per_ui_unit": 1.0},
+}
+
+
+def dof_kind(dof):
+    """The kind of a Mate value name: "rz" is a rotation, "tz" a translation."""
+    return "rotation" if dof.startswith("r") else "translation"
+
+
+# Relation types: the kind of freedom each side accepts. The user's ratio is in b's UI unit per a's UI unit
+# (DOF_KINDS "ui_unit": a rotation counts in revolutions, a translation in mm); "ratio_unit" is its label.
+# Stored values are in DOF_KINDS "unit" (deg, mm), so relation_ratio() converts: value_b = sign x ratio x
+# value_a + phase holds in stored units (ADR 0005). "same_mate" marks a type whose two sides are one mate.
+RELATION_TYPES = {
+    "linear": {"label": "Linear", "a": "translation", "b": "translation", "ratio_unit": "mm/mm",
+               "help": "Ties one slide to another: the second moves ratio times as far"},
+    "gear": {"label": "Gear", "a": "rotation", "b": "rotation", "ratio_unit": "turns/turn",
+             "help": "Turns the driven mate ratio turns for each turn of the driving mate"},
+    "rack_pinion": {"label": "Rack and pinion", "a": "rotation", "b": "translation", "ratio_unit": "mm/rev",
+                    "help": "Moves the rack ratio mm for each turn of the pinion"},
+    "screw": {"label": "Screw", "a": "rotation", "b": "translation", "ratio_unit": "mm/rev", "same_mate": True,
+              "help": "Moves a cylindrical mate along its axis ratio mm for each turn about it"},
+}
+
+
+def relation_ratio(r):
+    """r's ratio in stored units (b's deg or mm per a's deg or mm), converted from the user's ratio by the
+    unit sizes the type's two kinds carry in DOF_KINDS."""
+    spec = RELATION_TYPES[r["type"]]
+    return float(r["ratio"]) * DOF_KINDS[spec["b"]]["per_ui_unit"] / DOF_KINDS[spec["a"]]["per_ui_unit"]
+
+
 FILE_FORMAT = "freeshape-assembly"
 
 
@@ -44,6 +93,43 @@ def _upgrade_part_id_syntax(data):
 
 
 M.register("assembly", _upgrade_part_id_syntax)
+
+
+def _add_groups(data):
+    """Assembly file version 2 -> 3 (I4.1): add the empty list of groups (rigid sets of instances)."""
+    data.setdefault("groups", [])
+    return data
+
+
+M.register("assembly", _add_groups)
+
+
+def _upgrade_mate_values(data):
+    """Assembly file version 3 -> 4 (I1.2): each mate stores its Mate values ("values"). Measuring them needs the
+    resolved parts, so this step only marks the version; AssemblyDoc.load fills any mate that has no
+    values from the saved pose once the instances are resolved."""
+    return data
+
+
+M.register("assembly", _upgrade_mate_values)
+
+
+def _add_mate_limits(data):
+    """Assembly file version 4 -> 5 (I5.1): a mate may carry "limits", {dof: [min, max]} with either end null.
+    Older files have none, so this step only marks the version."""
+    return data
+
+
+M.register("assembly", _add_mate_limits)
+
+
+def _add_relations(data):
+    """Assembly file version 5 -> 6 (I2.1): add the empty list of Relations."""
+    data.setdefault("relations", [])
+    return data
+
+
+M.register("assembly", _add_relations)
 INSTANCE_COLORS = [(0.60, 0.74, 0.85), (0.72, 0.74, 0.78), (0.86, 0.66, 0.40), (0.56, 0.78, 0.56),
                    (0.85, 0.55, 0.55), (0.70, 0.60, 0.85), (0.50, 0.78, 0.78), (0.85, 0.78, 0.45)]
 
@@ -388,7 +474,7 @@ def mate_residuals(m, FA, FB, L):
     if t in ("fastened", "revolute", "ball"):
         out.append(oB - (oA + d * zA))
     if t != "ball":
-        out.append((zB - s * zA) * L)
+        out.append((zB - s * zA) * L)               # parallel holds only this (opposed, or aligned with flip)
     if t in ("fastened", "slider"):
         out.append((xB - xt) * L)
     if t in ("slider", "cylindrical"):
@@ -396,6 +482,10 @@ def mate_residuals(m, FA, FB, L):
         out.append(dv - (dv @ zA) * zA)
     if t == "planar":
         out.append(np.array([(oB - oA) @ zA - d]))
+    if t == "pin_slot":
+        # B's origin on the line through A's origin along A's X (offset d along Z); the slot ignores `angle`
+        dv = oB - oA
+        out.append(np.array([dv @ yA, dv @ zA - d]))
     return np.concatenate(out) if out else np.zeros(0)
 
 
@@ -409,16 +499,29 @@ def snap_transform(m, FA, FB):
     yA = np.cross(zA, xA)
     xt = np.cos(ang) * xA + np.sin(ang) * yA
     zt = s * zA
+    if m["type"] == "parallel":
+        # turn B about its own origin by the smallest rotation that makes the Z axes parallel; no translation
+        zB = unit(FB["z"])
+        axis = np.cross(zB, zt)
+        sn, cs = float(np.linalg.norm(axis)), float(zB @ zt)
+        if sn < 1e-12:
+            if cs > 0:
+                return np.eye(4)
+            xb = unit(FB["x"])
+            axis, sn = xb, 1.0                      # already antiparallel: half a turn about any axis across Z
+        return rot_about(axis / sn, np.arctan2(sn, cs), FB["o"])
     target = frame_matrix({"o": FA["o"] + d * zA, "z": zt, "x": xt})
-    if m["type"] in ("slider", "cylindrical", "planar"):
+    if m["type"] in ("slider", "cylindrical", "planar", "pin_slot"):
         # keep B where it is along the free directions: only fix what the mate fixes
         dv = FB["o"] - FA["o"]
-        if m["type"] == "planar":
+        if m["type"] == "pin_slot":
+            o = FA["o"] + d * zA + (dv @ xA) * xA
+        elif m["type"] == "planar":
             o = FB["o"] - ((dv @ zA) - d) * zA
         else:
             o = FA["o"] + (dv @ zA) * zA
         target[:3, 3] = o
-    if m["type"] in ("revolute", "cylindrical", "planar", "ball"):
+    if m["type"] in ("revolute", "cylindrical", "planar", "pin_slot", "ball"):
         # keep B's current spin about the axis instead of forcing X onto A's X
         xb = np.asarray(FB["x"], float)
         if m["type"] == "ball":
@@ -432,7 +535,65 @@ def snap_transform(m, FA, FB):
     return target @ np.linalg.inv(frame_matrix(FB))
 
 
+def _wrap_deg(a):
+    """Wrap an angle in degrees to (-180, 180]."""
+    a = (a + 180.0) % 360.0 - 180.0
+    return 180.0 if a <= -180.0 + 1e-9 else a
+
+
+def mate_values(m, FA, FB):
+    """The Mate values of one mate, measured from the world connector frames A and B.
+    Returns {name: value} for the names in MATE_VALUE_DOFS[type]; empty for fastened and ball.
+    Zero is the aligned pose snap_transform gives (flip, offset and angle already applied, B's
+    X on the target X). Translations are in mm along A's axes: tz along A's Z, tx and ty along the
+    target X and its Y (A's Z crossed with it). rz is the turn of B's X about A's Z, in degrees."""
+    names = MATE_VALUE_DOFS[m["type"]]
+    if not names:
+        return {}
+    ang = np.radians(float(m.get("angle", 0.0) or 0.0))
+    if m["type"] in ("pin_slot", "parallel"):
+        ang = 0.0                                   # the slot runs along A's X whatever `angle` says
+    zA, xA = unit(FA["z"]), unit(FA["x"])
+    yA = np.cross(zA, xA)
+    xt = np.cos(ang) * xA + np.sin(ang) * yA
+    yt = np.cross(zA, xt)
+    dv = np.asarray(FB["o"], float) - np.asarray(FA["o"], float)
+    xB = np.asarray(FB["x"], float)
+    out = {}
+    for n in names:
+        if n == "tz":
+            out[n] = float(dv @ zA)
+        elif n == "tx":
+            out[n] = float(dv @ xt)
+        elif n == "ty":
+            out[n] = float(dv @ yt)
+        else:
+            out[n] = _wrap_deg(float(np.degrees(np.arctan2(xB @ yt, xB @ xt))))
+    return out
+
+
 # =========================================================================== the document
+
+ANIMATE_PLAYBACKS = ("single", "reciprocate", "loop")
+ANIMATE_MAX_RANGE = 36000.0   # degrees (or mm): the widest range one Animate run covers
+
+
+def animate_values(start, end, steps, playback):
+    """Values an Animate run steps through: `steps` evenly spaced values from start to end ("single" and "loop",
+    where the caller repeats the sequence), or that sequence followed by its reverse without repeating the end
+    value ("reciprocate"). Raises ValueError for steps below 2, an unknown playback, or a range over 36000."""
+    if playback not in ANIMATE_PLAYBACKS:
+        raise ValueError(f"Unknown playback {playback!r}")
+    steps = int(steps)
+    if steps < 2:
+        raise ValueError("Animate needs at least 2 steps")
+    if abs(float(end) - float(start)) > ANIMATE_MAX_RANGE:
+        raise ValueError(f"Animate range is limited to {ANIMATE_MAX_RANGE:g}")
+    seq = [float(v) for v in np.linspace(float(start), float(end), steps)]
+    if playback == "reciprocate":
+        seq += seq[-2::-1]
+    return seq
+
 
 class AssemblyDoc:
     kind = "assembly"
@@ -442,6 +603,10 @@ class AssemblyDoc:
         self.name = "Assembly 1"
         self.instances: list[dict] = []
         self.mates: list[dict] = []
+        self.groups: list[dict] = []             # {"id", "name", "instances": [ids]}; an instance is in at most one
+        # Relations: {"id", "type", "name", "a": {"mate", "dof"}, "b": {"mate", "dof"}, "ratio", "reverse",
+        # "phase", "suppressed"}; value_b = sign x ratio x value_a + phase (ADR 0005)
+        self.relations: list[dict] = []
         self.blobs: dict[str, str] = {}          # embedded STEP files (base64), keyed by content hash
         self.path = None
         self.dirty = False
@@ -455,9 +620,14 @@ class AssemblyDoc:
         self._fallback: dict[str, object] = {}   # instance id -> shape stored in the file
         self._step_cache: dict[str, list] = {}
         self.errors: dict[str, str] = {}         # instance / mate id -> message
-        self._conflicts: set = set()             # mates left out because they can't hold with the others
+        self._conflicts: set = set()             # mates and relations left out because they can't hold with the others
+        self._rel_filter = None                  # relation ids allowed a residual inside a solve; None = all
+        self._limit_failed: set = set()          # mates whose limits the last enforcement could not meet
+        self._limits_active = False              # the last static solve ended with a limit held
+        self._limit_holds: dict = {}             # mate id -> {dof: bound}; active limits, set only inside a solve
         self.dof = 0
         self._undo: list[str] = []
+        self._animate = None                     # snapshot taken by begin_animate, in memory only
         self._redo: list[str] = []
         self._counter = 0
         # Part-Studio-shaped attributes some generic window code looks at
@@ -470,7 +640,8 @@ class AssemblyDoc:
     # ------------------------------------------------------------------ ids
     def new_id(self, prefix):
         self._counter += 1
-        used = {i["id"] for i in self.instances} | {m["id"] for m in self.mates}
+        used = {i["id"] for i in self.instances} | {m["id"] for m in self.mates} | {g["id"] for g in self.groups}
+        used |= {r["id"] for r in self.relations}
         while f"{prefix}{self._counter}" in used:
             self._counter += 1
         return f"{prefix}{self._counter}"
@@ -486,11 +657,14 @@ class AssemblyDoc:
 
     # ------------------------------------------------------------------ undo / redo
     def _snapshot(self):
-        return json.dumps({"instances": self.instances, "mates": self.mates, "name": self.name})
+        return json.dumps({"instances": self.instances, "mates": self.mates, "name": self.name,
+                           "groups": self.groups, "relations": self.relations})
 
     def _restore(self, snap):
         d = json.loads(snap)
         self.instances, self.mates = d["instances"], d["mates"]
+        self.groups = d.get("groups", [])
+        self.relations = d.get("relations", [])
 
     def checkpoint(self):
         self._undo.append(self._snapshot())
@@ -760,12 +934,53 @@ class AssemblyDoc:
         self.mates = [m for m in self.mates if m["a"]["inst"] not in ids and m["b"]["inst"] not in ids]
         for i in ids:
             self.parts.pop(i, None)
+        for g in self.groups:
+            g["instances"] = [i for i in g["instances"] if i not in ids]
+        self.groups = [g for g in self.groups if len(g["instances"]) >= 2]   # a group needs two members
+        self.solve()
+        self.notify()
+
+    def group_of(self, iid):
+        """The group an instance belongs to, or None."""
+        return next((g for g in self.groups if iid in g["instances"]), None)
+
+    def add_group(self, instance_ids):
+        """Make a group of instances: they move as one rigid body in the solver. Returns the group id."""
+        ids = list(dict.fromkeys(instance_ids))
+        if len(ids) < 2:
+            raise ValueError("A group needs at least two instances")
+        for iid in ids:
+            if self.instance(iid) is None:
+                raise ValueError(f"No instance {iid}")
+            g = self.group_of(iid)
+            if g is not None:
+                raise ValueError(f"{self.instance(iid)['name']} is already in {g['name']}")
+        self.checkpoint()
+        used = {int("".join(c for c in g["name"] if c.isdigit()) or 0) for g in self.groups}
+        n = 1
+        while n in used:
+            n += 1
+        gid = self.new_id("G")
+        self.groups.append({"id": gid, "name": f"Group {n}", "instances": ids})
+        self.solve()
+        self.notify()
+        return gid
+
+    def delete_group(self, gid):
+        """Dissolve a group; its instances stay where they are."""
+        if not any(g["id"] == gid for g in self.groups):
+            raise ValueError(f"No group {gid}")
+        self.checkpoint()
+        self.groups = [g for g in self.groups if g["id"] != gid]
         self.solve()
         self.notify()
 
     def delete_mates(self, ids):
         self.checkpoint()
         self.mates = [m for m in self.mates if m["id"] not in set(ids)]
+        for r in self.relations:                  # a relation stays, inert, when one of its mates goes (I2.3/I2.5)
+            if r["a"]["mate"] in set(ids) or r["b"]["mate"] in set(ids):
+                r["phase"] = None
         self._update_status()
         self.notify()
 
@@ -853,11 +1068,133 @@ class AssemblyDoc:
         while f"{label} {n}" in names:
             n += 1
         return {"id": self.new_id("M"), "type": mtype, "name": f"{label} {n}", "a": None, "b": None,
-                "flip": False, "offset": 0.0, "angle": 0.0, "suppressed": False}
+                "flip": False, "offset": 0.0, "angle": 0.0, "suppressed": False, "values": {}}
+
+    def _update_mate_values(self, mates, fill_only=False):
+        """Measure each mate's Mate values from the current pose and store them. A rotation is unwrapped to
+        the turn nearest its stored value, so turns past 180 degrees are counted; a missing value (or one
+        being filled for the first time) is the wrapped measure. fill_only keeps mates that already have values."""
+        for m in mates:
+            if not m.get("a") or not m.get("b") or (fill_only and m.get("values")):
+                continue
+            if m["type"] not in MATE_VALUE_DOFS:
+                continue
+            try:
+                new = mate_values(m, self.world_frame(m["a"]), self.world_frame(m["b"]))
+            except Exception:
+                continue
+            old = m.get("values") or {}
+            m["values"] = {n: (float(old[n]) + _wrap_deg(v - float(old[n])) if n.startswith("r") and n in old else v)
+                           for n, v in new.items()}
+
+    def set_limits(self, mid, dof, lo, hi):
+        """Limit one freedom of a mate to [lo, hi] (either end None for no bound; both None removes the limit).
+        Values are unwrapped Mate values, so a rotation limit may span more than one turn."""
+        m = self.mate(mid)
+        if m is None:
+            raise ValueError(f"No mate {mid}")
+        names = MATE_VALUE_DOFS.get(m["type"], ())
+        if not names:
+            raise ValueError(f"A {m['type']} mate has no freedoms to limit")
+        if dof not in names:
+            raise ValueError(f"A {m['type']} mate has no freedom {dof!r}; it has {', '.join(names)}")
+        lo = None if lo is None else float(lo)
+        hi = None if hi is None else float(hi)
+        if lo is not None and hi is not None and lo > hi:
+            raise ValueError(f"Limit minimum {lo} is above maximum {hi}")
+        self.checkpoint()
+        limits = dict(m.get("limits") or {})
+        if lo is None and hi is None:
+            limits.pop(dof, None)
+        else:
+            limits[dof] = [lo, hi]
+        if limits:
+            m["limits"] = limits
+        else:
+            m.pop("limits", None)
+        self.solve()
+        self.notify()
+
+    def _hold_residuals(self, m, FA, FB, L):
+        """Residuals holding mate m's active limits (self._limit_holds) at their bounds. A rotation is measured
+        unwrapped against the stored value, as _update_mate_values does, and counted in mm of arc."""
+        holds = self._limit_holds.get(m["id"])
+        if not holds:
+            return np.zeros(0)
+        new = mate_values(m, FA, FB)
+        stored = m.get("values") or {}
+        out = []
+        for dof, bound in holds.items():
+            v = new[dof]
+            if dof.startswith("r"):
+                if dof in stored:
+                    v = float(stored[dof]) + _wrap_deg(v - float(stored[dof]))
+                out.append(np.radians(v - bound) * L)
+            else:
+                out.append(v - bound)
+        return np.array(out, float)
+
+    @staticmethod
+    def _limit_violations(mates, holds):
+        """{mate id: {dof: nearer bound}} for each limited freedom outside its range that is not already held.
+        Compares the stored (unwrapped) Mate values, so call it after _update_mate_values."""
+        out = {}
+        for m in mates:
+            vals = m.get("values") or {}
+            for dof, (lo, hi) in (m.get("limits") or {}).items():
+                if dof not in vals or dof in holds.get(m["id"], {}):
+                    continue
+                v = float(vals[dof])
+                if lo is not None and v < float(lo) - 1e-9:
+                    out.setdefault(m["id"], {})[dof] = float(lo)
+                elif hi is not None and v > float(hi) + 1e-9:
+                    out.setdefault(m["id"], {})[dof] = float(hi)
+        return out
+
+    def _enforce_limits(self, mates, iters=40, keep=None, drag=None):
+        """Active-set limit enforcement after a solve that has already run over `mates` and stored their values.
+        Each round holds every newly violated freedom at its nearer bound and solves again, for at most as many
+        rounds as there are limited freedoms. With no limits on `mates` it does nothing at all. A round whose solve
+        leaves a mate unsatisfied is undone and enforcement stops; the mates whose limits were in that round go
+        into self._limit_failed for solve() to report as conflicts. While drive_mate holds a step value, the
+        rounds solve without it, so an active limit stops the drive. Returns the holds that ended active,
+        {mate id: {dof: bound}}."""
+        self._limit_failed = set()
+        limited = sum(len(m.get("limits") or {}) for m in mates)
+        if not limited:
+            return {}
+        holds: dict = {}
+        drive = self._drive
+        try:
+            for _round in range(limited):
+                new = self._limit_violations(mates, holds)
+                if not new:
+                    break
+                trial = {k: dict(v) for k, v in holds.items()}
+                for mid, d in new.items():
+                    trial.setdefault(mid, {}).update(d)
+                before = {i["id"]: list(i["T"]) for i in self.instances}
+                self._limit_holds = trial
+                self._drive = None
+                bad = self._solve_core(mates, drag, iters, keep)
+                self._drive = drive
+                if bad:
+                    for i in self.instances:
+                        i["T"] = before[i["id"]]
+                    self._limit_failed = set(new)
+                    break
+                holds = trial
+                self._limit_holds = {}
+                self._update_mate_values(mates)
+        finally:
+            self._limit_holds = {}
+            self._drive = drive
+        return holds
 
     def add_mate(self, m, checkpoint=True):
         if checkpoint:
             self.checkpoint()
+        m["values"] = {}
         self.mates.append(m)
         self.place_for_mate(m)
         self.solve()
@@ -865,12 +1202,276 @@ class AssemblyDoc:
 
     def replace_mate(self, m):
         self.checkpoint()
+        m["values"] = {}          # editing a mate resets its values to the measured pose (ADR 0005)
         for i, old in enumerate(self.mates):
             if old["id"] == m["id"]:
                 self.mates[i] = m
+        touched = [r for r in self.relations if m["id"] in (r["a"]["mate"], r["b"]["mate"])]
+        for r in touched:
+            r["phase"] = None     # ...and recaptures the phase of its relations, after the solve
         self.place_for_mate(m)
         self.solve()
+        for r in touched:
+            self._capture_phase(r)
         self.notify()
+
+    # ------------------------------------------------------------------ driving a mate to a value
+    _drive = None        # (mate id, freedom, value) while drive_mate holds one freedom at a step value
+
+    def _drive_residual(self, m, FA, FB, L):
+        """The hook drive_mate uses: one extra residual holding a freedom of mate m at the step value
+        (rotations in mm of arc at the part's size, like the mate residuals). Empty when nothing is driven."""
+        if self._drive is None or self._drive[0] != m["id"]:
+            return np.zeros(0)
+        _mid, dof, value = self._drive
+        d = mate_values(m, FA, FB)[dof] - value
+        if dof.startswith("r"):
+            return np.array([np.radians(_wrap_deg(d)) * L])
+        return np.array([d])
+
+    def _drive_steps(self, m, dof, target):
+        """Move freedom `dof` of mate m towards `target` in steps of at most 30 degrees or 0.25 x length_scale()
+        mm, each solved with the freedom held at the step value. Stops at the last step that held, with the
+        poses and values of that step. Returns (reached value, ok). No checkpoint, no notify: callers add
+        their own (Set value, limits, Animate)."""
+        if not m.get("values"):
+            self._update_mate_values([m], fill_only=True)
+        cur = float((m.get("values") or {}).get(dof, 0.0))
+        step = 30.0 if dof.startswith("r") else 0.25 * self.length_scale()
+        n = max(1, int(np.ceil(abs(target - cur) / step - 1e-9))) if target != cur else 0
+        ok, at_limit = True, False
+        try:
+            for k in range(1, n + 1):
+                want = cur + (target - cur) * k / n
+                poses = {i["id"]: list(i["T"]) for i in self.instances}
+                held = dict(m["values"])
+                self._drive = (m["id"], dof, want)
+                solved = self.solve()
+                got = float(m["values"].get(dof, want))
+                # a relation left out of the solve doesn't stop the drive: the others still hold
+                rel_only = bool(self._conflicts) and all(self.relation(c) is not None for c in self._conflicts)
+                if (solved or rel_only) and m["id"] not in self._conflicts and abs(got - want) < 1e-5:
+                    continue
+                if (solved or rel_only) and m["id"] not in self._conflicts and self._limits_active:
+                    ok = False        # a limit holds the motion here: keep this pose, it is the limit position
+                    at_limit = True
+                    break
+                for i in self.instances:
+                    i["T"] = poses[i["id"]]
+                m["values"] = held
+                ok = False
+                break
+        finally:
+            self._drive = None
+        if not ok and not at_limit:
+            self.solve()          # settle errors and status at the last step that held
+        else:
+            self._update_status()  # the last step's status counted the drive residual; recount without it
+        return float(m["values"].get(dof, cur)), ok
+
+    def drive_mate(self, mid, dof, target):
+        """Move freedom `dof` of mate `mid` to `target` (degrees or mm, a turn past 180 counts) while every other
+        mate stays enforced. Returns (reached value, ok); ok is False when a step could not hold and the
+        motion stopped at the last one that did. One undo checkpoint, one notify."""
+        m = next((x for x in self.mates if x["id"] == mid), None)
+        if m is None:
+            raise ValueError(f"No mate {mid!r}")
+        if dof not in MATE_VALUE_DOFS.get(m["type"], ()):
+            raise ValueError(f"Mate {mid!r} ({m['type']}) has no freedom {dof!r}")
+        self.checkpoint()
+        out = self._drive_steps(m, dof, float(target))
+        self.notify()
+        return out
+
+    # ------------------------------------------------------------------ animate
+    def begin_animate(self):
+        """Remember instance transforms and mate values so end_animate can put them back. No undo checkpoint.
+        A second call while an animation is open keeps the first snapshot."""
+        if getattr(self, "_animate", None) is not None:
+            return
+        self._animate = {
+            "T": {i["id"]: json.dumps(i["T"]) for i in self.instances},
+            "values": {m["id"]: json.dumps(m.get("values")) for m in self.mates},
+            "errors": dict(self.errors), "conflicts": set(self._conflicts), "dof": self.dof, "dirty": self.dirty,
+        }
+
+    def animate_frame(self, mid, dof, value):
+        """Pose mate `mid` at `value` through the drive stepping. No checkpoint. Returns the value reached,
+        which differs from `value` when a step could not hold. Notifies so views redraw."""
+        m = self.mate(mid)
+        if m is None:
+            raise ValueError(f"No mate {mid!r}")
+        if dof not in MATE_VALUE_DOFS.get(m["type"], ()):
+            raise ValueError(f"Mate {mid!r} ({m['type']}) has no freedom {dof!r}")
+        self.begin_animate()
+        reached, _ok = self._drive_steps(m, dof, float(value))
+        self.notify()
+        return reached
+
+    def end_animate(self):
+        """Put back what begin_animate saw, exactly, and notify. Does nothing when no animation is open.
+        Relations are not touched, and the undo stack is not either."""
+        snap = getattr(self, "_animate", None)
+        if snap is None:
+            return
+        self._animate = None
+        for i in self.instances:
+            if i["id"] in snap["T"]:
+                i["T"] = json.loads(snap["T"][i["id"]])
+        for m in self.mates:
+            if m["id"] in snap["values"]:
+                m["values"] = json.loads(snap["values"][m["id"]])
+        self.errors, self._conflicts = snap["errors"], snap["conflicts"]
+        self.dof, self.dirty = snap["dof"], snap["dirty"]
+        self.notify()
+
+    # ------------------------------------------------------------------ relations (ADR 0005)
+    def relation(self, rid):
+        return next((r for r in self.relations if r["id"] == rid), None)
+
+    def make_relation(self, rtype):
+        """A new, unattached relation of a type in RELATION_TYPES; fill "a" and "b" ({"mate", "dof"}) and add it."""
+        label = RELATION_TYPES[rtype]["label"]
+        names = {r["name"] for r in self.relations}
+        n = 1
+        while f"{label} {n}" in names:
+            n += 1
+        return {"id": self.new_id("R"), "type": rtype, "name": f"{label} {n}", "a": None, "b": None,
+                "ratio": 1.0, "reverse": False, "phase": 0.0, "suppressed": False}
+
+    def _check_relation(self, r):
+        """Raise ValueError unless r names two existing mate freedoms of the kinds its type accepts."""
+        spec = RELATION_TYPES.get(r.get("type"))
+        if spec is None:
+            raise ValueError(f"Unknown relation type {r.get('type')!r}")
+        for side in ("a", "b"):
+            ref = r.get(side) or {}
+            m = self.mate(ref.get("mate"))
+            if m is None:
+                raise ValueError(f"Relation side {side} names no mate")
+            if ref.get("dof") not in MATE_VALUE_DOFS.get(m["type"], ()):
+                raise ValueError(f"Mate {m['name']!r} ({m['type']}) has no freedom {ref.get('dof')!r}")
+            if dof_kind(ref["dof"]) != spec[side]:
+                raise ValueError(f"A {spec['label']} relation needs a {spec[side]} on side {side}, "
+                                 f"not {ref['dof']!r} of mate {m['name']!r}")
+        if spec.get("same_mate") and r["a"]["mate"] != r["b"]["mate"]:
+            raise ValueError(f"A {spec['label']} relation needs both sides on one mate")
+        if (r["a"]["mate"], r["a"]["dof"]) == (r["b"]["mate"], r["b"]["dof"]):
+            raise ValueError("A relation needs two different freedoms")
+        ratio = float(r.get("ratio", 1.0))
+        if not np.isfinite(ratio) or ratio == 0.0:
+            raise ValueError("The ratio must be a non-zero number")
+
+    def _capture_phase(self, r):
+        """Set r's phase so it holds at the current stored Mate values: nothing moves (ADR 0005). Leaves the
+        phase None (the relation inert) while either freedom has no value yet."""
+        ma, mb = self.mate(r["a"]["mate"]), self.mate(r["b"]["mate"])
+        if ma is None or mb is None:
+            r["phase"] = None
+            return
+        self._update_mate_values([ma, mb], fill_only=True)
+        va, vb = (ma.get("values") or {}).get(r["a"]["dof"]), (mb.get("values") or {}).get(r["b"]["dof"])
+        if va is None or vb is None:
+            r["phase"] = None
+            return
+        sign = -1.0 if r.get("reverse") else 1.0
+        r["phase"] = float(vb) - sign * relation_ratio(r) * float(va)
+
+    def add_relation(self, r, checkpoint=True):
+        """Add a relation, capturing its phase from the current values; no instance moves."""
+        self._check_relation(r)
+        if checkpoint:
+            self.checkpoint()
+        r["ratio"] = float(r.get("ratio", 1.0))
+        self._capture_phase(r)
+        self.relations.append(r)
+        self.notify()
+
+    def replace_relation(self, r):
+        """Replace the relation with r's id (an edit), recapturing the phase; no instance moves."""
+        if self.relation(r["id"]) is None:
+            raise ValueError(f"No relation {r['id']!r}")
+        self._check_relation(r)
+        self.checkpoint()
+        r["ratio"] = float(r.get("ratio", 1.0))
+        self._capture_phase(r)
+        self.relations = [r if x["id"] == r["id"] else x for x in self.relations]
+        self.notify()
+
+    def set_relation_suppressed(self, rid, value):
+        """Suppress or unsuppress a relation. Unsuppressing recaptures the phase, so nothing moves."""
+        r = self.relation(rid)
+        if r is None:
+            raise ValueError(f"No relation {rid!r}")
+        self.checkpoint()
+        r["suppressed"] = bool(value)
+        if not r["suppressed"]:
+            self._capture_phase(r)
+        self.notify()
+
+    def delete_relation(self, rid):
+        if self.relation(rid) is None:
+            raise ValueError(f"No relation {rid!r}")
+        self.checkpoint()
+        self.relations = [r for r in self.relations if r["id"] != rid]
+        self.notify()
+
+    def _relation_value(self, m, dof, Ts, frames):
+        """Freedom `dof` of mate m measured at trial poses Ts, a rotation unwrapped to the turn nearest
+        its stored value (as _update_mate_values does after a solve)."""
+        FA = transform_frame(Ts[m["a"]["inst"]], frames[m["id"]][0])
+        FB = transform_frame(Ts[m["b"]["inst"]], frames[m["id"]][1])
+        v = mate_values(m, FA, FB)[dof]
+        old = (m.get("values") or {}).get(dof)
+        if dof_kind(dof) == "rotation" and old is not None:
+            v = float(old) + _wrap_deg(v - float(old))
+        return v
+
+    def _relation_residuals(self, mates, Ts, frames, L):
+        """The hook relations use: one residual per active relation whose two mates are both in `mates`,
+        value_b - (sign x ratio x value_a + phase) in b's unit, scaled to mm by DOF_KINDS. Empty without relations."""
+        if not self.relations:
+            return np.zeros(0)
+        by_id = {m["id"]: m for m in mates}
+        out = []
+        for r in self.relations:
+            if r.get("suppressed") or r.get("phase") is None or not r.get("a") or not r.get("b"):
+                continue
+            if self._rel_filter is not None and r["id"] not in self._rel_filter:
+                continue
+            ma, mb = by_id.get(r["a"]["mate"]), by_id.get(r["b"]["mate"])
+            if ma is None or mb is None:
+                continue
+            da, db = r["a"]["dof"], r["b"]["dof"]
+            if da not in MATE_VALUE_DOFS.get(ma["type"], ()) or db not in MATE_VALUE_DOFS.get(mb["type"], ()):
+                continue
+            sign = -1.0 if r.get("reverse") else 1.0
+            va = self._relation_value(ma, da, Ts, frames)
+            vb = self._relation_value(mb, db, Ts, frames)
+            out.append((vb - (sign * relation_ratio(r) * va + float(r["phase"]))) * DOF_KINDS[dof_kind(db)]["scale"](L))
+        return np.array(out, float)
+
+    def _relations_in(self, ids, fn):
+        """Run fn() with only the relations in `ids` given a residual."""
+        old, self._rel_filter = self._rel_filter, set(ids)
+        try:
+            return fn()
+        finally:
+            self._rel_filter = old
+
+    def _relation_left_out(self, r, mates):
+        """Error text when relation r can't be used because a mate of it is missing, suppressed or itself in
+        conflict (the relation is then inert and the text names that mate); else None."""
+        for end in ("a", "b"):
+            mid = (r.get(end) or {}).get("mate")
+            m = self.mate(mid) if mid else None
+            if m is None:
+                return f"Left out: its mate {mid or '?'} no longer exists"
+            if m.get("suppressed"):
+                return f"Left out: its mate {m['name']} is suppressed"
+            if m["id"] in self._conflicts or m["id"] in self.errors or all(x["id"] != m["id"] for x in mates):
+                return f"Left out: its mate {m['name']} can't be solved or is not in use"
+        return None
 
     # ------------------------------------------------------------------ solving
     def _groups(self, exclude=None):
@@ -888,6 +1489,10 @@ class AssemblyDoc:
             a, b = m["a"]["inst"], m["b"]["inst"]
             if a in parent and b in parent:
                 parent[find(a)] = find(b)
+        for g in self.groups:                       # a group is one body, whatever mates it has
+            ids = [i for i in g["instances"] if i in parent]
+            for i in ids[1:]:
+                parent[find(i)] = find(ids[0])
         groups = {}
         for iid in parent:
             groups.setdefault(find(iid), set()).add(iid)
@@ -921,6 +1526,14 @@ class AssemblyDoc:
             inst["T"] = orthonormalize(M @ np.array(inst["T"], float)).tolist()
 
     def _active_mates(self):
+        # a mate between two members of one group can't move either of them: leave it out and say why
+        for k in [k for k, v in self.errors.items() if v.startswith("Both ends are in ")]:
+            self.errors.pop(k)
+        for m in self.mates:
+            if m.get("a") and m.get("b"):
+                g = self.group_of(m["a"]["inst"])
+                if g is not None and m["b"]["inst"] in g["instances"]:
+                    self.errors[m["id"]] = f"Both ends are in {g['name']}, which moves as one body"
         return [m for m in self.mates if not m.get("suppressed") and m.get("a") and m.get("b")
                 and m["a"]["inst"] in self.parts and m["b"]["inst"] in self.parts
                 and m["id"] not in self.errors]
@@ -931,6 +1544,10 @@ class AssemblyDoc:
             FA = transform_frame(Ts[m["a"]["inst"]], frames[m["id"]][0])
             FB = transform_frame(Ts[m["b"]["inst"]], frames[m["id"]][1])
             out.append(mate_residuals(m, FA, FB, L))
+            out.append(self._drive_residual(m, FA, FB, L))
+            if self._limit_holds:
+                out.append(self._hold_residuals(m, FA, FB, L))
+        out.append(self._relation_residuals(mates, Ts, frames, L))
         return np.concatenate(out) if out else np.zeros(0)
 
     def solve(self, drag=None, iters=40, keep=None):
@@ -938,16 +1555,28 @@ class AssemblyDoc:
         drag: {"inst", "local" point, "target" world point, "P" 2x3 screen-plane projector} — the dragged part
         follows the target as far as the mates allow. keep: an instance that should not move if avoidable.
         Mates that can't hold together with the earlier ones are left out (and shown red), like Onshape."""
+        self._rel_filter = None
         for k in [k for k, v in self.errors.items() if v.startswith("Can't be solved")]:
+            self.errors.pop(k)
+        for k in [k for k, v in self.errors.items() if v.startswith("Limit can't be met")]:
             self.errors.pop(k)
         mates = self._active_mates()
         if drag is not None:
-            self._solve_core([m for m in mates if m["id"] not in self._conflicts], drag, iters, keep)
+            live = [m for m in mates if m["id"] not in self._conflicts]
+            self._rel_filter = {r["id"] for r in self.relations if r["id"] not in self._conflicts}
+            try:
+                self._solve_core(live, drag, iters, keep)
+                self._update_mate_values(live)
+                self._enforce_limits(live, iters, keep, drag)      # limit rounds use the same relation set
+            finally:
+                self._rel_filter = None
             self._update_status()
             return True
         before = {i["id"]: list(i["T"]) for i in self.instances}
         bad = self._solve_core(mates, None, iters, keep)
         self._conflicts = set()
+        if bad:
+            self._rel_filter = set()        # the mates are re-added without relations; relations follow below
         if bad and len(mates) > 1:
             # find the culprits: add the mates one at a time, keeping each one that still solves
             for i in self.instances:
@@ -961,28 +1590,60 @@ class AssemblyDoc:
                     self._conflicts.add(m["id"])
                 else:
                     good.append(m)
+        if bad and self.relations:
+            # relations: re-add them one at a time on top of the mates that held, keeping each that still solves
+            for i in self.instances:
+                i["T"] = before[i["id"]]
+            held = [m for m in mates if m["id"] not in self._conflicts]
+            self._solve_core(held, None, iters, keep)
+            rels = [r for r in self.relations if not r.get("suppressed") and r.get("phase") is not None
+                    and self._relation_left_out(r, held) is None]
+            kept = set()
+            for r in rels:
+                snap = {i["id"]: list(i["T"]) for i in self.instances}
+                self._rel_filter = kept | {r["id"]}
+                if self._solve_core(held, None, iters, keep):
+                    for i in self.instances:
+                        i["T"] = snap[i["id"]]
+                    self._conflicts.add(r["id"])
+                else:
+                    kept.add(r["id"])
+            self._rel_filter = kept
+            self._solve_core(held, None, iters, keep)
+        self._update_mate_values([m for m in mates if m["id"] not in self._conflicts])
+        self._limits_active = bool(self._enforce_limits([m for m in mates if m["id"] not in self._conflicts], iters, keep))
+        for mid in self._limit_failed:         # a limit that cannot be met with the other mates (I5.2)
+            self._conflicts.add(mid)
+            self.errors[mid] = "Limit can't be met together with the other mates"
         self._update_status()
+        self._rel_filter = None
         return not self._conflicts and not bad
 
     def _solve_core(self, mates, drag, iters, keep):
         """One least-squares solve over the given mates. Returns the ids of mates left unsatisfied."""
-        fixed = {i["id"] for i in self.instances if i.get("fixed")}
+        # a group is one body: its members share one set of six variables, and one fixed member fixes all
+        gkey = {iid: g["id"] for g in self.groups for iid in g["instances"]}
+        body = lambda iid: gkey.get(iid, iid)
+        fixed = {body(i["id"]) for i in self.instances if i.get("fixed")}
         involved = set()
         for m in mates:
-            involved |= {m["a"]["inst"], m["b"]["inst"]}
+            involved |= {body(m["a"]["inst"]), body(m["b"]["inst"])}
         if drag is not None:
-            involved.add(drag["inst"])
-        free = [i["id"] for i in self.instances if i["id"] in involved and i["id"] not in fixed
-                and i["id"] in self.parts]
+            involved.add(body(drag["inst"]))
+        members: dict = {}
+        for i in self.instances:
+            if i["id"] in self.parts:
+                members.setdefault(body(i["id"]), []).append(i["id"])
+        free = [k for k in members if k in involved and k not in fixed]
         L = self.length_scale()
         frames = {m["id"]: (frame_from_json(m["a"]["frame"]), frame_from_json(m["b"]["frame"])) for m in mates}
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
         if not free:
             return self._failing(mates, Ts, frames, L)
         pivots = {}
-        for iid in free:
-            a, b = K.bbox(self.world_shape(iid))
-            pivots[iid] = (a + b) / 2
+        for key in free:
+            boxes = [K.bbox(self.world_shape(iid)) for iid in members[key]]
+            pivots[key] = (np.min([b[0] for b in boxes], axis=0) + np.max([b[1] for b in boxes], axis=0)) / 2
         n = 6 * len(free)
         # rotations are measured in mm of arc at the part's size, and cost a little more than sliding
         # (while dragging, much more: parts should slide with the mouse and only turn when a mate makes them)
@@ -991,20 +1652,21 @@ class AssemblyDoc:
         cost = np.ones(n)
         for k, iid in enumerate(free):
             cost[6 * k:6 * k + 3] = rot_cost
-            if keep is not None and iid == keep:
+            if keep is not None and iid == body(keep):
                 cost[6 * k:6 * k + 6] *= 50.0
 
         def apply(Ts0, x):
             out = dict(Ts0)
-            for k, iid in enumerate(free):
+            for k, key in enumerate(free):
                 w = x[6 * k:6 * k + 3] / L
                 v = x[6 * k + 3:6 * k + 6]
-                c = pivots[iid]
+                c = pivots[key]
                 R = rodrigues(w)
                 D = np.eye(4)
                 D[:3, :3] = R
                 D[:3, 3] = c - R @ c + v
-                out[iid] = D @ Ts0[iid]
+                for iid in members[key]:
+                    out[iid] = D @ Ts0[iid]
             return out
 
         def drag_res(Ts_):
@@ -1104,8 +1766,9 @@ class AssemblyDoc:
                     alpha *= 0.5
                 if not ok:
                     break
-        for iid in free:
-            self.instance(iid)["T"] = orthonormalize(cur[iid]).tolist()
+        for key in free:
+            for iid in members[key]:
+                self.instance(iid)["T"] = orthonormalize(cur[iid]).tolist()
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
         return self._failing(mates, Ts, frames, L)
 
@@ -1119,7 +1782,7 @@ class AssemblyDoc:
 
     def _update_status(self, Ts=None, mates=None, frames=None, L=None):
         """Per-mate 'holds or not' and the remaining degrees of freedom."""
-        for k in [k for k, v in self.errors.items() if v.startswith("Can't be solved")]:
+        for k in [k for k, v in self.errors.items() if v.startswith(("Can't be solved", "Left out:"))]:
             self.errors.pop(k)
         mates = self._active_mates() if mates is None else mates
         L = self.length_scale() if L is None else L
@@ -1127,12 +1790,33 @@ class AssemblyDoc:
                             for m in mates}
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
         for m in mates:
-            r = self._residuals([m], Ts, frames, L)
+            r = self._relations_in((), lambda: self._residuals([m], Ts, frames, L))
             if len(r) and float(np.linalg.norm(r)) > 1e-4 * max(L, 1):
                 self.errors[m["id"]] = "Can't be solved together with the other mates (shown red)"
+        # relations: one that can't be used names its mate; one that is used must hold
+        live_rels = []
+        for rel in self.relations:
+            if rel.get("suppressed"):
+                continue
+            why = self._relation_left_out(rel, mates)
+            if why is not None:
+                self.errors[rel["id"]] = why
+            elif rel.get("phase") is not None:
+                r = self._relations_in({rel["id"]}, lambda: self._relation_residuals(mates, Ts, frames, L))
+                if rel["id"] in self._conflicts or (len(r) and float(np.linalg.norm(r)) > 1e-4 * max(L, 1)):
+                    self.errors[rel["id"]] = "Can't be solved together with the mates and relations (shown red)"
+                else:
+                    live_rels.append(rel["id"])
         # degrees of freedom of the free instances
-        fixed = {i["id"] for i in self.instances if i.get("fixed")}
-        free = [i["id"] for i in self.instances if i["id"] not in fixed and i["id"] in self.parts]
+        # a group is one body: one set of six variables, and one fixed member fixes the whole group
+        gkey = {iid: g["id"] for g in self.groups for iid in g["instances"]}
+        body = lambda iid: gkey.get(iid, iid)
+        fixed = {body(i["id"]) for i in self.instances if i.get("fixed")}
+        members: dict = {}
+        for i in self.instances:
+            if i["id"] in self.parts and body(i["id"]) not in fixed:
+                members.setdefault(body(i["id"]), []).append(i["id"])
+        free = list(members)
         n = 6 * len(free)
         if n == 0:
             self.dof = 0
@@ -1143,14 +1827,15 @@ class AssemblyDoc:
             return
         idx = {iid: k for k, iid in enumerate(free)}
         pivots = {}
-        for iid in free:
-            s = self.world_shape(iid)
-            a, b = K.bbox(s) if s is not None else (np.zeros(3), np.zeros(3))
-            pivots[iid] = (a + b) / 2
-        r0 = self._residuals(ok, Ts, frames, L)
+        for key in free:
+            boxes = [K.bbox(s) if s is not None else (np.zeros(3), np.zeros(3))
+                     for s in (self.world_shape(iid) for iid in members[key])]
+            pivots[key] = (np.min([b[0] for b in boxes], axis=0) + np.max([b[1] for b in boxes], axis=0)) / 2
+        resid = lambda T: self._relations_in(live_rels, lambda: self._residuals(ok, T, frames, L))
+        r0 = resid(Ts)
         J = np.zeros((len(r0), n))
         h = 1e-6 * L
-        for iid, k in idx.items():
+        for key, k in idx.items():
             for j in range(6):
                 T2 = dict(Ts)
                 if j < 3:
@@ -1159,12 +1844,13 @@ class AssemblyDoc:
                     R = rodrigues(w)
                     D = np.eye(4)
                     D[:3, :3] = R
-                    D[:3, 3] = pivots[iid] - R @ pivots[iid]
+                    D[:3, 3] = pivots[key] - R @ pivots[key]
                 else:
                     D = np.eye(4)
                     D[j - 3, 3] = h
-                T2[iid] = D @ Ts[iid]
-                J[:, 6 * k + j] = (self._residuals(ok, T2, frames, L) - r0) / h
+                for iid in members[key]:
+                    T2[iid] = D @ Ts[iid]
+                J[:, 6 * k + j] = (resid(T2) - r0) / h
         sv = np.linalg.svd(J, compute_uv=False) if J.size else np.zeros(0)
         rank = int(np.sum(sv > 1e-6 * (sv[0] if len(sv) else 1)))
         self.dof = n - rank
@@ -1174,16 +1860,28 @@ class AssemblyDoc:
         inst = self.instance(iid)
         if inst is None or inst.get("fixed"):
             return 0
-        mates = [m for m in self._active_mates() if iid in (m["a"]["inst"], m["b"]["inst"])
-                 and m["id"] not in self.errors]
+        g = self.group_of(iid)
+        ids = list(g["instances"]) if g is not None else [iid]     # a group moves as one body
+        if any((self.instance(i) or {}).get("fixed") for i in ids):
+            return 0
+        ids = [i for i in ids if i in self.parts] or [iid]
+        allok = [m for m in self._active_mates() if m["id"] not in self.errors]
+        mates = [m for m in allok if (m["a"]["inst"] in ids or m["b"]["inst"] in ids)]
         if not mates:
             return 6
         L = self.length_scale()
-        frames = {m["id"]: (frame_from_json(m["a"]["frame"]), frame_from_json(m["b"]["frame"])) for m in mates}
+        frames = {m["id"]: (frame_from_json(m["a"]["frame"]), frame_from_json(m["b"]["frame"])) for m in allok}
+        # active relations on this instance's mates; the other end's mate is measured with its part held still
+        rels = [r["id"] for r in self.relations
+                if r["id"] not in self.errors and r["id"] not in self._conflicts
+                and {r["a"]["mate"], r["b"]["mate"]} & {m["id"] for m in mates}]
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
-        a, b = K.bbox(self.world_shape(iid))
-        c = (a + b) / 2
-        r0 = self._residuals(mates, Ts, frames, L)
+        boxes = [K.bbox(self.world_shape(i)) for i in ids]
+        c = (np.min([b[0] for b in boxes], axis=0) + np.max([b[1] for b in boxes], axis=0)) / 2
+        resid = lambda T: np.concatenate([
+            self._relations_in((), lambda: self._residuals(mates, T, frames, L)),
+            self._relations_in(rels, lambda: self._relation_residuals(allok, T, frames, L))])
+        r0 = resid(Ts)
         J = np.zeros((len(r0), 6))
         h = 1e-6 * L
         for j in range(6):
@@ -1198,8 +1896,9 @@ class AssemblyDoc:
             else:
                 D = np.eye(4)
                 D[j - 3, 3] = h
-            T2[iid] = D @ Ts[iid]
-            J[:, j] = (self._residuals(mates, T2, frames, L) - r0) / h
+            for i in ids:
+                T2[i] = D @ Ts[i]
+            J[:, j] = (resid(T2) - r0) / h
         sv = np.linalg.svd(J, compute_uv=False)
         return 6 - int(np.sum(sv > 1e-6 * (sv[0] if len(sv) else 1)))
 
@@ -1290,7 +1989,8 @@ class AssemblyDoc:
                             pass
         used = {i["source"]["blob"] for i in self.instances if i["source"].get("kind") == "step"}
         return json.dumps({"format": FILE_FORMAT, "version": M.latest_version("assembly"), "name": self.name,
-                           "uid": self.uid, "instances": insts, "mates": self.mates,
+                           "uid": self.uid, "instances": insts, "mates": self.mates, "groups": self.groups,
+                           "relations": self.relations,
                            "blobs": {k: v for k, v in self.blobs.items() if k in used}}, indent=1)
 
     def save(self, path=None):
@@ -1314,6 +2014,8 @@ class AssemblyDoc:
         a.uid = d.get("uid") or a.uid
         a.instances = d.get("instances", [])
         a.mates = d.get("mates", [])
+        a.groups = d.get("groups", [])
+        a.relations = d.get("relations", [])
         a.blobs = d.get("blobs", {})
         a.path = path
         base = os.path.dirname(os.path.abspath(path))
@@ -1323,8 +2025,9 @@ class AssemblyDoc:
                 cand = os.path.normpath(os.path.join(base, src["relpath"]))
                 if os.path.exists(cand):
                     src["path"] = cand
-        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0) for x in a.instances + a.mates]
+        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0) for x in a.instances + a.mates + a.groups + a.relations]
         a._counter = max(nums + [0])
         a.resolver = resolver
         a.refresh(solve=False, notify=False)
+        a._update_mate_values(a.mates, fill_only=True)   # files from before Mate values were stored
         return a

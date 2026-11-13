@@ -1,0 +1,246 @@
+# The harness gate on GitHub's runners: the four capabilities in harness.jsonc (build, lint, test, e2e),
+# each on both OCP venvs, inside the image built from Dockerfile.harness. It is the same gate that
+# bin/fs-gate runs on the dev box, so a branch can be pushed and waited on instead of queueing locally.
+#
+#   prepare  reads the commands out of harness.jsonc and makes sure the image exists on GHCR
+#            (ghcr.io/<owner>/freeshape-harness:<sha256 of Dockerfile.harness, 16 chars>). It builds and
+#            pushes only when that tag is missing, so a Dockerfile.harness change is what rebuilds it.
+#   check    build, lint and e2e, one runner each, running the harness.jsonc command unchanged.
+#   test     the pytest suite split into SHARDS shards per OCP venv, one runner each. A shard collects
+#            the whole suite and runs every SHARDS-th test id (round robin), exactly as fs-gate does.
+#   gate     green only if every job above is green. Wait on this one.
+#
+# Containers run with no network, as a non-root user, with .git mounted read-only, as in fs-gate.
+#
+# A branch that does not carry this file can still be gated: push it, then
+#   gh workflow run gate.yml --ref ci/gate -f ref=<full commit sha or branch>
+# runs this workflow's jobs against that commit. bin/ci-gate finds either kind of run.
+name: gate
+run-name: gate ${{ inputs.ref || github.ref_name }}
+
+on:
+  push:
+    # Branches agent runs push. Add a pattern here to gate another family. Not master.
+    branches:
+      - "ci/**"
+      - "harness/**"
+      - "mates-parity"
+      - "mates/**"
+      - "afk/**"
+      - "sp/**"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit sha or branch to gate (default, the branch the workflow is run from)
+        required: false
+        default: ""
+
+concurrency:
+  group: gate-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  # Number of test shards per OCP venv. Keep equal to the length of the test job's `shard` list.
+  SHARDS: "3"
+  # Passed into every gate container. numpy's OpenBLAS picks its kernels by CPU model, and the runners
+  # (AMD EPYC, or Xeons with AVX-512) are not the dev box (AVX2, Haswell kernels). An ill-conditioned
+  # sketch solve then differs in the 7th decimal and misses its golden (abs_tol 1e-7). Pinning the
+  # kernel type makes the arithmetic the same as where the goldens were recorded.
+  OPENBLAS_CORETYPE: Haswell
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      commands: ${{ steps.commands.outputs.commands }}
+      sha: ${{ steps.commands.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Read the gate commands from harness.jsonc
+        id: commands
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+
+          src = open("harness.jsonc").read()
+          out, i, in_str = [], 0, False
+          while i < len(src):          # JSONC to JSON: drop comments and trailing commas outside strings
+              c = src[i]
+              if in_str:
+                  out.append(c)
+                  if c == "\\":
+                      i += 1
+                      out.append(src[i])
+                  elif c == '"':
+                      in_str = False
+              elif c == '"':
+                  in_str = True
+                  out.append(c)
+              elif src.startswith("//", i):
+                  while i < len(src) and src[i] != "\n":
+                      i += 1
+                  continue
+              elif src.startswith("/*", i):
+                  i = src.index("*/", i) + 2
+                  continue
+              elif c in "}]":
+                  while out and out[-1].isspace():
+                      out.pop()
+                  if out and out[-1] == ",":
+                      out.pop()
+                  out.append(c)
+              else:
+                  out.append(c)
+              i += 1
+          caps = json.loads("".join(out))["capabilities"]
+          missing = [k for k in ("build", "lint", "test", "e2e") if k not in caps]
+          if missing:
+              raise SystemExit(f"harness.jsonc has no capability: {missing}")
+          # The test job shards this exact command. If it changes, change the test job with it.
+          if caps["test"]["command"] != "both fs_pytest tests":
+              raise SystemExit("harness.jsonc test command is no longer 'both fs_pytest tests'; "
+                               "update the test job in .github/workflows/gate.yml to shard the new command")
+          print("commands=" + json.dumps({k: v["command"] for k, v in caps.items()}))
+          PY
+      - name: Make sure the harness image is on GHCR
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(sha256sum Dockerfile.harness | cut -c1-16)
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/freeshape-harness:$tag"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$image" > /dev/null 2>&1; then
+            echo "$image exists"
+            exit 0
+          fi
+          echo "$image missing, building"
+          # Dockerfile.harness copies nothing from the repo, so it is built with an empty context.
+          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.description=FreeShape harness gate image (Dockerfile.harness)" \
+            -t "$image" - < Dockerfile.harness
+          docker push "$image"
+
+  check:
+    needs: prepare
+    name: ${{ matrix.step }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        step: [build, lint, e2e]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0          # scripts/smoke/s0_goldens.py reads tests/golden at the base ref
+          persist-credentials: false
+      - name: Base ref for the frozen-goldens check
+        run: |
+          # s0_goldens.py compares against a local `harness-base` branch, else origin/master.
+          if git rev-parse -q --verify origin/harness-base > /dev/null; then
+            git branch -f harness-base origin/harness-base
+          fi
+          git rev-parse -q --verify harness-base || git rev-parse --verify origin/master
+      - name: Pull the harness image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker pull -q "$IMAGE"
+          docker logout ghcr.io
+      - name: ${{ matrix.step }}
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          CMD: ${{ fromJSON(needs.prepare.outputs.commands)[matrix.step] }}
+        run: |
+          lscpu | grep 'Model name'
+          docker run --rm --network none -u "$(id -u):$(id -g)" -e HOME=/tmp -e OPENBLAS_CORETYPE \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e "GIT_CONFIG_VALUE_0=*" \
+            -v "$PWD:$PWD" -v "$PWD/.git:$PWD/.git:ro" -w "$PWD" \
+            --entrypoint sh "$IMAGE" -c "$CMD"
+
+  test:
+    needs: prepare
+    name: test ${{ matrix.ocp }} ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        ocp: [ocp7.9.3.1.1, ocp8.0.1.1.0]
+        shard: [0, 1, 2]          # 0 .. SHARDS-1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Base ref for the frozen-goldens check
+        run: |
+          # s0_goldens.py compares against a local `harness-base` branch, else origin/master.
+          if git rev-parse -q --verify origin/harness-base > /dev/null; then
+            git branch -f harness-base origin/harness-base
+          fi
+          git rev-parse -q --verify harness-base || git rev-parse --verify origin/master
+      - name: Pull the harness image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker pull -q "$IMAGE"
+          docker logout ghcr.io
+      - name: pytest shard
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          OCP: ${{ matrix.ocp }}
+          SHARD: ${{ matrix.shard }}
+          # fs-gate's sharded(): collect everything, keep every SHARDS-th id, run those. Unlike
+          # fs-gate, a collection error fails the shard instead of silently dropping that module.
+          SCRIPT: |
+            fs_pytest --collect-only tests > /tmp/all 2>&1; crc=$?
+            grep '::' /tmp/all | awk -v n="$SHARDS" -v s="$SHARD" 'NR % n == s' > /tmp/ids
+            if [ "$crc" -ne 0 ]; then tail -40 /tmp/all; echo "collection failed (exit $crc)"; exit "$crc"; fi
+            [ -s /tmp/ids ] || { tail -20 /tmp/all; echo 'collected nothing'; exit 4; }
+            echo "shard total $(grep -c :: /tmp/all) selected $(wc -l < /tmp/ids)"
+            tr '\n' '\0' < /tmp/ids | xargs -0 fs_pytest
+        run: |
+          lscpu | grep 'Model name'
+          docker run --rm --network none -u "$(id -u):$(id -g)" -e HOME=/tmp -e OCP -e SHARD -e SHARDS \
+            -e OPENBLAS_CORETYPE \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e "GIT_CONFIG_VALUE_0=*" \
+            -v "$PWD:$PWD" -v "$PWD/.git:$PWD/.git:ro" -w "$PWD" \
+            --entrypoint sh "$IMAGE" -c "$SCRIPT"
+
+  gate:
+    if: always()
+    needs: [prepare, check, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: All gate jobs green
+        env:
+          PREPARE: ${{ needs.prepare.result }}
+          CHECK: ${{ needs.check.result }}
+          TEST: ${{ needs.test.result }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          echo "commit $SHA: prepare=$PREPARE check=$CHECK test=$TEST"
+          [ "$PREPARE" = success ] && [ "$CHECK" = success ] && [ "$TEST" = success ]

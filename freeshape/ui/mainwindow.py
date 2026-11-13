@@ -279,6 +279,12 @@ class MainWindow(QMainWindow):
         self._add_action(m, "Export STEP…", lambda: self.export(None, "step"))
         self._add_action(m, "Export STL…", lambda: self.export(None, "stl"))
         m.addSeparator()
+        rm = m.addMenu("Add relation (Assembly)")
+        from ..assembly import RELATION_TYPES as _RT
+        for t, spec in _RT.items():
+            rm.addAction(icon("r_" + t, 16), spec["label"],
+                         lambda tt=t: self.asm.start_relation(tt) if self.is_asm else None)
+        m.addSeparator()
         self._add_action(m, "Keyboard shortcuts", self.show_shortcuts)
         self._add_action(m, "About FreeShape", self.show_about)
         self._add_action(m, "Quit", self.close, "Ctrl+Q")
@@ -582,13 +588,18 @@ class MainWindow(QMainWindow):
         h.addWidget(_sep())
         self._tb(h, "insert", "Insert — add parts from your Part Studios or a file (I)", a.toggle_insert)
         h.addWidget(_sep())
-        from ..assembly import MATE_TYPES
+        from ..assembly import MATE_TYPES, RELATION_TYPES
         for t, (label, tip) in MATE_TYPES.items():
             key = {"fastened": " (Shift+F)", "revolute": " (Shift+R)", "slider": " (Shift+L)"}.get(t, "")
             self._tb(h, "m_" + t, f"{label} mate{key} — {tip}", lambda _=False, tt=t: a.start_mate(tt))
         h.addWidget(_sep())
+        for t, spec in RELATION_TYPES.items():
+            self._tb(h, "r_" + t, f"{spec['label']} relation — {spec['help']}",
+                     lambda _=False, tt=t: a.start_relation(tt))
+        h.addWidget(_sep())
         self._tb(h, "move", "Move / rotate the selected parts by exact amounts", lambda: a.start_move())
         self._tb(h, "fix", "Fix / unfix the selected parts", self._asm_toggle_fix)
+        self.btn_group = self._tb(h, "group", "Group the selected parts so they move as one body", self._asm_group)
         h.addWidget(_sep())
         self.btn_interf = self._tb(h, "interference", "Interference check — show where parts overlap",
                                    lambda: a.toggle_interference(), checkable=True)
@@ -635,6 +646,12 @@ class MainWindow(QMainWindow):
     @property
     def is_dwg(self):
         return getattr(self.doc, "kind", "studio") == "drawing"
+
+    def _asm_group(self):
+        if not self.asm.can_group():
+            self.status.showMessage("Select two or more parts that are not already in a group", 4000)
+            return
+        self.asm.group_selected()
 
     def _asm_toggle_fix(self):
         ids = self.asm.selected_instance_ids()

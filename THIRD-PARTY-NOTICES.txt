@@ -45,3 +45,12 @@ The full texts of the GNU LGPL v2.1 and v3 are available at https://www.gnu.org/
 Test data (not shipped): tests/data/freecad/
   FreeCAD kernel-stress shapes under LGPL-2.1+, CC-BY-SA-4.0, CC-BY-4.0, CC-BY-3.0 and Public Domain.
   Sources, attribution and licence texts: tests/data/freecad/NOTICE.md and tests/data/freecad/LICENSES/
+
+freecad.gears / pygears — involute gear geometry (the Gears plugin, freeshape/plugins/gears/)
+  Licence: GNU General Public License v3 or (at your option) any later version
+  https://github.com/looooo/freecad.gears  ·  commit 4164073946282ee6e88594b0f7d1774a60b04f76
+  Copyright: the freecad.gears contributors.
+  Verbatim copies (headers intact): pygears/__init__.py, pygears/_functions.py, pygears/involute_tooth.py,
+  pygears/bevel_tooth.py.
+  Adapted to OCP (original header kept, "adapted from" line added): spur_geometry.py from
+  freecad/gears/involutegear.py and freecad/gears/basegear.py; bevel_geometry.py from freecad/gears/bevelgear.py.

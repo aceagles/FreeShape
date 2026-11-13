@@ -20,10 +20,13 @@ from .. import assembly as A
 from .icons import icon
 from .numparse import parse_number, fmt
 from .panels import swatch
+from .pyfeature_ui import NOTICE_COLOR
 from .viewport import Pick
 
 ROLE_ID = Qt.UserRole + 1
 ROLE_KIND = Qt.UserRole
+ROLE_NOTICE = Qt.UserRole + 2        # a Standard part instance's version notice text (marker in the list)
+NOTICE_MARK = "   ↻"
 
 
 def _floating(frame: QFrame):
@@ -128,8 +131,9 @@ class AssemblyPanel(QWidget):
         sel_i = set(self.selected_instances())
         sel_m = set(self.selected_mates())
         self.instances.clear()
+        notices = doc.standard_notices()
         for inst in doc.instances:
-            label = inst["name"] + ("   ⚓" if inst.get("fixed") else "")
+            label = inst["name"] + ("   ⚓" if inst.get("fixed") else "") + (NOTICE_MARK if inst["id"] in notices else "")
             it = QListWidgetItem(swatch(doc.instance_color(inst)), label)
             it.setData(ROLE_ID, inst["id"])
             tips = []
@@ -143,8 +147,17 @@ class AssemblyPanel(QWidget):
                 it.setForeground(QColor("#9aa3ae"))
                 tips.append("Hidden")
             src = inst["source"]
-            tips.append("From " + (src.get("filename") or "STEP") if src.get("kind") == "step" else
-                        "From Part Studio “%s”" % (src.get("studio_name") or "?"))
+            if src.get("kind") == "standard":
+                tips.append("Standard part " + str(src.get("type")))
+            else:
+                tips.append("From " + (src.get("filename") or "STEP") if src.get("kind") == "step" else
+                            "From Part Studio “%s”" % (src.get("studio_name") or "?"))
+            note = notices.get(inst["id"])
+            if note:
+                it.setData(ROLE_NOTICE, note["text"])
+                if not err:
+                    it.setForeground(QColor(NOTICE_COLOR))
+                tips.insert(0, note["text"] + " (right-click → Accept plugin update)")
             it.setToolTip("\n".join(tips))
             self.instances.addItem(it)
             if inst["id"] in sel_i:
@@ -1248,6 +1261,7 @@ class AssemblyController:
         m.addAction("Duplicate", lambda: self.duplicate(ids))
         if inst["source"].get("kind") == "studio":
             m.addAction("Open Part Studio", lambda: self.open_source(iid))
+        self.add_standard_actions(m, ids)
         m.addAction("Mass properties", lambda: self.w._mass_props_shape(inst["name"], doc.world_shape(iid)))
         dof = doc.instance_dof(iid)
         a = m.addAction(f"Degrees of freedom: {dof}" + (" (fixed)" if inst.get("fixed") else ""))
@@ -1255,6 +1269,34 @@ class AssemblyController:
         m.addSeparator()
         m.addAction("Delete", lambda: self.delete_instances(ids))
         m.exec(gpos)
+
+    def add_standard_actions(self, menu, ids):
+        """`Edit standard part…` and `Accept plugin update` for the Standard parts among `ids`. Returns the actions."""
+        doc = self.doc
+        std = [i for i in ids if (doc.instance(i) or {}).get("source", {}).get("kind") == "standard"]
+        out = []
+        if not std:
+            return out
+        out.append(menu.addAction("Edit standard part…", lambda: self.edit_standard_parts(std)))
+        marked = [i for i in std if i in doc.standard_notices()]
+        if marked:
+            out.append(menu.addAction("Accept plugin update", lambda: self.accept_plugin_update(marked)))
+        return out
+
+    def standard_dialog(self, ids):
+        """A StandardPartEditDialog for `ids` whose result is reported in the status bar (not shown or run)."""
+        from .standard_parts_ui import StandardPartEditDialog
+        dlg = StandardPartEditDialog(self.doc, ids, parent=self.w)
+        dlg.applied.connect(lambda res, d=dlg: self.w.status.showMessage(d.message, 8000))
+        return dlg
+
+    def edit_standard_parts(self, ids):
+        dlg = self.standard_dialog(ids)
+        dlg.exec()
+
+    def accept_plugin_update(self, ids):
+        done = self.doc.acknowledge_standard_versions(ids)
+        self.w.status.showMessage(f"Accepted the plugin update on {len(done)} standard part(s)", 5000)
 
     def mate_menu(self, mid, gpos):
         from PySide6.QtWidgets import QMenu

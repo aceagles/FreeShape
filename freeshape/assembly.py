@@ -856,8 +856,15 @@ class AssemblyDoc:
             return None
 
     def named_connector(self, iid, cid):
-        """A mate end on the part's own published connector `cid`: {"inst", "named": cid, ...}. Its frame is
-        re-read from the Part Studio on every refresh."""
+        """A mate end on one of the part's own connectors.
+        A Standard part offers connectors by name, e.g. a screw's "under_head": `cid` is that name and the end is
+        {"inst", "kind": "named", "name", "frame"}, with no index, click, ref or snap (see connector_by_name).
+        Any other part offers its published mate connectors by id: {"inst", "named": cid, ...}, whose frame is
+        re-read from the Part Studio on every refresh. world_frame, place_for_mate and the solver read `frame`
+        like any other connector. Raises KernelError when the part offers no such connector."""
+        inst = self.instance(iid)
+        if inst is not None and inst["source"].get("kind") == "standard":
+            return {"inst": iid, "kind": "named", "name": cid, "frame": self.connector_by_name(iid, cid)}
         for c in self.published_connectors(iid) or []:
             if str(c["id"]) == str(cid):
                 fr = frame_to_json({**c["frame"], "what": f"connector {c['name']}" if c.get("name") else "connector"})
@@ -1343,9 +1350,9 @@ class AssemblyDoc:
     def connector_by_name(self, iid, name):
         """THE lookup of a named connector: the frame (JSON form, in the part's own coordinates) that instance
         `iid`'s part offers under `name`. Raises KernelError when the instance or the name is not there.
-        Today only Standard parts offer named connectors (their `connectors(params)`). To let another kind of
-        part offer them, for example a Part Studio's mate connectors, add its branch here and nowhere else:
-        `named_connector` and the re-find block in `refresh` both go through this function."""
+        Only Standard parts offer connectors by name (their `connectors(params)`); `named_connector` and the
+        re-find block in `refresh` come here for them. A Part Studio's published mate connectors are found by id
+        instead, through `published_connectors` and `_refresh_named_ends`."""
         from .pyfeature import registry
         inst = self.instance(iid)
         if inst is None:
@@ -1366,12 +1373,6 @@ class AssemblyDoc:
         fr = dict(frames[name])
         fr.setdefault("what", name)
         return frame_to_json(frame_from_json(fr))
-
-    def named_connector(self, iid, name):
-        """A mate end on a part's own named connector, e.g. a screw's "under_head": {"inst", "kind": "named",
-        "name", "frame"}. No index, click, ref or snap. world_frame, place_for_mate and the solver read `frame`
-        like any other connector. Raises KernelError when the part offers no such name."""
-        return {"inst": iid, "kind": "named", "name": name, "frame": self.connector_by_name(iid, name)}
 
     def set_standard_params(self, iids, changes):
         """Apply the parameter `changes` (a dict) to each Standard part instance in `iids`, as ONE undo step.

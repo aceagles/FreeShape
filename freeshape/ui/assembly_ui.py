@@ -8,7 +8,7 @@ import math
 import os
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal, QSize
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, QSize
 from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QListWidget, QListWidgetItem, QWidget,
@@ -1764,8 +1764,8 @@ class AssemblyController:
         p.relationClicked.connect(self.select_relation)
         p.relationDouble.connect(self.edit_relation)
         p.relationContext.connect(self.relation_menu)
-        from PySide6.QtGui import QAction
-        self.act_edit_in_context = QAction("Edit in context", w)
+        # tests drive the controller with a plain stand-in window, which cannot parent a QAction
+        self.act_edit_in_context = QAction("Edit in context", w if isinstance(w, QObject) else None)
         self.act_edit_in_context.setObjectName("edit_in_context")
         self.act_edit_in_context.triggered.connect(lambda _=False: self.edit_in_context())
 

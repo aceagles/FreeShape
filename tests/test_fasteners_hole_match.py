@@ -23,19 +23,41 @@ def test_every_clearance_and_tap_drill_matches_its_size(tid):
         if size not in CLEARANCE or size not in offered:
             continue
         for d in (*CLEARANCE[size], TAP_DRILL[size]):
-            assert p.match_hole(d) == size, (tid, size, d)
-            assert p.match_hole(d + 0.04) == size, (tid, size, d)
+            for dd in (d, d + 0.04):
+                assert p.match_hole(dd) in _readings(offered, dd, size), (tid, size, dd)
             checked += 1
     assert checked > 0
+
+
+def _readings(offered, d, size):
+    """Every offered size a hole of diameter `d` can mean: `size` itself plus any other size with a clearance
+    hole or tap drill within the matcher's tolerance of `d`. The hole tables run from M1.6 to M24, and over that
+    range one diameter can be two things (12.0 is the M14 tap drill and the M10 coarse clearance hole), so
+    match_hole may answer with any of them; for an unambiguous diameter this is just {size}."""
+    out = {size}
+    for s in offered:
+        if any(abs(v - d) <= hole_match.TOL + 1e-9 for v in (*CLEARANCE.get(s, ()), *([TAP_DRILL[s]] if s in TAP_DRILL else []))):
+            out.add(s)
+    return out
+
+
+def test_an_unambiguous_diameter_matches_exactly_its_size():
+    p = part("iso4762")
+    assert p.match_hole(3.4) == "M3" and p.match_hole(2.5) == "M3"      # medium clearance, tap drill
+    assert p.match_hole(6.6) == "M6" and p.match_hole(5.0) == "M6"
 
 
 def test_iso4762_every_size_with_a_clearance_entry():
     p = part("iso4762")
     sizes = [s for s in K.ISO_PITCH if s in CLEARANCE]
-    assert sizes and all(s in p.sizes() for s in sizes)
+    # the hole tables also hold M18 and M22, which this part's ISO 4762 table does not list
+    assert sizes and {s for s in sizes if s not in p.sizes()} == {"M18", "M22"}
+    offered = set(p.sizes())
     for s in sizes:
+        if s not in offered:
+            continue
         for d in (*CLEARANCE[s], TAP_DRILL[s]):
-            assert p.match_hole(d) == s
+            assert p.match_hole(d) in _readings(offered, d, s), (s, d)
 
 
 def test_examples_and_misses():

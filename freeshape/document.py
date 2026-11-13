@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import traceback
 
 import numpy as np
@@ -485,8 +486,18 @@ class Document:
     def save(self, path=None):
         path = path or self.path
         self.write_blobs(path)
-        with open(path, "w") as fh:
-            fh.write(self.to_json())
+        txt = self.to_json()
+        tmp = str(path) + ".tmp"
+        try:
+            with open(tmp, "w") as fh:
+                fh.write(txt)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
         self.path = path
         self.dirty = False
 
@@ -494,6 +505,15 @@ class Document:
     def load(path) -> "Document":
         with open(path) as fh:
             d = json.load(fh)
+        fmt = d.get("format") if isinstance(d, dict) else None
+        kinds = {"freeshape-assembly": "an Assembly", "freeshape-drawing": "a Drawing",
+                 "freeshape-variables": "a Variable Studio"}
+        if fmt in kinds:
+            raise K.KernelError(f"This file is {kinds[fmt]}, not a FreeShape Part Studio")
+        if fmt is not None and fmt != "freeshape":
+            raise K.KernelError("Not a FreeShape Part Studio")
+        if not isinstance(d, dict) or not isinstance(d.get("features"), list):
+            raise K.KernelError("Not a FreeShape Part Studio (no features list)")
         d = M.migrate("document", d, path)
         doc = Document()
         doc.name = d.get("name", "Part Studio 1")

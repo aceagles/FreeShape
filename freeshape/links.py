@@ -301,6 +301,14 @@ class LinkResolver:
                                     f"{folder.errors.get(tid, 'unknown error')}")
             return tab.doc
         path = src.get("path")
+        if path and folder.path is None:
+            # a Document kept in no folder (docstore.MemoryStore): the uid may name one of its tabs, but a path
+            # has no folder to be inside of, so one that names no tab is never read from disk
+            tab = _tab_for_legacy(folder, src, kind)
+            if tab is None:
+                raise K.KernelError(f"Link path “{path}” names no tab of the Document, which is kept in "
+                                    f"{folder.store.describe()}; not opened")
+            return tab.doc
         if path and self._outside_folder(path):
             raise K.KernelError(f"Link path “{path}” is outside the Document folder; not opened")
         tab = _tab_for_legacy(folder, src, kind)
@@ -674,7 +682,7 @@ def _tab_for_legacy(folder, src, kind):
         if tab.kind == kind and tab.doc is not None and uid and getattr(tab.doc, "uid", None) == uid:
             return tab
     path = src.get("path")
-    if path:
+    if path and folder.path is not None:
         full = os.path.realpath(os.path.join(folder.path, path))
         for tab in folder.tabs:
             if tab.kind == kind and tab.file and \

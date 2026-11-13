@@ -20,6 +20,10 @@ are pruned down to the element-map files ADR 0003 ported, so there's no Document
 in them to port here; writes instead reuse this repo's own existing atomic-save convention, already used
 by AssemblyDoc.save and DrawingDoc.save -- a `<path>.tmp` file written alongside the target and moved
 into place with `os.replace`, which never follows a symlink at the destination.)
+
+Every read and write of the manifest, a tab's data or a blob goes through the Document's `store` (ADR 0009,
+freeshape/docstore.py); the checks and the atomic write above live in `docstore.FolderStore`. Git does not:
+Versions, Workspaces and merge run in the store's folder (`docstore.git_folder`).
 """
 from __future__ import annotations
 
@@ -32,12 +36,13 @@ import uuid
 import weakref
 
 from . import doc_registry as R
+from . import docstore as DS
 from . import gitstore as G
 from . import kernel as K
 from . import tabkinds as TK
 from .links import LinkResolver, migrate_links_to_tab_ids, tab_sources
 
-MANIFEST_NAME = "document.json"
+MANIFEST_NAME = DS.MANIFEST_NAME
 FORMAT = "freeshape-document"
 FORMAT_VERSION = 1
 
@@ -50,26 +55,15 @@ FACTORIES = TK.FACTORIES
 LOADERS = TK.LOADERS
 
 
-def _atomic_write(path, text):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
-
-
 def _rmtree(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
 def _peek_id(folder):
     """The id in a folder's document.json, or None. Reads one regular file; runs no git and loads nothing."""
-    p = os.path.join(folder, MANIFEST_NAME)
     try:
-        if os.path.islink(p) or os.path.getsize(p) > (1 << 20):
-            return None
-        with open(p) as fh:
-            doc_id = json.load(fh).get("id")
-    except (OSError, ValueError, AttributeError):
+        doc_id = json.loads(DS.FolderStore(folder).read_manifest(max_bytes=1 << 20).decode("utf-8")).get("id")
+    except (OSError, ValueError, AttributeError, K.KernelError):
         return None
     return doc_id if isinstance(doc_id, str) else None
 
@@ -77,6 +71,15 @@ def _peek_id(folder):
 def _attribute_lines():
     """`.gitattributes` for a new Document: no automatic merge of the manifest or any tab file."""
     return [f"{MANIFEST_NAME} -merge"] + [f"*{ext} -merge" for ext in TK.extensions()]
+
+
+def hold_blobs(doc):
+    """`doc`, with every blob its data names read into memory (held until its next save writes them). A tab loaded
+    from an autosave finds its blobs beside the autosave, which is removed once the tab is recovered; a kind
+    reads blobs only when it needs them, so they are read now (I4.9). A kind with no blobs is returned as is."""
+    if hasattr(doc, "write_blobs"):
+        doc.write_blobs(store=DS.HeldBlobs({}))
+    return doc
 
 
 class DirtyWorkspaceError(K.KernelError):
@@ -117,6 +120,18 @@ class FolderDocument:
         self.registry = None
         self.git_error = None     # why a new Document got no repository (git missing or too old)
         self._scratch = None
+        self._store = None        # the DocumentStore it was opened on, if one was given (see `store`)
+        self._folder_store = None
+
+    @property
+    def store(self):
+        """The DocumentStore the manifest, the tabs' data and blobs go through: the one given to `open`, else a
+        docstore.FolderStore on `path` (made again when `path` changes)."""
+        if self._store is not None:
+            return self._store
+        if self._folder_store is None or self._folder_store.folder != self.path:
+            self._folder_store = DS.FolderStore(self.path)
+        return self._folder_store
 
     def _attach(self, tab):
         """Point a tab's document at this Document's resolver (studios, assemblies and drawings hold links)."""
@@ -187,13 +202,11 @@ class FolderDocument:
             elif tab.kind == "drawing" and tab.doc is not None:
                 tab.doc.refresh(notify=False)
 
-    @staticmethod
-    def _stamped_tab_id(full):
-        """The `_tab_id` a tab file carries, or None when it has none or cannot be read."""
+    def _stamped_tab_id(self, tab_id):
+        """The `_tab_id` a tab's data carries, or None when it has none or cannot be read."""
         try:
-            with open(full) as fh:
-                v = json.load(fh).get("_tab_id")
-        except (OSError, ValueError, AttributeError):
+            v = json.loads(self.store.read_tab(tab_id).decode("utf-8")).get("_tab_id")
+        except (OSError, ValueError, AttributeError, K.KernelError):
             return None
         return v if isinstance(v, str) else None
 
@@ -210,32 +223,29 @@ class FolderDocument:
             out.append({"problem": problem, "tab": tab.id if tab else None, "tab_name": tab.name if tab else None,
                         "target": target, "message": message})
 
-        listed = set()
+        store = self.store
+        listed = []
         for tab in self.tabs:
             label = f"Tab “{tab.name}” ({tab.id})"
             try:
-                full = self._resolve_tab_path(tab.file, label)
-                listed.add(os.path.normpath(os.path.relpath(full, self.path)))
+                store.place_tab(tab.id, tab.file)
+                listed.append(tab.id)
+                placed = True
             except K.KernelError:
-                full = None
+                placed = False
             if tab.doc is not None:
-                stamped = self._stamped_tab_id(full)
+                stamped = self._stamped_tab_id(tab.id) if placed else None
                 if stamped is not None and stamped != tab.id:
                     warn("tab-id-mismatch", f"{label}: its file “{tab.file}” is stamped with another tab's id "
                                             f"({stamped}), not {tab.id}", tab, stamped)
                 continue
-            if full is not None and not os.path.lexists(full):
+            if placed and not store.list_tabs([tab.id]):
                 warn("missing-file", f"{label}: its file “{tab.file}” is missing from the Document folder", tab)
             else:
                 warn("unreadable", f"{label} could not be opened: {self.errors.get(tab.id, 'unknown error')}", tab)
-        exts = TK.extensions()
-        for root, dirs, files in os.walk(self.path or "."):
-            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
-            for f in sorted(files):
-                rel = os.path.normpath(os.path.relpath(os.path.join(root, f), self.path))
-                if f.endswith(exts) and rel not in listed:
-                    warn("not-in-manifest", f"“{rel}” is a tab file in the Document folder but is not listed in "
-                                            f"{MANIFEST_NAME}", target=rel)
+        for rel in store.strays(listed):
+            warn("not-in-manifest", f"“{rel}” is a tab file in the Document folder but is not listed in "
+                                    f"{MANIFEST_NAME}", target=rel)
         for tab in self.tabs:
             if tab.doc is None:
                 continue
@@ -287,7 +297,7 @@ class FolderDocument:
             raise K.KernelError(f"Tab {tab_id!r} already exists in the Document")
         name = name or doc.name
         tab = Tab(tab_id or self.new_tab_id(), kind, file or self._unique_filename(name, TK.get(kind).ext), name)
-        self._resolve_tab_path(tab.file, f"tab {tab.id!r}")     # the file name comes from an autosave: check it
+        self.store.place_tab(tab.id, tab.file)     # the file name comes from an autosave: check it
         tab.doc = doc
         self.tabs.append(tab)
         self._attach(tab)
@@ -309,14 +319,15 @@ class FolderDocument:
                 data = json.load(fh)
             name = os.path.splitext(os.path.basename(src))[0]
             file = self._unique_filename(name, ext)
-            while os.path.exists(os.path.join(self.path, file)):
+            while self.store.file_taken(file):
                 self._counter += 1
                 file = self._unique_filename(f"{name} {self._counter}", ext)
             tab_id = self.new_tab_id()
             data["_tab_id"] = tab_id
-            _atomic_write(os.path.join(self.path, file), json.dumps(data, indent=1))
+            self.store.place_tab(tab_id, file)
+            self.store.write_tab(tab_id, json.dumps(data, indent=1).encode("utf-8"))
             tab = Tab(tab_id, kind, file, name)
-            tab.doc = TK.get(kind).load(os.path.join(self.path, file))
+            tab.doc = self._load_tab(tab)
             tab.doc.name = name
             self.tabs.append(tab)
             self._attach(tab)
@@ -326,31 +337,83 @@ class FolderDocument:
         self.save()
         return added
 
-    # ------------------------------------------------------------------ untrusted-path checks
-    def _resolve_tab_path(self, rel, label):
-        """Join `rel` onto the folder after structural checks that need no filesystem access: no absolute
-        path, no '..' segment."""
-        if not rel or not isinstance(rel, str):
-            raise K.KernelError(f"{label}: missing a file path")
-        if os.path.isabs(rel) or (len(rel) >= 2 and rel[1] == ":"):
-            raise K.KernelError(f"{label}: an absolute path isn't allowed ({rel!r})")
-        if ".." in rel.replace("\\", "/").split("/"):
-            raise K.KernelError(f"{label}: a '..' segment isn't allowed ({rel!r})")
-        return os.path.normpath(os.path.join(self.path, rel))
+    # ------------------------------------------------------------------ tab data through the store
+    def _load_tab(self, tab):
+        """Load one tab's document from the store. The store checks the manifest's file name before anything is
+        read (see docstore.FolderStore). A kind with no `from_data` loads from its file."""
+        rec, store = TK.get(tab.kind), self.store
+        store.place_tab(tab.id, tab.file)
+        if rec.from_data is None:
+            return rec.load(store.checked_tab_path(tab.id))
+        return rec.from_data(store.read_tab(tab.id), path=store.tab_path(tab.id), blobs=store.blobs(tab.id))
 
-    def _safe_tab_path(self, rel, label):
-        """`_resolve_tab_path` plus the escape check that needs the filesystem: the real path must still
-        land inside the folder. Used when opening untrusted manifest content, before anything is read. A
-        save() target skips this extra check -- it's already known safe (self-generated by `add_tab`, or
-        validated here when its entry was opened) -- because this check follows a symlinked *leaf* to
-        find out where it points, which is the opposite of what a write wants: `save` must never follow
-        one, and the tempfile-then-rename it uses for every write is what guarantees that regardless of
-        what the target currently is."""
-        full = self._resolve_tab_path(rel, label)
-        root = os.path.realpath(self.path)
-        if os.path.commonpath([root, os.path.realpath(full)]) != root:
-            raise K.KernelError(f"{label}: resolves outside the Document folder ({rel!r})")
-        return full
+    @staticmethod
+    def peek_manifest(path):
+        """The parsed manifest of the folder at `path` (a recent entry, not necessarily open), or None when there is
+        none or it cannot be read."""
+        store = DS.FolderStore(path)
+        if not store.has_manifest():
+            return None
+        try:
+            return json.loads(store.read_manifest().decode("utf-8"))
+        except (OSError, ValueError, K.KernelError):
+            return None
+
+    @staticmethod
+    def has_manifest_at(path):
+        """True when the folder at `path` has a readable manifest."""
+        return DS.FolderStore(path).has_manifest()
+
+    def autosave_id(self, tab_id):
+        """What an autosave of a tab is named: Document id and tab id, with anything but letters, digits, '_' and
+        '-' made '_'."""
+        return ".".join(re.sub(r"[^A-Za-z0-9_-]", "_", str(k)) for k in (self.id, tab_id))
+
+    def autosave_key(self, tab_id, kind):
+        """The store's side key for a tab's autosave: `autosave_id` and the kind's extension."""
+        return self.autosave_id(tab_id) + (TK.find(kind) or TK.get("studio")).ext
+
+    def autosave_tab(self, tab_id, kind, data, where=None):
+        """Keep an autosave of a tab (`data`: bytes) in the store's side area; `where` is the folder a store that
+        keeps files writes it to. Returns the key."""
+        key = self.autosave_key(tab_id, kind)
+        self.store.write_side(key, data, where)
+        return key
+
+    def autosave_blobs(self, where=None):
+        """Where an autosave puts the blobs its data names (I4.9), before `autosave_tab` writes the data: the
+        store's side blobs (`DocumentStore.side_blobs`), each written only when it is not there yet. Dropping or
+        discarding the autosave drops the blobs no other autosave names."""
+        return DS.NewBlobsOnly(self.store.side_blobs(where))
+
+    def drop_autosave(self, tab_id, kind, where=None):
+        self.store.delete_side(self.autosave_key(tab_id, kind), where)
+
+    def discard_autosave(self, key, where=None):
+        """Drop the autosave kept under `key` (one a crashed run left, so not necessarily this run's)."""
+        self.store.delete_side(key, where)
+
+    def recover_tab(self, kind, key, tab_id=None, where=None):
+        """Load the autosave kept under `key` as a document of `kind`. A store that keeps files loads the file, as
+        a loose file loads; any other store gives its bytes to the kind's `from_data`."""
+        rec, store = TK.get(kind), self.store
+        path = store.side_path(key, where)
+        if path is not None:
+            doc = rec.load(path)            # its blobs are beside the side file (`autosave_blobs`)
+        elif rec.from_data is None:
+            raise K.KernelError(f"{rec.label}: loads only from a file, and {store.describe()} keeps none")
+        else:
+            doc = rec.from_data(store.read_side(key, where),
+                                blobs=DS.ChainedBlobs(store.side_blobs(where), store.blobs(tab_id)))
+        return hold_blobs(doc)
+
+    @staticmethod
+    def _tab_bytes(tab):
+        """A tab's data as saved in a Document: the document's own JSON, stamped with the tab id."""
+        doc = tab.doc
+        data = json.loads(doc.to_data() if hasattr(doc, "to_data") else doc.to_json())
+        data["_tab_id"] = tab.id
+        return json.dumps(data, indent=1).encode("utf-8")
 
     # ------------------------------------------------------------------ create / open / save
     @classmethod
@@ -378,6 +441,26 @@ class FolderDocument:
             except OSError:
                 pass
         return doc
+
+    @classmethod
+    def create_on(cls, store, name=None, registry=None):
+        """Make a new Document on `store` (a DocumentStore) and write its manifest there. A store that keeps a
+        folder gives the Document that `path`; a store that keeps none (docstore.MemoryStore) leaves `path` None.
+        No repository is made and the Document is not trusted, so Versions, Workspaces and merge need a folder
+        (see docstore.git_folder). `create` is the folder route: it also initialises git and registers the folder."""
+        doc = cls()
+        doc.path = store.folder
+        doc._store = store
+        doc.registry = registry
+        if name:
+            doc.name = name
+        doc._write_manifest()
+        return doc
+
+    @classmethod
+    def open_on(cls, store, registry=None):
+        """Load the Document that `store` holds: `open` for any store."""
+        return cls.open(store.folder, registry=registry, store=store)
 
     @classmethod
     def open_document(cls, path, registry=None, managed_root=None):
@@ -445,12 +528,10 @@ class FolderDocument:
         return dest
 
     @classmethod
-    def open(cls, path, registry=None):
-        """Load the folder at `path` as it stands. `registry` lets cross-Document links resolve while it loads."""
-        manifest_path = os.path.join(path, MANIFEST_NAME)
-        if os.path.islink(manifest_path):
-            raise K.KernelError(f"{MANIFEST_NAME}: refusing to open a symlink")
-        data = cls._read_manifest(manifest_path)
+    def open(cls, path, registry=None, store=None):
+        """Load the folder at `path` as it stands. `registry` lets cross-Document links resolve while it loads.
+        `store` is the DocumentStore to read through (by default a docstore.FolderStore on `path`)."""
+        data = cls._read_manifest((store if store is not None else DS.FolderStore(path)).read_manifest())
         version = data.get("version", 1)
         if version > FORMAT_VERSION:
             raise K.KernelError(f"{MANIFEST_NAME} was saved with file version {version}, but this build "
@@ -458,6 +539,7 @@ class FolderDocument:
                                 f"FreeShape to open it.")
         doc = cls()
         doc.path = path
+        doc._store = store
         doc.registry = registry
         doc.id = data.get("id") or doc.id
         doc.name = data.get("name", doc.name)
@@ -473,12 +555,7 @@ class FolderDocument:
             try:
                 if kind not in TK.KINDS:
                     raise K.KernelError(f"{label}: unknown tab kind {kind!r}")
-                full = doc._safe_tab_path(file, label)
-                if not os.path.lexists(full):
-                    raise K.KernelError(f"{label}: its file {file!r} is missing from the Document folder")
-                if os.path.islink(full):
-                    raise K.KernelError(f"{label}: refusing to open a symlink ({file!r})")
-                tab.doc = TK.get(kind).load(full)
+                tab.doc = doc._load_tab(tab)
             except K.KernelError as e:
                 doc.errors[tab_id] = str(e)
             except Exception as e:      # a damaged tab file (bad JSON, a missing key...) must not stop the rest
@@ -494,11 +571,10 @@ class FolderDocument:
         return doc
 
     @staticmethod
-    def _read_manifest(manifest_path):
-        """Parse document.json and check its shape; raise K.KernelError naming the first fault."""
+    def _read_manifest(raw):
+        """Parse document.json's bytes and check its shape; raise K.KernelError naming the first fault."""
         try:
-            with open(manifest_path, encoding="utf-8") as fh:
-                data = json.load(fh)
+            data = json.loads(bytes(raw).decode("utf-8"))
         except ValueError as e:
             raise K.KernelError(f"{MANIFEST_NAME} is not valid JSON ({e})") from e
         if not isinstance(data, dict):
@@ -530,21 +606,19 @@ class FolderDocument:
 
     def save(self):
         self._check_writable()
-        if self.path is None:
+        if self.path is None and self._store is None:
             raise K.KernelError("Document has no folder to save to")
-        os.makedirs(self.path, exist_ok=True)
+        store = self.store
         for tab in self.tabs:
             if tab.doc is None:
                 continue
-            full = self._resolve_tab_path(tab.file, f"tab {tab.id!r}")
-            if os.path.exists(full) and not tab.doc.dirty:
+            store.place_tab(tab.id, tab.file)
+            if store.has_tab(tab.id) and not tab.doc.dirty:
                 continue
-            tab.doc.path = full
+            tab.doc.path = store.tab_path(tab.id)
             if hasattr(tab.doc, "write_blobs"):      # a Part Studio's Python-feature builds (blobs/, I4.7)
-                tab.doc.write_blobs(full)
-            data = json.loads(tab.doc.to_json())
-            data["_tab_id"] = tab.id
-            _atomic_write(full, json.dumps(data, indent=1))
+                tab.doc.write_blobs(tab.doc.path, store=store.blobs(tab.id))
+            store.write_tab(tab.id, self._tab_bytes(tab))
             tab.doc.dirty = False
         self._write_manifest()
 
@@ -552,13 +626,14 @@ class FolderDocument:
         data = {**self.extra, "format": FORMAT, "version": FORMAT_VERSION, "id": self.id, "name": self.name,
                 "tabs": [{**t.extra, "id": t.id, "kind": t.kind, "file": t.file, "name": t.name}
                          for t in self.tabs]}
-        _atomic_write(os.path.join(self.path, MANIFEST_NAME), json.dumps(data, indent=1))
+        self.store.write_manifest(json.dumps(data, indent=1).encode("utf-8"))
 
     # ------------------------------------------------------------------ versions (git; see gitstore.py)
     def _git_ready(self):
+        folder = DS.git_folder(self.store)      # a store with no folder refuses first: trust is not the problem there
         if not self.trusted:
             raise K.KernelError("Versions need a Document the app created or imported: open it with open_document")
-        if self.path is None or not G.is_repo(self.path):
+        if folder is None or not G.is_repo(folder):
             raise G.GitError(self.git_error or "This Document folder has no repository")
 
     def create_version(self, name, note=""):
@@ -612,7 +687,11 @@ class FolderDocument:
         """Why this Document has no versions or Workspaces (git missing, no repository), or None."""
         if self.git_error:
             return self.git_error
-        if self.path is None or not G.is_repo(self.path):
+        try:
+            folder = DS.git_folder(self.store)
+        except K.KernelError as e:
+            return str(e)
+        if folder is None or not G.is_repo(folder):
             return "This Document folder has no repository, so it has no versions or Workspaces"
         return None
 
@@ -712,7 +791,7 @@ class FolderDocument:
 
     def reload(self):
         """Re-read the manifest and every tab from disk into this object (after a checkout)."""
-        fresh = FolderDocument.open(self.path)
+        fresh = FolderDocument.open(self.path, store=self._store)
         self.name, self.tabs, self.errors, self._counter = fresh.name, fresh.tabs, fresh.errors, fresh._counter
         for tab in self.tabs:
             self._attach(tab)

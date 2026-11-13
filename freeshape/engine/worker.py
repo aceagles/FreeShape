@@ -13,15 +13,15 @@ pipes do not tell a child that its parent died, because a spawned child holds bo
 """
 from __future__ import annotations
 
+import hashlib
 import os
-import shutil
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import asdict
 from types import SimpleNamespace
 
+from .. import blobstore
 from .. import kernel as K
 from .. import links
 from .. import naming as N
@@ -126,7 +126,7 @@ class _WorkerEngine(InProcessEngine):
         hit = next(((t, v) for t, v in views if tab and t == tab), None)
         if hit is None and uid:
             hit = next(((t, v) for t, v in views if v.uid == uid), None)
-        if hit is None and path:
+        if hit is None and path and not (tab and self.by_tab_id):    # a tab id names it: never a path
             ap = os.path.abspath(path)
             hit = next(((t, v) for t, v in views if v.path and os.path.abspath(v.path) == ap), None)
         return hit
@@ -183,16 +183,49 @@ class _WorkerEngine(InProcessEngine):
 
 # =========================================================================== the worker
 
+class _SentBlobs:
+    """The tab's blob lookup in the worker: the blobs the parent sent (with the load, and with any edit that
+    named new ones), plus those the tab puts. Never a file. The parent's own lookup checked them on the way out."""
+
+    def __init__(self, blobs):
+        self.data = dict(blobs or {})
+
+    def get(self, key, max_bytes=blobstore.DEFAULT_MAX_BYTES):
+        blobstore._check_key(key)
+        data = self.data.get(key)
+        if data is None:
+            raise blobstore.BlobError(f"no blob {key}")
+        if len(data) > max_bytes:
+            raise blobstore.BlobError(f"blob is {len(data)} bytes, over the {max_bytes} byte limit")
+        return data
+
+    def has(self, key):
+        return isinstance(key, str) and key in self.data
+
+    def put(self, data):
+        data = bytes(data)
+        key = hashlib.sha256(data).hexdigest()
+        self.data[key] = data
+        return key
+
+
 class _Worker:
     def __init__(self, spec):
         self.tab = spec["tab"]
         self.engine = _WorkerEngine(meshes=spec["meshes"])
         self.engine.use_document(spec.get("document_id"))     # whose tab ids the sources name: see CrossTabInputs
         self.engine.install(spec.get("upstream"), spec.get("upstream_key"))
+        self.engine.by_tab_id = bool(spec.get("by_tab_id"))   # the parent's matching rule (process._match)
+        sent = spec.get("blobs")
+        self.blobs = None if sent is None else _SentBlobs(sent)
+        self.known = set(sent or ())     # blob keys the parent holds the bytes of
         if spec.get("data") is None:
             self.engine.new_tab(spec["kind"], spec.get("name"), tab=self.tab)
         else:
-            self._open(spec["path"], spec["data"])
+            # from the parent's bytes, never from the file: `path` only places the tab (errors, relative link
+            # paths, a Part Studio's blobs folder when it has one)
+            self.engine.open_tab_data(spec["kind"], spec["data"], self.tab, spec.get("open_name"),
+                                      blobs=self.blobs, path=spec.get("path"))
         t = self.engine._get(self.tab)
         for edit in spec.get("edits") or ():           # the parent's log of every edit applied since `data`
             if edit.get("op") == "save":               # already written; replaying it only keeps a save-as path
@@ -203,26 +236,20 @@ class _Worker:
         t.revision = int(spec.get("revision") or 0)
         t.seen = self.engine.generation
 
-    def _open(self, path, data):
-        """Open this tab from `data`, the bytes the parent holds for `path`. The file itself is read only when
-        it still holds those bytes; otherwise a private copy is loaded and the tab keeps its own path."""
-        try:
-            with open(path, "rb") as fh:
-                same = fh.read() == data
-        except OSError:
-            same = False
-        if same:
-            self.engine.open_tab(path, tab=self.tab)
-            return
-        tmp = tempfile.mkdtemp(prefix="freeshape-tab-")
-        try:
-            copy = os.path.join(tmp, os.path.basename(path))
-            with open(copy, "wb") as fh:
-                fh.write(data)
-            self.engine.open_tab(copy, tab=self.tab)
-            self.engine._get(self.tab).doc.path = path
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+    def add_blobs(self, blobs):
+        """Blobs the parent sent with an edit that names them."""
+        if blobs and self.blobs is not None:
+            self.blobs.data.update(blobs)
+            self.known |= set(blobs)
+
+    def data(self):
+        """(bytes, [every blob key they name], {key: bytes} of those the parent does not hold yet)."""
+        data, named = self.engine._get(self.tab).data()
+        new = {k: b for k, b in named.items() if k not in self.known}
+        self.known |= set(new)
+        if self.blobs is not None:
+            self.blobs.data.update(new)
+        return data, sorted(named), new
 
     @property
     def doc(self):
@@ -281,13 +308,71 @@ class _Worker:
             return self.meta()
         if op == "meta":
             return self.meta()
+        if op == "data":
+            return self.data()
         raise EngineError(f"unknown worker call {op!r}")
+
+
+# =========================================================================== the test-only open guard
+
+TEST_GUARD_ENV = "FREESHAPE_TEST_REFUSE_TAB_OPENS"
+_refused = []
+
+
+def _guarded(path, exts, manifest):
+    """A tab file (any registered extension, or its `.tmp`), the Document manifest, or a file in a `blobs`
+    folder named by a blob key (or its `.tmp`)."""
+    try:
+        p = os.fsdecode(os.fspath(path))
+    except TypeError:
+        return False
+    base = os.path.basename(p)
+    stem = base[:-4] if base.endswith(".tmp") else base
+    if stem == manifest or os.path.splitext(stem)[1].lower() in exts:
+        return True
+    return os.path.basename(os.path.dirname(p)) == "blobs" and len(stem) == 64 and \
+        all(c in "0123456789abcdef" for c in stem)
+
+
+def refuse_tab_file_opens():
+    """For tests: make `open` / `io.open` / `os.open` refuse (PermissionError) any path `_guarded` names, and
+    record each try (`refused_opens`). Kernel scratch files, Python sources and plugins are not touched. Returns
+    a function that puts the real ones back. A worker installs it at start-up when TEST_GUARD_ENV is set."""
+    import builtins
+    import io
+
+    from .. import tabkinds as TK
+    from ..docstore import MANIFEST_NAME
+    exts = tuple(TK.extensions())
+    real = builtins.open, io.open, os.open
+
+    def wrap(fn):
+        def call(file, *a, **kw):
+            if isinstance(file, (str, bytes, os.PathLike)) and _guarded(file, exts, MANIFEST_NAME):
+                _refused.append(os.fsdecode(os.fspath(file)))
+                raise PermissionError(f"test guard: opening {file!r} is refused")
+            return fn(file, *a, **kw)
+        return call
+
+    builtins.open, io.open, os.open = wrap(real[0]), wrap(real[1]), wrap(real[2])
+
+    def undo():
+        builtins.open, io.open, os.open = real
+
+    return undo
+
+
+def refused_opens():
+    """The paths the guard refused in this process, in order."""
+    return list(_refused)
 
 
 def initialize(parent_pid):
     """The pool initializer: start the parent watchdog. Unpickling this function has already imported the
     engine (and OCP, the slow part of starting a worker), so the worker is now warm and waits for `load`."""
     _watch_parent(parent_pid)
+    if os.environ.get(TEST_GUARD_ENV):
+        refuse_tab_file_opens()
 
 
 def load(spec):
@@ -306,11 +391,13 @@ def current() -> _Worker:
     return _state
 
 
-def call(op, arg=None, upstream=None, key=None):
-    """One request from the parent. `upstream` (with its `key`) is sent only when it changed."""
+def call(op, arg=None, upstream=None, key=None, blobs=None):
+    """One request from the parent. `upstream` (with its `key`) is sent only when it changed; `blobs` are the
+    blobs an edit names that the worker was not sent before."""
     w = current()
     if upstream is not None:
         w.engine.install(upstream, key)
+    w.add_blobs(blobs)
     return w.call(op, arg)
 
 

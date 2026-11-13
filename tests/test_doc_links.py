@@ -118,7 +118,7 @@ def test_removed_source_tab_is_named_in_the_error(tmp_path):
     asm.doc.parts.clear()
     asm.doc._fallback.clear()
     for inst in asm.doc.instances:
-        inst.pop("_brep", None)
+        inst.pop("_brep_blob", None)
     doc.refresh_links()
     assert len(asm.doc.errors) == 2
     for msg in asm.doc.errors.values():

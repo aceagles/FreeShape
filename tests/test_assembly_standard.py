@@ -88,9 +88,9 @@ def test_round_trip_stores_no_shape(tmp_path):
     asm.save(path)
     d = json.load(open(path))
     assert d["version"] == Mig.latest_version("assembly")
-    assert not d["blobs"]
+    assert "blobs" not in d
     for inst in d["instances"]:
-        assert "_brep" not in inst
+        assert "_brep_blob" not in inst
     assert "_brep" not in open(path).read()
     back = A.AssemblyDoc.load(path)
     assert back.errors == {}
@@ -103,8 +103,8 @@ def test_round_trip_stores_no_shape(tmp_path):
 def test_stale_brep_is_dropped_on_save(tmp_path):
     asm = A.AssemblyDoc()
     iid = asm.insert_standard_part(TYPE, PARAMS)
-    asm.instance(iid)["_brep"] = "AAAA"
-    assert "_brep" not in json.loads(asm.to_json())["instances"][0]
+    asm.instance(iid)["_brep_blob"] = "0" * 64
+    assert "_brep_blob" not in json.loads(asm.to_json())["instances"][0]
 
 
 def test_unregistered_type_loads_unresolved_and_saves_unchanged(tmp_path):
@@ -209,19 +209,19 @@ def test_old_file_still_loads_and_solves(name, tmp_path):
 
 def test_version_3_standard_part_file_loads_through_the_merged_chain(tmp_path):
     """A file saved before Mates Parity was merged says version 3, holds a Standard part and has no groups or
-    relations. It runs master's steps 3->4..5->6 and the marker step 6->7."""
+    relations. It runs master's steps 3->4..5->6, the marker step 6->7 and the blob step 7->8."""
     src = {"kind": "standard", "type": TYPE, "plugin": "fasteners", "plugin_version": "1.0.0", "params": PARAMS}
     d = {"format": A.FILE_FORMAT, "version": 3, "name": "A", "uid": "u",
          "instances": [{"id": "I1", "name": "S <1>", "source": src, "T": np.eye(4).tolist(),
                         "fixed": False, "hidden": False}], "mates": [], "blobs": {}}
     path = str(tmp_path / "v3.fasm")
     json.dump(d, open(path, "w"))
-    assert Mig.latest_version("assembly") == 7
+    assert Mig.latest_version("assembly") == 8
     asm = A.AssemblyDoc.load(path)
     assert "I1" in asm.parts and not asm.errors
     assert asm.instance("I1")["source"] == src
     assert asm.groups == [] and asm.relations == []
-    out = str(tmp_path / "v7.fasm")
+    out = str(tmp_path / "v8.fasm")
     asm.save(out)
     saved = json.load(open(out))
-    assert saved["version"] == 7 and saved["groups"] == [] and saved["relations"] == []
+    assert saved["version"] == 8 and saved["groups"] == [] and saved["relations"] == []

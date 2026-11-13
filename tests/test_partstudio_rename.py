@@ -97,4 +97,9 @@ def test_load_then_save_bytes_unchanged(rel, tmp_path):
     out = str(tmp_path / "out.fshape")
     doc.save(out)
     with open(out, "rb") as fh:
-        assert hashlib.sha256(fh.read()).hexdigest() == SAVED_SHA256[rel]
+        data = fh.read()
+    # I4.9 bumped the Part Studio file version from 2 to 3 (import data moves to blobs; these files have none):
+    # apart from that number the bytes are the ones recorded before the rename
+    assert data.count(b'\n "version": 3,\n') == 1
+    data = data.replace(b'\n "version": 3,\n', b'\n "version": 2,\n')
+    assert hashlib.sha256(data).hexdigest() == SAVED_SHA256[rel]

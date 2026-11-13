@@ -135,8 +135,8 @@ def check_json(path, screw_ids):
         src = i["source"]
         check(src["type"] == SCREW and src["params"].get("length") == LENGTH and src["params"].get("size") == "M3",
               f"saved {i['id']} source is {src}, expected {SCREW} M3 length {LENGTH}")
-        check("_brep" not in i, f"saved {i['id']} carries a shape (_brep)")
-    check(d.get("blobs") == {}, f"saved JSON has blobs: {list(d.get('blobs', {}))}")
+        check("_brep" not in i and "_brep_blob" not in i, f"saved {i['id']} carries a shape (_brep_blob)")
+    check(not d.get("blobs"), f"saved JSON has blobs: {list(d.get('blobs', {}))}")    # no `blobs` since I4.9
     fastened = [m for m in d["mates"] if m.get("type") == "fastened"]
     check(len(fastened) == 5, f"saved JSON has {len(fastened)} fastened mates, expected 5")
     ends = [m["b"] for m in fastened]

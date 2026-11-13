@@ -98,7 +98,7 @@ class World:
         with open(self.path(self.local["gone"])) as fh:               # "gone" keeps no saved copy of the part
             data = json.load(fh)
         for inst in data["instances"]:
-            inst.pop("_brep", None)
+            inst.pop("_brep_blob", None)
         with open(self.path(self.local["gone"]), "w") as fh:
             json.dump(data, fh)
 

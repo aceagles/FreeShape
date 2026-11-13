@@ -582,7 +582,10 @@ def spline_curve_2d(pts, closed=False):
     """A smooth curve passing through the points (closed: a loop), as an OpenCascade 2D B-spline.
     None if there aren't enough points."""
     from OCP.Geom2dAPI import Geom2dAPI_Interpolate
-    from OCP.OCP.collections import HArray1_gp_Pnt2d as TColgp_HArray1OfPnt2d
+    try:
+        from OCP.TColgp import TColgp_HArray1OfPnt2d
+    except ImportError:  # OCP >= 8 exposes NCollection templates directly
+        from OCP.OCP.collections import HArray1_gp_Pnt2d as TColgp_HArray1OfPnt2d
     from OCP.gp import gp_Pnt2d
     q = _clean_pts2d(pts, closed)
     if len(q) < (3 if closed else 2):
@@ -626,7 +629,10 @@ def text_shape(text, font="Arial", size=10.0, bold=False, italic=False):
     from OCP.Font import (Font_FA_Regular, Font_FA_Bold, Font_FA_Italic, Font_FA_BoldItalic,
                           Font_StrictLevel_Any)
     from OCP.TCollection import TCollection_AsciiString
-    from OCP.NCollection import NCollection_String
+    try:
+        from OCP.NCollection import NCollection_String
+    except ImportError:  # OCP < 8 binds the typedef under its template name only
+        from OCP.NCollection import NCollection_Utf8String as NCollection_String
     if not str(text).strip() or size <= 0:
         shp = TopoDS_Compound()
         BRep_Builder().MakeCompound(shp)

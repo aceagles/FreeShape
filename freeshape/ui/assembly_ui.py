@@ -91,6 +91,251 @@ def limit_rows(mate):
             for d in A.MATE_VALUE_DOFS.get(mate["type"], ())]
 
 
+def animate_defaults(mate, dof, length_scale):
+    """(start, end) for animating `dof` of `mate`: its limits, per end, else 0 and 360° or 0 and `length_scale`."""
+    lo, hi = (mate.get("limits") or {}).get(dof) or (None, None)
+    full = 360.0 if dof.startswith("r") else float(length_scale)
+    return (0.0 if lo is None else float(lo)), (full if hi is None else float(hi))
+
+
+ANIMATE_PLAYBACK_LABELS = {"single": "Single", "reciprocate": "Reciprocate", "loop": "Loop"}
+ANIMATE_TICK_MS = 40       # one frame per tick: the default 60 steps play in 2.4 s
+
+
+class AnimateDialog(QFrame):
+    """Play one Mate value of a mate from a start to an end value (Onshape's Animate). The model side is
+    AssemblyDoc.animate_frame / end_animate; this dialog only chooses the values and paces the frames."""
+    finished = Signal()
+
+    def __init__(self, ctl, mid, dof=None):
+        super().__init__(ctl.w.viewport)
+        _floating(self)
+        self.ctl, self.doc, self.mid = ctl, ctl.doc, mid
+        mate = self.doc.mate(mid)
+        self.rows = value_rows(mate)
+        self.dofs = [r[0] for r in self.rows]
+        self._seq, self._idx = [], 0
+        self._reverse = False
+        self._open = False          # an animation is open in the doc (end_animate still owed)
+        self._framing = False       # inside animate_frame: ignore the notification it sends
+        self._closed = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(ANIMATE_TICK_MS)
+        self._timer.timeout.connect(self._tick)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 10)
+        lay.setSpacing(6)
+        head, self.title = _head(self, "Animate " + mate["name"], "m_" + mate["type"], None, self.reject,
+                                 cancel_tip="Close (Esc)")
+        self.title.setReadOnly(True)
+        lay.addLayout(head)
+        lay.addWidget(_hline())
+
+        def row(label, widget, unit=None):
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            lab = QLabel(label)
+            lab.setFixedWidth(80)
+            h.addWidget(lab)
+            h.addWidget(widget, 1)
+            unit_lab = QLabel(unit or "")
+            unit_lab.setFixedWidth(24)
+            h.addWidget(unit_lab)
+            lay.addWidget(w)
+            return w, unit_lab
+
+        self.dof_box = QComboBox()
+        for d, label, _t, unit in self.rows:
+            self.dof_box.addItem(f"{label} ({unit})", d)
+        self.dof_row, _ = row("Freedom", self.dof_box)
+        self.dof_row.setVisible(len(self.rows) > 1)
+        self.start_edit, self.end_edit = QLineEdit(), QLineEdit()
+        _, self.unit_start = row("Start", self.start_edit)
+        _, self.unit_end = row("End", self.end_edit)
+        self.steps_edit = QLineEdit("60")
+        row("Steps", self.steps_edit)
+        self.playback = QComboBox()
+        for k, label in ANIMATE_PLAYBACK_LABELS.items():
+            self.playback.addItem(label, k)
+        row("Playback", self.playback)
+        self.current = QLineEdit()
+        self.current.setReadOnly(True)
+        _, self.unit_cur = row("Current", self.current)
+        btns = QHBoxLayout()
+        self.play_btn = QPushButton("Play")
+        self.play_btn.clicked.connect(self.toggle_play)
+        self.reverse_btn = QPushButton("Reverse")
+        self.reverse_btn.setToolTip("Play the other way round")
+        self.reverse_btn.clicked.connect(self.reverse)
+        btns.addWidget(self.play_btn)
+        btns.addWidget(self.reverse_btn)
+        lay.addLayout(btns)
+        self.msg = QLabel("")
+        self.msg.setWordWrap(True)
+        self.msg.setObjectName("muted")
+        lay.addWidget(self.msg)
+        self.dof_box.currentIndexChanged.connect(lambda _i: self._freedom_changed())
+        if dof in self.dofs:
+            self.dof_box.setCurrentIndex(self.dofs.index(dof))
+        self._freedom_changed()
+        self.doc.listeners.append(self._doc_notified)
+        self.setFixedWidth(300)
+        self.adjustSize()
+        self.move(12, 12)
+        self.show()
+
+    # -- fields
+    @property
+    def dof(self):
+        return self.dof_box.currentData()
+
+    def _freedom_changed(self):
+        mate = self.doc.mate(self.mid)
+        unit = value_unit(self.dof)
+        for lab in (self.unit_start, self.unit_end, self.unit_cur):
+            lab.setText(unit)
+        if mate is not None:
+            lo, hi = animate_defaults(mate, self.dof, self.doc.length_scale())
+            self.start_edit.setText(fmt(lo))
+            self.end_edit.setText(fmt(hi))
+        self._show_current()
+
+    def _show_current(self):
+        mate = self.doc.mate(self.mid)
+        if mate is not None:
+            self.current.setText(fmt(float((mate.get("values") or {}).get(self.dof, 0.0))))
+
+    def _read(self):
+        """(start, end, steps, playback) from the fields; raises ValueError saying which one is wrong."""
+        ang = self.dof.startswith("r")
+        vals = []
+        for name, ed in (("Start", self.start_edit), ("End", self.end_edit)):
+            v = parse_number(ed.text(), angle=ang)
+            if v is None:
+                raise ValueError(f"{name}: can't read \"{ed.text()}\" as a number")
+            vals.append(float(v))
+        try:
+            steps = int(self.steps_edit.text().strip())
+        except ValueError:
+            raise ValueError(f"Steps: can't read \"{self.steps_edit.text()}\" as a whole number") from None
+        return vals[0], vals[1], steps, self.playback.currentData()
+
+    # -- playback
+    @property
+    def running(self):
+        return self._timer.isActive()
+
+    def toggle_play(self):
+        if self.running:
+            self.stop()
+        else:
+            self.play()
+
+    def play(self):
+        if self.running or self._closed:
+            return
+        try:
+            start, end, steps, mode = self._read()
+            seq = A.animate_values(start, end, steps, mode)
+        except ValueError as e:
+            self.msg.setText(str(e))
+            return
+        self.msg.setText("")
+        self._seq = seq[::-1] if self._reverse else seq
+        self._idx = 0
+        self._set_running(True)
+        self._timer.start()
+
+    def stop(self):
+        """Stop the run and put the assembly back as it was."""
+        self._set_running(False)
+        self._end()
+        self._show_current()
+
+    def reverse(self):
+        """Play the other way round: from the next Play, or from here when running."""
+        self._reverse = not self._reverse
+        self.reverse_btn.setDown(False)
+        if self.running and self._idx:
+            self._seq = self._seq[::-1]
+            self._idx = min(len(self._seq), len(self._seq) - self._idx + 1)
+
+    def _set_running(self, on):
+        if not on:
+            self._timer.stop()
+        self.play_btn.setText("Stop" if on else "Play")
+        for w in (self.dof_box, self.start_edit, self.end_edit, self.steps_edit, self.playback):
+            w.setEnabled(not on)
+
+    def _tick(self):
+        """One frame. A Single run ends, and the assembly goes back, after its last frame."""
+        if not self._seq or self._closed:
+            return
+        if self._idx >= len(self._seq):
+            self._idx = 0                       # loop (Single never gets here: it ends on the last frame)
+        value = self._seq[self._idx]
+        self._idx += 1
+        self._open = True
+        self._framing = True
+        try:
+            reached = self.doc.animate_frame(self.mid, self.dof, value)
+        except ValueError as e:                 # the mate was deleted under us
+            self._framing = False
+            self.msg.setText(str(e))
+            self.stop()
+            return
+        finally:
+            self._framing = False
+        self.current.setText(fmt(reached))
+        if self._idx >= len(self._seq) and self.playback.currentData() == "single":
+            self._set_running(False)            # keep the end value showing; the assembly goes back
+            self._end()
+
+    def _end(self):
+        if self._open:
+            self._open = False
+            self._framing = True
+            try:
+                self.doc.end_animate()
+            finally:
+                self._framing = False
+
+    def _doc_notified(self):
+        """Every animate_frame notifies; ours are ignored. Anything else that deletes the mate ends the run."""
+        if self._framing or self._closed:
+            return
+        if self.doc.mate(self.mid) is None:
+            self.reject()
+
+    # -- closing
+    def _close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self._set_running(False)
+        self._end()
+        if self._doc_notified in self.doc.listeners:
+            self.doc.listeners.remove(self._doc_notified)
+        self.finished.emit()
+
+    def accept(self):
+        self._close()
+
+    def reject(self):
+        self._close()
+
+    def closeEvent(self, e):
+        self._close()
+        super().closeEvent(e)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(e)
+
+
 class AssemblyPanel(QWidget):
     instanceClicked = Signal(str)
     instanceDouble = Signal(str)
@@ -1924,6 +2169,8 @@ class AssemblyController:
                     lambda: doc.set_suppressed(mid, not mt.get("suppressed")))
         if A.MATE_VALUE_DOFS.get(mt["type"]):
             m.addAction("Set value…", lambda: self.set_value_dialog(mid))
+        if A.MATE_VALUE_DOFS.get(mt["type"]):
+            m.addAction("Animate…", lambda: self.start_animate(mid))
         limited = [r for r in limit_rows(mt) if r[3] is not None or r[4] is not None]
         if limited:
             sub = m.addMenu("Apply limit position")
@@ -1959,6 +2206,27 @@ class AssemblyController:
         v, ok = QInputDialog.getDouble(self.w, "Set value", f"{label} ({unit}):", float(text), -1e6, 1e6, 3)
         if ok:
             self.set_mate_value(mid, dof, v)
+
+    animate_dialog = None
+
+    def start_animate(self, mid):
+        mt = self.doc.mate(mid)
+        if mt is None or not A.MATE_VALUE_DOFS.get(mt["type"]) or self.w.mode != "idle":
+            return
+        self.close_insert()
+        self.w.mode = "dialog"
+        self.animate_dialog = AnimateDialog(self, mid)
+        self.w._adapt_tree(self.animate_dialog)
+        self.animate_dialog.finished.connect(self._close_animate)
+
+    def _close_animate(self):
+        d = self.animate_dialog
+        if d is not None:
+            d.hide()
+            d.deleteLater()
+        self.animate_dialog = None
+        self.w.mode = "idle"
+        self.on_changed()
 
     def set_mate_value(self, mid, dof, value):
         """Drive freedom `dof` of mate `mid` to `value`; a failure goes to the status bar. Returns (reached, ok)."""
@@ -2118,6 +2386,8 @@ class AssemblyController:
             self.relation_dialog.reject()
         elif self.move_dialog is not None:
             self.move_dialog.reject()
+        elif self.animate_dialog is not None:
+            self.animate_dialog.reject()
         elif self.insert_panel is not None:
             self.close_insert()
         else:
@@ -2134,6 +2404,8 @@ class AssemblyController:
             self.relation_dialog.reject()
         if self.move_dialog is not None:
             self.move_dialog.reject()
+        if self.animate_dialog is not None:
+            self.animate_dialog.reject()
         self.close_insert()
         self._drag = None
         self.vp.triads = []

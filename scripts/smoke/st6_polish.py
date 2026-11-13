@@ -112,12 +112,15 @@ def list_icons(lst, size):
 
 
 def tree_icons(tree, size):
-    """The part rows of a tree (children of the top-level studio rows); top-level rows carry no preview."""
+    """The part rows of a tree (children of the top-level studio rows); top-level rows carry no preview, and
+    neither do the Insert panel's sketch rows, which keep the plain sketch icon."""
+    from freeshape.ui.assembly_ui import ROLE_KIND
     out = []
     for i in range(tree.topLevelItemCount()):
         top = tree.topLevelItem(i)
         out += [icon_state(top.child(j).icon(0), size) for j in range(top.childCount())
-                if not top.child(j).isDisabled()]      # "(no parts yet)" is a note, not a part row
+                if not top.child(j).isDisabled()       # "(no parts yet)" is a note, not a part row
+                and top.child(j).data(0, ROLE_KIND) != "sketch"]
     return out
 
 

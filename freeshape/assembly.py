@@ -2430,7 +2430,7 @@ class AssemblyDoc:
 
     def export(self, path, ids=None, options=None):
         insts = [i for i in self.instances if i["id"] in self.parts and (ids is None or i["id"] in ids)
-                 and not i.get("hidden") and not i.get("suppressed") and not is_sketch_source(i["source"])]
+                 and not i.get("hidden") and not i.get("suppressed") and not is_sketch_source(i.get("source"))]
         if not insts:
             raise K.KernelError("Nothing to export")
         if str(path).lower().endswith(".stl"):

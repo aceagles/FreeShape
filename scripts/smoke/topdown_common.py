@@ -357,8 +357,8 @@ def layout_studio():
     """A Part Studio Document holding the layout sketch (on the Front plane) and a 40 x 40 x 20 block.
     Returns (document, sketch feature id, block part id)."""
     from conftest import FRONT, add, rect_lines, region_refs, sketch_feature
-    from freeshape.document import Document
-    doc = Document()
+    from freeshape.document import PartStudioDoc
+    doc = PartStudioDoc()
     sid = sketch_feature(doc, layout_sketch, FRONT)
     rid = sketch_feature(doc, lambda s: rect_lines(s, 0, 0, 40, 40), FRONT)
     add(doc, "extrude", regions=region_refs(doc, rid), depth=20, op="new")

@@ -550,6 +550,18 @@ Split and merge are the same mechanism read in two directions, so they are descr
   reference test for a multi-transform asserts only the resulting map size, 26 entries for a
   transformed box (`/opt/freecad-src/src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py:1060`).
 
+### I1.10 Patterns: mirror, linear and circular
+
+* `run_mirror` names each mirrored copy from the source part's map under op `MIR` and the
+  mirror feature's tag (section 7, "Mirror"). The source part keeps its names.
+* `run_linear_pattern` and `run_circular_pattern` name each copy as a transform under op `XFM`
+  (`Part::OpCodes::Transform`, `/opt/freecad-src/src/Mod/Part/App/TopoShapeOpCode.h:61`).
+* FreeCAD tells identical instances apart with `;:C<n>` and says that postfix is not an index
+  (section 7, "Telling identical instances apart"). FreeShape wants an instance's names to carry
+  its index, so the tag of instance *k* (1-based; instance 0 is the source) is `<feature id>_<k>`.
+  The same source face has one distinct name per copy, and a change of count leaves the names of the
+  other instances alone.
+
 ## 8. Joint frame
 
 This section is about FreeCAD's Assembly workbench rather than the element map: it is the rule

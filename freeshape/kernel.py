@@ -707,10 +707,23 @@ def rotate(shape, p, d, angle_deg):
     return _placed(shape, _trsf_rotate(p, d, angle_deg))[0]
 
 
-def mirror(shape, plane: Plane):
+def mirror(shape, plane: Plane, with_history=False):
     t = gp_Trsf()
     t.SetMirror(gp_Ax2(_pnt(plane.origin), _dir(plane.normal)))
-    return _placed(shape, t)[0]
+    out, mk = _placed(shape, t)
+    return (out, _maker_history(mk, [shape])) if with_history else out
+
+
+def pattern_translate(shape, v, with_history=False):
+    """translate(), for a pattern instance: with_history=True also returns the move's history."""
+    out, mk = _placed(shape, _trsf_translate(v))
+    return (out, _maker_history(mk, [shape])) if with_history else out
+
+
+def pattern_rotate(shape, p, d, angle_deg, with_history=False):
+    """rotate(), for a pattern instance: with_history=True also returns the move's history."""
+    out, mk = _placed(shape, _trsf_rotate(p, d, angle_deg))
+    return (out, _maker_history(mk, [shape])) if with_history else out
 
 
 def _solid_volume(shape):

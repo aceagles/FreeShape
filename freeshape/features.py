@@ -1018,9 +1018,21 @@ def run_mirror(state, f):
     p = f["params"]
     ids = _selected_parts(state, p)
     plane = resolve_plane(state, p["plane"])
-    bodies = [K.mirror(state.parts[i].shape, plane) for i in ids]
+    bodies, named = [], []
+    for i in ids:
+        body, h = K.mirror(state.parts[i].shape, plane, with_history=True)
+        named.append(name_feature(state, f["id"], [i], body, h, "mirror"))
+        bodies.append(body)
     body = K.compound(bodies)
-    apply_body(state, body, p.get("op", "add"), f["id"], ids if p.get("op", "add") == "add" else None)
+    apply_body(state, body, p.get("op", "add"), f["id"], ids if p.get("op", "add") == "add" else None, named)
+
+
+def _pattern_instance_name(state, fid, pid, copy, history, op, k):
+    """The names of instance k (1-based; 0 is the source) of a pattern. The instance index goes in
+    the tag ("F5_2"), so it is part of every name of that copy and a change of count leaves the
+    other instances' names alone. FreeCAD's `;:C<n>` disambiguator (spec section 7) is not an index
+    to read back; this keeps the same one-name-per-instance effect with an index that is stable."""
+    return name_feature(state, f"{fid}_{k}", [pid], copy, history, op)
 
 
 def run_linear_pattern(state, f):
@@ -1032,13 +1044,15 @@ def run_linear_pattern(state, f):
         d = -d
     n = int(p.get("count", 3))
     sp = float(p.get("spacing", 20))
-    copies = []
+    copies, named = [], []
     for i in ids:
         for k in range(1, n):
-            copies.append(K.translate(state.parts[i].shape, d * sp * k))
+            c, h = K.pattern_translate(state.parts[i].shape, d * sp * k, with_history=True)
+            named.append(_pattern_instance_name(state, f["id"], i, c, h, "linear_pattern", k))
+            copies.append(c)
     if not copies:
         raise K.KernelError("Count must be at least 2")
-    apply_body(state, K.compound(copies), p.get("op", "add"), f["id"])
+    apply_body(state, K.compound(copies), p.get("op", "add"), f["id"], None, named)
 
 
 def run_circular_pattern(state, f):
@@ -1048,13 +1062,15 @@ def run_circular_pattern(state, f):
     n = int(p.get("count", 4))
     total = float(p.get("angle", 360))
     step = total / n if abs(total - 360) < 1e-9 else total / max(n - 1, 1)
-    copies = []
+    copies, named = [], []
     for i in ids:
         for k in range(1, n):
-            copies.append(K.rotate(state.parts[i].shape, a, d, step * k))
+            c, h = K.pattern_rotate(state.parts[i].shape, a, d, step * k, with_history=True)
+            named.append(_pattern_instance_name(state, f["id"], i, c, h, "circular_pattern", k))
+            copies.append(c)
     if not copies:
         raise K.KernelError("Count must be at least 2")
-    apply_body(state, K.compound(copies), p.get("op", "add"), f["id"])
+    apply_body(state, K.compound(copies), p.get("op", "add"), f["id"], None, named)
 
 
 def run_boolean(state, f):

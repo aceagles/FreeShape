@@ -979,6 +979,8 @@ class MainWindow(QMainWindow):
         ax = p.get("axis") or {}
         if ax.get("kind") == "sketch_line":
             show.add(ax["sketch"])
+        if feature["type"] == "mate_connector":      # every sketch below it, so its geometry can be picked (I1.6)
+            show |= set(st.sketches)
         self._show_state(st, also_show=show)
         self.viewport.overlays = overlays
         self.viewport.update()

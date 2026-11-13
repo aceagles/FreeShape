@@ -263,7 +263,7 @@ class Viewport(QOpenGLWidget):
             return any(pid == p.key[0] for pid, _, _ in self.parts)
         if p.kind == "region":
             return any(fid == p.key[0] and p.key[1] < len(sr.regions) for fid, sr, _ in self.sketches)
-        if p.kind == "sketch_line":
+        if p.kind in ("sketch_line", "sketch_point"):
             return any(fid == p.key[0] and p.key[1] in sr.sketch.entities for fid, sr, _ in self.sketches)
         if p.kind == "plane":
             return any(k == p.key for k, *_ in self.planes)
@@ -1366,6 +1366,22 @@ class Viewport(QOpenGLWidget):
             if best_v[1] is not None:
                 return best_v[1]
 
+        # sketch point entities (the Mate connector tool asks for them): the nearest within a few pixels
+        if allowed("sketch_point"):
+            best_s = (9.0, None)
+            for fid, sr, _ in self.sketches:
+                if self.sketcher and self.sketcher.fid == fid:
+                    continue
+                for eid, e in sr.sketch.entities.items():
+                    if e["type"] != "point" or e["p"] not in sr.sketch.points:
+                        continue
+                    s = self.cam.to_screen(np.asarray(sr.plane.to_world(*sr.sketch.points[e["p"]]), float))
+                    dv = float(np.hypot(s[0] - x, s[1] - y))
+                    if dv < best_s[0]:
+                        best_s = (dv, Pick("sketch_point", (fid, eid)))
+            if best_s[1] is not None:
+                return best_s[1]
+
         # edges & sketch lines (screen-space proximity)
         want_edge = allowed("edge")
         want_sl = allowed("sketch_line")
@@ -1738,7 +1754,7 @@ class Viewport(QOpenGLWidget):
         """Refresh the snap dots for the hovered pick (only when the pick changed), then the highlighted one."""
         if self.snap_provider is None:
             return
-        if h is None or h.kind not in ("face", "edge"):
+        if h is None or h.kind not in ("face", "edge", "sketch_line", "sketch_point"):
             self.snap_base, self.snap_points = None, []
         elif h != self.snap_base:
             self.snap_base = h

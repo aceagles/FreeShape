@@ -679,8 +679,9 @@ def make_sketch_edges(plane: Plane, curves, with_ids=False) -> list:
     Splines, ellipses and text are curves too; a text curve gives one edge per glyph outline.
 
     with_ids=True returns (curve id, edge) pairs instead, the id being the curve's "id" (the sketch
-    entity id, see Sketch.curves) or None. A text curve's edges are numbered "<id>.<n>" in the order the
-    text shape lists them, so each glyph outline has its own id. A degenerate curve is skipped as a whole,
+    entity id, see Sketch.curves) or None. A text curve's edges are numbered "<id>_<n>" in the order the
+    text shape lists them, so each glyph outline has its own id. The separator is "_" because "." is
+    reserved in an element name (naming._RESERVED), so a "." label would leave the whole sketch unnamed. A degenerate curve is skipped as a whole,
     so it never shifts the pairing of the curves after it."""
     out = []
     ax3 = plane.gp_ax3()
@@ -731,14 +732,25 @@ def make_sketch_edges(plane: Plane, curves, with_ids=False) -> list:
                     edge = BRepBuilderAPI_MakeEdge(gp_Elips(ax2, A, B)).Edge()
             elif c["type"] == "text":
                 cid = c.get("id")
-                for i, te in enumerate(edges(_place_text(plane, c))):
-                    out.append((None if cid is None else f"{cid}.{i}", te) if with_ids else te)
+                for i, te in enumerate(_ordered_glyph_edges(_place_text(plane, c))):
+                    out.append((None if cid is None else f"{cid}_{i}", te) if with_ids else te)
                 continue
         except Exception:
             continue
         if edge is not None:
             out.append((c.get("id"), edge) if with_ids else edge)
     return out
+
+
+def _ordered_glyph_edges(shape) -> list:
+    """The edges of a placed text shape in an order that depends only on the text and its font. The order
+    the font builder lists a glyph's contours in changes from one build to the next (the stem and the dot of an
+    "i" swap), and the glyph labels "<id>_<n>" are numbered in this order, so the edges are sorted by where they
+    sit (lowest corner, then highest corner, to 3 decimals) instead."""
+    def key(e):
+        lo, hi = bbox(e)
+        return tuple(round(float(v), 3) + 0.0 for v in (*lo, *hi))
+    return sorted(edges(shape), key=key)
 
 
 def sketch_geometry(plane: Plane, sketch):

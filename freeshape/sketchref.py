@@ -75,8 +75,9 @@ def _role_points(sketch, eid, etype, e):
     if etype == "arc":
         return {"centre": _pt(sketch, e["c"], eid), "end1": _pt(sketch, e["p1"], eid),
                 "end2": _pt(sketch, e["p2"], eid)}
-    # the curve types of upstream 2.0: an ellipse offers its centre, a spline the two ends of its point
-    # list (a closed one: its first point twice), a text its anchor point
+    # the curve types of upstream 2.0: an ellipse offers its centre, a spline the first and last point of its
+    # point list (a closed one too: end2 is its last listed point, not the start it loops back to), a text its
+    # anchor point
     if etype == "ellipse":
         return {"centre": _pt(sketch, e["c"], eid)}
     if etype == "spline" and e.get("pts"):

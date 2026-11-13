@@ -1,0 +1,237 @@
+"""The engine contract: what goes into a tab (`submit_edit`) and what comes out (`outputs`). Headless, and
+free of OCCT: every output object below holds only str / int / float / bool / None / bytes, numpy arrays of
+numbers, and lists / tuples / dicts of those, so it pickles and can cross a process (ADR 0002, I3.2) or a
+machine boundary unchanged.
+
+Outputs
+-------
+A part crosses as `PartOut`: its BREP (`brep`, zlib-compressed OCCT BREP text -- the same encoding as
+`kernel.shape_to_brep`, so `kernel.shape_from_brep(part.brep)` rebuilds it), a content hash of that BREP
+text, a mesh for display, and its element-name map.
+
+Element indices. Everything that names a face, edge or vertex by number uses one rule: the 1-based position
+of the sub-shape in `TopExp.MapShapes` order for that kind -- the order `kernel.faces` / `kernel.edges`
+return (shifted by one) and the rule behind FreeCAD's "Face1" / "Edge1" names
+(Part::TopoShape::getSubShape). `PartOut.names` is `{"face": {i: name}, "edge": {i: name},
+"vertex": {i: name}}`; `MeshOut.tri_face[t]` is the face index of triangle t; `MeshOut.edge_polys[i - 1]`
+is edge i; `PartOut.face_colors` and `ConnectorOut.index` use the same 1-based index. A consumer rebuilds
+the shape from `brep`, indexes its sub-shapes the same way, and looks names up by index.
+
+Edits
+-----
+An edit is a plain dict with an "op" key; see `STUDIO_OPS`, `ASSEMBLY_OPS`, `DRAWING_OPS` for what each
+tab kind accepts and the keys each op reads. An unknown op, or one naming something that is not there,
+raises `EngineError`; a feature that fails to rebuild is not an exception -- it shows up in `errors`, the
+same as in the Part Studio itself.
+"""
+from __future__ import annotations
+
+import abc
+from dataclasses import dataclass, field
+
+import numpy as np
+
+
+class EngineError(Exception):
+    """An edit the engine cannot apply, or a tab it does not have."""
+
+
+# =========================================================================== edits
+
+STUDIO_OPS = {
+    "set_param": "feature, key (a params key or a list of keys into nested params), value",
+    "replace_feature": "feature (the whole feature dict, matched by its id)",
+    "add_feature": "feature (a whole feature dict), index (optional; default: at the rollback bar)",
+    "delete_features": "ids",
+    "set_suppressed": "feature, value",
+    "set_rollback": "index (None = all features)",
+    "rename_feature": "feature, name",
+    "set_part_override": "part, plus any of name / color",
+    "undo": "", "redo": "",
+    "save": "path (optional)",
+}
+ASSEMBLY_OPS = {
+    "move_instance": "instance, T (4x4), solve (optional, default True)",
+    "set_hidden": "instance, value",
+    "set_fixed": "instance, value",
+    "set_suppressed": "mate, value",
+    "rename": "id (instance or mate), name",
+    "delete_instances": "ids",
+    "delete_mates": "ids",
+    "solve": "",
+    "refresh": "",
+    "undo": "", "redo": "",
+    "save": "path (optional)",
+}
+DRAWING_OPS = {
+    "set_source": "source (a drawing source dict: kind, uid, path, part ...)",
+    "auto_layout": "",
+    "refresh": "",
+    "undo": "", "redo": "",
+    "save": "path (optional)",
+}
+
+
+# =========================================================================== outputs
+
+@dataclass
+class MeshOut:
+    """A display mesh. verts / normals (n, 3) float32, tris (m, 3) uint32 into verts, tri_face (m,) int32
+    1-based face index, edge_polys one (k, 3) float32 polyline per edge (edge i at [i - 1]), vertices
+    (v, 3) float32 in vertex-index order."""
+    verts: np.ndarray
+    normals: np.ndarray
+    tris: np.ndarray
+    tri_face: np.ndarray
+    edge_polys: list
+    vertices: np.ndarray
+
+
+@dataclass
+class PartOut:
+    id: str
+    name: str
+    color: tuple
+    hidden: bool
+    brep: bytes              # zlib-compressed BREP text, no triangulation (kernel.shape_from_brep reads it)
+    hash: str                # sha256 hex of the uncompressed BREP text
+    names: dict              # {"face": {i: name}, "edge": {...}, "vertex": {...}}, 1-based i; empty if unnamed
+    mesh: MeshOut | None
+    face_colors: dict | None = None   # 1-based face index -> (r, g, b)
+
+
+@dataclass
+class SketchOut:
+    id: str
+    name: str
+    plane: dict              # {"origin", "xdir", "normal"}: 3-lists
+    sketch: dict             # the solved sketch (Sketch.to_dict)
+    regions: list            # per closed region: {"c", "area", "loops", "edges"}
+
+
+@dataclass
+class ConnectorOut:
+    """One side of a mate: a face or edge of an instance's part, and the frame on it."""
+    instance: str
+    kind: str                # "face" | "edge"
+    index: int | None        # 1-based element index in the instance's part
+    frame: dict              # {"o", "x", "z", "what"} in the part's own coordinates
+    world: dict              # the same frame placed by the instance's transform
+
+
+@dataclass
+class MateOut:
+    id: str
+    name: str
+    type: str
+    suppressed: bool
+    a: ConnectorOut
+    b: ConnectorOut
+    params: dict             # flip, offset, angle ... (whatever else the mate stores)
+
+
+@dataclass
+class InstanceOut:
+    id: str
+    name: str
+    part: str | None         # key into AssemblyOutputs.parts (a content hash); None when it has no part
+    T: list                  # 4x4 placement, nested lists of float
+    hidden: bool
+    fixed: bool
+    color: tuple
+    source: dict             # the link as stored (kind, uid, path, part ...)
+
+
+@dataclass
+class TabOutputs:
+    tab: str
+    kind: str
+    name: str
+    revision: int            # bumps on every edit applied to this tab
+    errors: dict             # feature / instance / mate id (or "" for the tab itself) -> message
+    consumes: tuple          # tab ids whose outputs this tab read, in first-use order
+
+
+@dataclass
+class StudioOutputs(TabOutputs):
+    parts: list = field(default_factory=list)          # [PartOut], in the studio's part order
+    sketches: list = field(default_factory=list)       # [SketchOut]
+    variables: dict = field(default_factory=dict)      # name -> number
+
+
+@dataclass
+class AssemblyOutputs(TabOutputs):
+    parts: dict = field(default_factory=dict)          # hash -> PartOut, shared by instances of one part
+    instances: list = field(default_factory=list)      # [InstanceOut]
+    mates: list = field(default_factory=list)          # [MateOut] -- the mate connectors live here
+    dof: int = 0
+
+
+@dataclass
+class DrawingOutputs(TabOutputs):
+    source: dict | None = None
+    sheet: dict = field(default_factory=dict)
+    title: dict = field(default_factory=dict)
+    views: list = field(default_factory=list)          # the view dicts as stored
+    annots: list = field(default_factory=list)
+    curves: dict = field(default_factory=dict)         # view id -> {"visible", "hidden", "tangent"}
+    model: str | None = None                           # content hash of the shape being drawn
+
+
+# =========================================================================== plain data
+
+_SCALARS = (str, int, float, bool, bytes, type(None))
+
+
+def plain(x):
+    """`x` as plain data: dicts / lists / tuples of scalars and numeric numpy arrays, numpy scalars turned
+    into Python ones. Anything else (an OCCT object, a Sketch, a Plane ...) raises EngineError, so nothing
+    the caller cannot pickle or read in another process leaks into an output by accident."""
+    if isinstance(x, _SCALARS):
+        return x
+    if isinstance(x, np.generic):
+        return x.item()
+    if isinstance(x, np.ndarray):
+        if x.dtype.kind not in "biuf":
+            raise EngineError(f"not plain data: array of {x.dtype}")
+        return x.copy()
+    if isinstance(x, dict):
+        return {plain(k): plain(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        out = [plain(v) for v in x]
+        return out if isinstance(x, list) else tuple(out)
+    if isinstance(x, (set, frozenset)):
+        return sorted(plain(v) for v in x)
+    raise EngineError(f"not plain data: {type(x).__module__}.{type(x).__qualname__}")
+
+
+# =========================================================================== the interface
+
+class Engine(abc.ABC):
+    """`submit_edit(tab, edit)` -> `outputs(tab)`. Tabs are opened from a file (or made new) and addressed
+    by a string tab id. The engine, not the tab, owns cross-tab inputs: a tab is handed the outputs it
+    consumes and never opens another tab's file itself."""
+
+    @abc.abstractmethod
+    def open_tab(self, path, tab=None) -> str:
+        """Open the Part Studio / Assembly / Drawing at `path`; returns its tab id (`tab` if given)."""
+
+    @abc.abstractmethod
+    def new_tab(self, kind, name=None, tab=None) -> str:
+        """A new empty tab of `kind` ("studio" | "assembly" | "drawing")."""
+
+    @abc.abstractmethod
+    def close_tab(self, tab) -> None:
+        ...
+
+    @abc.abstractmethod
+    def tabs(self) -> list:
+        """[(tab id, kind, name, path)] of every open tab, including ones opened to feed another."""
+
+    @abc.abstractmethod
+    def submit_edit(self, tab, edit) -> int:
+        """Apply one edit; returns the tab's new revision."""
+
+    @abc.abstractmethod
+    def outputs(self, tab) -> TabOutputs:
+        ...

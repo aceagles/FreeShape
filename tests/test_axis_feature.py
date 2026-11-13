@@ -118,7 +118,7 @@ def test_auto_detects_each_type_and_rejects_a_plain_face():
     top = _fref(doc, lambda i: i["type"] == int(K.GeomAbs_Plane) and i["n"][2] > 0.9)
     assert F.axis_type({"type": "auto", "refs": [top]}) is None
     assert _err(doc, refs=[top]) == "That selection does not fit an axis type"
-    assert "not built yet" in _err(doc, type="two_planes", refs=[])
+    assert _err(doc, type="two_planes", refs=[]) == "Pick two planes or planar faces"
     assert _err(doc, type="edge", refs=[top]) == "Pick a straight or circular edge"
 
 

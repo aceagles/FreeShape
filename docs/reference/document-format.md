@@ -99,7 +99,7 @@ Types whose `params` name something outside the feature:
 | `derived` | `sketches` | list of string | Sketch ids taken from the source. |
 | `derived` | `connectors` | list | Mate connectors taken from the source. |
 | `mate_connector` | `name`, `ref`, `kind`, `click`, `snap`, `x_ref`, `flip`, `owner` | mixed | A mate connector the studio publishes. `ref` is a face or edge reference, `owner` the part it belongs to. |
-| `axis` | `type`, `refs`, `click`, `flip`, `connector_axis` | mixed | A construction axis. `type` is `auto` or one of `edge`, `round_face`, `two_points`, `two_planes`, `point_normal`, `face_point`, `point_parallel`, `connector`. `refs` is a list of `{k, ref}` with `k` one of `face`, `edge`, `vertex`, `plane`, `axis`, `sketch_line`, `sketch`, `connector`. `click` is a world point or null. `connector_axis` is `z`, `x` or `y`. The types `two_planes` to `connector` are not built yet and report an error. |
+| `axis` | `type`, `refs`, `click`, `flip`, `connector_axis` | mixed | A construction axis. `type` is `auto` or one of `edge`, `round_face`, `two_points`, `two_planes`, `point_normal`, `face_point`, `point_parallel`, `connector`. `refs` is a list of `{k, ref}` with `k` one of `face`, `edge`, `vertex`, `plane`, `axis`, `sketch_line`, `sketch`, `connector`. `click` is a world point or null. `connector_axis` is `z`, `x` or `y`. |
 | `context` | `assembly` | string | The Assembly Tab, by id or uid. |
 | `context` | `instance` | string | The instance id the capture was taken for. |
 | `context` | `capture` | string | Blob key of the capture listing. See Where binary data lives. |

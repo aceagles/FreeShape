@@ -649,7 +649,7 @@ def build_plane(state, p):
 # --------------------------------------------------------------------------- axes
 # An axis feature copies the plane feature's shape: a list of selected items, a type chosen or detected from
 # them ("auto"), and a result kept in ModelState.axes. Its types follow FreeCAD's datum line attachment modes
-# (Part/App/AttachExtension: Axis, Line / TwoPointLine / ObjectXY...); the others are built by later cards.
+# (Part/App/AttachExtension: Axis, Line / TwoPointLine / ObjectXY / Normal to surface...).
 
 AXIS_TYPES = [
     ("auto", "Automatic"), ("edge", "Through edge"), ("round_face", "Through cylinder / cone / torus"),
@@ -658,7 +658,6 @@ AXIS_TYPES = [
     ("point_parallel", "Parallel to line through point"), ("connector", "Mate connector axis"),
 ]
 AXIS_TYPE_NAMES = dict(AXIS_TYPES)
-_AXIS_BUILT = ("edge", "round_face", "two_points")
 
 
 def axis_items(p):
@@ -685,14 +684,28 @@ def axis_role(kind, ref):
     return "?"
 
 
-def detect_axis_type(roles):
-    """The axis type that fits a selection (a list of roles from axis_role), or None."""
-    if len(roles) == 1 and roles[0] in ("line", "circle", "curve"):
-        return "edge"
-    if len(roles) == 1 and roles[0] == "round":
-        return "round_face"
-    if len(roles) == 2 and roles.count("point") == 2:
+def detect_axis_type(roles, click=False):
+    """The axis type that fits a selection (a list of roles from axis_role; `click` says the feature has a click
+    point), or None. The order matters: a point and a plane is point_normal, not face_point."""
+    n = {r: roles.count(r) for r in ("point", "plane", "round", "surface", "line", "axis", "circle", "curve",
+                                      "connector")}
+    total = len(roles)
+    if total == 2 and n["point"] == 2:
         return "two_points"
+    if total == 2 and n["plane"] == 2:
+        return "two_planes"
+    if total == 2 and n["point"] == 1 and n["line"] + n["axis"] == 1:
+        return "point_parallel"
+    if total == 2 and n["point"] == 1 and n["plane"] + n["round"] + n["surface"] == 1:
+        return "point_normal"
+    if total == 1 and n["connector"] == 1:
+        return "connector"
+    if total == 1 and n["round"] == 1:
+        return "round_face"
+    if total == 1 and n["line"] + n["circle"] + n["curve"] == 1:
+        return "edge"
+    if total == 1 and click and n["plane"] + n["surface"] == 1:
+        return "face_point"
     return None
 
 
@@ -700,7 +713,7 @@ def axis_type(p):
     """The effective type of an axis feature's params (resolves 'auto'); None when the selection fits nothing."""
     t = p.get("type") or "auto"
     if t == "auto":
-        return detect_axis_type([axis_role(k, r) for k, r in axis_items(p)])
+        return detect_axis_type([axis_role(k, r) for k, r in axis_items(p)], bool(p.get("click")))
     return t
 
 
@@ -722,6 +735,47 @@ def _axis_point(state, kind, ref):
     return np.array(sketchref.frame(plane, sk, ref["entity"], ref["role"])["o"], float)
 
 
+def _axis_plane(state, kind, ref):
+    return resolve_plane(state, ref if kind == "plane" else {"kind": "face", "face": ref})
+
+
+def _axis_surface_normal(state, kind, ref, pt):
+    """(point on the face or plane nearest `pt`, unit normal there): a plane gives its own normal, a curved face
+    the normal where `pt` projects onto it (for a cylinder that line crosses the centre line)."""
+    if kind == "plane" or (kind == "face" and ref.get("type") == int(K.GeomAbs_Plane)):
+        pl = _axis_plane(state, kind, ref)
+        return pt - ((pt - pl.origin) @ pl.normal) * pl.normal, pl.normal
+    _, face = resolve(state, ref, "face")
+    return K.surface_point_normal(face, pt)
+
+
+def _axis_line(state, kind, ref):
+    """(point, unit direction) of a straight edge, sketch line or axis feature."""
+    if kind == "edge":
+        _, e = resolve(state, ref, "edge")
+        ln = K.edge_line(e)
+        if ln is None:
+            raise K.KernelError("Pick a straight edge")
+        o, d = ln
+    else:
+        o, d = resolve_axis(state, ref)
+    d = np.asarray(d, float)
+    return np.asarray(o, float), d / np.linalg.norm(d)
+
+
+def _connector_axis(state, fid, which="z"):
+    """(origin, unit direction) of one axis of a mate connector's frame: z, x, or y = z cross x."""
+    c = state.connectors.get(fid)
+    if c is None or "frame" not in c:
+        raise K.KernelError("Missing mate connector")
+    if which not in ("z", "x", "y"):
+        raise K.KernelError("Unknown connector axis")
+    fr = c["frame"]
+    z, x = np.asarray(fr["z"], float), np.asarray(fr["x"], float)
+    d = {"z": z, "x": x, "y": np.cross(z, x)}[which]
+    return np.asarray(fr["o"], float), d / np.linalg.norm(d)
+
+
 def build_axis(state, p):
     """The construction axis an axis feature describes: {o, d, span}."""
     t = axis_type(p)
@@ -729,10 +783,48 @@ def build_axis(state, p):
         raise K.KernelError("That selection does not fit an axis type")
     if t not in AXIS_TYPE_NAMES or t == "auto":
         raise K.KernelError("Unknown axis type")
-    if t not in _AXIS_BUILT:
-        raise K.KernelError(f"Axis type {AXIS_TYPE_NAMES[t]} is not built yet")
     items = axis_items(p)
-    if t == "edge":
+    if t == "two_planes":
+        if len(items) != 2 or any(axis_role(k, r) != "plane" for k, r in items):
+            raise K.KernelError("Pick two planes or planar faces")
+        a, b = (_axis_plane(state, k, r) for k, r in items)
+        d = np.cross(a.normal, b.normal)
+        if np.linalg.norm(d) < 1e-9:
+            raise K.KernelError("Those planes are parallel")
+        d = d / np.linalg.norm(d)
+        M = np.array([a.normal, b.normal, d])               # the point of the line nearest the first plane's origin
+        o = np.linalg.solve(M, np.array([a.normal @ a.origin, b.normal @ b.origin, d @ a.origin]))
+        span = None
+    elif t == "point_normal":
+        pts = [(k, r) for k, r in items if axis_role(k, r) == "point"]
+        rest = [(k, r) for k, r in items if axis_role(k, r) in ("plane", "round", "surface")]
+        if len(items) != 2 or len(pts) != 1 or len(rest) != 1:
+            raise K.KernelError("Pick one point and one face or plane")
+        o = _axis_point(state, *pts[0])
+        o_on, d = _axis_surface_normal(state, rest[0][0], rest[0][1], o)
+        span = None
+    elif t == "face_point":
+        if len(items) != 1 or items[0][0] not in ("face", "plane"):
+            raise K.KernelError("Pick one face")
+        if not p.get("click"):
+            raise K.KernelError("Click the face where the axis should be")
+        o, d = _axis_surface_normal(state, items[0][0], items[0][1], np.asarray(p["click"], float))
+        span = None
+    elif t == "point_parallel":
+        pts = [(k, r) for k, r in items if axis_role(k, r) == "point"]
+        lines = [(k, r) for k, r in items if axis_role(k, r) in ("line", "axis")]
+        if len(items) != 2 or len(pts) != 1 or len(lines) != 1:
+            raise K.KernelError("Pick one point and one straight line")
+        o = _axis_point(state, *pts[0])
+        d = _axis_line(state, *lines[0])[1]
+        span = None
+    elif t == "connector":
+        if len(items) != 1 or items[0][0] != "connector":
+            raise K.KernelError("Pick one mate connector")
+        ref = items[0][1]
+        o, d = _connector_axis(state, ref.get("fid"), p.get("connector_axis") or ref.get("axis") or "z")
+        span = None
+    elif t == "edge":
         if len(items) != 1:
             raise K.KernelError("Pick one edge")
         kind, ref = items[0]
@@ -873,6 +965,8 @@ def resolve_axis(state: ModelState, ref):
         if ax is None:
             raise K.KernelError("Missing axis")
         return np.array(ax["o"], float), np.array(ax["d"], float)
+    if kind == "connector":
+        return _connector_axis(state, ref.get("fid"), ref.get("axis") or "z")
     raise K.KernelError("Select an axis")
 
 

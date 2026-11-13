@@ -270,6 +270,15 @@ def draw(name: str, p: QPainter):
         _arrow(p, 14, 18, 26, 6, ORANGE, 1.8)
         p.setPen(_pen(BLUE, 1.4))
         p.drawArc(QRectF(15, 15, 13, 13), 200 * 16, 140 * 16)
+    elif name == "mate_connector":
+        _box(p, 4, 17, 14, 10, 5)
+        p.setPen(_pen(BLUE, 2))
+        p.drawLine(QPointF(14, 14), QPointF(14, 3))
+        p.setPen(_pen(ORANGE, 2))
+        p.drawLine(QPointF(14, 14), QPointF(26, 14))
+        p.setPen(_pen(GREEN, 2))
+        p.drawLine(QPointF(14, 14), QPointF(8, 20))
+        _dot(p, 14, 14, ORANGE, 3)
     elif name == "sk_fillet":
         p.setPen(_pen(INK, 2))
         path = QPainterPath()

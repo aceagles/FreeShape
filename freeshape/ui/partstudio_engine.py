@@ -139,6 +139,7 @@ class _Result:
     def __init__(self, snap, out, parts):
         self.snap, self.errors, self.variables, self.revision = snap, dict(out.errors), dict(out.variables), out.revision
         self.parts = parts           # [(PartOut, shape, K.Mesh)]
+        self.connectors = list(getattr(out, "connectors", []))     # [MateConnectorOut]
         self.rebuilt = []            # tab ids the engine rebuilt because this tab's output changed (Link graph)
         self.extra = []              # [(rec, _Result)] for the Part Studios among them
 
@@ -321,6 +322,7 @@ class StudioEngine(QObject):
             if names:
                 st.set_named(p.id, N.NamedShape(shape, names))
         st.engine_names = {p.id: p.names for p, *_ in res.parts}      # the engine's name maps, for picking
+        st.connectors = {c.id: {"name": c.name, "part": c.part, "frame": c.frame} for c in res.connectors}
         st.vars = dict(res.variables)
         n = len(res.snap["features"]) if res.snap["rollback"] is None else min(res.snap["rollback"],
                                                                                  len(res.snap["features"]))

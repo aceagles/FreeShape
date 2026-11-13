@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from .. import kernel as K
 from .. import features as F
+from .. import assembly as AS
 from .icons import icon
 from . import theme
 from .numparse import parse_number, fmt, has_vars
@@ -73,6 +74,13 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
         if n:
             ref["name"] = n
         return ref
+    if "element" in want and k in ("face", "edge"):      # a Mate connector: one face or one edge, never a face's edges
+        pid, i = pick.key
+        shape = vp.part_shapes.get(pid)
+        if shape is None:
+            return None
+        sub = (K.faces if k == "face" else K.edges)(shape)[i]
+        return (k, engine_named(F.make_ref(pid, sub, k, shape, names(pid)), pid, k, i))
     if k == "region" and "region" in want:
         fid, ri = pick.key
         for sfid, sr, _ in vp.sketches:
@@ -552,6 +560,11 @@ SCHEMAS = {
                                                        "thread, shafts an external one. For 3D printing, add "
                                                        "about 0.1–0.2 mm clearance."},
     ],
+    "mate_connector": [
+        {"t": "text", "key": "name", "label": "Name", "placeholder": "e.g. Hinge pin"},
+        _sel("element", "Face or edge (hover for snap points)", {"element"}, multi=False),
+        _check("flip", "Flip (reverse the Z axis)"),
+    ],
     "variable": [
         {"t": "text", "key": "name", "label": "Name   #", "placeholder": "e.g. wall"},
         {"t": "text", "key": "expr", "label": "Value", "placeholder": "e.g. 3 or #wall * 2", "expr": True},
@@ -608,6 +621,9 @@ def params_to_fields(ftype, p):
         f["neutral_sel"] = [("plane", p["neutral"])] if p.get("neutral") else []
     if ftype in ("split", "move"):
         f["parts"] = [("part", i) for i in p.get("parts", [])]
+    if ftype == "mate_connector":
+        ref = p.get("ref")
+        f["element"] = [(p.get("kind", "face"), ref)] if ref and not ref.get("origin") else []
     if ftype == "split":
         f["plane_sel"] = [("plane", p["plane"])] if p.get("plane") else []
     if ftype == "move":
@@ -659,6 +675,12 @@ def fields_to_params(ftype, fields, p):
         p["neutral"] = sel[0][1] if sel else {"kind": "std", "name": "Top"}
     if ftype in ("split", "move"):
         p["parts"] = [r for k, r in fields.get("parts", [])]
+    if ftype == "mate_connector" and "element" in fields:
+        sel = fields["element"]
+        if sel:
+            p["kind"], p["ref"] = sel[0]
+        elif not (p.get("ref") or {}).get("origin"):
+            p.update(ref=None, click=None, snap=None, x_ref=None)
     if ftype == "split":
         sel = fields.get("plane_sel", [])
         p["plane"] = sel[0][1] if sel else {"kind": "std", "name": "Right"}
@@ -839,6 +861,8 @@ class FeatureDialog(_ResizableFrame):
         first = next((f for f in self.fields.values() if not f.items), None) or next(iter(self.fields.values()), None)
         if first:
             self.activate(first)
+        if self.ftype == "mate_connector":       # hover a face or edge: the same snap points the Assembly offers
+            main.viewport.snap_provider = self.snap_candidates
         self._sync_visibility()
         self.schedule_preview()
         self.adjustSize()
@@ -1147,6 +1171,8 @@ class FeatureDialog(_ResizableFrame):
             kinds |= {"region", "sketch_line"}
         if "face" in want or "plane" in want:
             kinds.add("face")
+        if "element" in want:
+            kinds |= {"face", "edge"}
         if "edge" in want:
             kinds |= {"edge", "face"}
         if "axis" in want or "path" in want:
@@ -1200,6 +1226,9 @@ class FeatureDialog(_ResizableFrame):
         """Called by the main window when the user clicks in the viewport."""
         if self._pick_sketch(pick):
             return
+        if self.ftype == "mate_connector" and pick.kind != "overlay":
+            self._pick_connector(pick)
+            return
         if pick.kind == "overlay":
             key, i = pick.key
             fld = self.fields.get(key)
@@ -1222,6 +1251,69 @@ class FeatureDialog(_ResizableFrame):
             return
         fld.toggle(item)
 
+    # ------------------------------------------------------------------ mate connector
+    def snap_candidates(self, pick: Pick):
+        """Snap points the viewport draws while hovering a face or edge (assembly.snap_candidates, as in the
+        Assembly); the studio's coordinates are the world's, so "pw" is the point itself."""
+        shape = self.main.viewport.part_shapes.get(pick.key[0]) if pick.kind in ("face", "edge") else None
+        if shape is None:
+            return []
+        return [dict(c, pw=np.asarray(c["p"], float)) for c in AS.snap_candidates(shape, pick.kind, pick.key[1])]
+
+    def _pick_connector(self, pick: Pick):
+        """A click on a face or edge: a highlighted snap point wins over whatever is under the cursor (the
+        Assembly's rule). The click point and the snap are stored with the reference, as the Assembly stores them."""
+        vp = self.main.viewport
+        snap, base = vp.snap_hi, vp.snap_base
+        if snap is not None and base is not None and base.kind in ("face", "edge"):
+            pick = base
+        else:
+            snap = None
+        vp.clear_snaps()
+        if pick.kind not in ("face", "edge"):
+            return
+        item = pick_to_item(vp, pick, {"element"}, self.base_state)
+        if item is None:
+            return
+        click = None
+        if pick.kind == "face" and vp.last_click:
+            click = vp.surface_point(*vp.last_click)
+        fld = self.fields["element"]
+        fld.items = [item]
+        self._fields_changed()
+        self._stamp_connector(item, pick, click, snap)
+
+    def _stamp_connector(self, item, pick, click, snap):
+        """Store click, snap and the frame's X reference (the run rebuilds the frame from them)."""
+        p = self.feature["params"]
+        kind, ref = item
+        try:
+            pid, sub = F.resolve(self.base_state, ref, kind)
+            shape = self.base_state.parts[pid].shape
+            subs = K.faces(shape) if kind == "face" else K.edges(shape)
+            index = next(i for i, s in enumerate(subs) if s.IsSame(sub))
+            named = self.base_state.named(pid)
+            st = None
+            if snap is not None:
+                vshape = self.main.viewport.part_shapes.get(pick.key[0], shape)
+                edge_ref = None
+                if snap.get("edge") is not None:
+                    edge_ref = AS._ref_signature(vshape, "edge", snap["edge"], named)
+                    nm = ((getattr(self.base_state, "engine_names", None) or {}).get(pick.key[0]) or {}) \
+                        .get("edge", {}).get(snap["edge"] + 1)
+                    if nm:
+                        edge_ref["name"] = nm
+                st = {"type": snap["type"], "p": [float(a) for a in snap["p"]], "edge_ref": edge_ref}
+                fr = AS.snap_frame(shape, kind, index, st, named)
+            else:
+                fr = AS.connector_frame(shape, kind, index, click)
+            p["click"] = [float(a) for a in click] if click is not None else None
+            p["snap"] = st
+            p["x_ref"] = AS.connector_x_ref(fr)
+        except Exception:       # the preview shows why the connector is red; the picked reference is kept
+            p["click"], p["snap"], p["x_ref"] = None, None, None
+        self.schedule_preview()
+
     def _apply_preselection(self, picks):
         for pk in picks:
             if self._pick_sketch(pk):
@@ -1236,6 +1328,8 @@ class FeatureDialog(_ResizableFrame):
                     continue
                 used.add(i)
                 fld.toggle(item)
+                if self.ftype == "mate_connector":
+                    self._stamp_connector(item, pk, None, None)
         self.main.viewport.clear_selection()
 
     def _fields_changed(self):

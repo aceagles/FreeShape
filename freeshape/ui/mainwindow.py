@@ -449,6 +449,9 @@ class MainWindow(QMainWindow):
               "union subtract intersect combine merge"),
             C("split", "Split", "Cut a part in two with a plane or a flat face.", lambda: F_("split"), "cut"),
             C("move", "Move", "Move, rotate or copy parts by exact amounts.", lambda: F_("move"), "translate"),
+            C("mate_connector", "Mate connector", "Put a named frame (origin, Z and X) on a face or edge, with the "
+              "same snap points as an Assembly. Assemblies can mate to it.", lambda: F_("mate_connector"),
+              "mate connector frame triad origin snap mate"),
             C("variable", "Variable", "Define #name values to use in any dimension.", lambda: F_("variable"),
               "parameter"),
             C("variable_studio_ref", "Variable Studio reference", "Use the variables of a Variable Studio tab "
@@ -569,7 +572,9 @@ class MainWindow(QMainWindow):
         h.addWidget(_sep())
         for name, tip in (("mirror", "Mirror"), ("linear_pattern", "Linear pattern"),
                           ("circular_pattern", "Circular pattern"), ("boolean", "Boolean"),
-                          ("split", "Split a part with a plane"), ("move", "Move / rotate / copy parts")):
+                          ("split", "Split a part with a plane"), ("move", "Move / rotate / copy parts"),
+                          ("mate_connector", "Mate connector — a named frame on a face or edge, for Assemblies "
+                                             "to mate to")):
             self._tb(h, name, tip, lambda _=False, n=name: self.start_feature(n))
         h.addWidget(_sep())
         self._tb(h, "import", "Import STEP (opens in a new tab)", lambda: self.import_step())
@@ -821,6 +826,24 @@ class MainWindow(QMainWindow):
         tab = self.folder.tab(src.get("tab")) if self.folder is not None and src.get("tab") else None
         return None if tab is None or tab.doc is None or not hasattr(tab.doc, "values") else dict(tab.doc.values()[0])
 
+    def _connector_triads(self, state):
+        """The Part Studio's mate connectors as the triads the Assembly draws (viewport.triads); a connector
+        whose feature row is selected or hovered in the feature list is drawn larger and thicker."""
+        picked = set(self.left.features.selected_feature_ids())
+        if self._hl_hover:
+            picked.add(self._hl_hover)
+        out = []
+        for fid, c in getattr(state, "connectors", {}).items():
+            if fid in self.doc.hidden_features or c["part"] in self.doc.hidden_parts:
+                continue
+            fr = c["frame"]
+            z, x = np.asarray(fr["z"], float), np.asarray(fr["x"], float)
+            tri = {"o": np.asarray(fr["o"], float), "x": x, "y": np.cross(z, x), "z": z, "id": fid}
+            if fid in picked:
+                tri.update(size_px=56, width=5.0)
+            out.append(tri)
+        return out
+
     def _planes_for(self, state):
         half = self.viewport.plane_half()
         planes = []
@@ -849,6 +872,7 @@ class MainWindow(QMainWindow):
                 continue
             sketches.append((fid, sr))
         self.viewport.set_scene(parts, self._planes_for(state), sketches)
+        self.viewport.triads = self._connector_triads(state)
 
     # ================================================================== feature dialogs
     def finish_sketch_and_start(self, ftype):
@@ -945,6 +969,8 @@ class MainWindow(QMainWindow):
         vp = self.viewport
         vp.pick_handler = None
         vp.select_filter = None
+        vp.snap_provider = None
+        vp.clear_snaps()
         vp.overlays = []
         vp.manipulators = []
         vp._manip_drag = None
@@ -2390,6 +2416,7 @@ class MainWindow(QMainWindow):
             if shp is not None:
                 edges[pid] = K.face_edge_indices(shp, fis)
         vp.feature_hl = {"faces": faces, "edges": edges, "polys": polys} if (faces or polys) else None
+        vp.triads = self._connector_triads(getattr(self.doc, "state", None))
         vp.update()
 
     def _feature_geometry(self, fid):
@@ -2418,6 +2445,8 @@ class MainWindow(QMainWindow):
             if pl is not None:
                 h = self.viewport.plane_half() * 0.6
                 polys.append(np.array([pl.to_world(u, v) for u, v in ((-h, -h), (h, -h), (h, h), (-h, h), (-h, -h))]))
+        elif f["type"] == "mate_connector":
+            pass                              # its triad is drawn by _connector_triads
         elif f["type"] != "variable":
             before = doc.state_before(idx)
             after = doc.state_before(idx + 1)

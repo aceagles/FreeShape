@@ -210,9 +210,13 @@ def test_washers_then_screws_on_the_washers_inner_rims():
     for iid, t in zip(res["instances"], [t for g in plan["groups"] for t in g["targets"]]):
         w = t["inst"]
         top_z = K.bbox(a.world_shape(w))[1][2]
-        head = world(a, iid, "under_head")["o"]
+        hf = world(a, iid, "under_head")
+        head = hf["o"]
+        assert np.allclose(hf["z"], [0, 0, -1], atol=1e-6)             # the shank runs down through the washer
         assert head[2] == pytest.approx(top_z, abs=1e-6) and top_z > T + 0.1
         assert np.allclose(head, t["centre"], atol=1e-6)
+        lo, hi = K.bbox(a.world_shape(iid))                            # direction: head above the washer, shank down through it
+        assert lo[2] < top_z - 1.0 and hi[2] > top_z + 0.5
         seen.append((w, tuple(np.round(head, 6))))
     print("screw under_head origins on washers:", seen[0], seen[-1])
     assert len({s[0] for s in seen}) == 12                              # one screw per washer

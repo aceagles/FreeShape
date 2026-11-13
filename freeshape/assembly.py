@@ -152,7 +152,7 @@ def connector_frame(shape, kind, index, click=None):
         ad = BRepAdaptor_Surface(f)
         st = ad.GetType()
         if st == GeomAbs_Plane:
-            z = unit(info["n"])
+            z = unit(K.face_outward_normal(f))  # not info["n"]: that points inward on a left-handed plane
             o = np.array(info["c"], float)
             # X along the longest straight edge, so square things line up squarely. This only picks X when the
             # connector is made: the connector then stores X against the plane's own axes ("xb"; see
@@ -216,10 +216,11 @@ def connector_frame(shape, kind, index, click=None):
         # point Z out of the material: along the outward normal of the flat face the circle sits on
         sign = None
         for f in _adjacent_faces(shape, e):
-            fi = K.face_info(f)
-            if "n" in fi and abs(float(np.dot(fi["n"], z))) > 0.99:
-                sign = 1.0 if float(np.dot(fi["n"], z)) > 0 else -1.0
-                break
+            if "n" in K.face_info(f):
+                fn = K.face_outward_normal(f)
+                if abs(float(np.dot(fn, z))) > 0.99:
+                    sign = 1.0 if float(np.dot(fn, z)) > 0 else -1.0
+                    break
         if sign is None:
             sign = 1.0 if float((o - centre) @ z) >= 0 else -1.0
         z = sign * z

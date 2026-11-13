@@ -79,6 +79,14 @@ def _attribute_lines():
     return [f"{MANIFEST_NAME} -merge"] + [f"*{ext} -merge" for ext in EXTENSIONS.values()]
 
 
+class DirtyWorkspaceError(K.KernelError):
+    """A Workspace switch was refused because tabs have unsaved changes; `tabs` names them."""
+
+    def __init__(self, tabs):
+        self.tabs = list(tabs)
+        super().__init__("Unsaved changes in " + ", ".join(self.tabs) + ": save or discard them before switching")
+
+
 class Tab:
     """One row of document.json. `doc` is the loaded Document / AssemblyDoc / DrawingDoc once opened, or
     `None` if its file was refused -- see `FolderDocument.errors`."""
@@ -448,6 +456,90 @@ class FolderDocument:
         view._scratch = scratch
         weakref.finalize(view, _rmtree, scratch)
         return view
+
+    # ------------------------------------------------------------------ workspaces (git branches)
+    def unsaved_tabs(self):
+        """Names of the tabs with unsaved changes."""
+        return [t.name or t.id for t in self.tabs if t.doc is not None and t.doc.dirty]
+
+    def git_problem(self):
+        """Why this Document has no versions or Workspaces (git missing, no repository), or None."""
+        if self.git_error:
+            return self.git_error
+        if self.path is None or not G.is_repo(self.path):
+            return "This Document folder has no repository, so it has no versions or Workspaces"
+        return None
+
+    def workspaces(self):
+        """Workspace names (branches), the default one first."""
+        self._git_ready()
+        names = G.list_branches(self.path)
+        return names or [G.current_branch(self.path) or G.DEFAULT_BRANCH]
+
+    def current_workspace(self):
+        self._git_ready()
+        return G.current_branch(self.path) or G.DEFAULT_BRANCH
+
+    def _check_dirty(self, dirty):
+        if dirty not in ("raise", "save", "discard"):
+            raise ValueError(f"dirty must be 'raise', 'save' or 'discard', not {dirty!r}")
+        unsaved = self.unsaved_tabs()
+        if unsaved and dirty == "raise":
+            raise DirtyWorkspaceError(unsaved)
+        return unsaved
+
+    def switch_workspace(self, name, dirty="raise"):
+        """Check out Workspace `name` and reload every tab from it. Unsaved tabs block the switch
+        (`DirtyWorkspaceError`, nothing changed) unless `dirty` is "save" (save first) or "discard" (drop them).
+        Saved but uncommitted edits stay with the Workspace they were made in: they are committed there first."""
+        self._check_writable()
+        self._git_ready()
+        G.check_branch_name(name)
+        if name not in G.list_branches(self.path):
+            raise G.GitError(f"No Workspace named {name!r}")
+        unsaved = self._check_dirty(dirty)
+        if name == self.current_workspace():
+            return
+        if unsaved and dirty == "save":
+            self.save()
+        self._snapshot()
+        G.switch_branch(self.path, name)
+        self.reload()
+
+    def create_workspace(self, name, version=None, switch=True, dirty="raise"):
+        """Make Workspace `name` from version `version` (the current commit when None) and, by default, switch to
+        it. A refused switch (unsaved tabs) leaves no new Workspace behind."""
+        self._check_writable()
+        self._git_ready()
+        G.check_branch_name(name)
+        if name in G.list_branches(self.path):
+            raise G.GitError(f"A Workspace named {name!r} already exists")
+        commit = G.resolve_version(self.path, version) if version is not None else None
+        if switch:
+            self._check_dirty(dirty)
+        if commit is None:
+            self._snapshot()
+            commit = G.head(self.path)
+        if commit is None:
+            raise G.GitError("Create a version first: a Workspace starts from one")
+        G.create_branch(self.path, name, commit)
+        if switch:
+            self.switch_workspace(name, dirty)
+        return name
+
+    def _snapshot(self):
+        """Commit saved-but-uncommitted edits to the current Workspace so a branch change cannot carry them along."""
+        if G.has_changes(self.path):
+            G.commit_all(self.path, f"Snapshot of Workspace {self.current_workspace()}")
+
+    def reload(self):
+        """Re-read the manifest and every tab from disk into this object (after a checkout)."""
+        fresh = FolderDocument.open(self.path)
+        self.name, self.tabs, self.errors, self._counter = fresh.name, fresh.tabs, fresh.errors, fresh._counter
+        for tab in self.tabs:
+            self._attach(tab)
+        migrate_links_to_tab_ids(self)
+        self.refresh_links()
 
     def close(self):
         """Release a version view's scratch folder."""

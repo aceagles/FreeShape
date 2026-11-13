@@ -1,0 +1,32 @@
+{
+ "_meta": {
+  "cadquery-ocp": "7.9.3.1.1",
+  "note": "written by `pytest tests --update-golden`; see tests/conftest.py"
+ },
+ "original_box": {
+  "F2/1": {
+   "area": 1599.9999999999998,
+   "bbox": [
+    0.0,
+    0.0,
+    0.0,
+    20.0,
+    20.0,
+    10.0
+   ],
+   "com": [
+    9.999999999999998,
+    9.999999999999998,
+    5.0
+   ],
+   "diag": 30.0,
+   "edges": 12,
+   "faces": 6,
+   "shells": 1,
+   "solids": 1,
+   "valid": true,
+   "vertices": 8,
+   "volume": 3999.999999999999
+  }
+ }
+}

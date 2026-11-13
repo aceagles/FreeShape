@@ -289,3 +289,24 @@ def test_escaping_manifest_entry_and_symlinked_tab_are_refused_without_reading_t
     view = doc.open_version("r1")
     assert "T8" in view.errors and "T9" in view.errors
     assert view.tab("T8").doc is None and view.tab("T9").doc is None
+
+
+def test_workspace_create_switch_and_back_in_hostile_document_fires_nothing(tmp_path):
+    """Checkout runs smudge filters, so this is the case that matters: a Workspace made in the imported hostile
+    Document, switched to and back, leaves every sentinel unwritten."""
+    src, sentinels = build_hostile(tmp_path / "recv")
+    registry = R.DocRegistry(str(tmp_path / "app" / "documents.json"))
+    doc = DF.FolderDocument.open_document(str(src), registry=registry, managed_root=str(tmp_path / "app" / "documents"))
+    for tab in doc.tabs:
+        if tab.doc is not None:
+            tab.doc.dirty = True
+    doc.save()
+    doc.create_workspace("alt", "v1")
+    assert doc.current_workspace() == "alt" and not doc.errors
+    doc.tab(doc.tabs[0].id).doc.dirty = True
+    doc.save()                                                    # a change on the new Workspace, committed by the switch
+    doc.switch_workspace("main")
+    doc.switch_workspace("alt")
+    doc.switch_workspace("main")
+    assert doc.current_workspace() == "main" and not doc.errors
+    assert _fired(sentinels) == []

@@ -20,6 +20,7 @@ from ..document import Document
 from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
 from .. import doc_folder
+from .. import doc_registry
 from .. import links
 from ..sketch import Sketch
 from . import theme, navstyles
@@ -279,6 +280,7 @@ class MainWindow(QMainWindow):
         self._add_action(m, "Quit", self.close, "Ctrl+Q")
         menu_btn.setMenu(m)
         h.addWidget(menu_btn)
+        self._build_workspace_switcher(h)
         view_btn = QToolButton()
         view_btn.setObjectName("menuButton")
         view_btn.setText("View")
@@ -1493,6 +1495,7 @@ class MainWindow(QMainWindow):
             return None
         self._adopt_document(fd)
         self.show_workspace()
+        self._note_git_problem(fd)
         return fd
 
     def open_document(self, path):
@@ -1502,12 +1505,13 @@ class MainWindow(QMainWindow):
         if not self._close_document():
             return None
         try:
-            fd = doc_folder.FolderDocument.open(path)
+            fd = doc_folder.FolderDocument.open_document(path, registry=doc_registry.default_registry())
         except (K.KernelError, OSError, ValueError) as e:
             QMessageBox.critical(self, APP_NAME, f"Could not open the Document {path}:\n{e}")
             return None
         self._adopt_document(fd)
         self.show_workspace()
+        self._note_git_problem(fd)
         if fd.errors:
             QMessageBox.warning(self, APP_NAME, "Some tabs could not be opened:\n\n" + "\n".join(
                 f"• {fd.tab(t).name if fd.tab(t) else t}: {m}" for t, m in fd.errors.items()))
@@ -1536,6 +1540,7 @@ class MainWindow(QMainWindow):
             self._views.pop(id(d), None)
         self._note_document_tab(fd, active.id if active is not None else None)
         self._add_recent(fd.path)
+        self._refresh_workspaces()
 
     def _close_document(self):
         """Close the open Document's tabs (asking about unsaved ones). False if the person cancelled."""
@@ -1556,6 +1561,7 @@ class MainWindow(QMainWindow):
             self._drop_autosave(doc)
             self._remove_tab_silently(doc)
         self.folder = None
+        self._refresh_workspaces()
         return True
 
     def _remove_tab_silently(self, doc):
@@ -1616,6 +1622,156 @@ class MainWindow(QMainWindow):
         self._add_recent(fd.path)
         self.status.showMessage(f"Saved {fd.path}", 4000)
         return True
+
+    # ================================================================== Workspaces (git branches of the Document)
+    def _build_workspace_switcher(self, layout):
+        """The top-bar switcher: a combo box of the Document's Workspaces and a button to start a new one from a version."""
+        from PySide6.QtWidgets import QComboBox
+        self.workspace_label = QLabel("Workspace")
+        self.workspace_label.setObjectName("muted")
+        self.workspace_combo = QComboBox()
+        self.workspace_combo.setObjectName("workspaceSwitcher")
+        self.workspace_combo.setMinimumWidth(120)
+        self.workspace_combo.setToolTip("Workspace: a line of work in this Document")
+        self.workspace_combo.currentIndexChanged.connect(self._workspace_chosen)
+        self.workspace_new = QToolButton()
+        self.workspace_new.setObjectName("menuButton")
+        self.workspace_new.setText("+ Workspace")
+        self.workspace_new.setToolTip("New Workspace from a version")
+        self.workspace_new.clicked.connect(lambda: self.new_workspace_dialog())
+        self._ws_updating = False
+        self._ws_widgets = (self.workspace_label, self.workspace_combo, self.workspace_new)
+        layout.addSpacing(8)
+        for wdg in self._ws_widgets:
+            layout.addWidget(wdg)
+            wdg.setVisible(False)
+
+    def _refresh_workspaces(self):
+        """Fill the switcher from the open Document (hidden when there is none)."""
+        fd = self.folder
+        combo = self.workspace_combo
+        self._ws_updating = True
+        try:
+            combo.clear()
+            problem = fd.git_problem() if fd is not None else None
+            if fd is not None and problem is None:
+                try:
+                    names, current = fd.workspaces(), fd.current_workspace()
+                except K.KernelError as e:
+                    problem = str(e)
+            if fd is not None and problem is None:
+                combo.addItems(names)
+                combo.setCurrentIndex(max(0, combo.findText(current)))
+            for wdg in self._ws_widgets:
+                wdg.setVisible(fd is not None)
+                wdg.setEnabled(problem is None)
+            if problem:
+                combo.setToolTip(f"Workspaces are unavailable: {problem}")
+            else:
+                combo.setToolTip("Workspace: a line of work in this Document")
+        finally:
+            self._ws_updating = False
+
+    def _note_git_problem(self, fd):
+        """Tell the person, without a dialog, when a Document has no repository (git missing, or none in the folder)."""
+        problem = fd.git_problem() if fd is not None else None
+        if problem:
+            self.status.showMessage(f"Versions and Workspaces are off for this Document: {problem}", 15000)
+
+    def _workspace_chosen(self, index):
+        if self._ws_updating or self.folder is None or index < 0:
+            return
+        self.switch_workspace(self.workspace_combo.itemText(index))
+
+    def _workspace_dirty_choice(self, what):
+        """How to treat unsaved tabs before a Workspace change: "raise" (none to worry about), "discard", or None
+        when the person cancelled (or chose Save and the save failed). Save is done here."""
+        fd = self.folder
+        unsaved = fd.unsaved_tabs()
+        if not unsaved:
+            return "raise"
+        r = QMessageBox.question(self, APP_NAME, f"Save changes to {', '.join(f'“{n}”' for n in unsaved)} before "
+                                 f"{what}?", QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+        if r == QMessageBox.Save:
+            return "raise" if self._save_document() else None
+        return "discard" if r == QMessageBox.Discard else None
+
+    def _workspace_op(self, what, op):
+        """Run a Workspace change (`op(dirty)` on the Document) behind the dirty guard, then reload the tabs."""
+        fd = self.folder
+        try:
+            if fd is None:
+                return False
+            self._leave_modes()
+            dirty = self._workspace_dirty_choice(what)
+            if dirty is None:
+                return False
+            old = [t.doc for t in fd.tabs if t.doc is not None and self._tab_index(t.doc) >= 0]
+            cur = self._folder_tab(self.doc)
+            before = fd.current_workspace()
+            try:
+                op(dirty)
+            except doc_folder.DirtyWorkspaceError as e:
+                QMessageBox.warning(self, APP_NAME, str(e))
+                return False
+            except (K.KernelError, OSError) as e:
+                QMessageBox.warning(self, APP_NAME, f"Couldn't change Workspace:\n{e}")
+                return False
+            if fd.current_workspace() != before:
+                self._reload_document_tabs(old, cur.id if cur is not None else None)
+                self.status.showMessage(f"Workspace: {fd.current_workspace()}", 5000)
+            return True
+        finally:
+            self._refresh_workspaces()
+
+    def _reload_document_tabs(self, old_docs, tab_id):
+        """Replace every shown tab of the open Document with the freshly loaded ones, keeping the same tab current."""
+        fd = self.folder
+        for doc in old_docs:
+            self._drop_autosave(doc)
+        self._note_document_tab(fd, tab_id)
+        self._adopt_document(fd)
+        for doc in old_docs:
+            self._remove_tab_silently(doc)
+        self._on_doc_changed()
+
+    def switch_workspace(self, name):
+        """Switch the open Document to Workspace `name`. Unsaved tabs bring up Save / Discard / Cancel first."""
+        fd = self.folder
+        if fd is None or name == fd.current_workspace():
+            self._refresh_workspaces()
+            return fd is not None
+        return self._workspace_op(f"switching to Workspace “{name}”", lambda dirty: fd.switch_workspace(name, dirty))
+
+    def create_workspace(self, name, version):
+        """Start Workspace `name` from version `version` of the open Document and switch to it."""
+        fd = self.folder
+        if fd is None:
+            return False
+        return self._workspace_op(f"starting Workspace “{name}”",
+                                  lambda dirty: fd.create_workspace(name, version, dirty=dirty))
+
+    def new_workspace_dialog(self):
+        """Ask for a version and a name, then create the Workspace."""
+        fd = self.folder
+        if fd is None:
+            return False
+        try:
+            versions = fd.versions()
+        except K.KernelError as e:
+            QMessageBox.warning(self, APP_NAME, f"Workspaces are unavailable:\n{e}")
+            return False
+        if not versions:
+            QMessageBox.information(self, APP_NAME, "A Workspace starts from a version. Create a version first.")
+            return False
+        labels = [v["name"] + (f" — {v['note']}" if v["note"] and v["note"] != v["name"] else "") for v in versions]
+        label, ok = QInputDialog.getItem(self, APP_NAME, "Start from version:", labels, len(labels) - 1, False)
+        if not ok:
+            return False
+        name, ok = QInputDialog.getText(self, APP_NAME, "Workspace name:")
+        if not ok or not name.strip():
+            return False
+        return self.create_workspace(name.strip(), versions[labels.index(label)]["name"])
 
     def _recover_document_tab(self, path, meta):
         """Put an autosaved Document tab back into its Document. False if the Document is gone (the caller then

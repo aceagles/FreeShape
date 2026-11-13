@@ -203,6 +203,56 @@ def resolve_version(path, name):
     return _commit_id(r.stdout.strip())
 
 
+# ---------------------------------------------------------------------- workspaces (branches)
+def check_branch_name(name):
+    """Reject a Workspace name that is not a safe branch name (same cheap checks as `check_name`, then
+    `git check-ref-format`). Returns the name."""
+    if not isinstance(name, str) or not name.strip():
+        raise GitError("A Workspace name is required")
+    if (name != name.strip() or name.startswith(("-", "/", ".")) or ".." in name or "\\" in name
+            or "\x00" in name or any(ord(c) < 32 for c in name)):
+        raise GitError(f"{name!r} is not a valid Workspace name")
+    r = run(["check-ref-format", f"refs/heads/{name}"], check=False)
+    if r.returncode != 0:
+        raise GitError(f"{name!r} is not a valid Workspace name")
+    return name
+
+
+def current_branch(path):
+    """The checked-out branch, or None on a detached HEAD."""
+    r = run(["symbolic-ref", "--quiet", "--short", "HEAD"], path, check=False)
+    return r.stdout.strip() or None
+
+
+def list_branches(path):
+    """Branch names, sorted, with the default branch first."""
+    r = run(["for-each-ref", "--format=%(refname:strip=2)", "refs/heads/"], path)
+    names = sorted(n for n in r.stdout.split("\n") if n)
+    return sorted(names, key=lambda n: n != DEFAULT_BRANCH)
+
+
+def has_changes(path):
+    """Whether the work tree differs from HEAD (modified, deleted or untracked files)."""
+    return bool(run(["status", "--porcelain", "--untracked-files=all"], path).stdout.strip())
+
+
+def create_branch(path, name, commit):
+    """Make branch `name` at `commit` without checking it out."""
+    check_branch_name(name)
+    if name in list_branches(path):
+        raise GitError(f"A Workspace named {name!r} already exists")
+    run(["branch", "--quiet", "--", name, _commit_id(commit)], path)
+
+
+def switch_branch(path, name):
+    """Check out the existing branch `name`. The work tree must already be committed (the caller snapshots it):
+    git then rewrites only the files that differ between the two branches."""
+    check_branch_name(name)
+    if name not in list_branches(path):
+        raise GitError(f"No Workspace named {name!r}")
+    run(["switch", "--quiet", "--no-guess", name, "--"], path)
+
+
 def read_tree(path, commit, dest):
     """Write the files of `commit` into the empty folder `dest` without touching the work tree and without
     running any filter: each blob is read raw with `cat-file`. Symlink entries are written as symlinks (the Document

@@ -9,7 +9,7 @@ import os
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
-from PySide6.QtGui import QColor, QFont, QGuiApplication
+from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QListWidget, QListWidgetItem, QWidget,
     QGraphicsDropShadowEffect, QTreeWidget, QTreeWidgetItem, QPushButton, QDialog, QTableWidget,
@@ -243,6 +243,14 @@ class InsertPanel(QFrame):
         f.setToolTip("A FreeShape document (.fshape) or a STEP file")
         f.clicked.connect(self._from_file)
         row.addWidget(f)
+        self.other_doc_action = QAction("Other Document…", self)
+        self.other_doc_action.setObjectName("insert_other_document")
+        self.other_doc_action.setToolTip("A part of a Version of another Document on this machine")
+        self.other_doc_action.triggered.connect(self._from_other_document)
+        od = QPushButton("Other Document…")
+        od.setToolTip(self.other_doc_action.toolTip())
+        od.clicked.connect(self.other_doc_action.trigger)
+        row.addWidget(od)
         lay.addLayout(row)
         self.msg = QLabel("")
         self.msg.setWordWrap(True)
@@ -304,6 +312,17 @@ class InsertPanel(QFrame):
                 self.fill()
                 self.ctl.insert_studio_parts(doc.uid, None)
                 self.msg.setText(f"Inserted the parts of {doc.name}")
+
+    def _from_other_document(self):
+        from .document_picker import OtherDocumentDialog
+        folder = self.ctl.w.folder
+        if folder is None:
+            self.msg.setText("Save this as a Document to insert from another one.")
+            return
+        dlg = OtherDocumentDialog(folder, self)
+        if dlg.exec() == QDialog.Accepted:
+            n = self.ctl.insert_document_sources(dlg.sources())
+            self.msg.setText(f"Inserted {n} part(s) from another Document")
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
@@ -988,6 +1007,21 @@ class AssemblyController:
             pass
         self.w.status.showMessage(f"Inserted {len(first_new)} instance(s)", 4000)
         QTimer.singleShot(0, lambda: self.vp.fit())
+
+    def insert_document_sources(self, sources):
+        """Insert one instance per cross-Document source (a part pinned to a Version of another Document)."""
+        n = 0
+        self.doc.checkpoint()
+        for src in sources:
+            try:
+                self.doc.insert(src, checkpoint=False)
+                n += 1
+            except K.KernelError as e:
+                QMessageBox.warning(self.w, "Insert", str(e))
+        if n:
+            self.w.status.showMessage(f"Inserted {n} instance(s)", 4000)
+            QTimer.singleShot(0, lambda: self.vp.fit())
+        return n
 
     def insert_step(self, path):
         import base64

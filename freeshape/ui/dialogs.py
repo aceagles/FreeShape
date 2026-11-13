@@ -165,6 +165,10 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
         return ("axis", {"kind": "axis", "fid": pick.key[0]})
     if k == "connector" and "connector" in want:
         return ("connector", {"fid": pick.key[0]})
+    if k == "connector" and ("axis" in want or "axis_connector" in want):
+        # a mate connector where an axis is asked for: its Z axis, by reference to the connector (the viewport pick
+        # does not say which arrow of the triad was hit)
+        return ("axis", {"kind": "connector", "fid": pick.key[0], "axis": "z"})
     return None
 
 
@@ -218,6 +222,9 @@ def item_label(doc, item):
         if ref["kind"] == "axis":        # an axis feature (the Axis tool)
             f = doc.feature(ref.get("fid"))
             return f["name"] if f else "Axis"
+        if ref["kind"] == "connector":   # a mate connector's axis
+            f = doc.feature(ref.get("fid"))
+            return f"{f['name'] if f else 'Mate connector'} {(ref.get('axis') or 'z').upper()}"
         if ref["kind"] == "std":
             return f"{ref['name']} axis"
         if ref["kind"] == "sketch_line":
@@ -261,6 +268,8 @@ def item_geometry(state, item, plane_half=40.0):
             return ("mesh", m)
         if kind == "axis":
             a, d = F.resolve_axis(state, ref)
+            if ref.get("kind") == "connector":       # short, from the connector origin along that axis
+                return ("poly", np.array([a, a + d * plane_half * 0.5]))
             return ("poly", np.array([a - d * plane_half * 1.5, a + d * plane_half * 1.5]))
         if kind == "sketch_line":        # the Axis tool's refs
             a, d = F.resolve_axis(state, ref)
@@ -568,7 +577,7 @@ SCHEMAS = {
     ],
     "plane": [
         _choice("type", "Plane type", F.PLANE_TYPES),
-        _sel("refs_sel", "Planes, faces, edges, axes and vertices", {"plane", "face", "edge", "vertex", "axis_feature"}),
+        _sel("refs_sel", "Planes, faces, edges, axes and vertices", {"plane", "face", "edge", "vertex", "axis_feature", "axis_connector"}),
         {"t": "info", "key": "_info", "text": lambda p: _plane_info(p)},
         _num("offset", "Offset distance", visible=lambda p: F.plane_type(p) == "offset"),
         _num("angle", "Angle", unit="deg", visible=lambda p: F.plane_type(p) == "line_angle"),
@@ -1905,7 +1914,7 @@ class FeatureDialog(_ResizableFrame):
             kinds.add("sketch_point")
         if "axis_feature" in want or "axis" in want:
             kinds.add("axis")
-        if "connector" in want:
+        if "connector" in want or "axis" in want or "axis_connector" in want:
             kinds.add("connector")
         if "part" in want:
             kinds.add("part")

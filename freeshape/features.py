@@ -982,6 +982,72 @@ def run_derived(state, f):
         if out is None:
             raise K.KernelError(f"Sketch {sid} is no longer published by “{label}”")
         state.sketches[f"{fid}:{sid}"] = _derived_sketch(out, fid, label)
+    # ---- placement (I4.1): one rigid move of everything this Derived owns, worked out once, applied last
+    trsf = _derived_placement(state, p, pkg, label)
+    if trsf is not None:
+        _place_derived(state, fid, trsf)
+
+
+def _derived_placement(state, p, pkg, label):
+    """The rigid move (a gp_Trsf) that takes the base frame onto the location frame of params["placement"]
+    ({"location": connector id, "base": "origin" | a connector id of the source}), or None when the Derived has no
+    placement. The location is looked up in state.connectors, which holds only what is built above this feature:
+    a mate_connector of this studio, or a derived connector. One defined below, or missing, is an error."""
+    from OCP.gp import gp_Trsf
+    from . import assembly as AS
+    place = p.get("placement")
+    if not place:
+        return None
+    loc_id, base_id = place.get("location"), place.get("base") or "origin"
+    loc = state.connectors.get(loc_id)
+    if loc is None:
+        raise K.KernelError(f"Placement connector {loc_id} is not defined above this Derived: it is missing, or "
+                            f"below the Derived in the feature list. Move it above the Derived or pick another")
+    if base_id == "origin":
+        base = {"o": np.zeros(3), "z": np.array([0.0, 0.0, 1.0]), "x": np.array([1.0, 0.0, 0.0])}
+    else:
+        c = pkg.connectors.get(base_id)
+        if c is None:
+            raise K.KernelError(f"Placement base connector {base_id} is no longer published by “{label}”")
+        base = c["frame"]
+    M = AS.frame_matrix(loc["frame"]) @ np.linalg.inv(AS.frame_matrix(base))
+    t = gp_Trsf()
+    t.SetValues(*[float(v) for v in M[:3, :4].reshape(-1)])
+    return t
+
+
+def _place_derived(state, fid, trsf):
+    """Move every part, sketch and connector this Derived (`fid`) owns by `trsf`, keeping their names
+    (namedbuild.Builder.transformed). A connector counts as owned when its part id starts `<fid>/`, so connectors
+    that arrive with a part (I3.6) move with it."""
+    from OCP.TopLoc import TopLoc_Location
+    from . import assembly as AS
+    from .namedbuild import Builder
+    b, loc = Builder(fid), TopLoc_Location(trsf)
+    M = np.eye(4)
+    M[:3, :4] = [[trsf.Value(r, c) for c in range(1, 5)] for r in range(1, 4)]
+    for pid in [k for k in state.parts if k.startswith(f"{fid}/")]:
+        part, named = state.parts[pid], state.named(pid)
+        moved = b.transformed(named, trsf) if named is not None else None
+        shape = moved.shape if moved is not None else part.shape.Moved(loc)
+        state.parts[pid] = Part(pid, part.name, shape, part.color, part.face_colors)
+        state.set_named(pid, moved)
+    for key in [k for k in state.sketches if k.startswith(f"{fid}:")]:
+        res = state.sketches[key]
+        pl = res.plane
+        plane = K.Plane(M[:3, :3] @ pl.origin + M[:3, 3], M[:3, :3] @ pl.xdir, M[:3, :3] @ pl.normal)
+        if not res.regions:
+            state.sketches[key] = SketchResult(plane, res.sketch, [], [], None, None, [])
+            continue
+        named = b.transformed(res.named, trsf)
+        old_faces, new_faces = K.faces(res.named.shape), K.faces(named.shape)      # same order: a rigid move
+        regions = [new_faces[next(i for i, g in enumerate(old_faces) if g.IsSame(r))] for r in res.regions]
+        state.sketches[key] = SketchResult(plane, res.sketch, regions, [region_signature(r) for r in regions],
+                                           K.bbox(named.shape), named, [named.name_of(r) for r in regions])
+    for cid, c in list(state.connectors.items()):
+        if str(c["part"]).startswith(f"{fid}/"):
+            fr = AS.transform_frame(M, {k: np.asarray(c["frame"][k], float) for k in ("o", "z", "x")})
+            state.connectors[cid] = dict(c, frame={k: [float(v) for v in fr[k]] for k in ("o", "z", "x")})
 
 
 def _derived_sketch(out, fid, label):

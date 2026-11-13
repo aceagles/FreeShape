@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
@@ -94,6 +94,7 @@ class StudioPackage:
     aliases: dict = field(default_factory=dict)
     digest: str = ""         # of everything published: parts, their visibility, sketches
     error: str = ""          # why the studio is in error (its red features), "" when it builds clean
+    connectors: dict = field(default_factory=dict)   # mate_connector feature id -> {name, part, frame, hash}
 
     def digest_for(self, part=None):
         """The digest of what a link reading `part` (an id, or None / "*" for the whole studio) takes."""
@@ -106,7 +107,8 @@ class StudioPackage:
     def _view(self):
         return {"parts": {pid: p.hash for pid, p in self.parts.items()},
                 "hidden": sorted(pid for pid, p in self.parts.items() if p.hidden), "aliases": dict(self.aliases),
-                "sketches": {fid: sk.hash for fid, sk in self.sketches.items()}}
+                "sketches": {fid: sk.hash for fid, sk in self.sketches.items()},
+                "connectors": {fid: c["hash"] for fid, c in self.connectors.items()}}
 
 
 def _studio_error(studio):
@@ -343,7 +345,8 @@ class LinkResolver:
         """The published output of the Part Studio `src` names (a Document.link_inputs callable): a
         StudioPackage of its parts and sketches, read from the studio's current state. Raises KernelError
         when the studio is not found."""
-        from .engine.encode import Encoder, named_elements, sketch_out
+        from .engine.contract import plain
+        from .engine.encode import Encoder, connector_out, named_elements, sketch_out
         studio = self._studio_for(src)
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
@@ -360,7 +363,8 @@ class LinkResolver:
         sketches = {str(fid): sketch_out(fid, (studio.feature(fid) or {}).get("name", fid), res)
                     for fid, res in st.sketches.items()}
         pkg = StudioPackage(parts, sketches, dict(getattr(studio, "part_aliases", {})),
-                            error=_studio_error(studio))
+                            error=_studio_error(studio),
+                            connectors={str(fid): plain(asdict(connector_out(fid, c))) for fid, c in st.connectors.items()})
         pkg.digest = pkg.digest_for(None)
         return pkg
 

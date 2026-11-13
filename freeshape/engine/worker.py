@@ -156,7 +156,8 @@ class _WorkerEngine(InProcessEngine):
             {lp["id"]: links.PublishedPart(id=lp["id"], name=lp["name"], color=tuple(lp["color"]), hidden=lp["hidden"],
                                      shape=parts[lp["id"]].shape, names=lp["names"], hash=lp["hash"])
              for lp in pkg["parts"]},
-            {sk["id"]: SketchOut(**sk) for sk in pkg.get("sketches") or ()}, dict(pkg.get("aliases") or {}))
+            {sk["id"]: SketchOut(**sk) for sk in pkg.get("sketches") or ()}, dict(pkg.get("aliases") or {}),
+            connectors={c["id"]: dict(c) for c in pkg.get("connectors") or ()})
         out.digest = out.digest_for(None)
         return out
 

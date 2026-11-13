@@ -995,7 +995,22 @@ class AssemblyDoc:
         self.notify()
 
     def set_hidden(self, iid, value):
+        self.checkpoint()
         self.instance(iid)["hidden"] = bool(value)
+        self.notify()
+
+    def isolate(self, iid):
+        """Hide every instance but `iid`. One undo step; undo brings back each instance's earlier state."""
+        self.checkpoint()
+        for i in self.instances:
+            i["hidden"] = i["id"] != iid
+        self.notify()
+
+    def show_all(self):
+        """Show every instance. One undo step."""
+        self.checkpoint()
+        for i in self.instances:
+            i["hidden"] = False
         self.notify()
 
     def set_instance_suppressed(self, iid, flag):

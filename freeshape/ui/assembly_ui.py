@@ -437,7 +437,13 @@ class AssemblyPanel(QWidget):
             if inst.get("fixed"):
                 tips.append("Fixed — it won't move (right-click → Unfix to let it move)")
             err = doc.errors.get(inst["id"])
-            if err:
+            if inst.get("suppressed"):
+                it.setForeground(QColor("#9aa3ae"))
+                f = QFont()
+                f.setStrikeOut(True)
+                it.setFont(f)
+                tips.append("Suppressed — left out of the model (right-click → Unsuppress)")
+            elif err:
                 it.setForeground(QColor("#d93025") if inst["id"] not in doc.parts else QColor("#b26a00"))
                 tips.append(err)
             elif inst.get("hidden"):
@@ -482,6 +488,12 @@ class AssemblyPanel(QWidget):
                 f.setStrikeOut(True)
                 it.setFont(f)
                 tip += "\nSuppressed"
+            elif doc.mate_inactive(m):
+                it.setForeground(QColor("#9aa3ae"))
+                f = QFont()
+                f.setStrikeOut(True)
+                it.setFont(f)
+                tip += "\nInactive: an instance it connects is suppressed"
             elif err:
                 it.setForeground(QColor("#d93025"))
                 it.setIcon(icon("error"))
@@ -2203,6 +2215,8 @@ class AssemblyController:
         m.addAction("Unfix" if inst.get("fixed") else "Fix", lambda: doc.set_fixed(iid, not inst.get("fixed")))
         m.addAction("Show" if inst.get("hidden") else "Hide", lambda: doc.set_hidden(iid, not inst.get("hidden")))
         m.addAction("Isolate", lambda: self.isolate(iid))
+        sup = bool(inst.get("suppressed"))
+        m.addAction("Unsuppress" if sup else "Suppress", lambda: doc.set_instance_suppressed(iid, not sup))
         m.addAction("Change colour…", lambda: self.recolor(iid))
         if inst.get("color"):
             m.addAction("Use the part's colour", lambda: doc.set_color(iid, None))
@@ -2392,14 +2406,10 @@ class AssemblyController:
             self.doc.set_color(iid, [c.redF(), c.greenF(), c.blueF()])
 
     def isolate(self, iid):
-        for i in self.doc.instances:
-            i["hidden"] = i["id"] != iid
-        self.doc.notify()
+        self.doc.isolate(iid)
 
     def show_all(self):
-        for i in self.doc.instances:
-            i["hidden"] = False
-        self.doc.notify()
+        self.doc.show_all()
 
     def duplicate(self, ids):
         doc = self.doc

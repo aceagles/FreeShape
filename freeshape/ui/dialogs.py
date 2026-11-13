@@ -7,7 +7,7 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QComboBox, QCheckBox,
+    QFrame, QVBoxLayout, QHBoxLayout, QBoxLayout, QLabel, QToolButton, QLineEdit, QComboBox, QCheckBox,
     QListWidget, QListWidgetItem, QWidget, QButtonGroup, QSizePolicy, QGraphicsDropShadowEffect,
 )
 
@@ -556,6 +556,10 @@ SCHEMAS = {
         {"t": "text", "key": "name", "label": "Name   #", "placeholder": "e.g. wall"},
         {"t": "text", "key": "expr", "label": "Value", "placeholder": "e.g. 3 or #wall * 2", "expr": True},
     ],
+    "variable_studio_ref": [
+        {"t": "studio_choice", "key": "source", "label": "Variable Studio"},
+        {"t": "studio_names", "key": "names", "label": "Variables"},
+    ],
     "hole": [
         {"t": "sketch_choice", "key": "sketch", "label": "Sketch with hole centres"},
         _choice("standard", "Standard", [("clearance", "ISO clearance"), ("tapped", "ISO tapped"),
@@ -1003,7 +1007,110 @@ class FeatureDialog(_ResizableFrame):
             self._sketch_cb = cb
             h.addWidget(cb)
             return row
+        if t == "studio_choice":
+            return self._make_studio_choice(spec, p, row, h)
+        if t == "studio_names":
+            return self._make_studio_names(spec, p, row, h)
         return None
+
+    # ------------------------------------------------------------------ Variable Studio reference rows
+    def _variable_tabs(self):
+        """The Variable Studio tabs of the open Document's manifest (none for a loose file)."""
+        fd = getattr(self.main, "folder", None)
+        return [t for t in (fd.tabs if fd is not None else []) if t.kind == "variables"]
+
+    def _studio_variable_names(self):
+        """The names the chosen Variable Studio defines now, in table order (empty if it is not found)."""
+        src = self.feature["params"].get("source") or {}
+        tab = next((t for t in self._variable_tabs() if t.id == src.get("tab")), None)
+        if tab is None or tab.doc is None:
+            return []
+        values = tab.doc.values()[0]
+        return [n for n in dict.fromkeys(str(r.get("name") or "").strip() for r in tab.doc.rows) if n in values]
+
+    def _make_studio_choice(self, spec, p, row, h):
+        cb = QComboBox()                 # the row's label is already in `h`
+        tabs = self._variable_tabs()
+        for t_ in tabs:
+            cb.addItem(t_.name, t_.id)
+        if not tabs:
+            cb.addItem("— no Variable Studio in this Document —", None)
+        cur = (p.get(spec["key"]) or {}).get("tab")
+        if cur is None and tabs:
+            p[spec["key"]] = {"kind": "variables", "tab": tabs[0].id, "name": tabs[0].name}
+        cb.setCurrentIndex(max(0, cb.findData((p.get(spec["key"]) or {}).get("tab"))))
+
+        def chosen(i, cb=cb):
+            tid = cb.itemData(i)
+            t_ = next((x for x in self._variable_tabs() if x.id == tid), None)
+            if t_ is not None:
+                self.feature["params"].pop("names", None)           # another Studio: its own names
+                self._set(spec["key"], {"kind": "variables", "tab": t_.id, "name": t_.name})
+                self._fill_names()
+        cb.currentIndexChanged.connect(chosen)
+        h.addWidget(cb)
+        self.widgets[spec["key"]] = cb
+        return row
+
+    def _make_studio_names(self, spec, p, row, h):
+        """"All variables" (no names key) or a tick list of the Studio's variables (a names list)."""
+        h.setDirection(QBoxLayout.TopToBottom)
+        all_cb = QCheckBox("All variables")
+        lst = QListWidget()
+        lst.setMaximumHeight(140)
+        h.addWidget(all_cb)
+        h.addWidget(lst)
+        self.widgets["names_all"], self.widgets["names"] = all_cb, lst
+        key = spec["key"]
+        busy = []
+
+        def read():
+            ticked = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
+                      if lst.item(i).checkState() == Qt.Checked]
+            if len(ticked) == lst.count():
+                self.feature["params"].pop(key, None)
+            else:
+                self.feature["params"][key] = ticked
+            self._set_unlisted()
+            busy.append(1)
+            all_cb.setChecked(key not in self.feature["params"])
+            busy.pop()
+
+        def fill():
+            names = self._studio_variable_names()
+            listed = self.feature["params"].get(key)
+            lst.blockSignals(True)
+            lst.clear()
+            for n in names + [n for n in (listed or []) if n not in names]:
+                it = QListWidgetItem(n if n in names else f"{n}  (not in the Studio)")
+                it.setData(Qt.UserRole, n)
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Checked if listed is None or n in listed else Qt.Unchecked)
+                lst.addItem(it)
+            lst.blockSignals(False)
+            busy.append(1)
+            all_cb.setChecked(listed is None)
+            busy.pop()
+
+        def all_toggled(on):
+            if busy:
+                return
+            lst.blockSignals(True)
+            for i in range(lst.count()):
+                lst.item(i).setCheckState(Qt.Checked if on else Qt.Unchecked)
+            lst.blockSignals(False)
+            read()
+
+        lst.itemChanged.connect(lambda _it: None if busy else read())
+        all_cb.toggled.connect(all_toggled)
+        self._fill_names = fill
+        fill()
+        return row
+
+    def _set_unlisted(self):
+        """The names key changed (or was dropped): refresh the dialog and the preview."""
+        self._sync_visibility()
+        self.schedule_preview()
 
     def _sync_visibility(self):
         p = self.feature["params"]

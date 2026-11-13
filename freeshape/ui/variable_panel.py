@@ -3,6 +3,7 @@ VariableTabs (I3.8) shows one per Variable Studio tab of the window."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QPushButton, QStackedWidget,
                                 QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -89,6 +90,62 @@ class VariablePanel(QWidget):
                 self.table.setItem(r, VALUE, value_item)
         finally:
             self._loading = False
+
+
+# =========================================================================== variables a Part Studio defines (I2.6)
+
+OVERRIDDEN = Qt.UserRole + 1        # on a name item: True when a later definition of the same name is in force
+
+
+class DefinedVariables(QTableWidget):
+    """The variables a Part Studio defines, from Document.variable_table(): name, value and where it is defined. A
+    name a later Variable or Variable Studio reference defines again is marked overridden (struck through, with
+    "overridden" in the last column); the definition in force carries no mark."""
+
+    def __init__(self, parent=None):
+        super().__init__(0, 3, parent)
+        self.setHorizontalHeaderLabels(["Name", "Value", "Defined in"])
+        self.verticalHeader().setVisible(False)
+        self.horizontalHeader().setStretchLastSection(True)
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.setSelectionMode(QAbstractItemView.NoSelection)
+
+    def populate(self, doc, variables_of=None):
+        """`variables_of(source) -> {name: value} | None` supplies the Studios a reference reads when the document
+        has no engine-set `var_inputs` of its own (the window's copy of a tab does not)."""
+        if not hasattr(doc, "variable_table"):
+            rows = []
+        elif doc.var_inputs is None and variables_of is not None:
+            doc.var_inputs = variables_of
+            try:
+                rows = doc.variable_table()
+            finally:
+                doc.var_inputs = None
+        else:
+            rows = doc.variable_table()
+        self.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            origin = next((doc.feature(x["feature"]) for x in rows[r + 1:] if x["name"] == row["name"]), None)
+            home = doc.feature(row["feature"])
+            name = QTableWidgetItem("#" + row["name"])
+            name.setData(OVERRIDDEN, bool(row["overridden"]))
+            src = QTableWidgetItem((home or {}).get("name", row["feature"]))
+            if row["overridden"]:
+                font = name.font()
+                font.setStrikeOut(True)
+                name.setFont(font)
+                name.setForeground(QColor("#8a919a"))
+                src.setText("overridden")
+                src.setForeground(QColor("#b26a00"))
+                tip = "Overridden by " + ((origin or {}).get("name") or "a later definition")
+                name.setToolTip(tip)
+                src.setToolTip(tip)
+            self.setItem(r, 0, name)
+            self.setItem(r, 1, QTableWidgetItem(fmt(row["value"])))
+            self.setItem(r, 2, src)
+
+    def overridden(self, row):
+        return bool(self.item(row, 0).data(OVERRIDDEN))
 
 
 # =========================================================================== the window's Variable Studio tabs (I3.8)

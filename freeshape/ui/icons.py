@@ -316,6 +316,11 @@ def draw(name: str, p: QPainter):
         p.drawArc(QRectF(3, 5, 10, 22), 100 * 16, 160 * 16)
         p.drawArc(QRectF(19, 5, 10, 22), -80 * 16, 160 * 16)
         _text(p, "x", BLUE, 15, True, QRectF(6, 4, 20, 22))
+    elif name == "variable_studio_ref":
+        p.setPen(_pen(INK, 1.8))
+        p.drawArc(QRectF(3, 5, 10, 22), 100 * 16, 160 * 16)
+        p.drawArc(QRectF(19, 5, 10, 22), -80 * 16, 160 * 16)
+        _arrow(p, 9, 22, 23, 10, BLUE, 1.6)
     elif name == "measure":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(QColor("#f5d77a"))

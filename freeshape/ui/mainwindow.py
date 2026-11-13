@@ -34,7 +34,7 @@ from .numparse import fmt
 from .filedirs import start_dir, remember_dir
 from .assembly_ui import AssemblyController
 from .partstudio_engine import StudioEngine, element_index
-from .variable_panel import VariableTabs
+from .variable_panel import VariableTabs, DefinedVariables
 
 APP_NAME = "FreeShape"
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
@@ -138,6 +138,12 @@ class MainWindow(QMainWindow):
         split = QSplitter(Qt.Horizontal)
         split.setHandleWidth(1)
         self.left = LeftPanel()
+        self.defined_vars_header = QLabel("Variables")          # a Part Studio's variables, overridden ones marked
+        self.defined_vars_header.setObjectName("sectionHeader")
+        self.defined_vars = DefinedVariables()
+        self.defined_vars.setMaximumHeight(150)
+        self.left.layout().addWidget(self.defined_vars_header)
+        self.left.layout().addWidget(self.defined_vars)
         self.left_stack = QStackedWidget()
         self.left_stack.addWidget(self.left)
         self.left_stack.addWidget(self.asm.panel)
@@ -445,6 +451,9 @@ class MainWindow(QMainWindow):
             C("move", "Move", "Move, rotate or copy parts by exact amounts.", lambda: F_("move"), "translate"),
             C("variable", "Variable", "Define #name values to use in any dimension.", lambda: F_("variable"),
               "parameter"),
+            C("variable_studio_ref", "Variable Studio reference", "Use the variables of a Variable Studio tab "
+              "of this Document: all of them or the ones you tick.", lambda: F_("variable_studio_ref"),
+              "variables studio link import parameter"),
             C("import", "Import STEP", "Open a STEP file in a new tab.", lambda: self.import_step(), "open file",
               "File"),
             C("export", "Export", "Export the model as STEP or STL.", lambda: self.export(None, None),
@@ -530,6 +539,7 @@ class MainWindow(QMainWindow):
         self.btn_redo = self._tb(h, "redo", "Redo (Ctrl+Y)", self.redo)
         h.addWidget(_sep())
         self._tb(h, "variable", "Variable — define #name values to use in any dimension", lambda: self.start_feature("variable"))
+        self._tb(h, "variable_studio_ref", "Variable Studio reference — use the variables of a Variable Studio tab", lambda: self.start_feature("variable_studio_ref"))
         h.addWidget(_sep())
         self._tb(h, "sketch", "Sketch (Shift+S)", lambda: self.start_sketch())
         h.addWidget(_sep())
@@ -802,6 +812,14 @@ class MainWindow(QMainWindow):
             editing = self.sk_ctx["feature"]["id"]
         self.left.features.populate(self.doc, editing)
         self.left.parts.populate(self.doc)
+        self.defined_vars.populate(self.doc, self._studio_variables)
+        self.defined_vars_header.setVisible(self.defined_vars.rowCount() > 0)
+        self.defined_vars.setVisible(self.defined_vars.rowCount() > 0)
+
+    def _studio_variables(self, src):
+        """{name: value} of the Variable Studio tab a reference's source names (live, as the table shows it)."""
+        tab = self.folder.tab(src.get("tab")) if self.folder is not None and src.get("tab") else None
+        return None if tab is None or tab.doc is None or not hasattr(tab.doc, "values") else dict(tab.doc.values()[0])
 
     def _planes_for(self, state):
         half = self.viewport.plane_half()

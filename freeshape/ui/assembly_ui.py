@@ -345,6 +345,9 @@ class AssemblyPanel(QWidget):
     mateContext = Signal(str, object)
     groupClicked = Signal(str)
     groupContext = Signal(str, object)
+    relationClicked = Signal(str)
+    relationDouble = Signal(str)
+    relationContext = Signal(str, object)
 
     def __init__(self):
         super().__init__()
@@ -392,6 +395,21 @@ class AssemblyPanel(QWidget):
         self.mates.itemClicked.connect(lambda it: self.mateClicked.emit(it.data(ROLE_ID)))
         self.mates.itemDoubleClicked.connect(lambda it: self.mateDouble.emit(it.data(ROLE_ID)))
         lay.addWidget(self.mates, 2)
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background:#d5d9de;")
+        lay.addWidget(sep)
+        self.relation_header = QLabel("Relations")
+        self.relation_header.setObjectName("sectionHeader")
+        lay.addWidget(self.relation_header)
+        self.relations = QListWidget()
+        self.relations.setIconSize(QSize(18, 18))
+        self.relations.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.relations.customContextMenuRequested.connect(
+            lambda pos: self._ctx(self.relations, pos, self.relationContext))
+        self.relations.itemClicked.connect(lambda it: self.relationClicked.emit(it.data(ROLE_ID)))
+        self.relations.itemDoubleClicked.connect(lambda it: self.relationDouble.emit(it.data(ROLE_ID)))
+        lay.addWidget(self.relations, 1)
         self.status = QLabel("")
         self.status.setObjectName("muted")
         self.status.setWordWrap(True)
@@ -405,7 +423,7 @@ class AssemblyPanel(QWidget):
             sig.emit(it.data(ROLE_ID), lst.viewport().mapToGlobal(pos))
 
     def populate(self, doc, editing=None):
-        for lst in (self.instances, self.mates, self.groups):
+        for lst in (self.instances, self.mates, self.groups, self.relations):
             lst.blockSignals(True)
         sel_g = set(self.selected_groups())
         sel_i = set(self.selected_instances())
@@ -480,6 +498,32 @@ class AssemblyPanel(QWidget):
             self.mates.addItem(it)
             if m["id"] in sel_m:
                 it.setSelected(True)
+        sel_r = set(self.selected_relations())
+        self.relations.clear()
+        for r in doc.relations:
+            it = QListWidgetItem(icon("r_" + r["type"]), r["name"])
+            it.setData(ROLE_ID, r["id"])
+            names = []
+            for side in ("a", "b"):
+                m = doc.mate(r[side]["mate"]) if r.get(side) else None
+                names.append(m["name"] if m else "?")
+            tip = f"{A.RELATION_TYPES[r['type']]['label']}: {names[0]}  ↔  {names[1]}"
+            err = doc.errors.get(r["id"])
+            if r.get("suppressed"):
+                it.setForeground(QColor("#9aa3ae"))
+                f = QFont()
+                f.setStrikeOut(True)
+                it.setFont(f)
+                tip += "\nSuppressed"
+            elif err:
+                it.setForeground(QColor("#d93025"))
+                it.setIcon(icon("error"))
+                tip += "\n" + err
+            it.setToolTip(tip)
+            self.relations.addItem(it)
+            if r["id"] in sel_r:
+                it.setSelected(True)
+        self.relation_header.setText(f"Relations ({len(doc.relations)})")
         self.inst_header.setText(f"Instances ({len(doc.instances)})")
         self.mate_header.setText(f"Mates ({len(doc.mates)})")
         if not doc.instances:
@@ -491,8 +535,18 @@ class AssemblyPanel(QWidget):
             if bad:
                 txt += f" · {bad} mate(s) failing"
             self.status.setText(txt + "\nDrag parts to move them through their mates.")
-        for lst in (self.instances, self.mates, self.groups):
+        for lst in (self.instances, self.mates, self.groups, self.relations):
             lst.blockSignals(False)
+
+    def selected_relations(self):
+        return [it.data(ROLE_ID) for it in self.relations.selectedItems()]
+
+    def select_mates(self, ids):
+        self.mates.blockSignals(True)
+        for i in range(self.mates.count()):
+            it = self.mates.item(i)
+            it.setSelected(it.data(ROLE_ID) in ids)
+        self.mates.blockSignals(False)
 
     def selected_groups(self):
         return [it.data(ROLE_ID) for it in self.groups.selectedItems()]
@@ -1575,6 +1629,9 @@ class AssemblyController:
         p.mateContext.connect(self.mate_menu)
         p.groupClicked.connect(self.select_group)
         p.groupContext.connect(self.group_menu)
+        p.relationClicked.connect(self.select_relation)
+        p.relationDouble.connect(self.edit_relation)
+        p.relationContext.connect(self.relation_menu)
 
     @property
     def doc(self):
@@ -1842,6 +1899,53 @@ class AssemblyController:
         r = self.doc.relation(rid)
         if r is not None and self.w.mode == "idle":
             self.start_relation(r["type"], rid)
+
+    def select_relation(self, rid):
+        """Highlight a relation's two mates (their connector triads), as the relation dialog does."""
+        r = self.doc.relation(rid)
+        if r is None:
+            return
+        self.panel.select_mates({r[s]["mate"] for s in ("a", "b") if r.get(s)})
+        self.vp.clear_selection()
+        self.update_triads()
+
+    def rename_relation(self, rid, name=None):
+        # the model's rename() does not know relations; edit behind a checkpoint, as rename_group does
+        from PySide6.QtWidgets import QInputDialog
+        r = self.doc.relation(rid)
+        if r is None:
+            return
+        if name is None:
+            name, ok = QInputDialog.getText(self.w, "Rename relation", "Name:", text=r["name"])
+            if not ok:
+                return
+        name = name.strip()
+        if name and name != r["name"]:
+            self.doc.checkpoint()
+            r["name"] = name
+            self.doc.notify()
+
+    def suppress_relation(self, rid, flag):
+        if self.doc.relation(rid) is not None:
+            self.doc.set_relation_suppressed(rid, flag)
+
+    def delete_relation(self, rid):
+        if self.doc.relation(rid) is not None:
+            self.doc.delete_relation(rid)
+
+    def relation_menu(self, rid, gpos):
+        from PySide6.QtWidgets import QMenu
+        r = self.doc.relation(rid)
+        if r is None or self.w.mode != "idle":
+            return
+        m = QMenu(self.w)
+        m.addAction("Edit…", lambda: self.edit_relation(rid))
+        m.addAction("Rename…", lambda: self.rename_relation(rid))
+        sup = bool(r.get("suppressed"))
+        m.addAction("Unsuppress" if sup else "Suppress", lambda: self.suppress_relation(rid, not sup))
+        m.addSeparator()
+        m.addAction("Delete", lambda: self.delete_relation(rid))
+        m.exec(gpos)
 
     def _close_relation(self):
         d = self.relation_dialog

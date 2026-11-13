@@ -406,6 +406,27 @@ code and tag. A part a later feature merely touches then keeps the names of its 
 the names of long-lived faces do not grow with every feature. An element the boolean modifies or
 merges still gets the `;:M` / `;K` fragments of sections 2 and 5.
 
+### I1.8 Blends: fillet, chamfer, shell, draft
+
+FreeCAD names each of these through the plain maker history (section 3), with these op codes:
+fillet `FLT` (`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:3962`), chamfer `CHF`
+(`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:3994`), thick solid (shell) `THK`
+(`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:2963`) and draft `DFT`
+(`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:4499`). FreeShape adds `fillet`,
+`chamfer`, `shell` and `draft` to `naming.OP_FOR` with those codes.
+
+* The kernel helpers `fillet`, `chamfer`, `shell` and `draft` take `with_history=True` and return
+  `(shape, history)`. `fillet` and `chamfer` try more than one maker and return the history of the
+  maker whose result they use.
+* A fillet or chamfer face is generated from the edge it replaces, so it is named from that edge
+  (`;:G`); the faces the blend trims are modified (`;:M`). With `stamp=True` every other face is
+  re-encoded with the blend's op code and tag, as in section 2.
+* A shell's faces are modified copies of the source faces (outer) or generated from them (inner,
+  offset). A face the shell removes has no image in the history, so it has no name (section 6).
+* A draft modifies the drafted faces; their names keep the source face name plus the `DFT` fragment.
+* The runners name with `stamp=True` and replace the part's map with the result's, so a later
+  feature referring to a blend face by name finds it after an upstream dimension change.
+
 ## 5. Split and merge
 
 Split and merge are the same mechanism read in two directions, so they are described together.

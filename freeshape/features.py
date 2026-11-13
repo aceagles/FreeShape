@@ -945,7 +945,10 @@ def run_fillet(state, f):
         raise K.KernelError("Select edges to fillet")
     for pid, es in groups.items():
         part = state.parts[pid]
-        state.parts[pid] = Part(pid, part.name, K.fillet(part.shape, es, float(p.get("radius", 1))), part.color)
+        res, hist = K.fillet(part.shape, es, float(p.get("radius", 1)), with_history=True)
+        named = name_feature(state, f["id"], [pid], res, hist, "fillet")
+        state.parts[pid] = Part(pid, part.name, res, part.color)
+        state.set_named(pid, named)
 
 
 def run_chamfer(state, f):
@@ -955,7 +958,10 @@ def run_chamfer(state, f):
         raise K.KernelError("Select edges to chamfer")
     for pid, es in groups.items():
         part = state.parts[pid]
-        state.parts[pid] = Part(pid, part.name, K.chamfer(part.shape, es, float(p.get("distance", 1))), part.color)
+        res, hist = K.chamfer(part.shape, es, float(p.get("distance", 1)), with_history=True)
+        named = name_feature(state, f["id"], [pid], res, hist, "chamfer")
+        state.parts[pid] = Part(pid, part.name, res, part.color)
+        state.set_named(pid, named)
 
 
 def run_shell(state, f):
@@ -965,9 +971,11 @@ def run_shell(state, f):
         raise K.KernelError("Select faces to remove")
     for pid, fs in groups.items():
         part = state.parts[pid]
-        state.parts[pid] = Part(pid, part.name,
-                                K.shell(part.shape, fs, float(p.get("thickness", 1)), p.get("outward", False)),
-                                part.color)
+        res, hist = K.shell(part.shape, fs, float(p.get("thickness", 1)), p.get("outward", False),
+                            with_history=True)
+        named = name_feature(state, f["id"], [pid], res, hist, "shell")
+        state.parts[pid] = Part(pid, part.name, res, part.color)
+        state.set_named(pid, named)
 
 
 def run_delete_face(state, f):
@@ -1345,8 +1353,10 @@ def run_draft(state, f):
     pull = -neutral.normal if p.get("flip") else neutral.normal
     for pid, fs in groups.items():
         part = state.parts[pid]
-        state.parts[pid] = Part(pid, part.name, K.draft(part.shape, fs, pull, float(p.get("angle", 3)), neutral),
-                                part.color)
+        res, hist = K.draft(part.shape, fs, pull, float(p.get("angle", 3)), neutral, with_history=True)
+        named = name_feature(state, f["id"], [pid], res, hist, "draft")
+        state.parts[pid] = Part(pid, part.name, res, part.color)
+        state.set_named(pid, named)
 
 
 def run_split(state, f):

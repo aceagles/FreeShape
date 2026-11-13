@@ -885,7 +885,8 @@ def _blend_ok(before, after):
         return False
 
 
-def _try_blend(make, shape, edge_list, size):
+def _try_blend(make, shape, edge_list, size, with_history=False):
+    """The blended shape, or None. with_history=True returns (shape, history of this maker) or None."""
     mk = make(shape)
     for e in edge_list:
         mk.Add(float(size), e)
@@ -896,7 +897,9 @@ def _try_blend(make, shape, edge_list, size):
     if not mk.IsDone():
         return None
     out = mk.Shape()
-    return out if _blend_ok(shape, out) else None
+    if not _blend_ok(shape, out):
+        return None
+    return (out, _maker_history(mk, [shape])) if with_history else out
 
 
 def _largest_blend(make, shape, edge_list, size):
@@ -919,12 +922,13 @@ def _nice_down(x):
     return math.floor(x / step) * step
 
 
-def fillet(shape, edge_list, radius: float):
+def fillet(shape, edge_list, radius: float, with_history=False):
+    """with_history=True returns (shape, history of the maker whose result is used)."""
     if not edge_list:
         raise KernelError("Select edges to fillet")
     if radius <= 0:
         raise KernelError("Radius must be positive")
-    out = _try_blend(BRepFilletAPI_MakeFillet, shape, edge_list, radius)
+    out = _try_blend(BRepFilletAPI_MakeFillet, shape, edge_list, radius, with_history)
     if out is None:
         best = _largest_blend(BRepFilletAPI_MakeFillet, shape, edge_list, radius)
         hint = f" — the largest that works here is about {_nice_down(best):g} mm" if best else ""
@@ -932,12 +936,13 @@ def fillet(shape, edge_list, radius: float):
     return out
 
 
-def chamfer(shape, edge_list, dist: float):
+def chamfer(shape, edge_list, dist: float, with_history=False):
+    """with_history=True returns (shape, history of the maker whose result is used)."""
     if not edge_list:
         raise KernelError("Select edges to chamfer")
     if dist <= 0:
         raise KernelError("Distance must be positive")
-    out = _try_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist)
+    out = _try_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist, with_history)
     if out is None:
         best = _largest_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist)
         hint = f" — the largest that works here is about {_nice_down(best):g} mm" if best else ""
@@ -945,7 +950,7 @@ def chamfer(shape, edge_list, dist: float):
     return out
 
 
-def shell(shape, remove_faces, thickness: float, outward=False):
+def shell(shape, remove_faces, thickness: float, outward=False, with_history=False):
     if thickness <= 0:
         raise KernelError("Thickness must be positive")
     mk = BRepOffsetAPI_MakeThickSolid()
@@ -957,6 +962,8 @@ def shell(shape, remove_faces, thickness: float, outward=False):
         raise KernelError("Shell failed — try a smaller thickness") from exc
     if not mk.IsDone():
         raise KernelError("Shell failed — try a smaller thickness")
+    if with_history:
+        return mk.Shape(), _maker_history(mk, [shape])
     return mk.Shape()
 
 
@@ -1489,7 +1496,7 @@ def loft(profile_faces, ruled=False):
     return mk.Shape()
 
 
-def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane):
+def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=False):
     from OCP.BRepOffsetAPI import BRepOffsetAPI_DraftAngle
     if not face_list:
         raise KernelError("Select faces to draft")
@@ -1505,6 +1512,8 @@ def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane):
         raise KernelError("Draft failed — try a smaller angle") from exc
     if not mk.IsDone():
         raise KernelError("Draft failed — try a smaller angle")
+    if with_history:
+        return mk.Shape(), _maker_history(mk, [shape])
     return mk.Shape()
 
 

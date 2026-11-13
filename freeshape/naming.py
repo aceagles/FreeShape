@@ -46,11 +46,21 @@ OP_EXTRUDE, OP_REVOLVE = "XTR", "RVL"
 OP_FUSE, OP_CUT, OP_COMMON = "FUS", "CUT", "CMN"
 OP_SKETCH, OP_MIRROR, OP_MAKER = "SKT", "MIR", "MAK"
 
-OP_FOR = {"extrude": OP_EXTRUDE, "revolve": OP_REVOLVE, "fuse": OP_FUSE, "cut": OP_CUT,
-          "common": OP_COMMON, "fuse_all": OP_FUSE,
-          "circular_pattern": "XFM",
-          "linear_pattern": "XFM",
-          "mirror": OP_MIRROR}
+OP_FOR = {
+    "extrude": OP_EXTRUDE,
+    "revolve": OP_REVOLVE,
+    "fuse": OP_FUSE,
+    "cut": OP_CUT,
+    "common": OP_COMMON,
+    "fuse_all": OP_FUSE,
+    "mirror": OP_MIRROR,
+    "chamfer": "CHF",
+    "circular_pattern": "XFM",
+    "draft": "DFT",
+    "fillet": "FLT",
+    "linear_pattern": "XFM",
+    "shell": "THK",
+}
 
 VERTEX, EDGE, FACE = "V", "E", "F"
 KINDS = (VERTEX, EDGE, FACE)                 # low to high: the order every pass walks

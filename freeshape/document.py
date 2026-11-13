@@ -11,6 +11,7 @@ from . import kernel as K
 from . import migrations as M
 from .features import (RUNNERS, FEATURE_LABELS, ModelState, PartMap, default_params, Part, prepare,
                        carry_face_colors)
+from .expr import parse_number
 from . import pyfeature   # registers the bundled Python-feature plugins in any process that rebuilds
 
 
@@ -285,7 +286,38 @@ class Document:
         """The variables a "variable_studio_ref" feature consumes (None if its link finds nothing)."""
         src = (f.get("params") or {}).get("source")
         vals = self.var_inputs(src) if self.var_inputs is not None and isinstance(src, dict) else None
+        names = (f.get("params") or {}).get("names")
+        if vals is not None and names is not None:     # a subset: unticked names never reach the cache key
+            vals = {k: v for k, v in vals.items() if k in names}
         return None if vals is None else {str(k): float(v) for k, v in vals.items()}
+
+    def variable_table(self):
+        """One row per variable definition in history order (suppressed and rolled-back features skipped):
+        {"name", "value", "feature" (id of the defining feature), "overridden"}. A definition is overridden
+        when a later "variable" feature or Variable Studio reference defines the same name; the last one is
+        the value the model uses."""
+        rows, running = [], {}
+        for f in self.features[:self.active_count()]:
+            if f.get("suppressed"):
+                continue
+            p = f.get("params") or {}
+            if f.get("type") == "variable":
+                name = str(p.get("name", "")).strip().lstrip("#")
+                val = parse_number(p.get("expr", ""), variables=running)
+                defs = {name: val} if name and val is not None else {}
+            elif f.get("type") == "variable_studio_ref":
+                defs = self._ref_inputs(f) or {}
+                if p.get("names") is not None:
+                    defs = {n: defs[n] for n in p["names"] if n in defs}
+            else:
+                continue
+            for name, val in defs.items():
+                for r in rows:
+                    if r["name"] == name:
+                        r["overridden"] = True
+                rows.append({"name": name, "value": val, "feature": f["id"], "overridden": False})
+                running[name] = val
+        return rows
 
     def _with_consumed_inputs(self, h, f):
         """Cache-key step for cross-tab inputs: mixes the variables a "variable_studio_ref" feature reads into

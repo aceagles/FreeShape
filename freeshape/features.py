@@ -918,6 +918,12 @@ def run_variable_studio_ref(state, f):
     if values is None:
         src = f["params"].get("source") or {}
         raise K.KernelError(f"Variable Studio not found: {src.get('name') or src.get('path') or src.get('tab') or '(none linked)'}")
+    names = f["params"].get("names")
+    if names is not None:       # a subset: only the ticked names; one the Studio no longer has is an error
+        missing = [n for n in names if n not in values]
+        if missing:
+            raise K.KernelError(f"Variable Studio has no variable #{missing[0]}")
+        values = {n: values[n] for n in names}
     state.vars.update(values)
 
 

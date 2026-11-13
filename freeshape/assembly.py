@@ -303,22 +303,19 @@ def snap_candidates(shape, kind, index):
     return kept
 
 
-def snap_frame(shape, kind, index, snap):
+def snap_frame(shape, kind, index, snap, named=None):
     """Connector frame for a snap point on face/edge `index`. `snap` is the stored form {"type", "p", "edge_ref"}.
     Z is the face normal (the circle axis, signed outward, for a centre); X is the part's X axis projected
-    onto the plane (perp), so it does not depend on which edge happens to be longest."""
+    onto the plane (perp), so it does not depend on which edge happens to be longest. `named` is the part's
+    element map, used to find the snap edge by its name."""
     t = snap["type"]
     p = np.asarray(snap["p"], float)
     if t == "center":
-        ei = _refind(shape, snap["edge_ref"], "edge")
-        if ei is None:
-            raise ValueError("snap edge not found")
+        ei = resolve_element(shape, snap["edge_ref"], "edge", named)[0]
         base = connector_frame(shape, "edge", ei)
         o = np.array(K.edge_info(K.edges(shape)[ei])["center"], float)
     elif t == "mid":
-        ei = _refind(shape, snap["edge_ref"], "edge")
-        if ei is None:
-            raise ValueError("snap edge not found")
+        ei = resolve_element(shape, snap["edge_ref"], "edge", named)[0]
         info = K.edge_info(K.edges(shape)[ei])
         o = (np.array(info["p0"], float) + np.array(info["p1"], float)) / 2
         base = connector_frame(shape, kind, index, o if kind == "face" else None)
@@ -344,27 +341,34 @@ def frame_from_json(d):
     return {"o": np.array(d["o"], float), "z": unit(d["z"]), "x": unit(d["x"]), "what": d.get("what", "")}
 
 
-def _ref_signature(shape, kind, index):
+def _ref_signature(shape, kind, index, named=None):
+    """The stored reference to face/edge `index` of `shape`: its signature and, when the part's element map
+    `named` names it, its name (features.make_ref)."""
     from .features import make_ref
     sub = K.faces(shape)[index] if kind == "face" else K.edges(shape)[index]
-    ref = make_ref(None, sub, kind, shape)
+    ref = make_ref(None, sub, kind, shape, named)
     ref.pop("part", None)
     return json.loads(json.dumps(ref, default=lambda a: np.asarray(a).tolist()))
 
 
-def _refind(shape, ref, kind):
-    """Index of the face/edge of `shape` that best matches a stored signature (or None)."""
-    from .features import _score
-    lo, hi = K.bbox(shape)
-    scale = max(float(np.linalg.norm(hi - lo)), 1e-6)
+def resolve_element(shape, ref, kind, named=None):
+    """(index, recovered) of the face/edge of `shape` a stored reference points at, through features.resolve
+    (docs/reference/element-naming.md, section 6.4): a named reference finds the element of that name or
+    raises a KernelError naming it; a reference without a name (or a part that has no element map) is
+    matched by its signature and `recovered` is True. A part with no element map and a nameless
+    reference (a STEP part, a headless reader) has nothing better to offer, so that one is not flagged."""
+    from .features import ModelState, Part, resolve
+    pid, fid = "part", "connector"
+    state = ModelState(parts={pid: Part(pid, pid, shape)}, names={pid: named} if named is not None else {})
+    had_name = bool(ref.get("name"))
+    if named is None:
+        ref = {k: v for k, v in ref.items() if k != "name"}
+    _, sub = resolve(state, dict(ref, part=pid), kind, fid=fid)
     subs = K.faces(shape) if kind == "face" else K.edges(shape)
-    best, best_s = None, 1e9
     for i, s in enumerate(subs):
-        info = K.face_info(s) if kind == "face" else K.edge_info(s)
-        sc = _score(info, ref, scale, [lo, hi])
-        if sc < best_s:
-            best, best_s = i, sc
-    return best if best_s <= 0.6 else None
+        if s.IsSame(sub):
+            return i, fid in state.recovered and (named is not None or had_name)
+    raise K.KernelError(f"Missing {kind} reference")
 
 
 # =========================================================================== mate residuals
@@ -443,6 +447,10 @@ class AssemblyDoc:
         self.dirty = False
         self.listeners = []
         self.resolver = None                     # callable(source) -> features.Part (set by the main window)
+        # callable(source) -> naming.NamedShape or None: the element map of the part a source links to.
+        # Left None, it is found on the resolver when that is a LinkResolver method (links.py).
+        self.named_resolver = None
+        self._recovered = set()                  # (mate id, "a"/"b") found by signature, not by name; in memory only
         self.parts: dict[str, object] = {}       # instance id -> Part in its own coordinates
         self._fallback: dict[str, object] = {}   # instance id -> shape stored in the file
         self._step_cache: dict[str, list] = {}
@@ -546,6 +554,28 @@ class AssemblyDoc:
             raise K.KernelError("Part Studio not open")
         return self.resolver(src)
 
+    def _named(self, iid):
+        """The element map of instance `iid`'s part, or None when it has none (a STEP part, a saved copy)."""
+        inst, part = self.instance(iid), self.parts.get(iid)
+        if inst is None or part is None or inst["source"].get("kind") == "step":
+            return None
+        fn = self.named_resolver or getattr(getattr(self.resolver, "__self__", None), "resolve_named", None)
+        if fn is None:
+            return None
+        try:
+            nm = fn(inst["source"])
+        except Exception:
+            return None
+        return nm if nm is not None and nm.shape is not None and nm.shape.IsSame(part.shape) else None
+
+    def recovered_connectors(self):
+        """[(mate id, "a"/"b")] of the connectors the last refresh found by signature instead of by name: legacy
+        references (made before elements were named) and named ones on a part that has no element map. Their
+        result is a best guess; re-pick the connector to name it."""
+        live = {(m["id"], side) for m in self.mates for side in ("a", "b")}
+        self._recovered &= live
+        return sorted(self._recovered)
+
     def refresh(self, solve=True, notify=True):
         """Re-read every instance's part (picking up Part Studio edits), update mates, re-solve."""
         from .features import Part
@@ -590,20 +620,18 @@ class AssemblyDoc:
                 c = m[side]
                 if c["inst"] in changed and c.get("ref") and c["inst"] in self.parts:
                     shp = self.parts[c["inst"]].shape
-                    idx = c.get("index")
-                    subs = K.faces(shp) if c["kind"] == "face" else K.edges(shp)
-                    ok_idx = None
-                    if idx is not None and idx < len(subs):
-                        if _refind(shp, c["ref"], c["kind"]) == idx:
-                            ok_idx = idx
-                    if ok_idx is None:
-                        ok_idx = _refind(shp, c["ref"], c["kind"])
-                    if ok_idx is None:
-                        self.errors[m["id"]] = "Lost its connector after the part changed — edit the mate to re-pick"
+                    named = self._named(c["inst"])
+                    self._recovered.discard((m["id"], side))
+                    try:
+                        ok_idx, rec = resolve_element(shp, c["ref"], c["kind"], named)
+                    except K.KernelError as e:
+                        self.errors[m["id"]] = f"Lost its connector after the part changed: {e}"
                         continue
+                    if rec:
+                        self._recovered.add((m["id"], side))
                     try:
                         if c.get("snap"):
-                            fr = snap_frame(shp, c["kind"], ok_idx, c["snap"])
+                            fr = snap_frame(shp, c["kind"], ok_idx, c["snap"], named)
                         else:
                             fr = connector_frame(shp, c["kind"], ok_idx, c.get("click"))
                         if c.get("x_ref") is not None:
@@ -788,13 +816,14 @@ class AssemblyDoc:
         if click_world is not None:
             Ti = np.linalg.inv(T)
             click = (Ti[:3, :3] @ np.asarray(click_world, float) + Ti[:3, 3]).tolist()
+        named = self._named(iid)
         out = {"inst": iid, "kind": kind, "index": int(index), "click": click,
-               "ref": _ref_signature(p.shape, kind, index)}
+               "ref": _ref_signature(p.shape, kind, index, named)}
         if snap is not None:
             st = {"type": snap["type"], "p": [float(a) for a in snap["p"]],
-                  "edge_ref": _ref_signature(p.shape, "edge", snap["edge"]) if snap.get("edge") is not None else None}
+                  "edge_ref": _ref_signature(p.shape, "edge", snap["edge"], named) if snap.get("edge") is not None else None}
             out["snap"] = st
-            fr = snap_frame(p.shape, kind, index, st)
+            fr = snap_frame(p.shape, kind, index, st, named)
         else:
             fr = connector_frame(p.shape, kind, index, click)
         out["frame"] = frame_to_json(fr)

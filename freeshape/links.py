@@ -261,6 +261,15 @@ class LinkResolver:
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         return p
 
+    def resolve_named(self, src):
+        """The element map (naming.NamedShape) of the part `resolve_source` returns for `src`, or None when
+        the studio is not found or the part carries no map. Lets a connector find its face by name."""
+        try:
+            studio = self._studio_for(src)
+        except K.KernelError:
+            return None
+        return None if studio is None else studio.state.named(_translate_part(studio, src.get("part")))
+
     # ------------------------------------------------------------------ drawing sources
     def resolve_drawing_source(self, src):
         """The shape a drawing shows (kept as the same object while the model is unchanged, so views aren't
@@ -269,6 +278,13 @@ class LinkResolver:
         if src.get("kind") == "assembly":
             return self._resolve_assembly_shape(src)
         return self._resolve_studio_shape(src)
+
+    def resolve_drawing_named(self, src):
+        """The element map of the shape `resolve_drawing_source` returns for `src`, or None: only a drawing of
+        one whole part has one (a compound of parts, an assembly or a flat pattern is a different shape)."""
+        if src.get("kind") == "assembly" or src.get("flat") or src.get("part") in (None, "*"):
+            return None
+        return self.resolve_named(src)
 
     def _resolve_assembly_shape(self, src):
         asm = self._assembly_for(src)

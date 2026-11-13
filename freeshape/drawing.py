@@ -92,6 +92,31 @@ def _unit(v):
     return v / n if n > 1e-12 else v
 
 
+def _circle_elements(shape):
+    """[(sub-shape, "edge" | "face", centre, radius)] for the round edges and cylinder faces of `shape` that
+    kernel.snap_features turns into dimensionable circles, so an end can be tied to the element it sits on."""
+    out = []
+    for e in K.edges(shape):
+        try:
+            ad = K.BRepAdaptor_Curve(e)
+            if ad.GetType() == K.GeomAbs_Circle:
+                ci = ad.Circle()
+                out.append((e, "edge", K._np(ci.Location()), ci.Radius()))
+        except Exception:
+            continue
+    for f in K.faces(shape):
+        try:
+            ad = K.BRepAdaptor_Surface(f)
+            if ad.GetType() == K.GeomAbs_Cylinder:
+                cy = ad.Cylinder()
+                ax = K._np(cy.Axis().Direction())
+                p0 = K._np(cy.Axis().Location())
+                out.append((f, "face", p0 - ax * float(p0 @ ax), cy.Radius()))
+        except Exception:
+            continue
+    return out
+
+
 class DrawingDoc:
     kind = "drawing"
 
@@ -103,6 +128,11 @@ class DrawingDoc:
         self.listeners = []
         self.resolver = None                 # callable(source) -> TopoDS shape (set by the main window)
         self.source = None                   # what the drawing shows (see the main window's resolver)
+        # callable(source) -> naming.NamedShape or None: the element map of the shape the resolver returns.
+        # Left None, it is found on the resolver when that is a LinkResolver method (links.py).
+        self.named_resolver = None
+        self._recovered = set()              # annotation ids with an end found by signature, not by name (memory only)
+        self._end_errors = {}                # annotation id -> why an end could not be found (memory only)
         self.sheet = {"size": "A3", "portrait": False, "scale": 1.0, "projection": "first"}
         self.title = {"title": "", "number": "", "rev": "A", "drawn": "", "date": time.strftime("%d/%m/%Y"),
                       "company": "", "material": "", "tolerance": "ISO 2768-m", "sheet": "1/1"}
@@ -631,8 +661,100 @@ class DrawingDoc:
             out.append((c, ax, r, uv, ci))
         return out
 
+    def _named(self):
+        """The element map of the model being drawn, or None (an assembly, a flat pattern, a saved copy)."""
+        if self.shape is None or self.source is None:
+            return None
+        fn = self.named_resolver or getattr(getattr(self.resolver, "__self__", None), "resolve_drawing_named", None)
+        if fn is None:
+            return None
+        try:
+            nm = fn(self.source)
+        except Exception:
+            return None
+        return nm if nm is not None and nm.shape is not None and nm.shape.IsSame(self.shape) else None
+
+    def _name_state(self, named):
+        from .features import ModelState, Part
+        return ModelState(parts={"part": Part("part", "part", self.shape)}, names={"part": named})
+
+    def _name_end(self, end, named):
+        """Give a vertex / circle end the name of the element it sits on (docs/reference/element-naming.md,
+        section 6): a vertex's own name, or the name of the round edge or cylinder face its circle is."""
+        end.pop("name", None)
+        end.pop("nkind", None)
+        if end.get("kind") == "vertex":
+            from .features import make_vertex_ref
+            name = make_vertex_ref("part", end["p"], None, named).get("name")
+            kind = "vertex"
+        else:
+            _verts, circles = self._snapdata()
+            i = end.get("i")
+            if i is None or not 0 <= i < len(circles):
+                return
+            c, _ax, r, _full, from_face = circles[i]
+            kind = "face" if from_face else "edge"
+            name = None
+            for sub, k, c2, r2 in _circle_elements(self.shape):
+                if k == kind and np.linalg.norm(c2 - c) < 1e-6 * (1 + r) and abs(r2 - r) < 1e-6 * (1 + r):
+                    name = named.name_of(sub)
+                    break
+        if name:
+            end["name"], end["nkind"] = name, kind
+
+    def _resolve_named(self, a, named):
+        """The end a name points at, as `resolve` returns it, through features.resolve / resolve_point;
+        raises KernelError (naming the element) when it is gone or no longer a vertex / circle."""
+        from .features import resolve, resolve_point
+        state = self._name_state(named)
+        ref = {"name": a["name"], "part": "part"}
+        tol = 0.02 * self._size() + 1e-6
+        verts, circles = self._snapdata()
+        if a["kind"] == "vertex":
+            P = resolve_point(state, ref)
+            if len(verts):
+                d = np.linalg.norm(np.nan_to_num(verts, nan=1e30) - P, axis=1)
+                j = int(np.argmin(d))
+                if d[j] <= 1e-6 * (1 + self._size()):
+                    return verts[j], None, j, len(verts)
+            raise K.KernelError(f"Vertex {a['name']} is no longer a corner of the model")
+        kind = a.get("nkind", "edge")
+        _, sub = resolve(state, ref, kind)
+        for sub2, k, c, r in _circle_elements(sub):
+            if k != kind or not sub2.IsSame(sub):
+                continue
+            for j, (c3, _ax, r3, _full, from_face) in enumerate(circles):
+                if from_face == (k == "face") and np.linalg.norm(c3 - c) < 1e-6 * (1 + r) and abs(r3 - r) < 1e-6 * (1 + r):
+                    return c3, r3, j, len(circles)
+        raise K.KernelError(f"{kind.capitalize()} {a['name']} is no longer round")
+
+    def _resolve_end(self, a):
+        """(hit, error, recovered) for a stored dimension end. A named end goes through the reference policy
+        (ADR 0003): found by name or an error naming the element, never the nearest. A nameless end (a drawing
+        from before elements were named) is matched by position and is flagged recovered when the model has
+        names it could have used; so is a named end on a model with no element map."""
+        named = self._named()
+        if a.get("name") and named is not None:
+            try:
+                return self._resolve_named(a, named), None, False
+            except K.KernelError as e:
+                return None, str(e), False
+        hit = self.resolve(a)
+        return hit, (None if hit is not None else "Dimension end not found on the model"), \
+            hit is not None and (named is not None or bool(a.get("name")))
+
+    def recovered_dimensions(self):
+        """Ids of the dimensions with an end the last refresh found by position instead of by name."""
+        live = {a.get("id") for a in self.annots}
+        return sorted(self._recovered & live)
+
+    def dimension_errors(self):
+        """{dimension id: message} for the dimensions whose end was lost the last time the model changed."""
+        return {k: v for k, v in self._end_errors.items() if any(a.get("id") == k for a in self.annots)}
+
     def resolve(self, a):
-        """Where a stored dimension end is on the current model: (3D point, radius or None), or None if gone."""
+        """Where a stored dimension end is on the current model, matched by position (the legacy, nameless path
+        of `_resolve_end`): (3D point, radius or None, index, count), or None if gone."""
         verts, circles = self._snapdata()
         P = np.asarray(a["p"], float)
         tol = 0.02 * self._size() + 1e-6
@@ -668,6 +790,7 @@ class DrawingDoc:
 
     def _reattach(self):
         """After the model changed: move each dimension end onto its feature in the new model."""
+        self._recovered, self._end_errors = set(), {}
         for a in self.annots:
             for k in ("a", "b", "b2"):
                 end = a.get(k)
@@ -685,7 +808,11 @@ class DrawingDoc:
                             continue
                     end["lost"] = True
                     continue
-                hit = self.resolve(end)
+                hit, err, rec = self._resolve_end(end)
+                if rec:
+                    self._recovered.add(a.get("id"))
+                if err:
+                    self._end_errors.setdefault(a.get("id"), err)
                 if hit is not None:
                     end["p"] = [float(x) for x in hit[0]]
                     if hit[1] is not None:
@@ -699,6 +826,11 @@ class DrawingDoc:
     def add_annot(self, a):
         self.checkpoint()
         a["id"] = self.new_id("D" if a["type"] != "note" else "N")
+        named = self._named()
+        if named is not None:
+            for k in ("a", "b", "b2"):
+                if isinstance(a.get(k), dict) and a[k].get("kind") != "uv" and a[k].get("p") is not None:
+                    self._name_end(a[k], named)
         self.annots.append(a)
         self.changed()
         return a

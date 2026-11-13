@@ -606,6 +606,29 @@ Split and merge are the same mechanism read in two directions, so they are descr
 * **Not ported from FreeCAD.** FreeCAD logs `missing element reference` and re-binds to a nearby
   index (see above); FreeShape raises instead (ADR 0003).
 
+### I1.13 Connectors and dimension ends
+
+Assembly mate connectors and drawing dimension ends are references too, and follow the section 6
+policy above (a stored sub-element name is looked up, never matched by position).
+
+* **A connector stores `ref` = `{name, signature}`** (`assembly._ref_signature`, which calls
+  `make_ref`) and `snap.edge_ref` likewise. The map comes from the studio the instance links to:
+  `AssemblyDoc.named_resolver(source)`, or `LinkResolver.resolve_named` when the resolver is a
+  `LinkResolver` method. A STEP part or a saved copy has no map and stores a signature only.
+* **One resolver, `assembly.resolve_element`, wraps `features.resolve`.** On refresh a named
+  connector finds the element of that name or sets the mate's error to a message that contains the
+  name. A connector with no name, or a named one on a part that has no map, is matched by signature
+  and listed by `AssemblyDoc.recovered_connectors()`. A part with no map and a nameless reference is
+  not listed: nothing better exists for it. The old `_refind` is deleted.
+* **A dimension end stores the name of its vertex, or of the round edge or cylinder face its
+  circle is** (`name`, `nkind`), added by `DrawingDoc.add_annot`. Only a drawing of one whole
+  part has a map (`LinkResolver.resolve_drawing_named`); a compound, an assembly or a flat pattern
+  has none. A named end resolves through `features.resolve_point` / `resolve`; a miss marks the end
+  `lost` and `DrawingDoc.dimension_errors()` holds the message with the name. A nameless end keeps
+  the position match and is listed by `DrawingDoc.recovered_dimensions()` when the model has a map.
+* **The marker is in memory only.** Neither flag is written to the file, so a reload recomputes it.
+  A recovered reference is not upgraded to a name; the user re-picks it.
+
 ## 7. Copies
 
 * **Mirror.** A mirror is a real kernel operation: a `BRepBuilderAPI_Transform` named through

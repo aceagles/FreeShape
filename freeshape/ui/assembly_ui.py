@@ -84,6 +84,13 @@ def value_rows(mate):
             for d in A.MATE_VALUE_DOFS.get(mate["type"], ())]
 
 
+def limit_rows(mate):
+    """(freedom, label, unit, lo, hi) for each limitable freedom of `mate`; lo/hi are None for no bound."""
+    lim = mate.get("limits") or {}
+    return [(d, VALUE_LABELS.get(d, d), value_unit(d), *(lim.get(d) or (None, None)))
+            for d in A.MATE_VALUE_DOFS.get(mate["type"], ())]
+
+
 class AssemblyPanel(QWidget):
     instanceClicked = Signal(str)
     instanceDouble = Signal(str)
@@ -196,7 +203,8 @@ class AssemblyPanel(QWidget):
         self.group_header.setText(f"Groups ({len(doc.groups)})")
         self.mates.clear()
         for m in doc.mates:
-            it = QListWidgetItem(icon("m_" + m["type"]), m["name"])
+            limited = any(lo is not None or hi is not None for _d, _l, _u, lo, hi in limit_rows(m))
+            it = QListWidgetItem(icon("m_" + m["type"]), m["name"] + (" ⇥" if limited else ""))
             it.setData(ROLE_ID, m["id"])
             names = []
             for side in ("a", "b"):
@@ -217,6 +225,10 @@ class AssemblyPanel(QWidget):
                 tip += "\n" + err
             for _d, label, text, unit in value_rows(m):
                 tip += f"\n{label}: {text} {unit}"
+            for _d, label, unit, lo, hi in limit_rows(m):
+                if lo is not None or hi is not None:
+                    tip += (f"\n{label} limits: {'no min' if lo is None else fmt(lo)} to "
+                            f"{'no max' if hi is None else fmt(hi)} {unit}")
             if m["id"] == editing:
                 it.setBackground(QColor("#ffe9b8"))
             it.setToolTip(tip)
@@ -475,6 +487,19 @@ class MateDialog(QFrame):
         self.values_lay.setSpacing(2)
         self.value_labels = {}
         lay.addWidget(self.values_box)
+        # Limits: staged here, applied with set_limits by the controller on Accept (Cancel never touches them)
+        self.limits_check = QCheckBox("Limits")
+        self.limits_check.setChecked(bool(self.mate.get("limits")))
+        self.limits_check.toggled.connect(lambda _c: self._refresh_limits())
+        lay.addWidget(self.limits_check)
+        self.limits_box = QWidget()
+        self.limits_lay = QVBoxLayout(self.limits_box)
+        self.limits_lay.setContentsMargins(0, 0, 0, 0)
+        self.limits_lay.setSpacing(2)
+        self.limit_edits = {}
+        self._limit_text = {d: [fmt(lo), fmt(hi)] for d, _l, _u, lo, hi in limit_rows(self.mate)}
+        self.limits = None               # {freedom: (lo, hi)} once accepted
+        lay.addWidget(self.limits_box)
         self.err = QLabel("")
         self.err.setObjectName("dialogError")
         self.err.setWordWrap(True)
@@ -539,6 +564,7 @@ class MateDialog(QFrame):
         self.offset_row.setVisible(t in ("fastened", "revolute", "planar", "pin_slot", "ball"))
         self.rot.setVisible(t in ("fastened", "slider"))
         self.flip.setVisible(t != "ball")
+        self._refresh_limits()
         self._refresh_values()
         self.adjustSize()
         if preview:
@@ -575,6 +601,57 @@ class MateDialog(QFrame):
         for d, _l, text, _u in rows:
             self.value_labels[d].setText(text)
         self.values_box.setVisible(bool(rows))
+
+    # Limits: a min and a max field per freedom, blank meaning no limit at that end
+    def _refresh_limits(self):
+        dofs = A.MATE_VALUE_DOFS.get(self.mate["type"], ())
+        for d, (lo, hi) in self.limit_edits.items():
+            self._limit_text[d] = [lo.text(), hi.text()]
+        while self.limits_lay.count():
+            self.limits_lay.takeAt(0).widget().deleteLater()
+        self.limit_edits = {}
+        self.limits_check.setVisible(bool(dofs))
+        show = bool(dofs) and self.limits_check.isChecked()
+        if show:
+            for d in dofs:
+                w = QWidget()
+                h = QHBoxLayout(w)
+                h.setContentsMargins(0, 0, 0, 0)
+                lab = QLabel(VALUE_LABELS.get(d, d))
+                lab.setFixedWidth(60)
+                h.addWidget(lab)
+                lo_t, hi_t = self._limit_text.get(d, ["", ""])
+                lo, hi = QLineEdit(lo_t), QLineEdit(hi_t)
+                lo.setPlaceholderText("min")
+                hi.setPlaceholderText("max")
+                h.addWidget(lo, 1)
+                h.addWidget(hi, 1)
+                h.addWidget(QLabel(value_unit(d)))
+                self.limits_lay.addWidget(w)
+                self.limit_edits[d] = (lo, hi)
+        self.limits_box.setVisible(show)
+
+    def limit_values(self):
+        """{freedom: (lo, hi)} for every freedom of the mate type; None is no bound, and an unticked Limits
+        gives no bounds anywhere. Raises ValueError (with a message for the user) on bad text or min > max."""
+        out = {d: (None, None) for d in A.MATE_VALUE_DOFS.get(self.mate["type"], ())}
+        if not self.limits_check.isChecked():
+            return out
+        for d, edits in self.limit_edits.items():
+            bounds = []
+            for ed, end in zip(edits, ("min", "max")):
+                text = ed.text().strip()
+                if not text:
+                    bounds.append(None)
+                    continue
+                v = parse_number(text, angle=value_unit(d) == "°")
+                if v is None:
+                    raise ValueError(f"{VALUE_LABELS.get(d, d)} {end}: can't read \"{text}\" as a number")
+                bounds.append(float(v))
+            if None not in bounds and bounds[0] > bounds[1]:
+                raise ValueError(f"{VALUE_LABELS.get(d, d)}: the minimum is above the maximum")
+            out[d] = tuple(bounds)
+        return out
 
     def _doc_notified(self):
         if not self._live:
@@ -713,6 +790,16 @@ class MateDialog(QFrame):
         if not (self.mate.get("a") and self.mate.get("b")):
             self._error("Pick a mate connector on each of the two parts first.")
             return
+        try:
+            self.limits = self.limit_values()
+        except ValueError as e:
+            self._error(str(e))
+            return
+        lim = {d: v for d, v in (self.mate.get("limits") or {}).items() if d in self.limits}
+        if lim:
+            self.mate["limits"] = lim          # drop limits on freedoms a changed type no longer has
+        else:
+            self.mate.pop("limits", None)
         self._detach()
         self._restore()
         self.accepted.emit()
@@ -1137,9 +1224,22 @@ class AssemblyController:
             self.doc.add_mate(m)
         else:
             self.doc.replace_mate(m)
+        self.apply_limits(m["id"], d.limits)
         err = self.doc.errors.get(m["id"])
         self.w.status.showMessage(f"{m['name']}: {err}" if err else f"{m['name']} added" if d.is_new
                                   else f"{m['name']} updated", 6000)
+
+    def apply_limits(self, mid, limits):
+        """Store the dialog's limits with set_limits, one call per freedom that changed."""
+        mt = self.doc.mate(mid)
+        for dof, (lo, hi) in (limits or {}).items():
+            cur = (mt.get("limits") or {}).get(dof) or (None, None)
+            if (lo, hi) == tuple(cur):
+                continue
+            try:
+                self.doc.set_limits(mid, dof, lo, hi)
+            except ValueError as e:
+                self.w.status.showMessage(str(e), 6000)
 
     def _mate_rejected(self):
         self._close_mate()
@@ -1440,6 +1540,14 @@ class AssemblyController:
                     lambda: doc.set_suppressed(mid, not mt.get("suppressed")))
         if A.MATE_VALUE_DOFS.get(mt["type"]):
             m.addAction("Set value…", lambda: self.set_value_dialog(mid))
+        limited = [r for r in limit_rows(mt) if r[3] is not None or r[4] is not None]
+        if limited:
+            sub = m.addMenu("Apply limit position")
+            for dof, label, unit, lo, hi in limited:
+                for end, bound in (("Min", lo), ("Max", hi)):
+                    if bound is not None:
+                        sub.addAction(f"{label} {end} ({fmt(bound)} {unit})",
+                                      lambda d=dof, b=bound: self.set_mate_value(mid, d, b))
         m.addSeparator()
         m.addAction("Delete", lambda: doc.delete_mates(ids))
         err = doc.errors.get(mid)

@@ -607,8 +607,10 @@ class Sketcher:
         if t == "dimension":
             return self._dimension_click(vp, x, y)
         if t == "use":
-            pk = vp.pick(x, y, kinds={"edge"})
-            if pk:
+            pk = vp.pick(x, y, kinds={"edge"}) or self._pick_axis(vp, x, y)
+            if pk and pk.kind == "axis":
+                self._use_axis(vp, pk)
+            elif pk:
                 self._use_edge(vp, pk)
             return True
         if t == "trim":
@@ -763,7 +765,7 @@ class Sketcher:
             pk = None
             sh = self.hit(vp, x, y, kinds=("point", "entity")) if self.tool == "dimension" else None
             if self.tool == "use" or (sh is None and (self.tool != "dimension" or self.dim_second is None)):
-                pk = vp.pick(x, y, kinds={"edge"})
+                pk = vp.pick(x, y, kinds={"edge"}) or self._pick_axis(vp, x, y)
             vp.hover = pk
             # the dimension follows the mouse once its items are picked, so the next click clearly places it
             self._dim_over_item = sh is not None or pk is not None
@@ -1251,9 +1253,10 @@ class Sketcher:
         if h is None and self.dim_second is None:
             # like Onshape: a part's edge (or corner) can be dimensioned to as well — it is brought into the
             # sketch as fixed construction geometry first
-            pk = vp.pick(x, y, kinds={"edge"})
+            pk = vp.pick(x, y, kinds={"edge"}) or self._pick_axis(vp, x, y)
             if pk is not None:
-                eid = self._use_edge(vp, pk, construction=True, click=(x, y))
+                eid = self._use_axis(vp, pk, click=(x, y)) if pk.kind == "axis" else \
+                    self._use_edge(vp, pk, construction=True, click=(x, y))
                 if eid is not None:
                     h = ("point" if eid in self.sk.points else "entity", eid)
         if self.dim_first is None:
@@ -1791,6 +1794,61 @@ class Sketcher:
                 self.undo_stack.pop()
                 return out
         self.changed(True)
+        return out
+
+    def _pick_axis(self, vp, x, y):
+        """The construction axis under the cursor, or None."""
+        pick = getattr(vp, "pick", None)
+        return pick(x, y, kinds={"axis"}) if pick is not None else None
+
+    def _axis_in_sketch(self, vp, pk):
+        """What a construction axis looks like on the sketch plane: ("line", a, b) in sketch coordinates, or
+        ("point", p) where an axis square to the plane meets it. None when the axis is not in the view."""
+        fid = pk.key[0]
+        for key, o, d, span, _label in getattr(vp, "axes", []):
+            if key[1:] == (fid,):
+                break
+        else:
+            return None
+        o, d = np.asarray(o, float), np.asarray(d, float)
+        n = np.asarray(self.plane.normal, float)
+        dn = float(d @ n)
+        if math.sqrt(max(0.0, 1.0 - dn * dn)) < 1e-6:
+            t = float((np.asarray(self.plane.origin, float) - o) @ n) / dn
+            return "point", np.array(self.plane.to_local(o + t * d), float)
+        a, b = (np.array(self.plane.to_local(q), float) for q in vp.axis_ends(o, d, span))
+        return "line", a, b
+
+    def _use_axis(self, vp, pk, click=None):
+        """Project a construction axis into the sketch as fixed construction geometry, as `_use_edge` does for a
+        part edge: a line along its projection, or a point where it meets the plane. Taken now, it does not
+        follow the axis later. An axis already projected returns the geometry that is there. With `click`, a
+        click near an end of the line gives that end point."""
+        got = self._axis_in_sketch(vp, pk)
+        if got is None:
+            return None
+        sk = self.sk
+        if got[0] == "point":
+            p = got[1]
+            for pid, uv in sk.points.items():
+                if np.linalg.norm(np.asarray(uv, float) - p) < 1e-6 and self._fixed(pid):
+                    return pid
+            self.push_undo()
+            out = sk.add_point(*p)
+            sk.add_constraint("fix", out, value=p.tolist())
+            self.changed(True)
+            return out
+        a, b = got[1], got[2]
+        out = self._used_line(a, b)
+        if out is None:
+            self.push_undo()
+            out = self._add_used_line(a, b, True)
+            self.changed(True)
+        if click is not None:
+            for pp in (sk.entities[out]["p1"], sk.entities[out]["p2"]):
+                sp = self.scr(vp, sk.P(pp))
+                if np.hypot(sp[0] - click[0], sp[1] - click[1]) < 10:
+                    return pp
         return out
 
     def _trim(self, eid, uv):

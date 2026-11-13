@@ -360,10 +360,16 @@ class Viewport(QOpenGLWidget):
             t0, t1 = -self.plane_half(), self.plane_half()
         return o + t0 * d, o + t1 * d
 
+    def _axes_live(self):
+        """Axes are drawn and picked outside a sketch, and inside one only while the Use or Dimension tool
+        (which project an axis into the sketch) is active."""
+        sk = self.sketcher
+        return self.show_planes and (sk is None or getattr(sk, "tool", None) in ("use", "dimension"))
+
     def _axis_hits(self, x, y):
         """[(screen distance, Pick, view z)] of the axes within the edge tolerance of a screen point."""
         out = []
-        if not self.show_planes or self.sketcher is not None:
+        if not self._axes_live():
             return out
         for key, o, d, span, _label in self.axes:
             a, b = self.axis_ends(o, d, span)
@@ -1028,8 +1034,8 @@ class Viewport(QOpenGLWidget):
         if self.preview_tool is not None:
             GL.glColor4f(0.9, 0.25, 0.2, 0.25)
             self._draw_mesh(self.preview_tool)
-        if self.show_planes and self.sketcher is None:
-            for key, pl, label, half in self.planes:
+        if self._axes_live() or (self.show_planes and self.sketcher is None):
+            for key, pl, label, half in (self.planes if self.sketcher is None else ()):
                 pk = Pick("plane", key)
                 col = self._sel_color(pk)
                 corners = [pl.to_world(u, v) for u, v in ((-half, -half), (half, -half), (half, half), (-half, half))]

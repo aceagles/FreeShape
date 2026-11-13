@@ -393,7 +393,8 @@ class MainWindow(QMainWindow):
         for key, label, kinds, on in (
                 ("vertex", "Vertices", ("vertex",), False), ("edge", "Edges", ("edge",), True),
                 ("face", "Faces", ("face",), True), ("part", "Solids (whole parts)", ("part",), False),
-                ("sketch", "Sketches", ("sketch_line", "region"), True), ("plane", "Planes", ("plane",), True)):
+                ("sketch", "Sketches", ("sketch_line", "region"), True), ("plane", "Planes", ("plane",), True),
+                ("axis", "Axes", ("axis",), True)):
             a = QAction(label, self)
             a.setCheckable(True)
             a.setChecked(on)
@@ -602,7 +603,7 @@ class MainWindow(QMainWindow):
             self._palette.setParent(host)
         self._palette.open()
 
-    SELECT_DEFAULTS = {"vertex": False, "edge": True, "face": True, "part": False, "sketch": True, "plane": True}
+    SELECT_DEFAULTS = {"vertex": False, "edge": True, "face": True, "part": False, "sketch": True, "plane": True, "axis": True}
 
     def _selection_filter_changed(self, _checked=None):
         kinds = set()
@@ -1012,6 +1013,15 @@ class MainWindow(QMainWindow):
                 planes.append((("plane", fid), pl, f["name"] if f else "", half * 0.6))
         return planes
 
+    def _axes_for(self, state):
+        axes = []
+        for fid, ax in getattr(state, "axes", {}).items():
+            if fid not in self.doc.hidden_features:
+                f = self.doc.feature(fid)
+                axes.append((("axis", fid), np.asarray(ax["o"], float), np.asarray(ax["d"], float), ax.get("span"),
+                             f["name"] if f else ""))
+        return axes
+
     def _show_state(self, state, active_sketch=None, also_show=()):
         if self.is_dwg:
             return
@@ -1026,7 +1036,7 @@ class MainWindow(QMainWindow):
             if fid in self.doc.hidden_features and fid != active_sketch and fid not in also_show:
                 continue
             sketches.append((fid, sr))
-        self.viewport.set_scene(parts, self._planes_for(state), sketches)
+        self.viewport.set_scene(parts, self._planes_for(state), sketches, self._axes_for(state))
         self.viewport.triads = self._connector_triads(state)
 
     # ================================================================== feature dialogs
@@ -2631,6 +2641,10 @@ class MainWindow(QMainWindow):
             if pl is not None:
                 h = self.viewport.plane_half() * 0.6
                 polys.append(np.array([pl.to_world(u, v) for u, v in ((-h, -h), (h, -h), (h, h), (-h, h), (-h, -h))]))
+        elif f["type"] == "axis":
+            ax = doc.state.axes.get(fid)
+            if ax is not None:
+                polys.append(np.array(self.viewport.axis_ends(ax["o"], ax["d"], ax.get("span"))))
         elif f["type"] == "mate_connector":
             pass                              # its triad is drawn by _connector_triads
         elif f["type"] != "variable":
@@ -2651,9 +2665,12 @@ class MainWindow(QMainWindow):
             f = self.doc.feature(ident)
             if f is not None and f["type"] == "sketch" and self._tree_sketch_to_dialog(ident):
                 return
-            if f is None or f["type"] != "plane" or ident not in self.doc.state.planes:
+            if f is not None and f["type"] == "axis" and ident in self.doc.state.axes:
+                pick = Pick("axis", (ident,))
+            elif f is None or f["type"] != "plane" or ident not in self.doc.state.planes:
                 return
-            pick = Pick("plane", ("plane", ident))
+            else:
+                pick = Pick("plane", ("plane", ident))
         if self.mode == "idle":
             self.viewport.set_selection([pick])
         elif self.viewport.pick_handler is not None:
@@ -2711,7 +2728,7 @@ class MainWindow(QMainWindow):
         m.addAction("Rename…", lambda: self._rename_feature(fid))
         if f["type"] == "context":
             m.addAction("Update context", lambda: self.update_context(fid))
-        if f["type"] in ("sketch", "plane"):
+        if f["type"] in ("sketch", "plane", "axis"):
             m.addAction("Show" if fid in self.doc.hidden_features else "Hide",
                         lambda: self.doc.toggle_feature_hidden(fid))
         if f["type"] == "plane":
@@ -2912,6 +2929,9 @@ class MainWindow(QMainWindow):
         if pk.kind in ("face", "edge", "vertex", "part"):
             p = self.doc.state.parts.get(pk.key[0])
             return p.name if p is not None else None
+        if pk.kind == "axis":
+            f = self.doc.feature(pk.key[0])
+            return f["name"] if f else None
         if pk.kind == "plane":
             if pk.key[0] == "std":
                 return pk.key[1]
@@ -2972,6 +2992,9 @@ class MainWindow(QMainWindow):
                 key = pk.key
                 hid = key[1]
                 m.addAction("Hide plane", lambda: self.doc.toggle_feature_hidden(hid))
+            if pk.kind == "axis":
+                aid = pk.key[0]
+                m.addAction("Hide axis", lambda: self.doc.toggle_feature_hidden(aid))
             m.addSeparator()
         m.addAction("Zoom to fit", lambda: self.viewport.fit())
         vm = m.addMenu("Views")

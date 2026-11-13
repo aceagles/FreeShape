@@ -34,7 +34,7 @@ class Pick:
 
     def label(self):
         names = {"face": "Face", "edge": "Edge", "vertex": "Vertex", "region": "Sketch region", "plane": "Plane",
-                 "sketch_line": "Sketch line", "part": "Part", "sketch_point": "Sketch point",
+                 "axis": "Axis", "sketch_line": "Sketch line", "part": "Part", "sketch_point": "Sketch point",
                  "connector": "Mate connector"}
         return names.get(self.kind, self.kind)
 
@@ -148,6 +148,7 @@ class Viewport(QOpenGLWidget):
         self.reference_ids = set()   # ids of reference (Context) bodies among self.parts
         self.part_shapes = {}    # pid -> shape
         self.planes = []         # list of (key_tuple, Plane, label, half_size)
+        self.axes = []           # list of (key_tuple, origin, direction, span or None, label); key = ("axis", fid)
         self.sketches = []       # list of (fid, SketchResult, region_meshes)
         self.hidden_sketch_regions = False
         self.sketch_see_through = True   # while sketching, draw solids translucent (setting `sketch_see_through`)
@@ -264,9 +265,9 @@ class Viewport(QOpenGLWidget):
         self._placed_cache[key] = (m, out)
         return out
 
-    def set_scene(self, parts, planes, sketches):
+    def set_scene(self, parts, planes, sketches, axes=()):
         """parts: [(pid, shape, color, face_colors, transform, local_shape)] (the last three optional);
-        planes: [(key, Plane, label)]; sketches: [(fid, SketchResult)]."""
+        planes: [(key, Plane, label)]; axes: [(key, origin, direction, span, label)]; sketches: [(fid, SketchResult)]."""
         parts = [tuple(x) + (None,) * (6 - len(x)) + (False,) * (7 - max(len(x), 6)) for x in parts]
         cb = self.progress_cb if len(parts) > 15 else None
         built = []
@@ -284,6 +285,7 @@ class Viewport(QOpenGLWidget):
         self._part_segs = {}
         self._section_cache_key = None
         self.planes = planes
+        self.axes = list(axes)
         self.sketches = [(fid, sr, [self.mesh_for(f, "region") for f in sr.regions]) for fid, sr in sketches]
         self._segs = None
         valid = []
@@ -306,6 +308,8 @@ class Viewport(QOpenGLWidget):
             return any(fid == p.key[0] and p.key[1] in sr.sketch.entities for fid, sr, _ in self.sketches)
         if p.kind == "plane":
             return any(k == p.key for k, *_ in self.planes)
+        if p.kind == "axis":
+            return any(k[1:] == p.key for k, *_ in self.axes)
         return True
 
     def model_bounds(self):
@@ -344,6 +348,30 @@ class Viewport(QOpenGLWidget):
     def plane_half(self):
         """Half-size of the default planes: fixed at 75 mm, so they're 150 x 150 mm whatever the model size."""
         return PLANE_HALF
+
+    def axis_ends(self, origin, direction, span):
+        """The two end points an axis is drawn between. The span is the stretch of the source geometry, drawn a
+        tenth longer at each end; with no span the line is as long as the default planes are wide."""
+        o, d = np.asarray(origin, float), np.asarray(direction, float)
+        if span is not None and span[1] - span[0] > 1e-9:
+            pad = 0.1 * (span[1] - span[0])
+            t0, t1 = span[0] - pad, span[1] + pad
+        else:
+            t0, t1 = -self.plane_half(), self.plane_half()
+        return o + t0 * d, o + t1 * d
+
+    def _axis_hits(self, x, y):
+        """[(screen distance, Pick, view z)] of the axes within the edge tolerance of a screen point."""
+        out = []
+        if not self.show_planes or self.sketcher is not None:
+            return out
+        for key, o, d, span, _label in self.axes:
+            a, b = self.axis_ends(o, d, span)
+            sa, sb = self.cam.to_screen(a), self.cam.to_screen(b)
+            dist, t = _seg_dist(x, y, np.array([sa[:2]]), np.array([sb[:2]]))
+            if dist[0] <= 7:
+                out.append((float(dist[0]), Pick("axis", key[1:]), float(sa[2] + t[0] * (sb[2] - sa[2]))))
+        return out
 
     # ================================================================== view control
     def animate_to(self, state, duration=0.35, pivot=None):
@@ -1015,6 +1043,17 @@ class Viewport(QOpenGLWidget):
                 GL.glLineWidth(2.5 if col else 1.0)
                 self._draw_polyline(corners, closed=True)
                 self._depth(None)
+            for key, o, d, span, label in self.axes:
+                pk = Pick("axis", key[1:])
+                col = self._sel_color(pk) or tuple(0.8 * c for c in theme.PLANE)
+                GL.glEnable(GL.GL_LINE_STIPPLE)
+                GL.glLineStipple(2, 0x1C47)             # dash-dot
+                GL.glLineWidth(3.5 if self._sel_color(pk) else 2.2)
+                GL.glColor3f(*col)
+                self._depth(pk)
+                self._draw_polyline(list(self.axis_ends(o, d, span)))
+                self._depth(None)
+                GL.glDisable(GL.GL_LINE_STIPPLE)
         GL.glDepthMask(GL.GL_TRUE)
 
         # ---- measured distance
@@ -1160,6 +1199,12 @@ class Viewport(QOpenGLWidget):
                     col.setAlpha(55)            # the label is behind a part: just a hint of it
                 p.setPen(col)
                 p.drawText(QPointF(s[0] + 4, s[1] + 14), label)
+        if self.show_planes and self.sketcher is None:
+            for key, o, d, span, label in self.axes:
+                if label:
+                    s = self.cam.to_screen(self.axis_ends(o, d, span)[1])
+                    p.setPen(QColor(theme.PLANE_LABEL))
+                    p.drawText(QPointF(s[0] + 4, s[1] + 14), label)
         # view cube
         self.cube.hover = getattr(self, "_cube_hover", None)
         self.cube.draw(p, self.cam, self.width())
@@ -1303,7 +1348,7 @@ class Viewport(QOpenGLWidget):
         p.drawText(QPointF(x0 + px + 8, y0 + 4), label)
 
     # ================================================================== picking
-    DEFAULT_KINDS = ("face", "edge", "region", "plane", "sketch_line")
+    DEFAULT_KINDS = ("face", "edge", "region", "plane", "axis", "sketch_line")
 
     def _allowed(self, kind):
         if self.select_filter is not None:          # a feature dialog asked for specific kinds
@@ -1463,6 +1508,12 @@ class Viewport(QOpenGLWidget):
                         continue      # hidden behind a face
                     return Pick(kind, key)
 
+        # construction axes (screen-space proximity, like edges)
+        if allowed("axis"):
+            hits = [h for h in self._axis_hits(x, y) if h[2] >= face_z - tol_z * 4]
+            if hits:
+                return min(hits, key=lambda h: h[0])[1]
+
         # sketch regions (they lie on top of faces when sketching on a face)
         if allowed("region"):
             best = (np.inf, None)
@@ -1582,6 +1633,10 @@ class Viewport(QOpenGLWidget):
                 u, v = pl.to_local(o + tt * d)
                 if abs(u) <= half and abs(v) <= half:
                     add(Pick("plane", key), self.cam.view_z_of_t(tt))
+
+        if allowed("axis"):
+            for _dist, pk, z in self._axis_hits(x, y):
+                add(pk, z)
 
         if kinds is None:
             for pk, pw in self.pick_points:
@@ -2045,7 +2100,7 @@ class Viewport(QOpenGLWidget):
             self.update()
             return
         if press[2] == Qt.RightButton and not self._moved:
-            pk = self.pick(pos.x(), pos.y(), kinds={"face", "edge", "region", "plane", "sketch_line"}) \
+            pk = self.pick(pos.x(), pos.y(), kinds={"face", "edge", "region", "plane", "axis", "sketch_line"}) \
                 if not self.sketcher else None
             self.contextRequested.emit(pk, e.globalPosition().toPoint())
             return

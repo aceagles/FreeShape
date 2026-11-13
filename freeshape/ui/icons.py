@@ -626,7 +626,11 @@ def draw(name: str, p: QPainter):
         p.drawEllipse(QPointF(16, 16), 11, 11)
         _text(p, "!", QColor("white"), 16)
     else:
-        _text(p, name[:2].upper())
+        if name.startswith("py:"):
+            from .pyfeature_ui import fallback_text
+            _text(p, fallback_text(name), size=11)
+        else:
+            _text(p, name[:2].upper())
 
 
 CONSTRAINT_GLYPHS = {
@@ -648,6 +652,11 @@ def draw_constraint(name, p: QPainter, rect: QRectF):
 
 @lru_cache(maxsize=None)
 def icon(name: str, size: int = 32) -> QIcon:
+    if name.startswith("py:"):
+        from .pyfeature_ui import feature_icon
+        svg_icon = feature_icon(name)
+        if svg_icon is not None:
+            return svg_icon
     ic = QIcon()
     for scale in (1, 2):
         pm = QPixmap(size * scale, size * scale)

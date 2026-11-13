@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from .icons import icon
-from . import theme
+from . import theme, pyfeature_ui
 
 ROLE_KIND = Qt.UserRole
 ROLE_ID = Qt.UserRole + 1
@@ -189,6 +189,7 @@ class FeatureList(_EyeMixin, QListWidget):
                 it.setForeground(QColor("#9aa3ae"))
             self.addItem(it)
         active = doc.active_count()
+        notices = pyfeature_ui.notices_for(doc.features)
         for i, f in enumerate(doc.features):
             if i == active:
                 self._add_rollback()
@@ -221,6 +222,9 @@ class FeatureList(_EyeMixin, QListWidget):
                 it.setToolTip("Rolled back")
             elif f["id"] in doc.hidden_features:
                 it.setForeground(QColor("#8a94a3"))
+            if f["id"] in notices and not it.toolTip():      # plugin notice: not errored, suppressed or rolled back
+                it.setForeground(QColor(pyfeature_ui.NOTICE_COLOR))
+                it.setToolTip(notices[f["id"]])
             if f["id"] == editing_id:
                 it.setBackground(QColor(theme.SELECTED_ROW))
                 it.setFont(bold)

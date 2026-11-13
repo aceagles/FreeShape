@@ -144,6 +144,10 @@ def main():
     from .ui.mainwindow import app_icon
     app.setWindowIcon(app_icon())
     from .ui.mainwindow import MainWindow
+    from . import pyfeature
+    pyfeature.load_user_plugins()
+    for where, why in pyfeature.problems():
+        print(f"[FreeShape] plugin problem: {where}: {why}", file=sys.stderr)
     path = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-psn") else None
     app.processEvents()             # collect a Finder "open this file" event that arrived during start-up
     if path is None and opener.pending:

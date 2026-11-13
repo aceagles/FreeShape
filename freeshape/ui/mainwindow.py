@@ -454,7 +454,8 @@ class MainWindow(QMainWindow):
         for i, name in enumerate(("Front", "Back", "Left", "Right", "Top", "Bottom"), 1):
             cmds.append(C("iso", f"{name} view", f"Look at the model from the {name.lower()} (Shift+{i}).",
                           lambda n=name: self.viewport.set_standard_view(n), "", "View"))
-        return cmds
+        from . import pyfeature_ui
+        return cmds + pyfeature_ui.palette_commands(self)
 
     def open_command_search(self):
         if self.is_asm or self.is_dwg or self.mode != "idle":
@@ -544,6 +545,9 @@ class MainWindow(QMainWindow):
                                  checkable=True)
         self._tb(h, "flat_dxf", "Export the flat pattern as DXF (for laser / plasma cutting)",
                  lambda: self.export_flat_dxf())
+        from . import pyfeature_ui
+        pyfeature_ui.install()
+        pyfeature_ui.toolbar_button(self, h)
         h.addWidget(_sep())
         self._tb(h, "plane", "Plane", lambda: self.start_feature("plane"))
         h.addWidget(_sep())

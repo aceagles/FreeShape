@@ -513,7 +513,7 @@ class FolderDocument:
             folder = os.path.join(scratch, "Document")
             os.makedirs(folder)
             G.read_tree(self.path, commit, folder)
-            view = FolderDocument.open(folder)
+            view = FolderDocument.open(folder, registry=self.registry)     # its links resolve against the view's own tabs
         except (OSError, ValueError) as e:
             _rmtree(scratch)
             raise K.KernelError(f"Version {name!r} is not a readable Document: {e}") from e

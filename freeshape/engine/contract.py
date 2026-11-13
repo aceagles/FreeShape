@@ -68,7 +68,14 @@ STUDIO_OPS = {
     "set_suppressed": "feature, value",
     "set_rollback": "index (None = all features)",
     "rename_feature": "feature, name",
-    "set_part_override": "part, plus any of name / color",
+    "set_part_override": "part, plus any of name / color (None puts it back); or colors ({part: color}) for "
+                         "several parts in one undo step",
+    "make_folder": "ids (a run of features), name (optional), folder (optional id to give it)",
+    "ungroup_folder": "folder",
+    "remove_from_folder": "ids",
+    "rename_folder": "folder, name",
+    "set_folder_open": "folder, value (a view setting: no undo step)",
+    "set_folder_suppressed": "folder, value",
     "undo": "", "redo": "",
     "save": "path (optional)",
 }

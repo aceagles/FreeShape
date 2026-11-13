@@ -38,6 +38,7 @@ from .section import SectionPanel
 from .sketcher import Sketcher, CONSTRAINT_TOOLS
 from .numparse import fmt
 from .assembly_ui import AssemblyController
+from ..engine.executor import apply_part_override
 from .partstudio_engine import StudioEngine, element_index
 from .variable_panel import VariableTabs, DefinedVariables
 
@@ -3114,7 +3115,7 @@ class MainWindow(QMainWindow):
             return
         self._auto_color_turn = getattr(self, "_auto_color_turn", -1) + 1
         cols = F.auto_colors(len(pids), shift=self._auto_color_turn * 5)
-        self.doc.set_part_colors(dict(zip(pids, cols)))
+        apply_part_override(self.doc, {"op": "set_part_override", "colors": dict(zip(pids, cols))})
         self.status.showMessage(f"Coloured {len(pids)} parts — choose Auto colour again for a different "
                                 "set, or Undo to go back", 6000)
 

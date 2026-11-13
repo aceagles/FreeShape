@@ -175,6 +175,30 @@ class _Tab:
         raise NotImplementedError
 
 
+def apply_part_override(doc, edit):
+    """The `set_part_override` edit on a Part Studio Document: a part's name / color (None puts it back), or
+    `colors`, a {part: color} for several parts in one undo step. The window runs this too, so both copies of a
+    tab change the same way."""
+    colors = edit.get("colors")
+    if colors is not None:
+        doc.set_part_colors(colors)
+        return
+    part = _need(edit, "part")
+    kw = {k: edit[k] for k in ("name", "color") if k in edit}
+    gone = [k for k, v in kw.items() if v is None]
+    if not gone:
+        doc.set_part_override(part, **kw)
+        return
+    doc.checkpoint()
+    ov = doc.part_overrides.setdefault(part, {})
+    ov.update({k: v for k, v in kw.items() if v is not None})
+    for k in gone:
+        ov.pop(k, None)
+    if not ov:
+        del doc.part_overrides[part]
+    doc.rebuild()
+
+
 class StudioTab(_Tab):
     kind = "studio"
     OPS = STUDIO_OPS
@@ -252,8 +276,48 @@ class StudioTab(_Tab):
         self.doc.rename_feature(edit["feature"], str(_need(edit, "name")))
 
     def _set_part_override(self, edit):
-        kw = {k: edit[k] for k in ("name", "color") if k in edit}
-        self.doc.set_part_override(_need(edit, "part"), **kw)
+        apply_part_override(self.doc, edit)
+
+    def _folder(self, edit):
+        fo = _need(edit, "folder")
+        if fo not in self.doc.folders:
+            raise EngineError(f"no folder {fo!r} in “{self.doc.name}”")
+        return fo
+
+    def _make_folder(self, edit):
+        want = edit.get("folder")
+        if want and want in self.doc.folders:
+            raise EngineError(f"“{self.doc.name}” already has a folder {want!r}")
+        try:
+            fo = self.doc.make_folder(list(_need(edit, "ids")), edit.get("name"))
+        except ValueError as e:
+            raise EngineError(str(e)) from e
+        name = edit.get("name")
+        if name:                    # make_folder gives a name another folder has a new one
+            self.doc.folders[fo]["name"] = str(name)
+        if want and want != fo:     # the window's own folder id, so later edits name the same folder
+            self.doc.folders[want] = self.doc.folders.pop(fo)
+            for f in self.doc.features:
+                if f.get("folder") == fo:
+                    f["folder"] = want
+
+    def _ungroup_folder(self, edit):
+        self.doc.ungroup_folder(self._folder(edit))
+
+    def _remove_from_folder(self, edit):
+        try:
+            self.doc.remove_from_folder(list(_need(edit, "ids")))
+        except ValueError as e:
+            raise EngineError(str(e)) from e
+
+    def _rename_folder(self, edit):
+        self.doc.rename_folder(self._folder(edit), str(_need(edit, "name")))
+
+    def _set_folder_open(self, edit):
+        self.doc.set_folder_open(self._folder(edit), bool(_need(edit, "value")))
+
+    def _set_folder_suppressed(self, edit):
+        self.doc.set_folder_suppressed(self._folder(edit), bool(_need(edit, "value")))
 
     def outputs(self):
         self.sync()

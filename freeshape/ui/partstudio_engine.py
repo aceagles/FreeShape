@@ -42,22 +42,36 @@ from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
-_EMPTY = {"features": [], "rollback": None}
+_EMPTY = {"features": [], "rollback": None, "folders": {}, "overrides": {}}
 _LIGHT = ("variable", "sketch", "plane")        # feature types re-run on the GUI thread (see the module doc)
 
 
 # =========================================================================== pure helpers
 
 def snapshot(doc):
-    """What the engine needs of a Part Studio: its features and rollback bar, copied."""
-    return {"features": copy.deepcopy(doc.features), "rollback": doc.rollback, "name": doc.name}
+    """What the engine needs of a Part Studio: its features and rollback bar, folders and part colours / names,
+    copied."""
+    return {"features": copy.deepcopy(doc.features), "rollback": doc.rollback, "name": doc.name,
+            "folders": copy.deepcopy(doc.folders), "overrides": copy.deepcopy(doc.part_overrides)}
+
+
+def side(doc):
+    """The part of `snapshot` that a change can alter without a rebuild (folders, part names and colours),
+    as comparable text: the window sends the engine a change of it."""
+    return json.dumps([doc.folders, doc.part_overrides], sort_keys=True, default=str)
+
+
+def _bare(f):
+    return {k: v for k, v in f.items() if k != "folder"}
 
 
 def plan_edits(have, want):
     """The engine edits that turn a tab holding `have` into one holding `want` (both {"features": [...],
-    "rollback": n | None}): delete what is gone, replace what changed, add what is new or moved, then put the
-    rollback bar where `want` has it."""
-    cur = list(have["features"])
+    "rollback": n | None, "folders": {...}, "overrides": {...}}): delete what is gone, replace what changed, add
+    what is new or moved, put the features into the folders `want` has, give parts their names and colours, then
+    put the rollback bar where `want` has it. A feature's folder is not a change of the feature: moving one
+    between folders rebuilds nothing."""
+    cur = [dict(f) for f in have["features"]]        # what the engine holds, with each feature's folder
     want_ids = {f["id"] for f in want["features"]}
     edits, structure = [], False
     gone = [f["id"] for f in cur if f["id"] not in want_ids]
@@ -67,18 +81,66 @@ def plan_edits(have, want):
         structure = True
     for i, f in enumerate(want["features"]):
         if i < len(cur) and cur[i]["id"] == f["id"]:
-            if cur[i] != f:
-                edits.append({"op": "replace_feature", "feature": copy.deepcopy(f)})
-                cur[i] = f
+            if _bare(cur[i]) != _bare(f):
+                g = copy.deepcopy(_bare(f))
+                if cur[i].get("folder"):
+                    g["folder"] = cur[i]["folder"]
+                edits.append({"op": "replace_feature", "feature": copy.deepcopy(g)})
+                cur[i] = g
             continue
         if any(c["id"] == f["id"] for c in cur):                   # moved: out and back in at its new place
             edits.append({"op": "delete_features", "ids": [f["id"]]})
             cur = [c for c in cur if c["id"] != f["id"]]
-        edits.append({"op": "add_feature", "feature": copy.deepcopy(f), "index": i})
-        cur.insert(i, f)
+        edits.append({"op": "add_feature", "feature": copy.deepcopy(_bare(f)), "index": i})
+        cur.insert(i, _bare(f))
         structure = True
+    edits += _plan_folders(have, want, cur)
+    edits += _plan_overrides(have, want)
     if want["rollback"] != have["rollback"] or (structure and have["rollback"] is not None):
         edits.append({"op": "set_rollback", "index": want["rollback"]})
+    return edits
+
+
+def _plan_folders(have, want, cur):
+    """Folder edits for a tab whose features are `cur` (each carrying the folder the engine has it in)."""
+    folders = want.get("folders") or {}
+    in_want = {f["id"]: f["folder"] for f in want["features"] if f.get("folder") in folders}
+    in_cur = {f["id"]: f["folder"] for f in cur if f.get("folder")}
+    edits = []
+    for fo in sorted(set(in_cur.values())):                       # a folder whose members changed starts again
+        if {i for i, v in in_cur.items() if v == fo} != {i for i, v in in_want.items() if v == fo}:
+            edits.append({"op": "ungroup_folder", "folder": fo})
+            in_cur = {i: v for i, v in in_cur.items() if v != fo}
+    held = set(in_cur.values())
+    old = have.get("folders") or {}
+    for fo, info in folders.items():
+        ids = [f["id"] for f in want["features"] if in_want.get(f["id"]) == fo]
+        if not ids:
+            continue
+        if fo not in held:
+            edits.append({"op": "make_folder", "ids": ids, "name": info["name"], "folder": fo})
+            if not info.get("open", True):
+                edits.append({"op": "set_folder_open", "folder": fo, "value": False})
+            continue
+        if old.get(fo, {}).get("name") != info["name"]:
+            edits.append({"op": "rename_folder", "folder": fo, "name": info["name"]})
+        if old.get(fo, {}).get("open", True) != info.get("open", True):
+            edits.append({"op": "set_folder_open", "folder": fo, "value": info.get("open", True)})
+    return edits
+
+
+def _plan_overrides(have, want):
+    """set_part_override edits for the part names and colours that differ (None: the override is gone)."""
+    old, new = have.get("overrides") or {}, want.get("overrides") or {}
+    edits = []
+    for pid in sorted(set(old) | set(new)):
+        kw = {}
+        for k in ("name", "color"):
+            a, b = old.get(pid, {}).get(k), new.get(pid, {}).get(k)
+            if (list(a) if k == "color" and a is not None else a) != (list(b) if k == "color" and b is not None else b):
+                kw[k] = list(b) if k == "color" and b is not None else b
+        if kw:
+            edits.append({"op": "set_part_override", "part": pid, **kw})
     return edits
 
 
@@ -127,6 +189,7 @@ class _Rec:
         self.want_tab = None         # the engine tab id to ask for: the manifest tab id of a Document tab
         self.sig = None              # assembly / drawing: the links its engine copy was opened with
         self.tab = None              # engine tab id (engine thread only)
+        self.side = None             # side(doc) as last sent: a change of it is a request
         self.have = _EMPTY           # what the engine tab holds (engine thread only)
         self.cache = {}              # part hash -> (shape, K.Mesh) (engine thread only)
         self.want = None             # newest snapshot, not yet sent
@@ -179,6 +242,7 @@ class StudioEngine(QObject):
         rec = self._recs[id(doc)] = _Rec(doc)
         rec.want_tab = self.live.tab_id(doc)
         doc.rebuild = lambda rec=rec: self._rebuild(rec)
+        doc.listeners.append(lambda rec=rec: self._side_changed(rec))
         self._request(rec)
 
     def attached(self, doc):
@@ -209,7 +273,14 @@ class StudioEngine(QObject):
         self._request(rec)
         rec.doc.notify()
 
+    def _side_changed(self, rec):
+        """Folders or part colours changed without a rebuild: the engine's copy needs the same edit."""
+        if rec.alive and not self._closed and rec.side != side(rec.doc):
+            self._request(rec)
+
     def _request(self, rec):
+        if rec.kind == "studio":
+            rec.side = side(rec.doc)
         rec.want, rec.dirty = (snapshot(rec.doc) if rec.kind == "studio" else self.live.snapshot(rec)), True
         self._pump(rec)
 

@@ -26,7 +26,7 @@ from .. import kernel as K
 from .. import links
 from .. import naming as N
 from ..features import Part, PartMap
-from .contract import EngineError, plain
+from .contract import EngineError, SketchOut, plain
 from .encode import connector_out, sketch_out
 from .executor import InProcessEngine
 
@@ -73,6 +73,7 @@ class _StudioView:
         self.hidden_parts = {p["id"] for p in pkg["parts"] if p["hidden"]}
         self.state = SimpleNamespace(parts=PartMap(parts, aliases=self.part_aliases),
                                      vars=dict(pkg.get("vars") or {}), sheet={})
+        self.package = None      # the links.StudioPackage a Document.link_inputs hands out (set by install)
 
 
 class _VariablesView:
@@ -148,6 +149,17 @@ class _WorkerEngine(InProcessEngine):
             p.named = N.NamedShape(shp, names)
         return p
 
+    def _studio_package(self, pkg, parts):
+        """The links.StudioPackage of a studio the parent sent, with the digest LinkResolver.resolve_studio
+        gives the same studio (the parts and sketches carry the hashes the parent computed)."""
+        out = links.StudioPackage(
+            {lp["id"]: links.PublishedPart(id=lp["id"], name=lp["name"], color=tuple(lp["color"]), hidden=lp["hidden"],
+                                     shape=parts[lp["id"]].shape, names=lp["names"], hash=lp["hash"])
+             for lp in pkg["parts"]},
+            {sk["id"]: SketchOut(**sk) for sk in pkg.get("sketches") or ()}, dict(pkg.get("aliases") or {}))
+        out.digest = out.digest_for(None)
+        return out
+
     def install(self, upstream, key):
         """Replace the upstream tabs with the parent's latest. Bumps the generation, so the tab re-reads its
         inputs on its next edit or outputs -- the same staleness rule as in process."""
@@ -155,6 +167,7 @@ class _WorkerEngine(InProcessEngine):
         for tid, pkg in (upstream or {}).items():
             if pkg["kind"] == "studio":
                 views[tid] = _StudioView(pkg, {lp["id"]: self._part(lp) for lp in pkg["parts"]})
+                views[tid].package = self._studio_package(pkg, views[tid].state.parts)
                 used |= {lp["hash"] for lp in pkg["parts"]}
             elif pkg["kind"] == "variables":
                 views[tid] = _VariablesView(pkg)

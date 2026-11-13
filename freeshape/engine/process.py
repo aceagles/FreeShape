@@ -438,4 +438,8 @@ class ProcessEngine(Engine):
         tests and diagnostics."""
         t = self._get(tab)
         self._check_alive(t)
+        upstream, key = self._upstream(t)
+        if key != t.sent:                  # fn reads the inputs as they are now, like any other call
+            self._wait(t, t.pool.submit(W.call, "meta", None, upstream, key))
+            t.sent = key
         return self._wait(t, t.pool.submit(fn, *args))

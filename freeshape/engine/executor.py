@@ -421,6 +421,7 @@ class InProcessEngine(Engine):
             if kind == "studio":
                 doc = Document.load(path)
                 doc.var_inputs = self.inputs.variables
+                doc.link_inputs = self.inputs.studio
                 if any(links.feature_source(f) is not None for f in doc.features):
                     doc.rebuild()            # the load ran without the resolver
             elif kind == "variables":
@@ -439,6 +440,7 @@ class InProcessEngine(Engine):
         if kind == "studio":
             doc = Document()
             doc.var_inputs = self.inputs.variables
+            doc.link_inputs = self.inputs.studio
         elif kind == "variables":
             doc = VariableStudioDoc()
         elif kind == "assembly":

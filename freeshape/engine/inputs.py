@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+from .. import kernel as K
 from .. import links
 from .linkgraph import norm_key
 
@@ -72,6 +73,18 @@ class CrossTabInputs:
         with self._resolving(src):
             doc = self._provide("variables", src.get("uid"), src.get("path"), src.get("tab"))
         return None if doc is None else dict(doc.values()[0])
+
+    def studio(self, src):
+        """The StudioPackage of the Part Studio tab `src` names (by tab id, uid, then file path), live and
+        unsaved: its parts and sketches as the parent publishes them. A Document.link_inputs callable. A worker
+        view carries the package the parent sent (`package`); otherwise it is read from the open tab. Raises
+        KernelError when no tab matches."""
+        with self._resolving(src):
+            doc = self._provide("studio", src.get("uid"), src.get("path"), src.get("tab"))
+            if doc is None:
+                raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
+            pkg = getattr(doc, "package", None)
+            return pkg if pkg is not None else self.resolver.resolve_studio(src)
 
     def repair(self, doc):
         """Write back drifted link uid / path / names -- the save-time step MainWindow runs before saving."""

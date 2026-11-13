@@ -622,6 +622,8 @@ class AssemblyDoc:
         self.errors: dict[str, str] = {}         # instance / mate id -> message
         self._conflicts: set = set()             # mates and relations left out because they can't hold with the others
         self._rel_filter = None                  # relation ids allowed a residual inside a solve; None = all
+        self._limit_failed: set = set()          # mates whose limits the last enforcement could not meet
+        self._limits_active = False              # the last static solve ended with a limit held
         self._limit_holds: dict = {}             # mate id -> {dof: bound}; active limits, set only inside a solve
         self.dof = 0
         self._undo: list[str] = []
@@ -1153,12 +1155,16 @@ class AssemblyDoc:
         """Active-set limit enforcement after a solve that has already run over `mates` and stored their values.
         Each round holds every newly violated freedom at its nearer bound and solves again, for at most as many
         rounds as there are limited freedoms. With no limits on `mates` it does nothing at all. A round whose solve
-        leaves a mate unsatisfied is undone and enforcement stops (I5.2 reports such limits as conflicts).
-        Returns the holds that ended active, {mate id: {dof: bound}}."""
+        leaves a mate unsatisfied is undone and enforcement stops; the mates whose limits were in that round go
+        into self._limit_failed for solve() to report as conflicts. While drive_mate holds a step value, the
+        rounds solve without it, so an active limit stops the drive. Returns the holds that ended active,
+        {mate id: {dof: bound}}."""
+        self._limit_failed = set()
         limited = sum(len(m.get("limits") or {}) for m in mates)
         if not limited:
             return {}
         holds: dict = {}
+        drive = self._drive
         try:
             for _round in range(limited):
                 new = self._limit_violations(mates, holds)
@@ -1169,16 +1175,20 @@ class AssemblyDoc:
                     trial.setdefault(mid, {}).update(d)
                 before = {i["id"]: list(i["T"]) for i in self.instances}
                 self._limit_holds = trial
+                self._drive = None
                 bad = self._solve_core(mates, drag, iters, keep)
+                self._drive = drive
                 if bad:
                     for i in self.instances:
                         i["T"] = before[i["id"]]
+                    self._limit_failed = set(new)
                     break
                 holds = trial
                 self._limit_holds = {}
                 self._update_mate_values(mates)
         finally:
             self._limit_holds = {}
+            self._drive = drive
         return holds
 
     def add_mate(self, m, checkpoint=True):
@@ -1229,7 +1239,7 @@ class AssemblyDoc:
         cur = float((m.get("values") or {}).get(dof, 0.0))
         step = 30.0 if dof.startswith("r") else 0.25 * self.length_scale()
         n = max(1, int(np.ceil(abs(target - cur) / step - 1e-9))) if target != cur else 0
-        ok = True
+        ok, at_limit = True, False
         try:
             for k in range(1, n + 1):
                 want = cur + (target - cur) * k / n
@@ -1242,6 +1252,10 @@ class AssemblyDoc:
                 rel_only = bool(self._conflicts) and all(self.relation(c) is not None for c in self._conflicts)
                 if (solved or rel_only) and m["id"] not in self._conflicts and abs(got - want) < 1e-5:
                     continue
+                if (solved or rel_only) and m["id"] not in self._conflicts and self._limits_active:
+                    ok = False        # a limit holds the motion here: keep this pose, it is the limit position
+                    at_limit = True
+                    break
                 for i in self.instances:
                     i["T"] = poses[i["id"]]
                 m["values"] = held
@@ -1249,8 +1263,10 @@ class AssemblyDoc:
                 break
         finally:
             self._drive = None
-        if not ok:
+        if not ok and not at_limit:
             self.solve()          # settle errors and status at the last step that held
+        else:
+            self._update_status()  # the last step's status counted the drive residual; recount without it
         return float(m["values"].get(dof, cur)), ok
 
     def drive_mate(self, mid, dof, target):
@@ -1542,15 +1558,18 @@ class AssemblyDoc:
         self._rel_filter = None
         for k in [k for k, v in self.errors.items() if v.startswith("Can't be solved")]:
             self.errors.pop(k)
+        for k in [k for k, v in self.errors.items() if v.startswith("Limit can't be met")]:
+            self.errors.pop(k)
         mates = self._active_mates()
         if drag is not None:
             live = [m for m in mates if m["id"] not in self._conflicts]
             self._rel_filter = {r["id"] for r in self.relations if r["id"] not in self._conflicts}
             try:
                 self._solve_core(live, drag, iters, keep)
+                self._update_mate_values(live)
+                self._enforce_limits(live, iters, keep, drag)      # limit rounds use the same relation set
             finally:
                 self._rel_filter = None
-            self._update_mate_values(live)
             self._update_status()
             return True
         before = {i["id"]: list(i["T"]) for i in self.instances}
@@ -1592,7 +1611,10 @@ class AssemblyDoc:
             self._rel_filter = kept
             self._solve_core(held, None, iters, keep)
         self._update_mate_values([m for m in mates if m["id"] not in self._conflicts])
-        self._enforce_limits([m for m in mates if m["id"] not in self._conflicts], iters, keep)
+        self._limits_active = bool(self._enforce_limits([m for m in mates if m["id"] not in self._conflicts], iters, keep))
+        for mid in self._limit_failed:         # a limit that cannot be met with the other mates (I5.2)
+            self._conflicts.add(mid)
+            self.errors[mid] = "Limit can't be met together with the other mates"
         self._update_status()
         self._rel_filter = None
         return not self._conflicts and not bad

@@ -3260,11 +3260,13 @@ class MainWindow(QMainWindow):
         return True
 
     def _stl_options(self, path):
-        """STL options from the dialog; None for any other file type, False if cancelled."""
-        if not path.lower().endswith(".stl"):
+        """Mesh options from the dialog for STL, 3MF and OBJ (no ASCII choice for the last two); None for any
+        other file type, False if cancelled."""
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in (".stl", ".3mf", ".obj"):
             return None
         from .export_dialog import StlOptionsDialog
-        return StlOptionsDialog.ask(self, self.settings)
+        return StlOptionsDialog.ask(self, self.settings, ext[1:].upper())
 
     def export(self, part_ids, fmt_=None):
         if self.is_dwg:
@@ -3277,12 +3279,12 @@ class MainWindow(QMainWindow):
             sel = "STL (*.stl)" if fmt_ == "stl" else "STEP (*.step *.stp)"
             default = self.doc.name.replace(" ", "_") + (".stl" if fmt_ == "stl" else ".step")
             path, chosen = QFileDialog.getSaveFileName(self, "Export assembly", self._dialog_dir("export", default),
-                                                       "STEP (*.step *.stp);;STL (*.stl)", sel)
+                                                       "STEP (*.step *.stp);;STL (*.stl);;3MF (*.3mf);;OBJ (*.obj)", sel)
             if not path:
                 return
             remember_dir(self.settings, "export", path)
             if not os.path.splitext(path)[1]:
-                path += ".stl" if "STL" in chosen else ".step"
+                path += ".stl" if "STL" in chosen else ".3mf" if "3MF" in chosen else ".obj" if "OBJ" in chosen else ".step"
             opts = self._stl_options(path)
             if opts is False:
                 return
@@ -3295,7 +3297,7 @@ class MainWindow(QMainWindow):
         if not self.doc.state.parts:
             QMessageBox.information(self, APP_NAME, "There are no parts to export yet.")
             return
-        filters = "STEP (*.step *.stp);;STL (*.stl)"
+        filters = "STEP (*.step *.stp);;STL (*.stl);;3MF (*.3mf);;OBJ (*.obj)"
         default = "part.stl" if fmt_ == "stl" else "part.step"
         if part_ids and len(part_ids) == 1:
             default = self.doc.state.parts[part_ids[0]].name.replace(" ", "_") + (".stl" if fmt_ == "stl" else ".step")
@@ -3305,7 +3307,7 @@ class MainWindow(QMainWindow):
             return
         remember_dir(self.settings, "export", path)
         if not os.path.splitext(path)[1]:
-            path += ".stl" if "STL" in chosen else ".step"
+            path += ".stl" if "STL" in chosen else ".3mf" if "3MF" in chosen else ".obj" if "OBJ" in chosen else ".step"
         opts = self._stl_options(path)
         if opts is False:
             return

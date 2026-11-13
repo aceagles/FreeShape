@@ -1149,7 +1149,8 @@ class Mesh:
     vertices: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))   # shape vertices, in order
 
 
-def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.3) -> Mesh:
+def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.3, edges_too: bool = True) -> Mesh:
+    """Triangulate every face. edges_too=False skips the edge polylines (mesh export does not need them)."""
     if lin_defl is None:
         lo, hi = bbox(shape)
         lin_defl = max(np.linalg.norm(hi - lo) * 0.001, 1e-3)
@@ -1199,9 +1200,9 @@ def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.3) -> M
         TF.append(np.full(nt, fi, dtype=np.int32))
         ranges.append((start, start + nt))
         base += nb
-    seams = seam_edge_indices(shape)
+    seams = seam_edge_indices(shape) if edges_too else set()
     polys = []
-    for i, e in enumerate(edges(shape)):
+    for i, e in enumerate(edges(shape) if edges_too else []):
         # seam edges (where a cylinder closes on itself) aren't shown or pickable, as in Onshape
         polys.append(np.zeros((0, 3), np.float32) if i in seams else discretize_edge(e, lin_defl))
     vpts = np.array(_vertices_np(shape), np.float32).reshape(-1, 3)

@@ -10,10 +10,11 @@ _KEY = "export_stl"
 
 
 class StlOptionsDialog(QDialog):
-    def __init__(self, parent=None, settings=None):
+    def __init__(self, parent=None, settings=None, mesh_kind="STL"):
         super().__init__(parent)
-        self.setWindowTitle("STL export options")
+        self.setWindowTitle(f"{mesh_kind} export options")
         self.settings = settings
+        self.has_format = mesh_kind == "STL"     # 3MF and OBJ have no ASCII/binary choice
         form = QFormLayout(self)
         self.resolution = QComboBox()
         self.resolution.addItems([f"{n}" for n in PRESETS] + [CUSTOM])
@@ -24,7 +25,8 @@ class StlOptionsDialog(QDialog):
         form.addRow("Angle (rad)", self.angle_edit)
         self.format = QComboBox()
         self.format.addItems(["Binary", "ASCII"])
-        form.addRow("Format", self.format)
+        if self.has_format:
+            form.addRow("Format", self.format)
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self._accept)
         self.buttons.rejected.connect(self.reject)
@@ -58,7 +60,10 @@ class StlOptionsDialog(QDialog):
             d, a = self._num(self.defl_edit, 0.05), self._num(self.angle_edit, 0.3)
         else:
             d, a = PRESETS[name]
-        return {"defl": d, "angle": a, "ascii": self.format.currentText() == "ASCII"}
+        o = {"defl": d, "angle": a}
+        if self.has_format:
+            o["ascii"] = self.format.currentText() == "ASCII"
+        return o
 
     def _load(self):
         s = self.settings
@@ -81,11 +86,12 @@ class StlOptionsDialog(QDialog):
             s.setValue(f"{_KEY}/resolution", self.resolution.currentText())
             s.setValue(f"{_KEY}/defl", f"{o['defl']:g}")
             s.setValue(f"{_KEY}/angle", f"{o['angle']:g}")
-            s.setValue(f"{_KEY}/format", self.format.currentText())
+            if self.has_format:
+                s.setValue(f"{_KEY}/format", self.format.currentText())
         self.accept()
 
     @classmethod
-    def ask(cls, parent, settings):
+    def ask(cls, parent, settings, mesh_kind="STL"):
         """Show the dialog. Returns the options dict, or False if cancelled."""
-        d = cls(parent, settings)
+        d = cls(parent, settings, mesh_kind)
         return d.options() if d.exec() == QDialog.Accepted else False

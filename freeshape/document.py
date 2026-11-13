@@ -542,5 +542,8 @@ class Document:
         shapes = [p.shape for p in parts]
         if str(path).lower().endswith((".stl",)):
             K.export_stl(shapes, path, **(options or {}))
+        elif str(path).lower().endswith((".3mf", ".obj")):
+            from . import meshexport as ME
+            ME.export_parts([(p.shape, p.name, p.color) for p in parts], path, **(options or {}))
         else:
             return K.export_step_named([(p.shape, np.eye(4), p.name, p.color) for p in parts], path, self.name)

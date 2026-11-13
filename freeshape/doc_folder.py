@@ -34,11 +34,8 @@ import weakref
 from . import doc_registry as R
 from . import gitstore as G
 from . import kernel as K
-from .assembly import AssemblyDoc
-from .document import Document
-from .drawing import DrawingDoc
+from . import tabkinds as TK
 from .links import LinkResolver, migrate_links_to_tab_ids, tab_sources
-from .variable_studio import VariableStudioDoc
 
 MANIFEST_NAME = "document.json"
 FORMAT = "freeshape-document"
@@ -47,10 +44,10 @@ FORMAT_VERSION = 1
 _MANIFEST_KEYS = {"format", "version", "id", "name", "tabs"}
 _TAB_KEYS = {"id", "kind", "file", "name"}
 
-EXTENSIONS = {"studio": ".fshape", "assembly": ".fasm", "drawing": ".fdwg", "variables": ".fvars"}
-FACTORIES = {"studio": Document, "assembly": AssemblyDoc, "drawing": DrawingDoc, "variables": VariableStudioDoc}
-LOADERS = {"studio": Document.load, "assembly": AssemblyDoc.load, "drawing": DrawingDoc.load,
-           "variables": VariableStudioDoc.load}
+# live views over the tab-kind registry (freeshape/tabkinds.py), kept for the callers that import them
+EXTENSIONS = TK.EXTENSIONS
+FACTORIES = TK.FACTORIES
+LOADERS = TK.LOADERS
 
 
 def _atomic_write(path, text):
@@ -79,7 +76,7 @@ def _peek_id(folder):
 
 def _attribute_lines():
     """`.gitattributes` for a new Document: no automatic merge of the manifest or any tab file."""
-    return [f"{MANIFEST_NAME} -merge"] + [f"*{ext} -merge" for ext in EXTENSIONS.values()]
+    return [f"{MANIFEST_NAME} -merge"] + [f"*{ext} -merge" for ext in TK.extensions()]
 
 
 class DirtyWorkspaceError(K.KernelError):
@@ -231,7 +228,7 @@ class FolderDocument:
                 warn("missing-file", f"{label}: its file “{tab.file}” is missing from the Document folder", tab)
             else:
                 warn("unreadable", f"{label} could not be opened: {self.errors.get(tab.id, 'unknown error')}", tab)
-        exts = tuple(EXTENSIONS.values())
+        exts = TK.extensions()
         for root, dirs, files in os.walk(self.path or "."):
             dirs[:] = sorted(d for d in dirs if not d.startswith("."))
             for f in sorted(files):
@@ -269,12 +266,12 @@ class FolderDocument:
         return name
 
     def add_tab(self, kind, name=None):
-        """Create a new, empty tab of the given kind ("studio" / "assembly" / "drawing") and return it."""
+        """Create a new, empty tab of the given registered kind and return it."""
         self._check_writable()
-        doc = FACTORIES[kind]()
+        doc = TK.get(kind).make()
         if name:
             doc.name = name
-        tab = Tab(self.new_tab_id(), kind, self._unique_filename(doc.name, EXTENSIONS[kind]), doc.name)
+        tab = Tab(self.new_tab_id(), kind, self._unique_filename(doc.name, TK.get(kind).ext), doc.name)
         tab.doc = doc
         self.tabs.append(tab)
         self._attach(tab)
@@ -289,7 +286,7 @@ class FolderDocument:
         if tab_id is not None and self.tab(tab_id) is not None:
             raise K.KernelError(f"Tab {tab_id!r} already exists in the Document")
         name = name or doc.name
-        tab = Tab(tab_id or self.new_tab_id(), kind, file or self._unique_filename(name, EXTENSIONS[kind]), name)
+        tab = Tab(tab_id or self.new_tab_id(), kind, file or self._unique_filename(name, TK.get(kind).ext), name)
         self._resolve_tab_path(tab.file, f"tab {tab.id!r}")     # the file name comes from an autosave: check it
         tab.doc = doc
         self.tabs.append(tab)
@@ -297,18 +294,17 @@ class FolderDocument:
         return tab
 
     def add_files(self, paths):
-        """Add loose .fshape / .fasm / .fdwg files to the Document as new tabs. Each is copied into the folder
+        """Add loose tab files (any registered kind) to the Document as new tabs. Each is copied into the folder
         (the original is only read, never changed, since loose files outside may still link to it by uid and
         path), then every legacy uid + path link in the copies is rewritten to tab ids. All the files go in
         before the links are converted, so an assembly added with its Part Studios finds them. Returns the
         new tabs."""
-        kinds = {ext: kind for kind, ext in EXTENSIONS.items() if kind != "variables"}
         added = []
         for src in paths:
             ext = os.path.splitext(src)[1].lower()
-            kind = kinds.get(ext)
+            kind = TK.kind_for_ext(ext)
             if kind is None:
-                raise K.KernelError(f"Can't add {os.path.basename(src)}: only .fshape, .fasm and .fdwg files")
+                raise K.KernelError(f"Can't add {os.path.basename(src)}: only {TK.extension_list()} files")
             with open(src) as fh:
                 data = json.load(fh)
             name = os.path.splitext(os.path.basename(src))[0]
@@ -320,7 +316,7 @@ class FolderDocument:
             data["_tab_id"] = tab_id
             _atomic_write(os.path.join(self.path, file), json.dumps(data, indent=1))
             tab = Tab(tab_id, kind, file, name)
-            tab.doc = LOADERS[kind](os.path.join(self.path, file))
+            tab.doc = TK.get(kind).load(os.path.join(self.path, file))
             tab.doc.name = name
             self.tabs.append(tab)
             self._attach(tab)
@@ -475,14 +471,14 @@ class FolderDocument:
             tab.extra = {k: v for k, v in entry.items() if k not in _TAB_KEYS}
             doc.tabs.append(tab)
             try:
-                if kind not in LOADERS:
+                if kind not in TK.KINDS:
                     raise K.KernelError(f"{label}: unknown tab kind {kind!r}")
                 full = doc._safe_tab_path(file, label)
                 if not os.path.lexists(full):
                     raise K.KernelError(f"{label}: its file {file!r} is missing from the Document folder")
                 if os.path.islink(full):
                     raise K.KernelError(f"{label}: refusing to open a symlink ({file!r})")
-                tab.doc = LOADERS[kind](full)
+                tab.doc = TK.get(kind).load(full)
             except K.KernelError as e:
                 doc.errors[tab_id] = str(e)
             except Exception as e:      # a damaged tab file (bad JSON, a missing key...) must not stop the rest

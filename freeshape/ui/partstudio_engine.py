@@ -35,6 +35,7 @@ from .. import features as F
 from .. import kernel as K
 from .. import links
 from .. import naming as N
+from .. import tabkinds as TK
 from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
 
@@ -580,7 +581,7 @@ class LiveTabs:
             rec.tab = None
         if self._tmp is None:
             self._tmp = tempfile.mkdtemp(prefix="freeshape-live-")
-        ext = ".fasm" if rec.kind == "assembly" else ".fdwg"
+        ext = TK.get(rec.kind).ext
         path = os.path.join(self._tmp, f"{rec.want_tab}-{next(self._files)}{ext}")
         with open(path, "w") as fh:
             fh.write(snap["json"])

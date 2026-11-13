@@ -17,7 +17,6 @@ import numpy as np
 from .. import assembly as A
 from .. import drawing as D
 from ..document import Document
-from ..variable_studio import FILE_FORMAT as VARIABLES_FORMAT
 from ..variable_studio import VariableStudioDoc
 from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
                        DrawingOutputs, Engine, EngineError, InstanceOut, MateOut, StudioOutputs, VariablesOutputs,
@@ -26,20 +25,19 @@ from .encode import Encoder, connector_out, sketch_out
 from .inputs import CrossTabInputs
 from .linkgraph import live_package, package_digest, propagate
 from .. import links
+from .. import tabkinds as TK
 
-KINDS = ("studio", "assembly", "drawing", "variables")
-_FORMAT_KIND = {"freeshape": "studio", A.FILE_FORMAT: "assembly", D.FILE_FORMAT: "drawing",
-                VARIABLES_FORMAT: "variables"}
+KINDS = TK.KINDS            # the registered tab kinds (freeshape/tabkinds.py), a live view
 
 
 def file_kind(path):
-    """"studio" | "assembly" | "drawing" from the file's own format tag."""
+    """The tab kind ("studio", "assembly", "drawing", "variables") from the file's own format tag."""
     try:
         with open(path) as fh:
             fmt = json.load(fh).get("format")
     except (OSError, ValueError, AttributeError) as e:
         raise EngineError(f"Cannot read {path}: {e}") from e
-    kind = _FORMAT_KIND.get(fmt)
+    kind = TK.kind_for_format(fmt)
     if kind is None:
         raise EngineError(f"{path} is not a FreeShape Part Studio, Assembly or Drawing")
     return kind

@@ -22,6 +22,7 @@ from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
 from .. import doc_folder
 from .. import doc_registry
+from .. import tabkinds as TK
 from .. import links
 from ..sketch import Sketch
 from . import theme, navstyles
@@ -1529,10 +1530,10 @@ class MainWindow(QMainWindow):
             if self.mode != "idle":
                 self._leave_modes()
             self.import_step_file(path)
-        elif ext in (".fshape", ".fcad", ".fasm", ".fdwg"):
+        elif TK.kind_for_ext(ext) is not None or ext == ".fcad":
             self.open_file(path)
         else:
-            QMessageBox.information(self, APP_NAME, "FreeShape opens .fshape, .fasm and .fdwg documents and STEP files.")
+            QMessageBox.information(self, APP_NAME, f"FreeShape opens {TK.extension_list()} documents and STEP files.")
             return
         self.show_workspace()
 
@@ -1684,7 +1685,7 @@ class MainWindow(QMainWindow):
 
     def _pick_files_to_add(self):
         paths, _ = QFileDialog.getOpenFileNames(self, "Add to Document", self._dialog_dir("doc"),
-                                                "FreeShape files (*.fshape *.fasm *.fdwg)")
+                                                "FreeShape files (" + " ".join(TK.glob(k) for k in TK.kinds()) + ")")
         return paths
 
     def _home_new_document(self):
@@ -1795,7 +1796,7 @@ class MainWindow(QMainWindow):
         self._views.pop(id(doc), None)
 
     def add_to_document(self, paths=None):
-        """Copy loose .fshape / .fasm / .fdwg files into the open Document and rewrite the links in the copies
+        """Copy loose tab files (see tabkinds) into the open Document and rewrite the links in the copies
         to tab ids. The originals are not touched. Saves the Document, since the copies are new files."""
         if self.folder is None:
             QMessageBox.information(self, APP_NAME, "Open or create a Document first, then add files to it.")
@@ -2253,10 +2254,10 @@ class MainWindow(QMainWindow):
         out = []
         for name in os.listdir(root):
             full = os.path.join(root, name)
-            if name.endswith((".fshape", ".fasm", ".fdwg")) and os.path.isfile(full):
+            if name.endswith(TK.extensions()) and os.path.isfile(full):
                 out.append(full)                                          # older single-folder layout
             elif os.path.isdir(full) and name.isdigit() and not self._process_alive(int(name)):
-                out += [os.path.join(full, f) for f in os.listdir(full) if f.endswith((".fshape", ".fasm", ".fdwg"))]
+                out += [os.path.join(full, f) for f in os.listdir(full) if f.endswith(TK.extensions())]
                 if not os.listdir(full):
                     try:
                         os.rmdir(full)
@@ -2272,7 +2273,7 @@ class MainWindow(QMainWindow):
             doc._autosave_id = ".".join(re.sub(r"[^A-Za-z0-9_-]", "_", str(k)) for k in key)
         elif not getattr(doc, "_autosave_id", None):
             doc._autosave_id = uuid.uuid4().hex
-        ext = {"assembly": ".fasm", "drawing": ".fdwg"}.get(doc.kind, ".fshape")
+        ext = (TK.find(doc.kind) or TK.get("studio")).ext
         return os.path.join(self.autosave_dir(), doc._autosave_id + ext)
 
     def autosave(self):
@@ -2330,10 +2331,11 @@ class MainWindow(QMainWindow):
                     if meta.get("document") and self._recover_document_tab(f, meta):
                         os.remove(f)
                         continue
-                    doc = AssemblyDoc.load(f, resolver=self._resolve_source) if f.endswith(".fasm") \
+                    kind = TK.kind_for_path(f)
+                    doc = AssemblyDoc.load(f, resolver=self._resolve_source) if kind == "assembly" \
                         else DrawingDoc.load(f, resolver=self._resolve_drawing_source,
-                                                      hlr_async=self.dwg.request_exact) if f.endswith(".fdwg") \
-                        else Document.load(f)
+                                                      hlr_async=self.dwg.request_exact) if kind == "drawing" \
+                        else TK.get(kind or "studio").load(f)
                     doc.path = meta.get("path")
                     doc.name = (meta.get("name") or "Recovered") + " (recovered)"
                     doc.dirty = True
@@ -3352,10 +3354,8 @@ class MainWindow(QMainWindow):
 
     def open_dialog(self):
         self._leave_modes()
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open", self._dialog_dir("doc"), "FreeShape documents and STEP files (*.fshape *.fasm *.fdwg *.fcad *.step *.stp);;"
-            "Part Studios (*.fshape *.fcad);;Assemblies (*.fasm);;Drawings (*.fdwg);;STEP files (*.step *.stp);;"
-            "All files (*)")
+        from .home import open_dialog_filter
+        path, _ = QFileDialog.getOpenFileName(self, "Open", self._dialog_dir("doc"), open_dialog_filter())
         if path:
             remember_dir(self.settings, "doc", path)
             self.open_any(path)
@@ -3374,20 +3374,21 @@ class MainWindow(QMainWindow):
         from .progress import ImportProgress
         prog = ImportProgress(self, f"Opening {os.path.basename(path)}")
         try:
-            if not path.lower().endswith((".fasm", ".fdwg")) and not self._prefetch_imports(path, prog):
+            kind = TK.kind_for_path(path)
+            if kind in (None, "studio") and not self._prefetch_imports(path, prog):
                 self.status.showMessage("Opening cancelled", 5000)
                 return
             prog.stage("Rebuilding the model…")
             self.viewport.progress_cb = prog.step
             try:
-                if path.lower().endswith(".fasm"):
+                if kind == "assembly":
                     doc = AssemblyDoc.load(path, resolver=self._resolve_source)
-                elif path.lower().endswith(".fdwg"):
+                elif kind == "drawing":
                     prog.stage("Working out the views…")
                     doc = DrawingDoc.load(path, resolver=self._resolve_drawing_source,
                                           hlr_async=self.dwg.request_exact)
                 else:
-                    doc = Document.load(path)
+                    doc = TK.get(kind or "studio").load(path)
             except Exception as e:
                 prog.close()
                 prog = None
@@ -3447,9 +3448,9 @@ class MainWindow(QMainWindow):
             return False
         if self._folder_tab(self.doc) is not None:       # a Document's tabs save with the Document
             return self._save_document()
-        ext = ".fdwg" if self.is_dwg else ".fasm" if self.is_asm else ".fshape"
-        filt = "FreeShape drawings (*.fdwg)" if self.is_dwg else "FreeShape assemblies (*.fasm)" if self.is_asm \
-            else "FreeShape documents (*.fshape)"
+        rec = TK.find(getattr(self.doc, "kind", "studio")) or TK.get("studio")
+        ext = rec.ext
+        filt = f"FreeShape {rec.plural.lower() if rec.kind != 'studio' else 'documents'} (*{ext})"
         path, _ = QFileDialog.getSaveFileName(
             self, "Save as", self.doc.path or self._dialog_dir("doc", f"{self.doc.name}{ext}"), filt)
         if not path:

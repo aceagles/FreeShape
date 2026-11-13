@@ -12,11 +12,29 @@ from PySide6.QtWidgets import (
     QSizePolicy, QLineEdit, QToolButton,
 )
 
+from .. import tabkinds as TK
 from .icons import icon
 
 CARD_W, THUMB_H = 236, 148
-KINDS = {".fshape": "Part Studio", ".fcad": "Part Studio", ".fasm": "Assembly", ".fdwg": "Drawing", ".step": "STEP file",
-         ".stp": "STEP file"}
+LEGACY_EXTS = {"studio": (".fcad",)}        # extensions opened as a kind but never written
+STEP_EXTS = (".step", ".stp")
+
+
+def kind_label(ext):
+    """"Part Studio" / "Assembly" / ... / "STEP file" for a file extension, or None."""
+    ext = ext.lower()
+    kind = TK.kind_for_ext(ext) or next((k for k, xs in LEGACY_EXTS.items() if ext in xs), None)
+    return TK.get(kind).label if kind else "STEP file" if ext in STEP_EXTS else None
+
+
+def open_dialog_filter():
+    """The filter of the Open dialog: every registered tab kind (plus legacy and STEP files) and one per kind."""
+    def globs(exts):
+        return " ".join("*" + x for x in exts)
+    every = list(TK.extensions()) + [x for xs in LEGACY_EXTS.values() for x in xs] + list(STEP_EXTS)
+    groups = [f"{r.plural} ({globs((r.ext,) + LEGACY_EXTS.get(r.kind, ()))})" for r in TK.records()]
+    return ";;".join([f"FreeShape documents and STEP files ({globs(every)})"] + groups
+                     + [f"STEP files ({globs(STEP_EXTS)})", "All files (*)"])
 
 
 def thumbs_dir():
@@ -84,8 +102,8 @@ class Card(QFrame):
             self.thumb.setPixmap(pm.copy((pm.width() - (CARD_W - 16)) // 2, (pm.height() - THUMB_H) // 2,
                                          CARD_W - 16, THUMB_H))
         else:
-            name = "assembly" if ext == ".fasm" else "drawing" if ext == ".fdwg" else \
-                "import" if ext in (".step", ".stp") else "part"
+            name = "import" if ext in STEP_EXTS else {"assembly": "assembly", "drawing": "drawing"}.get(
+                TK.kind_for_ext(ext), "part")
             self.thumb.setPixmap(icon(name, 64).pixmap(64, 64))
         lay.addWidget(self.thumb)
         label = (document.get("name") if document else None) or os.path.basename(path)
@@ -98,7 +116,7 @@ class Card(QFrame):
         folder.setObjectName("homeMuted")
         folder.setText(QFontMetrics(folder.font()).elidedText(os.path.dirname(path), Qt.ElideLeft, CARD_W - 20))
         lay.addWidget(folder)
-        meta = ["Document" if document else KINDS.get(ext, "File")]
+        meta = ["Document" if document else kind_label(ext) or "File"]
         if exists:
             meta.append(ago(opened_at))
             if not document:
@@ -204,7 +222,7 @@ class HomePage(QWidget):
         ic.setPixmap(icon("part", 40).pixmap(40, 40))
         ic.setAlignment(Qt.AlignCenter)
         dl.addWidget(ic)
-        dt = QLabel("Drop a .fshape, .fasm, .fdwg or STEP file here")
+        dt = QLabel(f"Drop a {', '.join(TK.extensions())} or STEP file here")
         dt.setAlignment(Qt.AlignCenter)
         dt.setStyleSheet("font-size: 14px;")
         dl.addWidget(dt)

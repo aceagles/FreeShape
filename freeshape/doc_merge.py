@@ -34,9 +34,11 @@ import tempfile
 from . import doc_folder as DF
 from . import gitstore as G
 from . import kernel as K
+from . import tabkinds as TK
 
 MANIFEST = DF.MANIFEST_NAME
 SIDES = ("ours", "theirs")
+_LINK_FILE_EXTS = tuple(TK.get(k).ext for k in ("assembly", "drawing"))     # the files that hold tab links
 
 
 class MergeRefused(K.KernelError):
@@ -228,7 +230,7 @@ class MergePreview:
             return
         # links to a re-keyed tab can only come from files the theirs side changed (the id is new on that side)
         for rel, (mode, sha) in list(t.files.items()):
-            if not rel.endswith((".fasm", ".fdwg")) or b.files.get(rel) == (mode, sha):
+            if not rel.endswith(_LINK_FILE_EXTS) or b.files.get(rel) == (mode, sha):
                 continue
             try:
                 data = json.loads(G.read_blob(path, sha).decode("utf-8"))

@@ -41,6 +41,7 @@ from concurrent.futures.process import BrokenProcessPool
 
 from .. import links
 from .. import migrations as M
+from .. import tabkinds as TK
 from . import worker as W
 from .contract import Engine, EngineError, TabErrored
 from .encode import Encoder
@@ -129,11 +130,11 @@ class _Tab:
 
 
 def _file_sources(kind, d, path):
-    """The link sources a .fasm / .fdwg holds, read without loading it (so its inputs can go with the load)."""
+    """The link sources an Assembly or Drawing file holds, read without loading it (so its inputs can go with the load)."""
     if kind == "variables":
         return []
     try:
-        d = M.migrate("document" if kind == "studio" else kind, copy.deepcopy(d), path)
+        d = M.migrate(TK.get(kind).chain, copy.deepcopy(d), path)
     except Exception:            # noqa: BLE001 -- the worker's own load reports a bad file
         return []
     out = []

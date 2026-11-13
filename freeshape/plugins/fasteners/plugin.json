@@ -7,6 +7,8 @@
   "hex_bolt:Iso4014",
   "hex_bolt:Iso4017",
   "hex_nut:Iso4032",
-  "washer:Iso7089"
+  "washer:Iso7089",
+  "socket_screw:Iso4762",
+  "tapping_screw:Iso7049"
  ]
 }

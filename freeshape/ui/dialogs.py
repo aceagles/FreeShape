@@ -573,6 +573,15 @@ SCHEMAS = {
         {"t": "studio_choice", "key": "source", "label": "Variable Studio"},
         {"t": "studio_names", "key": "names", "label": "Variables"},
     ],
+    # Derived: one row per control group, top to bottom. Add a row here and a `_make_derived_*` builder below.
+    #   Document chooser and Version pin: before `derived_source` (they decide which Part Studio list it shows).
+    #   Mate connectors tick list: after `derived_sketches`, key "connectors".
+    #   Location and Placement base: after that.
+    "derived": [
+        {"t": "derived_source", "key": "source", "label": "Part Studio"},
+        {"t": "derived_checks", "key": "parts", "label": "Parts"},
+        {"t": "derived_checks", "key": "sketches", "label": "Sketches"},
+    ],
     "hole": [
         {"t": "sketch_choice", "key": "sketch", "label": "Sketch with hole centres"},
         _choice("standard", "Standard", [("clearance", "ISO clearance"), ("tapped", "ISO tapped"),
@@ -1035,7 +1044,105 @@ class FeatureDialog(_ResizableFrame):
             return self._make_studio_choice(spec, p, row, h)
         if t == "studio_names":
             return self._make_studio_names(spec, p, row, h)
+        if t == "derived_source":
+            return self._make_derived_source(spec, p, row, h)
+        if t == "derived_checks":
+            return self._make_derived_checks(spec, p, row, h)
         return None
+
+    # ------------------------------------------------------------------ Derived rows (I1.9)
+    # Shared state: `self._derived_fills` holds one refill callback per tick list; a change of source clears the
+    # params the lists own and calls each. A later row that lists the source's output (Mate connectors) appends
+    # its own callback and registers its params key in `_derived_owned`.
+    def _derived_tabs(self):
+        """The Part Studio tabs of the open Document's manifest other than this one, open or not."""
+        fd = getattr(self.main, "folder", None)
+        mine = self.main._folder_tab(self.doc) if hasattr(self.main, "_folder_tab") else None
+        return [t for t in (fd.tabs if fd is not None else []) if t.kind == "studio" and t is not mine]
+
+    def _derived_package(self):
+        """(links.StudioPackage of the chosen source, "") or (None, why not): read from the source's current state."""
+        src = self.feature["params"].get("source") or {}
+        if not src.get("tab"):
+            return None, ""
+        try:
+            return self.main.folder.resolver.resolve_studio(src), ""
+        except Exception as e:          # source not found, in error, or not loadable: the list stays empty
+            return None, str(e)
+
+    def _make_derived_source(self, spec, p, row, h):
+        from .. import links as L
+        self._derived_fills = []
+        self._derived_owned = ["parts", "sketches"]      # params keys that belong to the source and are cleared with it
+        cb = QComboBox()
+        cb.addItem("— choose a Part Studio —", None)
+        for t_ in self._derived_tabs():
+            cb.addItem(t_.name, t_.id)
+        key = spec["key"]
+        cur = (p.get(key) or {}).get("tab")
+        if cur and cb.findData(cur) < 0:        # the source tab is gone: say so instead of silently changing it
+            cb.addItem(f"{(p[key].get('studio_name') or cur)} (not in this Document)", cur)
+        cb.setCurrentIndex(max(0, cb.findData(cur)))
+        self._derived_note = QLabel("")
+        self._derived_note.setWordWrap(True)
+        self._derived_note.setStyleSheet("color:#8a94a3;")
+        if not self._derived_tabs():
+            self._derived_note.setText("This Document has no other Part Studio to derive from.")
+
+        def chosen(i, cb=cb):
+            tid = cb.itemData(i)
+            tab = next((x for x in self._derived_tabs() if x.id == tid), None)
+            for k_ in self._derived_owned:
+                self.feature["params"][k_] = []          # another source: its own parts and sketches
+            if tab is not None:
+                self.feature["params"][key] = L.studio_source(tab)
+            elif tid is None:
+                self.feature["params"][key] = {}
+            for fill in self._derived_fills:
+                fill()
+            self._set_unlisted()
+        cb.currentIndexChanged.connect(chosen)
+        h.addWidget(cb)
+        h.setDirection(QBoxLayout.TopToBottom)
+        h.addWidget(self._derived_note)
+        self.widgets[key] = cb
+        return row
+
+    def _make_derived_checks(self, spec, p, row, h):
+        """A tick list of what the source publishes under `spec["key"]` ("parts" or "sketches"): the ticked ids are
+        the params list. Rows are the published part ids / sketch ids, shown by name."""
+        h.setDirection(QBoxLayout.TopToBottom)
+        key = spec["key"]
+        lst = QListWidget()
+        lst.setMaximumHeight(120)
+        h.addWidget(lst)
+        self.widgets[key] = lst
+
+        def read():
+            self.feature["params"][key] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
+                                           if lst.item(i).checkState() == Qt.Checked]
+            self._set_unlisted()
+
+        def fill():
+            pkg, why = self._derived_package()
+            self._derived_note.setText("⚠ " + why if why else "" if self._derived_tabs()
+                                       else "This Document has no other Part Studio to derive from.")
+            published = ({} if pkg is None else
+                         {i: v.name for i, v in (pkg.parts if key == "parts" else pkg.sketches).items()})
+            ticked = list(self.feature["params"].get(key) or [])
+            lst.blockSignals(True)
+            lst.clear()
+            for i, name in list(published.items()) + [(i, None) for i in ticked if i not in published]:
+                it = QListWidgetItem(name if name is not None else f"{i}  (no longer published)")
+                it.setData(Qt.UserRole, i)
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Checked if i in ticked else Qt.Unchecked)
+                lst.addItem(it)
+            lst.blockSignals(False)
+        lst.itemChanged.connect(lambda _it: read())
+        self._derived_fills.append(fill)
+        fill()
+        return row
 
     # ------------------------------------------------------------------ Variable Studio reference rows
     def _variable_tabs(self):

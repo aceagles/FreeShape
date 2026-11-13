@@ -330,6 +330,13 @@ def draw(name: str, p: QPainter):
         p.drawArc(QRectF(3, 5, 10, 22), 100 * 16, 160 * 16)
         p.drawArc(QRectF(19, 5, 10, 22), -80 * 16, 160 * 16)
         _arrow(p, 9, 22, 23, 10, BLUE, 1.6)
+    elif name == "derived":
+        # a source block with an arrow into a dashed (linked) copy
+        _box(p, 3, 5, 12, 12, 5)
+        p.setPen(_pen(ORANGE, 1.6, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(17, 15, 11, 11))
+        _arrow(p, 10, 20, 15, 20, ORANGE, 2)
     elif name == "measure":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(QColor("#f5d77a"))

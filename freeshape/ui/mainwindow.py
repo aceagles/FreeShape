@@ -37,6 +37,7 @@ from .partstudio_engine import StudioEngine, element_index
 from .variable_panel import VariableTabs, DefinedVariables
 
 APP_NAME = "FreeShape"
+DERIVED_LOOSE = "Add this Part Studio to a Document to use Derived for a loose .fshape."
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 
 
@@ -469,6 +470,9 @@ class MainWindow(QMainWindow):
             C("variable_studio_ref", "Variable Studio reference", "Use the variables of a Variable Studio tab "
               "of this Document: all of them or the ones you tick.", lambda: F_("variable_studio_ref"),
               "variables studio link import parameter"),
+            Command("derived", "Derived", "Bring parts and sketches from another Part Studio of this Document into "
+                    "this one; they follow the source when it changes.", self._start_derived,
+                    "link import reference skeleton master", "Feature", self._derived_blocked() or ""),
             C("import", "Import STEP", "Open a STEP file in a new tab.", lambda: self.import_step(), "open file",
               "File"),
             C("export", "Export", "Export the model as STEP or STL.", lambda: self.export(None, None),
@@ -486,6 +490,20 @@ class MainWindow(QMainWindow):
                           lambda n=name: self.viewport.set_standard_view(n), "", "View"))
         from . import pyfeature_ui
         return cmds + pyfeature_ui.palette_commands(self)
+
+    def _derived_blocked(self):
+        """Why Derived cannot start in the current tab (None when it can): a Part Studio outside a Document has
+        no other tab to read from (decision d-i1-7-loose)."""
+        if self._folder_tab(self.doc) is None:
+            return DERIVED_LOOSE
+        return None
+
+    def _start_derived(self):
+        why = self._derived_blocked()
+        if why:
+            self.status.showMessage(why, 6000)
+            return
+        self.start_feature("derived")
 
     def open_command_search(self):
         if self.is_asm or self.is_dwg or self.mode != "idle":
@@ -555,6 +573,7 @@ class MainWindow(QMainWindow):
         h.addWidget(_sep())
         self._tb(h, "variable", "Variable — define #name values to use in any dimension", lambda: self.start_feature("variable"))
         self._tb(h, "variable_studio_ref", "Variable Studio reference — use the variables of a Variable Studio tab", lambda: self.start_feature("variable_studio_ref"))
+        self._tb(h, "derived", "Derived — parts and sketches from another Part Studio of this Document", self._start_derived)
         h.addWidget(_sep())
         self._tb(h, "sketch", "Sketch (Shift+S)", lambda: self.start_sketch())
         h.addWidget(_sep())

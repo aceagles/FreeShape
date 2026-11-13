@@ -61,7 +61,7 @@ def make_cylinder_head_screw(base_type, size, length):
     return geom._solid_of(K.cut(shape, recess))
 
 
-class Iso4762(fb.ScrewPart):
+class Iso4762(fb.ThreadOption, fb.ScrewPart):
     id = "iso4762"
     label = "Socket head cap screw ISO 4762"
     type_key = "ISO4762"
@@ -69,3 +69,9 @@ class Iso4762(fb.ScrewPart):
 
     def build_solid(self, size, length):
         return make_cylinder_head_screw(self.type_key, size, length)
+
+    def add_thread(self, solid, size, length):
+        """As makeCylinderHeadScrew with fa.Thread True: b at the tip, or length - r when the screw is shorter."""
+        row = fb.dim_row(self.type_key, size)
+        b, r = row[1], row[8]
+        return fb.screw_thread(solid, size, length, b if length - r > b else length - r)

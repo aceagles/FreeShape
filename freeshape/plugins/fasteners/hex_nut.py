@@ -60,7 +60,7 @@ def make_hex_nut(base_type, size):
     return geom._solid_of(K.common(head, extrude))
 
 
-class Iso4032(fb.FlatPart):
+class Iso4032(fb.ThreadOption, fb.FlatPart):
     id = "iso4032"
     category = "Nuts"
     label = "Hex nut ISO 4032"
@@ -72,3 +72,9 @@ class Iso4032(fb.FlatPart):
 
     def build_solid(self, size):
         return make_hex_nut(self.type_key, size)
+
+    def add_thread(self, solid, size):
+        """Tap the bore through the full height m. The plain bore is at the minor diameter (the profile starts at
+        d/2 - 5H/8, as upstream does for a threaded nut), so the cut at the nominal diameter leaves the thread."""
+        return K.cut_internal_thread(solid, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), fb.dia(size, False),
+                                     K.ISO_PITCH[size], 0.0, self.thickness(size))

@@ -150,6 +150,41 @@ def _check_length(lengths, length):
     return length
 
 
+class ThreadOption:
+    """Opt-in mixin (listed before `ScrewPart` or `FlatPart`): adds the boolean parameter `model_thread`
+    (default False). When true and the size is in `K.ISO_PITCH`, `build` cuts a real thread with the kernel's
+    own thread code by calling `add_thread`; other sizes ignore the switch and stay plain. The switch changes
+    neither the connectors nor the designation. Subclasses implement `add_thread(solid, size, *rest)`, where
+    `rest` is `(length,)` for a screw and empty for a nut."""
+
+    def default_params(self):
+        return {**super().default_params(), "model_thread": False}
+
+    def validate(self, params):
+        flag = params.get("model_thread", False)
+        if not isinstance(flag, bool):
+            raise K.KernelError(f"model_thread: {str(flag)[:40]!r} is not true or false")
+        return {**super().validate(params), "model_thread": flag}
+
+    def build(self, params):
+        p = self.validate(params)
+        rest = (float(p["length"]),) if "length" in p else ()
+        solid = self.build_solid(p["size"], *rest)
+        if p["model_thread"] and p["size"] in K.ISO_PITCH:
+            solid = self.add_thread(solid, p["size"], *rest)
+        return solid
+
+    def add_thread(self, solid, size, *rest):
+        raise NotImplementedError
+
+
+def screw_thread(solid, size, length, thread_length):
+    """Thread the shank of a screw: the part of the shank `thread_length` long at the tip, along -Z from the
+    head's bearing face at z = 0. The crests sit on the shank surface, so the box does not grow."""
+    return K.external_thread(solid, (0.0, 0.0, 0.0), (0.0, 0.0, 1.0), dia(size, False) / 2.0, K.ISO_PITCH[size],
+                             -length, -length + thread_length)
+
+
 class ScrewPart(StandardPart):
     """A bolt or screw: `under_head` and `tip` connectors, parameters `size` and `length`."""
     category = "Screws"

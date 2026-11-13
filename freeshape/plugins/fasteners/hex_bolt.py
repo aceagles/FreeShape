@@ -79,7 +79,20 @@ def make_hex_head_bolt(base_type, size, length):
     return geom._solid_of(K.common(shape, extrude))
 
 
-class Iso4014(fb.ScrewPart):
+def threaded_length(base_type, size, length):
+    """How much of the shank at the tip is threaded, as makeHexHeadBolt decides it with fa.Thread True: the
+    table's b (b1, b2 or b3 by length) for a partly threaded bolt, else length - r (up to the root fillet).
+    ISO 4017 has b = length, so it is threaded all the way up to the fillet."""
+    row = fb.dim_row(base_type, size)
+    if base_type == "ISO4017":
+        r, b = row[5], length
+    else:
+        r = row[8]
+        b = row[1] if length <= 125.0 else row[2] if length <= 200.0 else row[3]
+    return b if length - r > b else length - r
+
+
+class Iso4014(fb.ThreadOption, fb.ScrewPart):
     id = "iso4014"
     label = "Hex head bolt ISO 4014"
     type_key = "ISO4014"
@@ -88,8 +101,11 @@ class Iso4014(fb.ScrewPart):
     def build_solid(self, size, length):
         return make_hex_head_bolt(self.type_key, size, length)
 
+    def add_thread(self, solid, size, length):
+        return fb.screw_thread(solid, size, length, threaded_length(self.type_key, size, length))
 
-class Iso4017(fb.ScrewPart):
+
+class Iso4017(fb.ThreadOption, fb.ScrewPart):
     id = "iso4017"
     label = "Hex head screw ISO 4017"
     type_key = "ISO4017"
@@ -97,3 +113,6 @@ class Iso4017(fb.ScrewPart):
 
     def build_solid(self, size, length):
         return make_hex_head_bolt(self.type_key, size, length)
+
+    def add_thread(self, solid, size, length):
+        return fb.screw_thread(solid, size, length, threaded_length(self.type_key, size, length))

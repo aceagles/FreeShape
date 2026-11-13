@@ -440,6 +440,47 @@ def compare_versions(folder, old, new=NOW, cache=None) -> dict:
     return res
 
 
+GHOST_COLORS = {"added": (0.12, 0.65, 0.25, 0.55), "removed": (0.85, 0.15, 0.12, 0.55)}   # as in to_html: green, red
+
+
+def tab_states(folder) -> dict:
+    """{tab id: ModelState} of the open Part Studio tabs of `folder`, as they stand now (no copy: a rebuild replaces
+    a tab's state, it does not change the one taken here)."""
+    return {t.id: t.doc.state for t in folder.tabs if t.kind == "studio" and t.doc is not None}
+
+
+def version_states(folder, name) -> dict:
+    """`tab_states` of Version `name`, read through `folder.open_version`. The Version is opened, built with its
+    own blobs (so an imported STEP or other blob-backed geometry is there) and closed again; the shapes stay."""
+    view = folder.open_version(name)
+    try:
+        return tab_states(view)
+    finally:
+        view.close()
+
+
+def compare_geometry(folder, tab_id, old, new=NOW, now_states=None, cache=None) -> dict:
+    """The material added and removed in Part Studio tab `tab_id` from Version `old` to `new` (a name, or NOW):
+    `geometry_changes` of the two built models, plus "meshes": {"added": [Mesh], "removed": [Mesh]} for drawing.
+    A side that lacks the tab counts as empty. `now_states` is `tab_states(folder)` taken by the caller (so this
+    can run off the GUI thread while the tabs are edited); `cache` keeps each Version's states between calls.
+    Raises K.KernelError when a Version cannot be read."""
+    from .features import ModelState
+    cache = {} if cache is None else cache
+
+    def side(name):
+        if name is NOW:
+            states = now_states if now_states is not None else tab_states(folder)
+        else:
+            if name not in cache:
+                cache[name] = version_states(folder, name)
+            states = cache[name]
+        return states.get(tab_id) or ModelState()
+    geo = geometry_changes(side(old), side(new))
+    geo["meshes"] = {k: [K.tessellate(sh) for sh in geo[k]] for k in ("added", "removed")}
+    return geo
+
+
 def _esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 

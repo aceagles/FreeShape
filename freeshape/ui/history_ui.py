@@ -4,12 +4,18 @@ and read, per Part Studio tab, which features were added, removed and changed.
 Versions are git tags of the whole Document (ADR 0001). Each one is read through FolderDocument.open_version (a
 read-only scratch copy), never by checking out; the comparison itself is history.compare_documents. The panel is
 opened by VersionsUI.compare (the Versions list's Compare button, the toolbar's history button and the palette's
-Compare Versions command) and floats over the view."""
+Compare Versions command) and floats over the view.
+
+"Show in 3D" draws the material added (green) and removed (red) in the Part Studio tab on screen as ghosts on the
+viewport. Each side is built in a worker thread (history.compare_geometry), never on the GUI thread; the panel
+shows a busy line meanwhile and drops a build that closing the panel, or a newer selection, has overtaken."""
 from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QFrame, QLabel, QListWidget, QListWidgetItem, QTextBrowser, QVBoxLayout,
+    QAbstractItemView, QApplication, QCheckBox, QFrame, QLabel, QListWidget, QListWidgetItem, QTextBrowser, QVBoxLayout,
 )
 
 from .. import history as H
@@ -31,6 +37,17 @@ class HistoryPanel(QFrame):
         self.result = None           # the last history.compare_versions result shown
         self.pair = None             # (old, new): Version names, H.NOW for the open Document
         self._versions = {}          # name -> document_snapshot of that Version (Versions never change)
+        self.ghost_sets = {"added": [], "removed": []}   # what the viewport was last given, as (Mesh, rgba)
+        self._given = None           # the list this panel put in viewport.ghosts, to clear only its own
+        self._geo_cache = {}         # Version name -> {tab id: ModelState} for the 3D build
+        self._executor = None
+        self._future = None
+        self._built = (0, "")        # (build id, tab name) of the build in flight
+        self._closed = False
+        self._build_id = 0           # a finished build is shown only if no later one was started
+        self._poll = QTimer(self)
+        self._poll.setInterval(30)
+        self._poll.timeout.connect(self._poll_build)
         self._watched = []           # tab docs whose edits re-run a comparison with now
         self._listener = lambda: QTimer.singleShot(0, self._doc_changed)
         self.setMinimumWidth(340)
@@ -50,6 +67,14 @@ class HistoryPanel(QFrame):
         self.hint.setWordWrap(True)
         self.hint.setObjectName("muted")
         lay.addWidget(self.hint)
+        self.show3d = QCheckBox("Show in 3D")
+        self.show3d.setToolTip("Draw the material added (green) and removed (red) in the open Part Studio tab")
+        self.show3d.toggled.connect(self._show3d_toggled)
+        lay.addWidget(self.show3d)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        self.status.setObjectName("muted")
+        lay.addWidget(self.status)
         self.text = QTextBrowser()
         self.text.setMinimumHeight(170)
         lay.addWidget(self.text, 3)
@@ -107,6 +132,7 @@ class HistoryPanel(QFrame):
             ids = ids[:2]
         if not ids or ids == [NOW]:
             self.pair = self.result = None
+            self._clear_3d()
             if ids == [NOW] and self.list.count() > 1:
                 self.text.setHtml("<p style='color:#888'>Pick a version to compare with now.</p>")
             return
@@ -119,7 +145,7 @@ class HistoryPanel(QFrame):
     def compare(self):
         """Compare the selected pair now and show it. Returns the result (None when nothing is selected or it
         failed)."""
-        if self.pair is None:
+        if self.pair is None or self._closed:
             return None
         old, new = self.pair
         QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -134,7 +160,86 @@ class HistoryPanel(QFrame):
         if res is not None:
             self.text.setHtml(H.document_html(res))
         self._watch(new is H.NOW)
+        self._start_3d()
         return res
+
+    # ------------------------------------------------------------------ 3D
+    def _show3d_toggled(self, on):
+        if on:
+            self._start_3d()
+        else:
+            self._clear_3d()
+
+    def _clear_3d(self):
+        """Cancel a build in progress and take this panel's ghosts off the viewport."""
+        self._build_id += 1
+        self._poll.stop()
+        self._future = None
+        self.status.setText("")
+        self._give({"added": [], "removed": []})
+
+    def _give(self, sets):
+        """Hand the viewport `sets` (removed, then added). Ghosts that are not this panel's are left alone when
+        there is nothing to show."""
+        vp = self.main.viewport
+        if sets["added"] or sets["removed"]:
+            self._given = sets["removed"] + sets["added"]
+            vp.ghosts = self._given
+            vp.update()
+        elif self._given is not None:
+            if vp.ghosts is self._given:
+                vp.ghosts = []
+                vp.update()
+            self._given = None
+        self.ghost_sets = sets
+
+    def _active_tab(self):
+        return next((t for t in self.folder.tabs if t.doc is not None and t.doc is self.main.doc), None)
+
+    def _start_3d(self):
+        """Build the added / removed material of the Part Studio tab on screen for the selected pair, off the GUI
+        thread."""
+        if not self.show3d.isChecked():
+            return
+        self._build_id += 1
+        self._poll.stop()
+        none = {"added": [], "removed": []}
+        tab = self._active_tab()
+        row = next((r for r in (self.result or {"tabs": []})["tabs"] if tab is not None and r["id"] == tab.id), None)
+        if self.pair is None or row is None or row["kind"] != "studio" or row["status"] in ("same", "unreadable"):
+            self._give(none)
+            self.status.setText("Open a Part Studio tab that changed between the two to see it in 3D.")
+            return
+        old, new = self.pair
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(1, thread_name_prefix="compare3d")
+        self.status.setText("Building the 3D comparison…")
+        self._future = self._executor.submit(H.compare_geometry, self.folder, tab.id, old, new,
+                                             H.tab_states(self.folder), self._geo_cache)
+        self._built = (self._build_id, tab.name)
+        self._poll.start()
+
+    def _poll_build(self):
+        f = self._future
+        if f is None or not f.done():
+            return
+        self._poll.stop()
+        self._future = None
+        if self._built[0] != self._build_id:
+            return
+        try:
+            geo = f.result()
+        except Exception as e:
+            self._give({"added": [], "removed": []})
+            self.status.setText(f"Couldn't build the 3D comparison: {e}")
+            return
+        sets = {k: [(m, H.GHOST_COLORS[k]) for m in geo["meshes"][k]] for k in ("added", "removed")}
+        self._give(sets)
+        if sets["added"] or sets["removed"]:
+            self.status.setText(f"{self._built[1]}: {len(sets['added'])} added (green), "
+                                f"{len(sets['removed'])} removed (red).")
+        else:
+            self.status.setText(f"{self._built[1]}: no material added or removed.")
 
     def _watch(self, on):
         """Follow edits to the open tabs while one side is now."""
@@ -168,7 +273,12 @@ class HistoryPanel(QFrame):
             super().keyPressEvent(e)
 
     def close_panel(self):
+        self._closed = True
         self._watch(False)
+        self._clear_3d()
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
         if getattr(self.ui, "compare_panel", None) is self:
             self.ui.compare_panel = None
         self.hide()

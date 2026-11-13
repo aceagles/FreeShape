@@ -75,12 +75,28 @@ def plan_edits(have, want):
 def kernel_mesh(m, nfaces):
     """A K.Mesh from the engine's MeshOut: its triangles are grouped by face, so each face's range is a count."""
     tf = np.asarray(m.tri_face, np.int32) - 1
-    counts = np.bincount(tf, minlength=nfaces) if len(tf) else np.zeros(nfaces, np.int64)
-    ends = np.cumsum(counts)
-    ranges = list(zip((ends - counts).tolist(), ends.tolist()))
+    ranges = [tuple(r) for r in getattr(m, "face_ranges", None) or ()]      # the engine's own ranges
+    if len(ranges) != nfaces:                                              # an older mesh: count them
+        counts = np.bincount(tf, minlength=nfaces) if len(tf) else np.zeros(nfaces, np.int64)
+        ends = np.cumsum(counts)
+        ranges = list(zip((ends - counts).tolist(), ends.tolist()))
     return K.Mesh(np.asarray(m.verts, np.float32), np.asarray(m.normals, np.float32),
                   np.asarray(m.tris, np.uint32), tf, ranges, [np.asarray(p, np.float32) for p in m.edge_polys],
                   np.asarray(m.vertices, np.float32))
+
+
+def element_name(state, pid, kind, index):
+    """The element name of the `index`-th (1-based, MapShapes order) face / edge / vertex of part `pid`, from
+    the element-name map the engine returned for it (None: no map, or that element has no name)."""
+    return ((getattr(state, "engine_names", None) or {}).get(pid) or {}).get(kind, {}).get(index)
+
+
+def element_index(state, pid, kind, name):
+    """The 1-based index of the element called `name` in part `pid` (None: no such name)."""
+    for i, n in ((getattr(state, "engine_names", None) or {}).get(pid) or {}).get(kind, {}).items():
+        if n == name:
+            return i
+    return None
 
 
 def mesh_hash(m):
@@ -269,6 +285,7 @@ class StudioEngine(QObject):
             names = {(_LETTER[k], i): n for k, d in p.names.items() for i, n in d.items()}
             if names:
                 st.set_named(p.id, N.NamedShape(shape, names))
+        st.engine_names = {p.id: p.names for p, *_ in res.parts}      # the engine's name maps, for picking
         st.vars = dict(res.variables)
         n = len(res.snap["features"]) if res.snap["rollback"] is None else min(res.snap["rollback"],
                                                                                  len(res.snap["features"]))

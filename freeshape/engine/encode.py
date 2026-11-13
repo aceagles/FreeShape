@@ -68,7 +68,8 @@ def mesh_out(shape) -> MeshOut:
     return MeshOut(verts=np.asarray(m.verts, np.float32), normals=np.asarray(m.normals, np.float32),
                    tris=np.asarray(m.tris, np.uint32), tri_face=np.asarray(m.tri_face, np.int32) + 1,
                    edge_polys=[np.asarray(p, np.float32) for p in m.edge_polys],
-                   vertices=np.asarray(m.vertices, np.float32))
+                   vertices=np.asarray(m.vertices, np.float32),
+                   face_ranges=[(int(a), int(b)) for a, b in m.face_ranges])
 
 
 class Encoder:

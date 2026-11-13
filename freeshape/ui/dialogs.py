@@ -65,6 +65,14 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
     the element's name next to its signature (a part without a map gives a signature-only reference)."""
     k = pick.kind
     names = (lambda pid: state.named(pid)) if state is not None else (lambda pid: None)
+
+    def engine_named(ref, pid, kind, idx):
+        # a Part Studio tab drawn from the engine: the name comes from the part's element-name map by
+        # the picked element's 1-based index, not from re-finding the element in a rebuilt shape
+        n = ((getattr(state, "engine_names", None) or {}).get(pid) or {}).get(kind, {}).get(idx + 1)
+        if n:
+            ref["name"] = n
+        return ref
     if k == "region" and "region" in want:
         fid, ri = pick.key
         for sfid, sr, _ in vp.sketches:
@@ -77,11 +85,12 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
             return None
         face = K.faces(shape)[fi]
         if "face" in want:
-            return ("face", F.make_ref(pid, face, "face", shape, names(pid)))
+            return ("face", engine_named(F.make_ref(pid, face, "face", shape, names(pid)), pid, "face", fi))
         if "plane" in want:
             pl = K.planar_face_plane(face)
             if pl is not None:
-                return ("plane", {"kind": "face", "face": F.make_ref(pid, face, "face", shape, names(pid)),
+                return ("plane", {"kind": "face",
+                                  "face": engine_named(F.make_ref(pid, face, "face", shape, names(pid)), pid, "face", fi),
                                   "origin": pl.origin.tolist(), "xdir": pl.xdir.tolist()})
         if "edge" in want:          # selecting a face selects all of its edges (fillet/chamfer)
             return ("edges", [F.make_ref(pid, e, "edge", shape, names(pid)) for e in K.edges(face)])
@@ -96,9 +105,10 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
             return None
         edge = K.edges(shape)[ei]
         if "edge" in want:
-            return ("edge", F.make_ref(pid, edge, "edge", shape, names(pid)))
+            return ("edge", engine_named(F.make_ref(pid, edge, "edge", shape, names(pid)), pid, "edge", ei))
         if "axis" in want:
-            return ("axis", {"kind": "edge", "edge": F.make_ref(pid, edge, "edge", shape, names(pid))})
+            return ("axis", {"kind": "edge",
+                             "edge": engine_named(F.make_ref(pid, edge, "edge", shape, names(pid)), pid, "edge", ei)})
     if k == "sketch_line" and "region" in want:
         # clicking a sketch's line (or circle) picks the closed area it bounds
         fid, eid = pick.key
@@ -128,7 +138,7 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
         pts = K.vertex_points(shape)
         if vi >= len(pts):
             return None
-        return ("vertex", F.make_vertex_ref(pid, pts[vi], shape, names(pid)))
+        return ("vertex", engine_named(F.make_vertex_ref(pid, pts[vi], shape, names(pid)), pid, "vertex", vi))
     if k == "plane" and "plane" in want:
         key = pick.key
         if key[0] == "std":

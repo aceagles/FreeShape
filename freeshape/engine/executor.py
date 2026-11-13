@@ -186,6 +186,9 @@ class StudioTab(_Tab):
         self.sync()
         doc, enc = self.doc, self.engine.encoder
         st = doc.state
+        for p in st.parts.values():     # I3.7: hand each part its element-name map (encode.element_names reads it)
+            if getattr(p, "named", None) is None:
+                p.named = st.named(p.id)
         parts = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()]
         sketches = []
         for fid, res in st.sketches.items():

@@ -33,7 +33,7 @@ from .sketcher import Sketcher, CONSTRAINT_TOOLS
 from .numparse import fmt
 from .filedirs import start_dir, remember_dir
 from .assembly_ui import AssemblyController
-from .partstudio_engine import StudioEngine
+from .partstudio_engine import StudioEngine, element_index
 
 APP_NAME = "FreeShape"
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
@@ -963,7 +963,7 @@ class MainWindow(QMainWindow):
                 has_plane = True
             else:
                 for pk in self.viewport.selection:
-                    item = pick_to_item(self.viewport, pk, {"plane"})
+                    item = pick_to_item(self.viewport, pk, {"plane"}, getattr(self.doc, "state", None))
                     if item:
                         feat["params"]["plane"] = item[1]
                         has_plane = True
@@ -995,13 +995,30 @@ class MainWindow(QMainWindow):
     # selections that define a plane by themselves, so Sketch can make the plane for you
     AUTO_SKETCH_PLANES = {"three_point", "plane_point", "point_normal", "curve_point", "mid_plane", "tangent"}
 
+    def highlight_element(self, name, kind="face", part=None, hover=False):
+        """Show the face / edge / vertex called `name` as selected (or hovered): name -> 1-based index through
+        the engine's element-name map -> the viewport pick, whose mesh triangles (faces) are then drawn.
+        Returns the Pick, or None when no part has that name."""
+        st = getattr(self.doc, "state", None)
+        for pid in ([part] if part else list(getattr(st, "engine_names", None) or {})):
+            i = element_index(st, pid, kind, name)
+            if i is not None:
+                pk = Pick(kind, (pid, i - 1))
+                if hover:
+                    self.viewport.hover = pk
+                    self.viewport.update()
+                else:
+                    self.viewport.set_selection([pk])
+                return pk
+        return None
+
     def _plane_for_selection(self, index):
         """When what is selected defines a plane (three vertices, a face and a vertex, two faces …), a new plane
         feature for it and the model state with that plane, so a sketch can start on it. None otherwise —
         including for a single plane or face, which is simply sketched on."""
         vp = self.viewport
         want = {"plane", "face", "edge", "vertex"}
-        items = [it for it in (pick_to_item(vp, pk, want) for pk in vp.selection) if it]
+        items = [it for it in (pick_to_item(vp, pk, want, getattr(self.doc, "state", None)) for pk in vp.selection) if it]
         if len(items) < 2:
             return None
         roles = [F.plane_role(k, r) for k, r in items]
@@ -1149,7 +1166,7 @@ class MainWindow(QMainWindow):
             self.viewport.normal_to(self.sketcher.plane)
             return
         for pk in self.viewport.selection:
-            item = pick_to_item(self.viewport, pk, {"plane"})
+            item = pick_to_item(self.viewport, pk, {"plane"}, getattr(self.doc, "state", None))
             if item:
                 try:
                     self.viewport.normal_to(F.resolve_plane(self.doc.state, item[1]))
@@ -2149,7 +2166,7 @@ class MainWindow(QMainWindow):
                         if chosen is not None:
                             break
             for pk in self.viewport.selection if not self.is_asm else ():
-                item = pick_to_item(self.viewport, pk, {"plane"})
+                item = pick_to_item(self.viewport, pk, {"plane"}, getattr(self.doc, "state", None))
                 if item:
                     try:
                         chosen = F.resolve_plane(self.doc.state, item[1])
@@ -2575,7 +2592,7 @@ class MainWindow(QMainWindow):
             return
         if pk is not None:
             if pk.kind in ("plane", "face"):
-                item = pick_to_item(self.viewport, pk, {"plane"})
+                item = pick_to_item(self.viewport, pk, {"plane"}, getattr(self.doc, "state", None))
                 if item:
                     m.addAction("New sketch", lambda: (self.viewport.set_selection([pk]), self.start_sketch()))
 

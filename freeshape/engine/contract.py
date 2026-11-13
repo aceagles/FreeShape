@@ -113,6 +113,8 @@ class MeshOut:
     tri_face: np.ndarray
     edge_polys: list
     vertices: np.ndarray
+    # face_ranges[i - 1] = (start, end): the triangles of face i are tris[start:end] (tri_face == i there)
+    face_ranges: list = field(default_factory=list)
 
 
 @dataclass

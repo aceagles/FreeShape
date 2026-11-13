@@ -124,7 +124,7 @@ def test_studio_edit_returns_parts_as_brep_and_hash(make_engine):
         assert isinstance(p, PartOut)
         assert isinstance(p.brep, bytes) and p.brep
         assert isinstance(p.hash, str) and len(p.hash) == 64
-        assert p.names == {"face": {}, "edge": {}, "vertex": {}}        # no element map on parts yet
+        assert p.names["face"] and len(p.names["face"]) == len(K.faces(K.shape_from_brep(p.brep)))   # the engine returns the element map (I3.7)
         assert p.mesh is not None and len(p.mesh.tris) and p.mesh.tri_face.min() >= 1
     # the bytes are the geometry: rebuilt from them, the parts match the recorded values
     assert_golden("engine/hinge_parts_depth_12",

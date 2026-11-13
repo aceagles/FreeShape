@@ -261,13 +261,14 @@ class InsertPanel(QFrame):
             top.setIcon(0, icon("part", 16))
             top.setData(0, ROLE_KIND, "studio")
             top.setData(0, ROLE_ID, doc.uid)
-            for p in doc.state.parts.values():
+            shown = [p for p in doc.state.parts.values() if not p.reference]    # Context bodies are not insertable
+            for p in shown:
                 it = QTreeWidgetItem([p.name])
                 it.setIcon(0, swatch(p.color))
                 it.setData(0, ROLE_KIND, "part")
                 it.setData(0, ROLE_ID, (doc.uid, p.id))
                 top.addChild(it)
-            if not doc.state.parts:
+            if not shown:
                 it = QTreeWidgetItem(["(no parts yet)"])
                 it.setDisabled(True)
                 top.addChild(it)
@@ -957,7 +958,7 @@ class AssemblyController:
         if studio is None:
             return
         doc = self.doc
-        pids = part_ids or list(studio.state.parts)
+        pids = part_ids or [p.id for p in studio.state.parts.values() if not p.reference]
         if not pids:
             return
         doc.checkpoint()

@@ -812,6 +812,20 @@ def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, 
     return named
 
 
+REFERENCE_ONLY = "Context bodies are reference only"
+
+
+def check_reference_parts(before, state):
+    """I5.3: a feature may read a Context body but not change it. Raises when a reference part of `before`
+    is gone from `state`, has another shape, or lost its flag."""
+    for pid, old in before.items():
+        if not old.reference:
+            continue
+        new = state.parts.get(pid)
+        if new is None or not new.reference or new.shape is not old.shape:
+            raise K.KernelError(REFERENCE_ONLY)
+
+
 def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=None):
     """Merge a tool body into the model according to op: new / add / remove / intersect.
 
@@ -825,7 +839,8 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=Non
     if not sols:
         raise K.KernelError("Feature produced no solid")
     tool = [] if named is None else list(named) if isinstance(named, (list, tuple)) else [named]
-    targets = [state.parts[p] for p in (scope or state.parts) if p in state.parts]
+    targets = [state.parts[p] for p in (scope or [i for i, q in state.parts.items() if not q.reference])
+               if p in state.parts]      # an unscoped feature leaves Context bodies alone (I5.3)
     if op == "new" or (op == "add" and not targets):
         for s in sols:
             state.set_named(state.new_part(s, fid).id, _piece(tool, s))
@@ -1115,6 +1130,16 @@ def run_extrude(state, f):
         flip = not flip
 
     def make(direction):
+        if end == "to_face":     # up to a planar face (any part, a Context body included), measured along `direction`
+            _, tf = resolve(state, p["to"], "face")
+            pl, fp = K.planar_face_plane(profs[0]), K.planar_face_plane(tf)
+            if pl is None or fp is None:
+                raise K.KernelError("Up to face needs a planar face")
+            cos = float(np.dot(direction, fp.normal))
+            dist = float(np.dot(fp.origin - pl.origin, fp.normal)) / cos if abs(cos) > 1e-9 else -1.0
+            if dist <= 1e-9:
+                raise K.KernelError("The face is not ahead of the profile")
+            return K.extrude(profs, direction, dist, with_history=True)
         if end == "through":
             lo, hi = np.full(3, 1e18), np.full(3, -1e18)
             for part in state.parts.values():
@@ -1490,7 +1515,7 @@ def _model_hole_threads(state, f, p, sk, centres, d, through, depth, back, big):
         z0, z1 = (rng[0], rng[1]) if through else (max(rng[0], -back), min(rng[1], depth))
         if z1 - z0 < 1e-6:
             continue
-        for part in list(state.parts.values()):
+        for part in [q for q in state.parts.values() if not q.reference]:
             probe = K.cylinder(c + d * z0, d, major / 2 + pitch, z1 - z0)
             if not K.intersects(part.shape, probe):
                 continue

@@ -188,7 +188,8 @@ class StudioTab(_Tab):
         for p in st.parts.values():     # I3.7: hand each part its element-name map (encode.element_names reads it)
             if getattr(p, "named", None) is None:
                 p.named = st.named(p.id)
-        parts = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()]
+        parts = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
+                 if not p.reference]     # I5.3: a Context body never leaves the studio
         sketches = []
         for fid, res in st.sketches.items():
             f = doc.feature(fid)

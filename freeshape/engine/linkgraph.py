@@ -33,7 +33,8 @@ def _round_T(T):
 def live_package(kind, doc, enc):
     """What a consumer can read of a live tab document (in this process)."""
     if kind == "studio":
-        return {"parts": {str(p.id): enc.brep(p.shape)[1] for p in doc.state.parts.values()},
+        return {"parts": {str(p.id): enc.brep(p.shape)[1] for p in doc.state.parts.values()
+                          if not p.reference},      # I5.3: Context bodies are reference only
                 "hidden": sorted(map(str, doc.hidden_parts)), "aliases": dict(getattr(doc, "part_aliases", {})),
                 "sketches": {str(fid): sketch_out(fid, "", res).hash for fid, res in doc.state.sketches.items()},
                 "connectors": {str(fid): connector_out(fid, c).hash for fid, c in doc.state.connectors.items()}}

@@ -10,7 +10,7 @@ from . import blobstore
 from . import kernel as K
 from . import migrations as M
 from .features import (RUNNERS, FEATURE_LABELS, ModelState, PartMap, default_params, Part, prepare,
-                       carry_face_colors, context_blobs, context_listing)
+                       carry_face_colors, context_blobs, context_listing, check_reference_parts, REFERENCE_ONLY)
 from .expr import parse_number
 from . import pyfeature   # registers the bundled Python-feature plugins in any process that rebuilds
 
@@ -408,6 +408,7 @@ class Document:
             if key in self._cache:
                 state, err = self._cache[key]
             else:
+                prior = state
                 state = state.copy()
                 err = None
                 if not f.get("suppressed"):
@@ -425,6 +426,7 @@ class Document:
                                 pyfeature.host.run(state, f)
                         else:
                             RUNNERS[f["type"]](state, prepare(f, state))
+                        check_reference_parts(before, state)
                         for pid, part in list(state.parts.items()):
                             old = before.get(pid) or before.get(pid.split(".")[0])
                             if old is not None and old.face_colors and part.shape is not old.shape \
@@ -433,6 +435,8 @@ class Document:
                                                         carry_face_colors(old, part.shape))
                     except K.KernelError as e:
                         err = str(e)
+                        if err == REFERENCE_ONLY:
+                            state = prior.copy()      # nothing the feature did to a Context body stays
                     except Exception as e:  # never let one feature kill the model
                         traceback.print_exc()
                         err = f"{type(e).__name__}: {e}"
@@ -604,10 +608,10 @@ class Document:
         return doc
 
     def visible_parts(self):
-        return [p for p in self.state.parts.values() if p.id not in self.hidden_parts]
+        return [p for p in self.state.parts.values() if p.id not in self.hidden_parts and not p.reference]
 
     def export(self, path, part_ids=None):
-        parts = [p for p in self.state.parts.values() if part_ids is None or p.id in part_ids]
+        parts = [p for p in self.state.parts.values() if (part_ids is None or p.id in part_ids) and not p.reference]
         if not parts:
             raise K.KernelError("Nothing to export")
         shapes = [p.shape for p in parts]

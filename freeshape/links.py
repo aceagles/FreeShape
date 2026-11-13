@@ -314,7 +314,7 @@ class LinkResolver:
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
         p = studio.state.parts.get(_translate_part(studio, src.get("part")))
-        if p is None:
+        if p is None or getattr(p, "reference", False):
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         return p
 
@@ -403,7 +403,8 @@ class LinkResolver:
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
         if src.get("part") in (None, "*"):
-            parts = [p for p in studio.state.parts.values() if p.id not in studio.hidden_parts]
+            parts = [p for p in studio.state.parts.values() if p.id not in studio.hidden_parts
+                     and not getattr(p, "reference", False)]
             if not parts:
                 raise K.KernelError(f"“{studio.name}” has no parts")
             if len(parts) == 1:
@@ -413,7 +414,7 @@ class LinkResolver:
                 self._shape_cache[key] = K.compound([p.shape for p in parts])
             return self._shape_cache[key]
         p = studio.state.parts.get(_translate_part(studio, src["part"]))
-        if p is None:
+        if p is None or getattr(p, "reference", False):
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         if src.get("flat"):
             if p.id not in getattr(studio.state, "sheet", {}):

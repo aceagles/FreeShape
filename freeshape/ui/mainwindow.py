@@ -2978,12 +2978,12 @@ class MainWindow(QMainWindow):
             d = self.docs.get(self.tabs.tabData(i))
             if d is None:
                 continue
-            if d.kind == "studio" and d.state.parts:
+            if d.kind == "studio" and any(not p.reference for p in d.state.parts.values()):
                 base = self.studio_link(d)
                 entries = []
-                if len(d.state.parts) > 1:
+                if sum(not p.reference for p in d.state.parts.values()) > 1:
                     entries.append(("All parts", {**base, "part": "*"}))
-                for p in d.state.parts.values():
+                for p in (p for p in d.state.parts.values() if not p.reference):
                     entries.append((p.name, {**base, "part": p.id, "part_name": p.name}))
                     if p.id in getattr(d.state, "sheet", {}):
                         entries.append((p.name + " — flat pattern", {**base, "part": p.id, "part_name": p.name,
@@ -3004,7 +3004,8 @@ class MainWindow(QMainWindow):
             return
         if preselect is None and self.doc is not None and self.doc.kind in ("studio", "assembly"):
             if self.doc.kind == "studio":
-                only = next(iter(self.doc.state.parts)) if len(self.doc.state.parts) == 1 else "*"
+                own = [i for i, p in self.doc.state.parts.items() if not p.reference]
+                only = own[0] if len(own) == 1 else "*"
                 preselect = self.studio_link(self.doc, only)
             else:
                 preselect = self.assembly_link(self.doc)

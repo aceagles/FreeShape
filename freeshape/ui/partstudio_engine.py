@@ -675,7 +675,7 @@ class LiveTabs:
             return None if doc.shape is None else geometry_hash(doc.shape)
         if kind == "variables":
             return dict(doc.values()[0])
-        return {p.id: hash_of(p.shape) for p in doc.state.parts.values()}
+        return {p.id: hash_of(p.shape) for p in doc.state.parts.values() if not getattr(p, "reference", False)}
 
     def link_edges(self, doc):
         """[(consumer tab id, upstream tab id)] of the engine's Link graph, read on the engine thread."""

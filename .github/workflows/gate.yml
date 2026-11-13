@@ -46,6 +46,11 @@ permissions:
 env:
   # Number of test shards per OCP venv. Keep equal to the length of the test job's `shard` list.
   SHARDS: "3"
+  # Passed into every gate container. numpy's OpenBLAS picks its kernels by CPU model, and the runners
+  # (AMD EPYC, or Xeons with AVX-512) are not the dev box (AVX2, Haswell kernels). An ill-conditioned
+  # sketch solve then differs in the 7th decimal and misses its golden (abs_tol 1e-7). Pinning the
+  # kernel type makes the arithmetic the same as where the goldens were recorded.
+  OPENBLAS_CORETYPE: Haswell
 
 jobs:
   prepare:
@@ -165,7 +170,8 @@ jobs:
           IMAGE: ${{ needs.prepare.outputs.image }}
           CMD: ${{ fromJSON(needs.prepare.outputs.commands)[matrix.step] }}
         run: |
-          docker run --rm --network none -u "$(id -u):$(id -g)" -e HOME=/tmp \
+          lscpu | grep 'Model name'
+          docker run --rm --network none -u "$(id -u):$(id -g)" -e HOME=/tmp -e OPENBLAS_CORETYPE \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e "GIT_CONFIG_VALUE_0=*" \
             -v "$PWD:$PWD" -v "$PWD/.git:$PWD/.git:ro" -w "$PWD" \
             --entrypoint sh "$IMAGE" -c "$CMD"
@@ -216,7 +222,9 @@ jobs:
             echo "shard total $(grep -c :: /tmp/all) selected $(wc -l < /tmp/ids)"
             tr '\n' '\0' < /tmp/ids | xargs -0 fs_pytest
         run: |
+          lscpu | grep 'Model name'
           docker run --rm --network none -u "$(id -u):$(id -g)" -e HOME=/tmp -e OCP -e SHARD -e SHARDS \
+            -e OPENBLAS_CORETYPE \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e "GIT_CONFIG_VALUE_0=*" \
             -v "$PWD:$PWD" -v "$PWD/.git:$PWD/.git:ro" -w "$PWD" \
             --entrypoint sh "$IMAGE" -c "$SCRIPT"

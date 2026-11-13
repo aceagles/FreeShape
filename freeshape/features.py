@@ -48,6 +48,7 @@ FEATURE_LABELS = {
     "linear_pattern": "Linear pattern", "circular_pattern": "Circular pattern",
     "boolean": "Boolean", "import": "Import", "hole": "Hole", "variable": "Variable",
     "variable_studio_ref": "Variable Studio reference",
+    "mate_connector": "Mate connector",
     "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
 }
@@ -233,11 +234,15 @@ class ModelState:
     # The one place a part's names live; Part itself carries none, so a Part rebuilt with a new name or
     # colour keeps its map. Read it through `named()`, write it through `set_named()`.
     names: dict = field(default_factory=dict)
+    # mate_connector feature id -> {name, part, frame {o, z, x}}: the connectors a Part Studio publishes,
+    # in the coordinates of the studio (the frames are plain lists, so the mapping is JSON-ready).
+    connectors: dict = field(default_factory=dict)
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
-                          set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts})
+                          set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts},
+                          dict(self.connectors))
 
     def named(self, pid):
         """The element map of part `pid`, or None when it has none or the part's shape has since been
@@ -925,6 +930,43 @@ def run_variable_studio_ref(state, f):
             raise K.KernelError(f"Variable Studio has no variable #{missing[0]}")
         values = {n: values[n] for n in names}
     state.vars.update(values)
+
+
+def run_mate_connector(state, f):
+    """A Mate connector on a face or edge of a part (or on the studio origin, owned by a part).
+    The element is found by name (`resolve`); the frame comes from assembly.connector_frame (or snap_frame for a
+    snap point) and X is rebuilt from the stored `x_ref` (I1.14), so an edit that changes which face edge is
+    longest does not turn X round. `flip` reverses Z and keeps X. A missing element or owner part is an error."""
+    from . import assembly as AS
+    p = f["params"]
+    ref = p.get("ref")
+    if not ref:
+        raise K.KernelError("Pick a face or edge, or the origin, for the mate connector")
+    if ref.get("origin"):
+        owner = p.get("owner")
+        if owner not in state.parts:
+            raise K.KernelError(f"Part {owner} is gone: the origin connector has no owner" if owner
+                                else "Pick the part that owns the origin connector")
+        pid, fr = owner, {"o": np.zeros(3), "z": np.array([0.0, 0.0, 1.0]), "x": np.array([1.0, 0.0, 0.0])}
+    else:
+        kind = p.get("kind", "face")
+        pid, sub = resolve(state, ref, kind, f["id"])
+        shape = state.parts[pid].shape
+        subs = K.faces(shape) if kind == "face" else K.edges(shape)
+        index = next(i for i, s in enumerate(subs) if s.IsSame(sub))
+        if p.get("snap"):
+            fr = AS.snap_frame(shape, kind, index, p["snap"], state.named(pid))
+        else:
+            fr = AS.connector_frame(shape, kind, index, p.get("click"))
+        if p.get("x_ref") is not None:
+            fr = AS.apply_x_ref(fr, p["x_ref"])
+    z = AS.unit(fr["z"])
+    x = AS.unit(np.asarray(fr["x"], float) - (np.asarray(fr["x"], float) @ z) * z)
+    if p.get("flip"):
+        z = -z
+    state.connectors[f["id"]] = {"name": str(p.get("name") or f.get("name") or ""), "part": pid,
+                                 "frame": {"o": [float(a) for a in fr["o"]], "z": [float(a) for a in z],
+                                           "x": [float(a) for a in x]}}
 
 
 def run_sketch(state, f):
@@ -1646,6 +1688,7 @@ RUNNERS = {
     "linear_pattern": run_linear_pattern, "circular_pattern": run_circular_pattern,
     "boolean": run_boolean, "import": run_import, "hole": run_hole, "variable": run_variable,
     "variable_studio_ref": run_variable_studio_ref,
+    "mate_connector": run_mate_connector,
     "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
@@ -1677,6 +1720,8 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "import": {"data": "", "filename": ""},
         "variable": {"name": "", "expr": "10"},
         "variable_studio_ref": {"source": {}},
+        "mate_connector": {"name": "", "ref": None, "kind": "face", "click": None, "snap": None,
+                           "x_ref": None, "flip": False, "owner": None},
         "thread": {"faces": [], "size": "auto", "major": 6.0, "pitch": 1.0, "length_mode": "full", "length": 10.0,
                    "left_hand": False, "clearance": 0.0},
         "hole": {"sketch": None, "standard": "clearance", "size": "M4", "fit": "normal", "diameter": 5.0,

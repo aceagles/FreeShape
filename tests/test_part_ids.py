@@ -111,9 +111,9 @@ def test_resaved_studio_holds_alias_table_and_dependents_write_new_ids(tmp_path)
     L.repair_links(r, g)
     asm.save()
     g.save()
-    for name in ("hinge.fasm", "arm_v1.fdwg"):
+    for name, fmt in (("hinge.fasm", "assembly"), ("arm_v1.fdwg", "drawing")):
         text = (tmp_path / name).read_text()
-        assert json.loads(text)["version"] == Mig.latest_version("assembly" if name.endswith(".fasm") else "drawing")
+        assert json.loads(text)["version"] == Mig.latest_version(fmt)
         assert not OLD_ID.search(text), name
     with open(tmp_path / "hinge.fasm") as fh:
         parts = {i["source"]["part"] for i in json.load(fh)["instances"]}

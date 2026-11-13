@@ -1,6 +1,6 @@
 """I1.4 renamed the part-id keys in tests/golden/ (scripts/rekey_goldens.py) without touching a value.
 Check that: each golden file at the base commit, with tests/golden/rekey_map.json applied, equals the
-committed file apart from `_meta` -- every value identical, no key lost, none added."""
+committed file apart from `_meta` -- every value identical, no base key lost. Entries added since the base are allowed."""
 import json
 import os
 import subprocess
@@ -63,7 +63,8 @@ def test_rekeyed_goldens_equal_base_apart_from_part_id_keys():
                 seen_entries.add(f"{group}/{key}")
             expected[key] = _rename(value, table)
         got = {k: v for k, v in current.items() if k != "_meta"}
-        assert sorted(got) == sorted(expected), f"{name}: top-level entries added or lost"
+        lost = sorted(set(expected) - set(got))
+        assert not lost, f"{name}: base entries lost: {lost}"      # entries added since the base are allowed
         for key in expected:
             assert got[key] == expected[key], f"{name}/{key}: differs from the base after applying the rekey map"
     assert seen_entries == {e for e in rekey if e.split("/")[0] + ".json" in names}, \

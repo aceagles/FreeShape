@@ -72,6 +72,273 @@ def _hline():
 
 # =========================================================================== left panel
 
+# What each Mate value is called in the UI, and its unit (rotations in degrees, translations in mm).
+VALUE_LABELS = {"rz": "Rotation", "tz": "Slide", "tx": "Slide X", "ty": "Slide Y"}
+
+
+def value_unit(dof):
+    return "°" if dof.startswith("r") else "mm"
+
+
+def value_rows(mate):
+    """(freedom, label, text, unit) for each Mate value of `mate`; empty for fastened and ball."""
+    vals = mate.get("values") or {}
+    return [(d, VALUE_LABELS.get(d, d), fmt(float(vals.get(d, 0.0))), value_unit(d))
+            for d in A.MATE_VALUE_DOFS.get(mate["type"], ())]
+
+
+def limit_rows(mate):
+    """(freedom, label, unit, lo, hi) for each limitable freedom of `mate`; lo/hi are None for no bound."""
+    lim = mate.get("limits") or {}
+    return [(d, VALUE_LABELS.get(d, d), value_unit(d), *(lim.get(d) or (None, None)))
+            for d in A.MATE_VALUE_DOFS.get(mate["type"], ())]
+
+
+def animate_defaults(mate, dof, length_scale):
+    """(start, end) for animating `dof` of `mate`: its limits, per end, else 0 and 360° or 0 and `length_scale`."""
+    lo, hi = (mate.get("limits") or {}).get(dof) or (None, None)
+    full = 360.0 if dof.startswith("r") else float(length_scale)
+    return (0.0 if lo is None else float(lo)), (full if hi is None else float(hi))
+
+
+ANIMATE_PLAYBACK_LABELS = {"single": "Single", "reciprocate": "Reciprocate", "loop": "Loop"}
+ANIMATE_TICK_MS = 40       # one frame per tick: the default 60 steps play in 2.4 s
+
+
+class AnimateDialog(QFrame):
+    """Play one Mate value of a mate from a start to an end value (Onshape's Animate). The model side is
+    AssemblyDoc.animate_frame / end_animate; this dialog only chooses the values and paces the frames."""
+    finished = Signal()
+
+    def __init__(self, ctl, mid, dof=None):
+        super().__init__(ctl.w.viewport)
+        _floating(self)
+        self.ctl, self.doc, self.mid = ctl, ctl.doc, mid
+        mate = self.doc.mate(mid)
+        self.rows = value_rows(mate)
+        self.dofs = [r[0] for r in self.rows]
+        self._seq, self._idx = [], 0
+        self._reverse = False
+        self._open = False          # an animation is open in the doc (end_animate still owed)
+        self._framing = False       # inside animate_frame: ignore the notification it sends
+        self._closed = False
+        self._timer = QTimer(self)
+        self._timer.setInterval(ANIMATE_TICK_MS)
+        self._timer.timeout.connect(self._tick)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 10)
+        lay.setSpacing(6)
+        head, self.title = _head(self, "Animate " + mate["name"], "m_" + mate["type"], None, self.reject,
+                                 cancel_tip="Close (Esc)")
+        self.title.setReadOnly(True)
+        lay.addLayout(head)
+        lay.addWidget(_hline())
+
+        def row(label, widget, unit=None):
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            lab = QLabel(label)
+            lab.setFixedWidth(80)
+            h.addWidget(lab)
+            h.addWidget(widget, 1)
+            unit_lab = QLabel(unit or "")
+            unit_lab.setFixedWidth(24)
+            h.addWidget(unit_lab)
+            lay.addWidget(w)
+            return w, unit_lab
+
+        self.dof_box = QComboBox()
+        for d, label, _t, unit in self.rows:
+            self.dof_box.addItem(f"{label} ({unit})", d)
+        self.dof_row, _ = row("Freedom", self.dof_box)
+        self.dof_row.setVisible(len(self.rows) > 1)
+        self.start_edit, self.end_edit = QLineEdit(), QLineEdit()
+        _, self.unit_start = row("Start", self.start_edit)
+        _, self.unit_end = row("End", self.end_edit)
+        self.steps_edit = QLineEdit("60")
+        row("Steps", self.steps_edit)
+        self.playback = QComboBox()
+        for k, label in ANIMATE_PLAYBACK_LABELS.items():
+            self.playback.addItem(label, k)
+        row("Playback", self.playback)
+        self.current = QLineEdit()
+        self.current.setReadOnly(True)
+        _, self.unit_cur = row("Current", self.current)
+        btns = QHBoxLayout()
+        self.play_btn = QPushButton("Play")
+        self.play_btn.clicked.connect(self.toggle_play)
+        self.reverse_btn = QPushButton("Reverse")
+        self.reverse_btn.setToolTip("Play the other way round")
+        self.reverse_btn.clicked.connect(self.reverse)
+        btns.addWidget(self.play_btn)
+        btns.addWidget(self.reverse_btn)
+        lay.addLayout(btns)
+        self.msg = QLabel("")
+        self.msg.setWordWrap(True)
+        self.msg.setObjectName("muted")
+        lay.addWidget(self.msg)
+        self.dof_box.currentIndexChanged.connect(lambda _i: self._freedom_changed())
+        if dof in self.dofs:
+            self.dof_box.setCurrentIndex(self.dofs.index(dof))
+        self._freedom_changed()
+        self.doc.listeners.append(self._doc_notified)
+        self.setFixedWidth(300)
+        self.adjustSize()
+        self.move(12, 12)
+        self.show()
+
+    # -- fields
+    @property
+    def dof(self):
+        return self.dof_box.currentData()
+
+    def _freedom_changed(self):
+        mate = self.doc.mate(self.mid)
+        unit = value_unit(self.dof)
+        for lab in (self.unit_start, self.unit_end, self.unit_cur):
+            lab.setText(unit)
+        if mate is not None:
+            lo, hi = animate_defaults(mate, self.dof, self.doc.length_scale())
+            self.start_edit.setText(fmt(lo))
+            self.end_edit.setText(fmt(hi))
+        self._show_current()
+
+    def _show_current(self):
+        mate = self.doc.mate(self.mid)
+        if mate is not None:
+            self.current.setText(fmt(float((mate.get("values") or {}).get(self.dof, 0.0))))
+
+    def _read(self):
+        """(start, end, steps, playback) from the fields; raises ValueError saying which one is wrong."""
+        ang = self.dof.startswith("r")
+        vals = []
+        for name, ed in (("Start", self.start_edit), ("End", self.end_edit)):
+            v = parse_number(ed.text(), angle=ang)
+            if v is None:
+                raise ValueError(f"{name}: can't read \"{ed.text()}\" as a number")
+            vals.append(float(v))
+        try:
+            steps = int(self.steps_edit.text().strip())
+        except ValueError:
+            raise ValueError(f"Steps: can't read \"{self.steps_edit.text()}\" as a whole number") from None
+        return vals[0], vals[1], steps, self.playback.currentData()
+
+    # -- playback
+    @property
+    def running(self):
+        return self._timer.isActive()
+
+    def toggle_play(self):
+        if self.running:
+            self.stop()
+        else:
+            self.play()
+
+    def play(self):
+        if self.running or self._closed:
+            return
+        try:
+            start, end, steps, mode = self._read()
+            seq = A.animate_values(start, end, steps, mode)
+        except ValueError as e:
+            self.msg.setText(str(e))
+            return
+        self.msg.setText("")
+        self._seq = seq[::-1] if self._reverse else seq
+        self._idx = 0
+        self._set_running(True)
+        self._timer.start()
+
+    def stop(self):
+        """Stop the run and put the assembly back as it was."""
+        self._set_running(False)
+        self._end()
+        self._show_current()
+
+    def reverse(self):
+        """Play the other way round: from the next Play, or from here when running."""
+        self._reverse = not self._reverse
+        self.reverse_btn.setDown(False)
+        if self.running and self._idx:
+            self._seq = self._seq[::-1]
+            self._idx = min(len(self._seq), len(self._seq) - self._idx + 1)
+
+    def _set_running(self, on):
+        if not on:
+            self._timer.stop()
+        self.play_btn.setText("Stop" if on else "Play")
+        for w in (self.dof_box, self.start_edit, self.end_edit, self.steps_edit, self.playback):
+            w.setEnabled(not on)
+
+    def _tick(self):
+        """One frame. A Single run ends, and the assembly goes back, after its last frame."""
+        if not self._seq or self._closed:
+            return
+        if self._idx >= len(self._seq):
+            self._idx = 0                       # loop (Single never gets here: it ends on the last frame)
+        value = self._seq[self._idx]
+        self._idx += 1
+        self._open = True
+        self._framing = True
+        try:
+            reached = self.doc.animate_frame(self.mid, self.dof, value)
+        except ValueError as e:                 # the mate was deleted under us
+            self._framing = False
+            self.msg.setText(str(e))
+            self.stop()
+            return
+        finally:
+            self._framing = False
+        self.current.setText(fmt(reached))
+        if self._idx >= len(self._seq) and self.playback.currentData() == "single":
+            self._set_running(False)            # keep the end value showing; the assembly goes back
+            self._end()
+
+    def _end(self):
+        if self._open:
+            self._open = False
+            self._framing = True
+            try:
+                self.doc.end_animate()
+            finally:
+                self._framing = False
+
+    def _doc_notified(self):
+        """Every animate_frame notifies; ours are ignored. Anything else that deletes the mate ends the run."""
+        if self._framing or self._closed:
+            return
+        if self.doc.mate(self.mid) is None:
+            self.reject()
+
+    # -- closing
+    def _close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self._set_running(False)
+        self._end()
+        if self._doc_notified in self.doc.listeners:
+            self.doc.listeners.remove(self._doc_notified)
+        self.finished.emit()
+
+    def accept(self):
+        self._close()
+
+    def reject(self):
+        self._close()
+
+    def closeEvent(self, e):
+        self._close()
+        super().closeEvent(e)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(e)
+
+
 class AssemblyPanel(QWidget):
     instanceClicked = Signal(str)
     instanceDouble = Signal(str)
@@ -79,6 +346,11 @@ class AssemblyPanel(QWidget):
     mateClicked = Signal(str)
     mateDouble = Signal(str)
     mateContext = Signal(str, object)
+    groupClicked = Signal(str)
+    groupContext = Signal(str, object)
+    relationClicked = Signal(str)
+    relationDouble = Signal(str)
+    relationContext = Signal(str, object)
 
     def __init__(self):
         super().__init__()
@@ -102,6 +374,19 @@ class AssemblyPanel(QWidget):
         sep.setFixedHeight(1)
         sep.setStyleSheet("background:#d5d9de;")
         lay.addWidget(sep)
+        self.group_header = QLabel("Groups")
+        self.group_header.setObjectName("sectionHeader")
+        lay.addWidget(self.group_header)
+        self.groups = QListWidget()
+        self.groups.setIconSize(QSize(18, 18))
+        self.groups.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.groups.customContextMenuRequested.connect(lambda pos: self._ctx(self.groups, pos, self.groupContext))
+        self.groups.itemClicked.connect(lambda it: self.groupClicked.emit(it.data(ROLE_ID)))
+        lay.addWidget(self.groups, 1)
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background:#d5d9de;")
+        lay.addWidget(sep)
         self.mate_header = QLabel("Mates")
         self.mate_header.setObjectName("sectionHeader")
         lay.addWidget(self.mate_header)
@@ -113,6 +398,21 @@ class AssemblyPanel(QWidget):
         self.mates.itemClicked.connect(lambda it: self.mateClicked.emit(it.data(ROLE_ID)))
         self.mates.itemDoubleClicked.connect(lambda it: self.mateDouble.emit(it.data(ROLE_ID)))
         lay.addWidget(self.mates, 2)
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background:#d5d9de;")
+        lay.addWidget(sep)
+        self.relation_header = QLabel("Relations")
+        self.relation_header.setObjectName("sectionHeader")
+        lay.addWidget(self.relation_header)
+        self.relations = QListWidget()
+        self.relations.setIconSize(QSize(18, 18))
+        self.relations.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.relations.customContextMenuRequested.connect(
+            lambda pos: self._ctx(self.relations, pos, self.relationContext))
+        self.relations.itemClicked.connect(lambda it: self.relationClicked.emit(it.data(ROLE_ID)))
+        self.relations.itemDoubleClicked.connect(lambda it: self.relationDouble.emit(it.data(ROLE_ID)))
+        lay.addWidget(self.relations, 1)
         self.status = QLabel("")
         self.status.setObjectName("muted")
         self.status.setWordWrap(True)
@@ -126,8 +426,9 @@ class AssemblyPanel(QWidget):
             sig.emit(it.data(ROLE_ID), lst.viewport().mapToGlobal(pos))
 
     def populate(self, doc, editing=None):
-        for lst in (self.instances, self.mates):
+        for lst in (self.instances, self.mates, self.groups, self.relations):
             lst.blockSignals(True)
+        sel_g = set(self.selected_groups())
         sel_i = set(self.selected_instances())
         sel_m = set(self.selected_mates())
         self.instances.clear()
@@ -159,12 +460,27 @@ class AssemblyPanel(QWidget):
                     it.setForeground(QColor(NOTICE_COLOR))
                 tips.insert(0, note["text"] + " (right-click → Accept plugin update)")
             it.setToolTip("\n".join(tips))
+            g = doc.group_of(inst["id"])
+            if g is not None:
+                tips.append("In " + g["name"])
+                it.setToolTip("\n".join(tips))
             self.instances.addItem(it)
             if inst["id"] in sel_i:
                 it.setSelected(True)
+        self.groups.clear()
+        for g in doc.groups:
+            names = [doc.instance(i)["name"] for i in g["instances"] if doc.instance(i) is not None]
+            it = QListWidgetItem(icon("group"), f"{g['name']}   ({', '.join(names)})")
+            it.setData(ROLE_ID, g["id"])
+            it.setToolTip(f"{g['name']}: " + ", ".join(names) + "\nMembers move together as one body")
+            self.groups.addItem(it)
+            if g["id"] in sel_g:
+                it.setSelected(True)
+        self.group_header.setText(f"Groups ({len(doc.groups)})")
         self.mates.clear()
         for m in doc.mates:
-            it = QListWidgetItem(icon("m_" + m["type"]), m["name"])
+            limited = any(lo is not None or hi is not None for _d, _l, _u, lo, hi in limit_rows(m))
+            it = QListWidgetItem(icon("m_" + m["type"]), m["name"] + (" ⇥" if limited else ""))
             it.setData(ROLE_ID, m["id"])
             names = []
             for side in ("a", "b"):
@@ -183,12 +499,44 @@ class AssemblyPanel(QWidget):
                 it.setForeground(QColor("#d93025"))
                 it.setIcon(icon("error"))
                 tip += "\n" + err
+            for _d, label, text, unit in value_rows(m):
+                tip += f"\n{label}: {text} {unit}"
+            for _d, label, unit, lo, hi in limit_rows(m):
+                if lo is not None or hi is not None:
+                    tip += (f"\n{label} limits: {'no min' if lo is None else fmt(lo)} to "
+                            f"{'no max' if hi is None else fmt(hi)} {unit}")
             if m["id"] == editing:
                 it.setBackground(QColor("#ffe9b8"))
             it.setToolTip(tip)
             self.mates.addItem(it)
             if m["id"] in sel_m:
                 it.setSelected(True)
+        sel_r = set(self.selected_relations())
+        self.relations.clear()
+        for r in doc.relations:
+            it = QListWidgetItem(icon("r_" + r["type"]), r["name"])
+            it.setData(ROLE_ID, r["id"])
+            names = []
+            for side in ("a", "b"):
+                m = doc.mate(r[side]["mate"]) if r.get(side) else None
+                names.append(m["name"] if m else "?")
+            tip = f"{A.RELATION_TYPES[r['type']]['label']}: {names[0]}  ↔  {names[1]}"
+            err = doc.errors.get(r["id"])
+            if r.get("suppressed"):
+                it.setForeground(QColor("#9aa3ae"))
+                f = QFont()
+                f.setStrikeOut(True)
+                it.setFont(f)
+                tip += "\nSuppressed"
+            elif err:
+                it.setForeground(QColor("#d93025"))
+                it.setIcon(icon("error"))
+                tip += "\n" + err
+            it.setToolTip(tip)
+            self.relations.addItem(it)
+            if r["id"] in sel_r:
+                it.setSelected(True)
+        self.relation_header.setText(f"Relations ({len(doc.relations)})")
         self.inst_header.setText(f"Instances ({len(doc.instances)})")
         self.mate_header.setText(f"Mates ({len(doc.mates)})")
         if not doc.instances:
@@ -200,8 +548,21 @@ class AssemblyPanel(QWidget):
             if bad:
                 txt += f" · {bad} mate(s) failing"
             self.status.setText(txt + "\nDrag parts to move them through their mates.")
-        for lst in (self.instances, self.mates):
+        for lst in (self.instances, self.mates, self.groups, self.relations):
             lst.blockSignals(False)
+
+    def selected_relations(self):
+        return [it.data(ROLE_ID) for it in self.relations.selectedItems()]
+
+    def select_mates(self, ids):
+        self.mates.blockSignals(True)
+        for i in range(self.mates.count()):
+            it = self.mates.item(i)
+            it.setSelected(it.data(ROLE_ID) in ids)
+        self.mates.blockSignals(False)
+
+    def selected_groups(self):
+        return [it.data(ROLE_ID) for it in self.groups.selectedItems()]
 
     def selected_instances(self):
         return [it.data(ROLE_ID) for it in self.instances.selectedItems()]
@@ -447,12 +808,33 @@ class MateDialog(QFrame):
         lay.addWidget(self.offset_row)
         self.angle_row, self.angle = self._num_row("Angle", self.mate.get("angle", 0.0), "angle", "°")
         lay.addWidget(self.angle_row)
+        self.values_box = QWidget()
+        self.values_lay = QVBoxLayout(self.values_box)
+        self.values_lay.setContentsMargins(0, 0, 0, 0)
+        self.values_lay.setSpacing(2)
+        self.value_labels = {}
+        lay.addWidget(self.values_box)
+        # Limits: staged here, applied with set_limits by the controller on Accept (Cancel never touches them)
+        self.limits_check = QCheckBox("Limits")
+        self.limits_check.setChecked(bool(self.mate.get("limits")))
+        self.limits_check.toggled.connect(lambda _c: self._refresh_limits())
+        lay.addWidget(self.limits_check)
+        self.limits_box = QWidget()
+        self.limits_lay = QVBoxLayout(self.limits_box)
+        self.limits_lay.setContentsMargins(0, 0, 0, 0)
+        self.limits_lay.setSpacing(2)
+        self.limit_edits = {}
+        self._limit_text = {d: [fmt(lo), fmt(hi)] for d, _l, _u, lo, hi in limit_rows(self.mate)}
+        self.limits = None               # {freedom: (lo, hi)} once accepted
+        lay.addWidget(self.limits_box)
         self.err = QLabel("")
         self.err.setObjectName("dialogError")
         self.err.setWordWrap(True)
         self.err.hide()
         lay.addWidget(self.err)
         self.active = None
+        self._live = True
+        self.doc.listeners.append(self._doc_notified)
         self.set_type(self.mate["type"], preview=False)
         self.flip.setChecked(bool(self.mate.get("flip")))
         self._apply_preselection(preselection)
@@ -506,9 +888,11 @@ class MateDialog(QFrame):
         if self.is_new and len(base) == 2 and base[0] in [v[0] for v in A.MATE_TYPES.values()]:
             self.title.setText(self.doc.make_mate(t)["name"] if self.is_new else self.title.text())
         self.angle_row.setVisible(t in ("fastened", "slider"))
-        self.offset_row.setVisible(t in ("fastened", "revolute", "planar", "ball"))
+        self.offset_row.setVisible(t in ("fastened", "revolute", "planar", "pin_slot", "ball"))
         self.rot.setVisible(t in ("fastened", "slider"))
         self.flip.setVisible(t != "ball")
+        self._refresh_limits()
+        self._refresh_values()
         self.adjustSize()
         if preview:
             self.schedule()
@@ -516,6 +900,98 @@ class MateDialog(QFrame):
     def _set(self, key, value):
         self.mate[key] = value
         self.schedule()
+
+    # read-only Mate values: one row per freedom, kept current while the document changes
+    def _refresh_values(self):
+        live = self.doc.mate(self.mate["id"]) if not self.is_new else None
+        src = dict(self.mate)
+        if live is not None and live["type"] == self.mate["type"]:
+            src["values"] = live.get("values")
+        rows = value_rows(src)
+        if list(self.value_labels) != [r[0] for r in rows]:
+            while self.values_lay.count():
+                self.values_lay.takeAt(0).widget().deleteLater()
+            self.value_labels = {}
+            for d, label, _t, unit in rows:
+                w = QWidget()
+                h = QHBoxLayout(w)
+                h.setContentsMargins(0, 0, 0, 0)
+                lab = QLabel("Value" if len(rows) == 1 else label)
+                lab.setFixedWidth(60)
+                h.addWidget(lab)
+                val = QLabel()
+                val.setObjectName("muted")
+                h.addWidget(val, 1)
+                h.addWidget(QLabel(unit))
+                self.values_lay.addWidget(w)
+                self.value_labels[d] = val
+        for d, _l, text, _u in rows:
+            self.value_labels[d].setText(text)
+        self.values_box.setVisible(bool(rows))
+
+    # Limits: a min and a max field per freedom, blank meaning no limit at that end
+    def _refresh_limits(self):
+        dofs = A.MATE_VALUE_DOFS.get(self.mate["type"], ())
+        for d, (lo, hi) in self.limit_edits.items():
+            self._limit_text[d] = [lo.text(), hi.text()]
+        while self.limits_lay.count():
+            self.limits_lay.takeAt(0).widget().deleteLater()
+        self.limit_edits = {}
+        self.limits_check.setVisible(bool(dofs))
+        show = bool(dofs) and self.limits_check.isChecked()
+        if show:
+            for d in dofs:
+                w = QWidget()
+                h = QHBoxLayout(w)
+                h.setContentsMargins(0, 0, 0, 0)
+                lab = QLabel(VALUE_LABELS.get(d, d))
+                lab.setFixedWidth(60)
+                h.addWidget(lab)
+                lo_t, hi_t = self._limit_text.get(d, ["", ""])
+                lo, hi = QLineEdit(lo_t), QLineEdit(hi_t)
+                lo.setPlaceholderText("min")
+                hi.setPlaceholderText("max")
+                h.addWidget(lo, 1)
+                h.addWidget(hi, 1)
+                h.addWidget(QLabel(value_unit(d)))
+                self.limits_lay.addWidget(w)
+                self.limit_edits[d] = (lo, hi)
+        self.limits_box.setVisible(show)
+
+    def limit_values(self):
+        """{freedom: (lo, hi)} for every freedom of the mate type; None is no bound, and an unticked Limits
+        gives no bounds anywhere. Raises ValueError (with a message for the user) on bad text or min > max."""
+        out = {d: (None, None) for d in A.MATE_VALUE_DOFS.get(self.mate["type"], ())}
+        if not self.limits_check.isChecked():
+            return out
+        for d, edits in self.limit_edits.items():
+            bounds = []
+            for ed, end in zip(edits, ("min", "max")):
+                text = ed.text().strip()
+                if not text:
+                    bounds.append(None)
+                    continue
+                v = parse_number(text, angle=value_unit(d) == "°")
+                if v is None:
+                    raise ValueError(f"{VALUE_LABELS.get(d, d)} {end}: can't read \"{text}\" as a number")
+                bounds.append(float(v))
+            if None not in bounds and bounds[0] > bounds[1]:
+                raise ValueError(f"{VALUE_LABELS.get(d, d)}: the minimum is above the maximum")
+            out[d] = tuple(bounds)
+        return out
+
+    def _doc_notified(self):
+        if not self._live:
+            return
+        try:
+            self._refresh_values()
+        except RuntimeError:             # the dialog was deleted without accept/reject
+            self._detach()
+
+    def _detach(self):
+        self._live = False
+        if self._doc_notified in self.doc.listeners:
+            self.doc.listeners.remove(self._doc_notified)
 
     def _rotate90(self):
         a = (float(self.mate.get("angle", 0.0) or 0.0) + 90.0) % 360.0
@@ -631,6 +1107,7 @@ class MateDialog(QFrame):
         else:
             self.doc.solve()
             self._error("")
+        self._refresh_values()
         self.ctl.show_scene()
         self.ctl.update_triads()
 
@@ -640,13 +1117,334 @@ class MateDialog(QFrame):
         if not (self.mate.get("a") and self.mate.get("b")):
             self._error("Pick a mate connector on each of the two parts first.")
             return
+        try:
+            self.limits = self.limit_values()
+        except ValueError as e:
+            self._error(str(e))
+            return
+        lim = {d: v for d, v in (self.mate.get("limits") or {}).items() if d in self.limits}
+        if lim:
+            self.mate["limits"] = lim          # drop limits on freedoms a changed type no longer has
+        else:
+            self.mate.pop("limits", None)
+        self._detach()
         self._restore()
         self.accepted.emit()
 
     def reject(self):
         self._timer.stop()
+        self._detach()
         self._restore()
         self.doc.solve()
+        self.rejected.emit()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.accept()
+        elif e.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(e)
+
+
+# =========================================================================== relation dialog
+
+def mate_freedoms(mate, kind):
+    """The freedoms of `mate` of one kind (DOF_KINDS), in MATE_VALUE_DOFS order."""
+    return [d for d in A.MATE_VALUE_DOFS.get(mate["type"], ()) if A.dof_kind(d) == kind]
+
+
+class RelationDialog(QFrame):
+    """Add or edit a relation (gear, rack and pinion, screw, linear), driven by A.RELATION_TYPES. Two mate fields
+    are filled from the mate list or by clicking a part near a mate's connector (one field for a same_mate type).
+    A freedom chooser appears for a side only when its mate has several freedoms of the kind that side needs.
+    Nothing is previewed: adding a relation moves no part (ADR 0005)."""
+    accepted = Signal()
+    rejected = Signal()
+
+    def __init__(self, ctl, rel, is_new):
+        super().__init__(ctl.w.viewport)
+        _floating(self)
+        self.ctl = ctl
+        self.doc = ctl.doc
+        self.rel = copy.deepcopy(rel)
+        self.is_new = is_new
+        self.result = None
+        self.sel = {s: (rel.get(s) or {}).get("mate") for s in ("a", "b")}
+        self.dof_choice = {s: (rel.get(s) or {}).get("dof") for s in ("a", "b")}
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 10)
+        lay.setSpacing(6)
+        head, self.title = _head(self, self.rel["name"], "r_" + self.rel["type"], self.accept, self.reject)
+        self.head_icon = head.itemAt(0).widget()
+        lay.addLayout(head)
+        lay.addWidget(_hline())
+        trow = QHBoxLayout()
+        trow.setSpacing(2)
+        self.type_buttons = {}
+        for t, spec in A.RELATION_TYPES.items():
+            b = QToolButton()
+            b.setIcon(icon("r_" + t))
+            b.setIconSize(QSize(22, 22))
+            b.setCheckable(True)
+            b.setToolTip(f"{spec['label']} — {spec['help']}")
+            b.clicked.connect(lambda _=False, tt=t: self.set_type(tt))
+            trow.addWidget(b)
+            self.type_buttons[t] = b
+        trow.addStretch(1)
+        lay.addLayout(trow)
+        self.type_label = QLabel("")
+        self.type_label.setObjectName("muted")
+        self.type_label.setWordWrap(True)
+        lay.addWidget(self.type_label)
+        self.fields, self.choosers = {}, {}
+        for side in ("a", "b"):
+            f = ConnectorField("")
+            f.activated.connect(self.activate)
+            f.clear_btn.clicked.connect(lambda _=False, s=side: self._clear(s))
+            lay.addWidget(f)
+            self.fields[side] = f
+            combo = QComboBox()
+            combo.currentIndexChanged.connect(lambda _i, s=side: self._chosen(s))
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            lab = QLabel("Freedom")
+            lab.setFixedWidth(60)
+            h.addWidget(lab)
+            h.addWidget(combo, 1)
+            lay.addWidget(row)
+            self.choosers[side] = (row, combo)
+        hint = QLabel("Click a mate in the list, or a part next to a mate's connector in the view.")
+        hint.setWordWrap(True)
+        hint.setObjectName("muted")
+        lay.addWidget(hint)
+        rrow = QWidget()
+        h = QHBoxLayout(rrow)
+        h.setContentsMargins(0, 0, 0, 0)
+        self.ratio_label = QLabel("Ratio")
+        self.ratio_label.setFixedWidth(60)
+        h.addWidget(self.ratio_label)
+        self.ratio = QLineEdit(fmt(float(self.rel.get("ratio", 1.0))))
+        h.addWidget(self.ratio, 1)
+        self.ratio_unit = QLabel("")
+        h.addWidget(self.ratio_unit)
+        lay.addWidget(rrow)
+        self.reverse = QCheckBox("Reverse")
+        self.reverse.setChecked(bool(self.rel.get("reverse")))
+        self.reverse.setToolTip("Make the second freedom move the opposite way")
+        lay.addWidget(self.reverse)
+        self.err = QLabel("")
+        self.err.setObjectName("dialogError")
+        self.err.setWordWrap(True)
+        self.err.hide()
+        lay.addWidget(self.err)
+        self.active = self.fields["a"]
+        self.set_type(self.rel["type"])
+        self.activate(self.fields["a"] if not self.sel["a"] else self.fields["b"] if not self.sel["b"]
+                      else self.fields["a"])
+        self.setFixedWidth(300)
+        self.adjustSize()
+        self.move(12, 12)
+        self.show()
+
+    # ------------------------------------------------------------------ state
+    @property
+    def spec(self):
+        return A.RELATION_TYPES[self.rel["type"]]
+
+    def set_type(self, t):
+        old = self.rel["type"]
+        self.rel["type"] = t
+        spec = self.spec
+        for k, b in self.type_buttons.items():
+            b.setChecked(k == t)
+        self.type_label.setText(f"<b>{spec['label']}</b> — {spec['help']}")
+        self.head_icon.setPixmap(icon("r_" + t).pixmap(20, 20))
+        if self.is_new and self.title.text() == self.doc.make_relation(old)["name"]:
+            self.title.setText(self.doc.make_relation(t)["name"])
+        self.ratio_label.setText("Distance" if spec["ratio_unit"].endswith("/rev") else "Ratio")
+        self.ratio_unit.setText(spec["ratio_unit"])
+        if spec.get("same_mate"):
+            self.sel["a"] = self.sel["a"] or self.sel["b"]
+            self.sel["b"] = self.sel["a"]
+            self.active = self.fields["a"]
+        elif A.RELATION_TYPES[old].get("same_mate") and self.sel["a"] == self.sel["b"]:
+            self.sel["b"] = None
+        self.fields["b"].setVisible(not spec.get("same_mate"))
+        self._normalise()
+        self._refresh()
+
+    def _side_label(self, side):
+        spec = self.spec
+        if spec.get("same_mate"):
+            return "Cylindrical mate"
+        kind = spec[side]
+        if spec["a"] != spec["b"]:
+            return f"{'Rotation' if kind == 'rotation' else 'Slide'} mate"
+        return f"{'First' if side == 'a' else 'Second'} mate"
+
+    def _options(self, side):
+        m = self.doc.mate(self.sel[side]) if self.sel[side] else None
+        return mate_freedoms(m, self.spec[side]) if m is not None else []
+
+    def _normalise(self):
+        """A type with two different kinds (rack and pinion) wants the rotation on a and the translation on b:
+        if the mates were picked the other way round, swap them."""
+        spec = self.spec
+        if spec["a"] == spec["b"] or spec.get("same_mate") or not (self.sel["a"] and self.sel["b"]):
+            return
+        if not self._options("a") or not self._options("b"):
+            swapped = {"a": self.sel["b"], "b": self.sel["a"]}
+            ma, mb = self.doc.mate(swapped["a"]), self.doc.mate(swapped["b"])
+            if ma is not None and mb is not None and mate_freedoms(ma, spec["a"]) and mate_freedoms(mb, spec["b"]):
+                self.sel = swapped
+                self.dof_choice = {"a": None, "b": None}
+
+    def _refresh(self):
+        problems = []
+        for side in ("a", "b"):
+            f = self.fields[side]
+            f.findChild(QLabel).setText(self._side_label(side) + f" ({self.spec[side]})")
+            mid = self.sel[side]
+            m = self.doc.mate(mid) if mid else None
+            if m is None:
+                self.sel[side] = None
+                f.text.setText("Click to select" if f is self.active else "—")
+                f.text.setStyleSheet("color:#8a94a3;")
+            else:
+                f.text.setText(m["name"])
+                f.text.setStyleSheet("")
+            opts = self._options(side)
+            row, combo = self.choosers[side]
+            if m is not None and not opts:
+                problems.append(f"{m['name']} has no {self.spec[side]} freedom.")
+            if [combo.itemData(i) for i in range(combo.count())] != opts:
+                combo.blockSignals(True)
+                combo.clear()
+                for d in opts:
+                    combo.addItem(f"{VALUE_LABELS.get(d, d)} ({value_unit(d)})", d)
+                combo.blockSignals(False)
+            if self.dof_choice[side] not in opts:
+                self.dof_choice[side] = opts[0] if opts else None
+            if opts:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(opts.index(self.dof_choice[side]))
+                combo.blockSignals(False)
+            row.setVisible(len(opts) > 1)
+        self._error(" ".join(problems))
+        self.adjustSize()
+        self.ctl.update_triads()
+
+    def _chosen(self, side):
+        d = self.choosers[side][1].currentData()
+        if d is not None:
+            self.dof_choice[side] = d
+
+    def _clear(self, side):
+        self.sel[side] = None
+        if self.spec.get("same_mate"):
+            self.sel["a"] = self.sel["b"] = None
+        self.dof_choice[side] = None
+        self.activate(self.fields[side])
+        self._refresh()
+
+    def activate(self, field):
+        if self.active is not None:
+            self.active.set_active(False)
+        self.active = field
+        field.set_active(True)
+        self.ctl.w.viewport.select_filter = {"face", "edge"}
+        self._refresh()
+
+    def _active_side(self):
+        return "a" if self.active is self.fields["a"] or self.spec.get("same_mate") else "b"
+
+    def pick_mate(self, mid):
+        """Put mate `mid` into the active field; when only the other side's kind fits (rack and pinion) it
+        goes there instead. Returns True if the mate was taken."""
+        m = self.doc.mate(mid)
+        if m is None:
+            return False
+        spec = self.spec
+        want = self._active_side()
+        sides = [want] if spec.get("same_mate") else [want, "b" if want == "a" else "a"]
+        target = next((s for s in sides if mate_freedoms(m, spec[s])), None)
+        if target is None:
+            kinds = " or ".join(sorted({spec["a"], spec["b"]}))
+            self._error(f"{m['name']} has no {kinds} freedom for a {spec['label']} relation.")
+            return False
+        self.sel[target] = mid
+        self.dof_choice[target] = None
+        if spec.get("same_mate"):
+            self.sel["b"] = mid
+            self.dof_choice["b"] = None
+        self._normalise()
+        other = "b" if target == "a" else "a"
+        if not self.sel[other] and not spec.get("same_mate"):
+            self.activate(self.fields[other])
+        else:
+            self._refresh()
+        return True
+
+    def handle_pick(self, pick: Pick):
+        """A click on a part: take the mate whose connector on that part is nearest the click."""
+        if pick.kind not in ("face", "edge", "part"):
+            return
+        iid = pick.key[0]
+        vp = self.ctl.w.viewport
+        click = vp.surface_point(*vp.last_click) if vp.last_click else None
+        spec = self.spec
+        cands = []
+        for m in self.doc.mates:
+            for side in ("a", "b"):
+                c = m.get(side)
+                if c and c["inst"] == iid and any(mate_freedoms(m, spec[s]) for s in ("a", "b")):
+                    o = np.asarray(self.doc.world_frame(c)["o"], float)
+                    d = 0.0 if click is None else float(np.linalg.norm(o - click))
+                    cands.append((d, m["id"]))
+        if not cands:
+            self._error("No mate on that part has a freedom this relation can use.")
+            return
+        self.pick_mate(min(cands)[1])
+
+    def _error(self, text):
+        self.err.setText(text)
+        self.err.setVisible(bool(text))
+        self.adjustSize()
+
+    # ------------------------------------------------------------------ result
+    def build(self):
+        """The relation as the fields stand. Raises ValueError, with a message for the user, if it can't be."""
+        if not (self.sel["a"] and self.sel["b"]):
+            raise ValueError("Pick a mate for each side first." if not self.spec.get("same_mate")
+                             else "Pick a cylindrical mate first.")
+        text = self.ratio.text().strip()
+        v = None
+        try:
+            v = parse_number(text)
+        except Exception:
+            pass
+        if v is None:
+            raise ValueError(f"{self.ratio_label.text()}: can't read \"{text}\" as a number")
+        r = copy.deepcopy(self.rel)
+        r["name"] = self.title.text().strip() or r["name"]
+        r["a"] = {"mate": self.sel["a"], "dof": self.dof_choice["a"]}
+        r["b"] = {"mate": self.sel["b"], "dof": self.dof_choice["b"]}
+        r["ratio"] = float(v)
+        r["reverse"] = self.reverse.isChecked()
+        self.doc._check_relation(r)
+        return r
+
+    def accept(self):
+        try:
+            self.result = self.build()
+        except ValueError as e:
+            self._error(str(e))
+            return
+        self.accepted.emit()
+
+    def reject(self):
         self.rejected.emit()
 
     def keyPressEvent(self, e):
@@ -844,6 +1642,7 @@ class AssemblyController:
         self.panel = AssemblyPanel()
         self.insert_panel = None
         self.mate_dialog = None
+        self.relation_dialog = None
         self.move_dialog = None
         self._drag = None
         self._interf = None          # last interference result (ghost meshes)
@@ -853,9 +1652,14 @@ class AssemblyController:
         p.instanceClicked.connect(self._instance_clicked)
         p.instanceDouble.connect(self.open_source)
         p.instanceContext.connect(self.instance_menu)
-        p.mateClicked.connect(lambda _mid: self.update_triads())
+        p.mateClicked.connect(self._mate_clicked)
         p.mateDouble.connect(self.edit_mate)
         p.mateContext.connect(self.mate_menu)
+        p.groupClicked.connect(self.select_group)
+        p.groupContext.connect(self.group_menu)
+        p.relationClicked.connect(self.select_relation)
+        p.relationDouble.connect(self.edit_relation)
+        p.relationContext.connect(self.relation_menu)
 
     @property
     def doc(self):
@@ -885,6 +1689,11 @@ class AssemblyController:
         if self.mate_dialog is not None:
             m = self.mate_dialog.mate
             conns = [m.get("a"), m.get("b")]
+        elif self.relation_dialog is not None:
+            for side in ("a", "b"):
+                m = doc.mate(self.relation_dialog.sel[side])
+                if m:
+                    conns += [m.get("a"), m.get("b")]
         else:
             for mid in self.panel.selected_mates():
                 m = doc.mate(mid)
@@ -1060,12 +1869,141 @@ class AssemblyController:
             self.doc.add_mate(m)
         else:
             self.doc.replace_mate(m)
+        self.apply_limits(m["id"], d.limits)
         err = self.doc.errors.get(m["id"])
         self.w.status.showMessage(f"{m['name']}: {err}" if err else f"{m['name']} added" if d.is_new
                                   else f"{m['name']} updated", 6000)
 
+    def apply_limits(self, mid, limits):
+        """Store the dialog's limits with set_limits, one call per freedom that changed."""
+        mt = self.doc.mate(mid)
+        for dof, (lo, hi) in (limits or {}).items():
+            cur = (mt.get("limits") or {}).get(dof) or (None, None)
+            if (lo, hi) == tuple(cur):
+                continue
+            try:
+                self.doc.set_limits(mid, dof, lo, hi)
+            except ValueError as e:
+                self.w.status.showMessage(str(e), 6000)
+
     def _mate_rejected(self):
         self._close_mate()
+        self.on_changed()
+
+    # ------------------------------------------------------------------ relations
+    def _mate_clicked(self, mid):
+        if self.relation_dialog is not None:
+            self.relation_dialog.pick_mate(mid)
+        self.update_triads()
+
+    def start_relation(self, rtype, edit_rid=None):
+        w = self.w
+        if w.mode != "idle":
+            if self.relation_dialog is not None and self.relation_dialog.is_new and edit_rid is None:
+                self.relation_dialog.set_type(rtype)
+            return
+        if not self.doc.mates:
+            w.status.showMessage("Add a mate before adding a relation", 5000)
+            return
+        self.close_insert()
+        if edit_rid:
+            r = self.doc.relation(edit_rid)
+            if r is None:
+                return
+            is_new = False
+        else:
+            r, is_new = self.doc.make_relation(rtype), True
+        w.mode = "dialog"
+        self.relation_dialog = RelationDialog(self, r, is_new)
+        w._adapt_tree(self.relation_dialog)
+        self.relation_dialog.accepted.connect(self._relation_accepted)
+        self.relation_dialog.rejected.connect(self._relation_rejected)
+        self.vp.pick_handler = self.relation_dialog.handle_pick
+        if is_new:                                   # mates already selected in the list fill the fields
+            for mid in self.panel.selected_mates()[:2]:
+                self.relation_dialog.pick_mate(mid)
+
+    def edit_relation(self, rid):
+        r = self.doc.relation(rid)
+        if r is not None and self.w.mode == "idle":
+            self.start_relation(r["type"], rid)
+
+    def select_relation(self, rid):
+        """Highlight a relation's two mates (their connector triads), as the relation dialog does."""
+        r = self.doc.relation(rid)
+        if r is None:
+            return
+        self.panel.select_mates({r[s]["mate"] for s in ("a", "b") if r.get(s)})
+        self.vp.clear_selection()
+        self.update_triads()
+
+    def rename_relation(self, rid, name=None):
+        # the model's rename() does not know relations; edit behind a checkpoint, as rename_group does
+        from PySide6.QtWidgets import QInputDialog
+        r = self.doc.relation(rid)
+        if r is None:
+            return
+        if name is None:
+            name, ok = QInputDialog.getText(self.w, "Rename relation", "Name:", text=r["name"])
+            if not ok:
+                return
+        name = name.strip()
+        if name and name != r["name"]:
+            self.doc.checkpoint()
+            r["name"] = name
+            self.doc.notify()
+
+    def suppress_relation(self, rid, flag):
+        if self.doc.relation(rid) is not None:
+            self.doc.set_relation_suppressed(rid, flag)
+
+    def delete_relation(self, rid):
+        if self.doc.relation(rid) is not None:
+            self.doc.delete_relation(rid)
+
+    def relation_menu(self, rid, gpos):
+        from PySide6.QtWidgets import QMenu
+        r = self.doc.relation(rid)
+        if r is None or self.w.mode != "idle":
+            return
+        m = QMenu(self.w)
+        m.addAction("Edit…", lambda: self.edit_relation(rid))
+        m.addAction("Rename…", lambda: self.rename_relation(rid))
+        sup = bool(r.get("suppressed"))
+        m.addAction("Unsuppress" if sup else "Suppress", lambda: self.suppress_relation(rid, not sup))
+        m.addSeparator()
+        m.addAction("Delete", lambda: self.delete_relation(rid))
+        m.exec(gpos)
+
+    def _close_relation(self):
+        d = self.relation_dialog
+        if d is not None:
+            d.hide()
+            d.deleteLater()
+        self.relation_dialog = None
+        self.w.mode = "idle"
+        vp = self.vp
+        vp.pick_handler = None
+        vp.select_filter = None
+        vp.clear_selection()
+        return d
+
+    def _relation_accepted(self):
+        d = self._close_relation()
+        r = d.result
+        try:
+            if d.is_new:
+                self.doc.add_relation(r)
+            else:
+                self.doc.replace_relation(r)
+        except ValueError as e:
+            self.w.status.showMessage(str(e), 6000)
+        else:
+            self.w.status.showMessage(f"{r['name']} added" if d.is_new else f"{r['name']} updated", 6000)
+        self.update_triads()
+
+    def _relation_rejected(self):
+        self._close_relation()
         self.on_changed()
 
     # ------------------------------------------------------------------ moving
@@ -1147,16 +2085,28 @@ class AssemblyController:
     def draw_overlay(self, p):
         self.gizmo.draw(p)
 
-    def _group_has_mates(self, iid):
-        return any(not m.get("suppressed") and m.get("a") and m.get("b")
-                   and iid in (m["a"]["inst"], m["b"]["inst"]) for m in self.doc.mates)
+    def _moves_with(self, iid):
+        """The instances that move rigidly with `iid`: its mate-connected instances and its Group's members,
+        closed over both."""
+        doc = self.doc
+        group = {iid}
+        while True:
+            more = set(group)
+            for i in group:
+                more |= doc._groups()[i]
+                g = doc.group_of(i)
+                if g is not None:
+                    more |= set(g["instances"])
+            if more == group:
+                return group
+            group = more
 
     def apply_motion(self, iid, M, T0s, local_pts, exact=False, turn=False):
         """Move instance `iid` by the world motion M (from the poses T0s), as far as its mates allow:
         a part with no mates, or a mated group with nothing fixed, moves exactly (the whole group together);
         otherwise the solver moves it within its mates' freedom."""
         doc = self.doc
-        group = doc._groups()[iid] if self._group_has_mates(iid) else {iid}
+        group = self._moves_with(iid)
         if not any(doc.instance(i).get("fixed") for i in group):
             for i in group:
                 doc.instance(i)["T"] = A.orthonormalize(M @ T0s[i]).tolist()
@@ -1202,7 +2152,7 @@ class AssemblyController:
         target = o + t * dr
         d["moved"] = True
         doc = self.doc
-        group = doc._groups()[d["inst"]] if self._group_has_mates(d["inst"]) else {d["inst"]}
+        group = self._moves_with(d["inst"])
         if not any(doc.instance(i).get("fixed") for i in group):
             # nothing in this group is fixed: slide the whole group together, like Onshape — the mates
             # between them stay exactly as they are and nothing spins round
@@ -1273,6 +2223,8 @@ class AssemblyController:
             m.addAction("Use the part's colour", lambda: doc.set_color(iid, None))
         m.addSeparator()
         m.addAction("Move / rotate…", lambda: self.start_move(ids))
+        ga = m.addAction("Group", lambda: self.group_selected(ids))
+        ga.setEnabled(self.can_group(ids))
         m.addAction("Duplicate", lambda: self.duplicate(ids))
         if inst["source"].get("kind") == "studio":
             m.addAction("Open Part Studio", lambda: self.open_source(iid))
@@ -1313,6 +2265,55 @@ class AssemblyController:
         done = self.doc.acknowledge_standard_versions(ids)
         self.w.status.showMessage(f"Accepted the plugin update on {len(done)} standard part(s)", 5000)
 
+    # groups ------------------------------------------------------------------
+    def can_group(self, ids=None):
+        """Group needs two or more instances, none of them already in a group (as in FreeCAD, where a part
+        belongs to one container)."""
+        ids = list(dict.fromkeys(self.selected_instance_ids() if ids is None else ids))
+        return len(ids) >= 2 and all(self.doc.group_of(i) is None for i in ids)
+
+    def group_selected(self, ids=None):
+        ids = self.selected_instance_ids() if ids is None else ids
+        if not self.can_group(ids):
+            return None
+        return self.doc.add_group(ids)
+
+    def ungroup(self, gid):
+        if any(g["id"] == gid for g in self.doc.groups):
+            self.doc.delete_group(gid)
+
+    def rename_group(self, gid, name=None):
+        from PySide6.QtWidgets import QInputDialog
+        g = next((g for g in self.doc.groups if g["id"] == gid), None)
+        if g is None:
+            return
+        if name is None:
+            name, ok = QInputDialog.getText(self.w, "Rename group", "Name:", text=g["name"])
+            if not ok:
+                return
+        name = name.strip()
+        if name and name != g["name"]:
+            self.doc.checkpoint()
+            g["name"] = name
+            self.doc.notify()
+
+    def select_group(self, gid):
+        g = next((g for g in self.doc.groups if g["id"] == gid), None)
+        if g is None:
+            return
+        self.panel.select_instances(set(g["instances"]))
+        self.vp.clear_selection()
+        self.update_triads()
+
+    def group_menu(self, gid, gpos):
+        from PySide6.QtWidgets import QMenu
+        if self.w.mode != "idle":
+            return
+        m = QMenu(self.w)
+        m.addAction("Rename…", lambda: self.rename_group(gid))
+        m.addAction("Delete (ungroup)", lambda: self.ungroup(gid))
+        m.exec(gpos)
+
     def mate_menu(self, mid, gpos):
         from PySide6.QtWidgets import QMenu
         doc = self.doc
@@ -1327,6 +2328,18 @@ class AssemblyController:
         m.addAction("Rename…", lambda: self.rename(mid))
         m.addAction("Unsuppress" if mt.get("suppressed") else "Suppress",
                     lambda: doc.set_suppressed(mid, not mt.get("suppressed")))
+        if A.MATE_VALUE_DOFS.get(mt["type"]):
+            m.addAction("Set value…", lambda: self.set_value_dialog(mid))
+        if A.MATE_VALUE_DOFS.get(mt["type"]):
+            m.addAction("Animate…", lambda: self.start_animate(mid))
+        limited = [r for r in limit_rows(mt) if r[3] is not None or r[4] is not None]
+        if limited:
+            sub = m.addMenu("Apply limit position")
+            for dof, label, unit, lo, hi in limited:
+                for end, bound in (("Min", lo), ("Max", hi)):
+                    if bound is not None:
+                        sub.addAction(f"{label} {end} ({fmt(bound)} {unit})",
+                                      lambda d=dof, b=bound: self.set_mate_value(mid, d, b))
         m.addSeparator()
         m.addAction("Delete", lambda: doc.delete_mates(ids))
         err = doc.errors.get(mid)
@@ -1335,6 +2348,60 @@ class AssemblyController:
             a = m.addAction("⚠ " + err)
             a.setEnabled(False)
         m.exec(gpos)
+
+    def set_value_dialog(self, mid):
+        """Ask for the freedom (when there are several) and a number, then drive the mate there."""
+        from PySide6.QtWidgets import QInputDialog
+        mt = self.doc.mate(mid)
+        rows = value_rows(mt) if mt else []
+        if not rows:
+            return
+        row = rows[0]
+        if len(rows) > 1:
+            names = [f"{r[1]} ({r[3]})" for r in rows]
+            pick, ok = QInputDialog.getItem(self.w, "Set value", "Freedom:", names, 0, False)
+            if not ok:
+                return
+            row = rows[names.index(pick)]
+        dof, label, text, unit = row
+        v, ok = QInputDialog.getDouble(self.w, "Set value", f"{label} ({unit}):", float(text), -1e6, 1e6, 3)
+        if ok:
+            self.set_mate_value(mid, dof, v)
+
+    animate_dialog = None
+
+    def start_animate(self, mid):
+        mt = self.doc.mate(mid)
+        if mt is None or not A.MATE_VALUE_DOFS.get(mt["type"]) or self.w.mode != "idle":
+            return
+        self.close_insert()
+        self.w.mode = "dialog"
+        self.animate_dialog = AnimateDialog(self, mid)
+        self.w._adapt_tree(self.animate_dialog)
+        self.animate_dialog.finished.connect(self._close_animate)
+
+    def _close_animate(self):
+        d = self.animate_dialog
+        if d is not None:
+            d.hide()
+            d.deleteLater()
+        self.animate_dialog = None
+        self.w.mode = "idle"
+        self.on_changed()
+
+    def set_mate_value(self, mid, dof, value):
+        """Drive freedom `dof` of mate `mid` to `value`; a failure goes to the status bar. Returns (reached, ok)."""
+        mt = self.doc.mate(mid)
+        name = mt["name"] if mt else mid
+        try:
+            reached, ok = self.doc.drive_mate(mid, dof, float(value))
+        except ValueError as e:
+            self.w.status.showMessage(str(e), 6000)
+            return None, False
+        if not ok:
+            self.w.status.showMessage(
+                f"{name}: stopped at {fmt(reached)} {value_unit(dof)}, it can't reach {fmt(float(value))}", 8000)
+        return reached, ok
 
     def viewport_menu(self, pk, gpos):
         from PySide6.QtWidgets import QMenu
@@ -1476,8 +2543,12 @@ class AssemblyController:
     def escape(self):
         if self.mate_dialog is not None:
             self.mate_dialog.reject()
+        elif self.relation_dialog is not None:
+            self.relation_dialog.reject()
         elif self.move_dialog is not None:
             self.move_dialog.reject()
+        elif self.animate_dialog is not None:
+            self.animate_dialog.reject()
         elif self.insert_panel is not None:
             self.close_insert()
         else:
@@ -1490,8 +2561,12 @@ class AssemblyController:
         """Close any open assembly dialog (switching tabs etc.)."""
         if self.mate_dialog is not None:
             self.mate_dialog.reject()
+        if self.relation_dialog is not None:
+            self.relation_dialog.reject()
         if self.move_dialog is not None:
             self.move_dialog.reject()
+        if self.animate_dialog is not None:
+            self.animate_dialog.reject()
         self.close_insert()
         self._drag = None
         self.vp.triads = []

@@ -137,3 +137,34 @@ def test_sketch_dialog_see_through_checkbox_persists():
     w.dialog.see_through.setChecked(True)
     assert w.settings["sketch_see_through"] == "true" and w.viewport.sketch_see_through
     w.cancel_sketch()
+
+
+def test_editing_extrude_can_repick_region_after_clearing_it():
+    """Editing an extrude whose sketch is hidden, clearing its region and clicking the region again must work:
+    the sketch stays on screen for the life of the dialog and the click goes to the regions field, not to a
+    hidden Merge scope field."""
+    from freeshape.ui.mainwindow import regions_of_sketch
+    from freeshape.ui.viewport import Pick
+    w = _window()
+    sid = sketch_feature(w.doc, lambda s: rect_lines(s, 0, 0, 10, 10))
+    w.doc.rebuild()
+    w.start_feature("extrude", preselect=regions_of_sketch(w.doc.state, sid))
+    w.dialog._do_preview()
+    w.commit_dialog()
+    assert sid in w.doc.hidden_features                  # a consumed sketch is hidden, as in Onshape
+    fid = w.doc.features[-1]["id"]
+    assert not w.doc.errors.get(fid)
+
+    w.start_feature("extrude", edit_fid=fid)
+    d = w.dialog
+    d._do_preview()
+    prof = d.fields["profiles"]
+    assert d.active_field is None or d.active_field.isVisibleTo(d), "a hidden field must never be the active one"
+    prof.clear()
+    d._do_preview()
+    assert d.feature["params"]["regions"] == []
+    assert sid in [f for f, _sr, _m in w.viewport.sketches], "the sketch must stay visible so it can be re-picked"
+    assert d.active_field is prof, "clearing a field makes it the one that takes the next click"
+    d.handle_pick(Pick("region", (sid, 0)))
+    assert len(d.feature["params"]["regions"]) == 1
+    w.cancel_dialog()

@@ -2558,6 +2558,11 @@ class MainWindow(QMainWindow):
     def _tree_context(self, key, gpos):
         kind, fid = key.split(":", 1)
         m = QMenu(self)
+        if kind == "origin":
+            if self.mode == "idle":
+                self._add_origin_connector_action(m)
+                m.exec(gpos)
+            return
         if kind == "std_plane":
             m.addAction("New sketch", lambda: (self.viewport.set_selection([Pick("plane", ("std", fid))]),
                                                self.start_sketch()))
@@ -2627,6 +2632,17 @@ class MainWindow(QMainWindow):
         except K.KernelError as e:
             self.status.showMessage(str(e), 6000)
         self._populate_lists()              # the row's status text
+
+    def _add_origin_connector_action(self, m):
+        a = m.addAction("Mate connector at origin", self.mate_connector_at_origin)
+        a.setObjectName("mate_connector_at_origin")
+        return a
+
+    def mate_connector_at_origin(self):
+        """Open the Mate connector dialog with the origin preselected and an Owner part row."""
+        self.start_feature("mate_connector")
+        if self.mode == "dialog" and self.dialog is not None and self.dialog.ftype == "mate_connector":
+            self.dialog.use_origin()
 
     def _rename_feature(self, fid):
         f = self.doc.feature(fid)
@@ -2729,6 +2745,11 @@ class MainWindow(QMainWindow):
             return
         if self.mode != "idle":
             return
+        lp = self.viewport.mapFromGlobal(gpos)
+        osp = self.viewport.cam.to_screen(np.zeros(3))
+        if abs(osp[0] - lp.x()) <= 10 and abs(osp[1] - lp.y()) <= 10:      # right-click on the Origin
+            self._add_origin_connector_action(m)
+            m.addSeparator()
         if pk is not None:
             if pk.kind in ("plane", "face"):
                 item = pick_to_item(self.viewport, pk, {"plane"}, getattr(self.doc, "state", None))

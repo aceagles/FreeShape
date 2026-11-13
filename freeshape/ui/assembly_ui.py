@@ -587,6 +587,13 @@ class MateDialog(QFrame):
                 best = (d, iid, pc["id"])
         return None if best is None else best[1:]
 
+    def handle_miss(self):
+        """A click that hit no face or edge: it may still be on a connector triad floating off the part."""
+        vp = self.ctl.w.viewport
+        hit = self._own_connector_at(vp.last_click) if vp.last_click else None
+        if hit is not None:
+            self.pick_named(*hit)
+
     def handle_pick(self, pick: Pick):
         vp = self.ctl.w.viewport
         hit = self._own_connector_at(vp.last_click) if vp.last_click else None
@@ -943,6 +950,12 @@ class AssemblyController:
                 x = A.unit(fr["x"])
                 tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75),
                             "size_px": 26, "width": 1.8})
+        for c in doc.connectors:             # explicit origin connectors, wherever their instance is
+            if doc.instance(c["inst"]) is not None and not doc.instance(c["inst"]).get("hidden"):
+                fr = doc.world_frame(doc.named_connector(c["inst"], c["id"]))
+                z = A.unit(fr["z"])
+                x = A.unit(fr["x"])
+                tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75)})
         self.vp.triads = tri
         self.vp.update()
 
@@ -1092,6 +1105,7 @@ class AssemblyController:
         self.mate_dialog.rejected.connect(self._mate_rejected)
         self.vp.pick_handler = self.mate_dialog.handle_pick
         self.vp.snap_provider = self.mate_dialog.snap_candidates
+        self.vp.miss_handler = self.mate_dialog.handle_miss
         self.panel.populate(self.doc, None if is_new else m["id"])
 
     def edit_mate(self, mid):
@@ -1108,6 +1122,7 @@ class AssemblyController:
         self.w.mode = "idle"
         vp = self.vp
         vp.pick_handler = None
+        vp.miss_handler = None
         vp.snap_provider = None
         vp.clear_snaps()
         vp.select_filter = None
@@ -1333,6 +1348,8 @@ class AssemblyController:
         if inst.get("color"):
             m.addAction("Use the part's colour", lambda: doc.set_color(iid, None))
         m.addSeparator()
+        a = m.addAction("Add mate connector to instance origin", lambda: doc.add_instance_origin_connector(iid))
+        a.setObjectName("add_connector_instance_origin")
         m.addAction("Move / rotate…", lambda: self.start_move(ids))
         m.addAction("Duplicate", lambda: self.duplicate(ids))
         if inst["source"].get("kind") == "studio":

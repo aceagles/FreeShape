@@ -564,6 +564,7 @@ SCHEMAS = {
     "mate_connector": [
         {"t": "text", "key": "name", "label": "Name", "placeholder": "e.g. Hinge pin"},
         _sel("element", "Face or edge (hover for snap points)", {"element"}, multi=False),
+        {"t": "owner_part", "key": "owner", "label": "Owner part", "visible": lambda p: (p.get("ref") or {}).get("origin")},
         _check("flip", "Flip (reverse the Z axis)"),
     ],
     "variable": [
@@ -1045,6 +1046,17 @@ class FeatureDialog(_ResizableFrame):
             cb.currentIndexChanged.connect(lambda i, cb=cb, k=spec["key"]: self._choose_sketch(cb.itemData(i)))
             cb.setToolTip("Holes go at this sketch's points and circle centres. You can also just click the sketch.")
             self._sketch_cb = cb
+            h.addWidget(cb)
+            return row
+        if t == "owner_part":
+            cb = QComboBox()
+            cb.addItem("— select —", None)
+            for pid, part in self.base_state.parts.items():
+                cb.addItem(getattr(part, "name", pid), pid)
+            cb.setCurrentIndex(max(0, cb.findData(p.get(spec["key"]))))
+            cb.currentIndexChanged.connect(lambda i, cb=cb, k=spec["key"]: self._set(k, cb.itemData(i)))
+            cb.setToolTip("The part the origin connector belongs to. Assemblies mate it as that part's own connector.")
+            self.widgets[spec["key"]] = cb
             h.addWidget(cb)
             return row
         if t == "studio_choice":
@@ -1915,12 +1927,29 @@ class FeatureDialog(_ResizableFrame):
             self.err.hide()
         self.adjustSize()
 
+    def use_origin(self):
+        """Mate connector at origin: the reference is the studio origin; one part is the owner without asking."""
+        p = self.feature["params"]
+        p["ref"], p["kind"], p["click"], p["snap"], p["x_ref"] = {"origin": True}, "origin", None, None, None
+        cb = self.widgets.get("owner")
+        if cb is not None and p.get("owner") is None and len(self.base_state.parts) == 1:
+            p["owner"] = next(iter(self.base_state.parts))
+        if cb is not None:
+            cb.setCurrentIndex(max(0, cb.findData(p.get("owner"))))
+        self._sync_visibility()
+        self.schedule_preview()
+
     def accept(self):
         if self.ftype == "derived" and self._derived_pending():
             return                              # another Document without a Version: nothing to pin yet
         if self.ftype == "variable_studio_ref" and self._ref_pending():
             return                              # likewise a Variable Studio reference
         self._timer.stop()
+        if self.ftype == "mate_connector" and (self.feature["params"].get("ref") or {}).get("origin") \
+                and self.feature["params"].get("owner") not in self.base_state.parts:
+            self.err.setText("⚠ Pick the part that owns the origin connector")
+            self.err.show()
+            return
         self.feature["name"] = self.title.text().strip() or self.feature["name"]
         if self.ftype == "hole":
             import re as _re

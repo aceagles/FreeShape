@@ -329,7 +329,7 @@ class FeatureList(_EyeMixin, QListWidget):
         if it is None:
             return
         k = it.data(ROLE_KIND)
-        if k in ("feature", "std_plane"):
+        if k in ("feature", "std_plane", "origin"):
             self.contextRequested.emit(f"{k}:{it.data(ROLE_ID)}", self.viewport().mapToGlobal(pos))
 
     def selected_feature_ids(self):

@@ -162,6 +162,7 @@ class Viewport(QOpenGLWidget):
         self._thumb = False            # drawing a clean picture for the home page
         self._orbiting = False
         self.last_click = None
+        self.miss_handler = None        # callable() on a click that picks nothing while pick_handler is set
         # hover snap points (the mate dialog sets snap_provider: Pick -> [{"type", "pw", ...}])
         self.snap_provider = None
         self.snap_base: Pick | None = None
@@ -1901,6 +1902,8 @@ class Viewport(QOpenGLWidget):
         if self.pick_handler is not None:
             if pk is not None:
                 self.pick_handler(pk)
+            elif self.miss_handler is not None:
+                self.miss_handler()
             self.update()
             return
         if pk is None:

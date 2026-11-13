@@ -293,6 +293,7 @@ class SelectionField(QFrame):
 
     def clear(self):
         self.items = []
+        self.activated.emit(self)           # an emptied field is the one the next click is meant for
         self.changed.emit()
 
     def toggle(self, item):
@@ -877,10 +878,7 @@ class FeatureDialog(_ResizableFrame):
                 self.fields[k].items = list(items)
         if is_new and preselection:
             self._apply_preselection(preselection)
-        first = next((f for f in self.fields.values() if not f.items), None) or next(iter(self.fields.values()), None)
-        if first:
-            self.activate(first)
-        self._sync_visibility()
+        self._sync_visibility()              # also picks the field that takes the first click
         self.schedule_preview()
         self.adjustSize()
         self.move(12, 12)
@@ -1061,6 +1059,14 @@ class FeatureDialog(_ResizableFrame):
         for spec, w in self.rows:
             vis = spec.get("visible")
             w.setVisible(True if vis is None else bool(vis(p)))
+        # clicks go to the active field, so it must be one the user can see: a row that has just been
+        # hidden (Merge scope when the operation becomes New) hands over to the first visible empty field
+        af = self.active_field
+        if af is None or not af.isVisibleTo(self):
+            shown = [f for f in self.fields.values() if f.isVisibleTo(self)]
+            nxt = next((f for f in shown if not f.items), None) or (shown[0] if shown else None)
+            if nxt is not None:
+                self.activate(nxt)
         for f in self.fields.values():
             f.refresh(self.doc)
         self.adjustSize()

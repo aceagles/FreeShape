@@ -17,19 +17,52 @@ _FUNCS = {"sqrt": math.sqrt, "sin": lambda d: math.sin(math.radians(d)), "cos": 
 _CONST = {"pi": math.pi, "e": math.e}
 
 
+class ExprError(ValueError):
+    """An expression couldn't be evaluated; the message is meant to be shown to the user as-is."""
+
+
+class ExprLimitError(ExprError):
+    """Raised when evaluating an expression would be too expensive: an exponent or a result beyond the
+    fixed caps below. Caught the same way as any other ExprError -- it exists as its own type only so a
+    caller that wants to explain *why* (rather than just report failure) can tell the two apart."""
+
+
+MAX_EXPONENT = 1000      # 9 ** 9 ** 9 is rejected on its outer '**' (exponent 387420489), well before a
+                          # `pow` call would ever start chewing through a number that large
+MAX_MAGNITUDE = 1e12      # generous for any real CAD length (mm) or angle (deg); catches runaway results
+
+
+def _cap(v):
+    if math.isnan(v) or abs(v) > MAX_MAGNITUDE:
+        raise ExprLimitError(f"result is too large (over {MAX_MAGNITUDE:g})")
+    return v
+
+
+def _apply(fn, *args):
+    """Call fn(*args), turning the OverflowError a too-large-but-finite-exponent float op can still raise
+    (e.g. 1000 ** 300) into the same ExprLimitError a too-large result gets from _cap."""
+    try:
+        return fn(*args)
+    except OverflowError:
+        raise ExprLimitError(f"result is too large (over {MAX_MAGNITUDE:g})") from None
+
+
 def _eval(node):
     if isinstance(node, ast.Expression):
         return _eval(node.body)
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return float(node.value)
+        return _cap(float(node.value))
     if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
-        return _OPS[type(node.op)](_eval(node.left), _eval(node.right))
+        left, right = _eval(node.left), _eval(node.right)
+        if isinstance(node.op, ast.Pow) and abs(right) > MAX_EXPONENT:
+            raise ExprLimitError(f"exponent is too large (over {MAX_EXPONENT})")
+        return _cap(_apply(_OPS[type(node.op)], left, right))
     if isinstance(node, ast.UnaryOp) and type(node.op) in _OPS:
-        return _OPS[type(node.op)](_eval(node.operand))
+        return _cap(_apply(_OPS[type(node.op)], _eval(node.operand)))
     if isinstance(node, ast.Name) and node.id in _CONST:
         return _CONST[node.id]
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FUNCS:
-        return float(_FUNCS[node.func.id](*[_eval(a) for a in node.args]))
+        return _cap(_apply(lambda *a: float(_FUNCS[node.func.id](*a)), *[_eval(a) for a in node.args]))
     raise ValueError("bad expression")
 
 
@@ -65,16 +98,14 @@ def _split_terms(t):
     return [(sg, term.strip()) for sg, term in out if term.strip()] if len(out) > 1 else [(1, t)]
 
 
-def parse_number(text, angle=False, variables=None):
-    """Returns a float in mm (or degrees), or None if the text can't be parsed
-    (including when it uses a variable that isn't defined)."""
+def _parse(text, angle=False, variables=None):
+    """Raising core of parse_number: returns a float in mm (or degrees), or raises ExprError (including
+    ExprLimitError for the cost caps above) naming why."""
     if isinstance(text, (int, float)):
         return float(text)
-    if text is None:
-        return None
+    if text is None or not str(text).strip():
+        raise ExprError("enter a value or expression")
     t = str(text).strip().replace(",", ".").replace("×", "*")
-    if not t:
-        return None
     if "#" in t:
         missing = []
 
@@ -86,23 +117,19 @@ def parse_number(text, angle=False, variables=None):
             return f"({float(v)!r})"
         t = VAR_RE.sub(sub, t)
         if missing:
-            return None
+            raise ExprError(f"unknown variable #{missing[0]}")
     # split at top-level + and - so a unit belongs to its own term: "#wall + 1/2 in"
     terms = _split_terms(t)
     if len(terms) > 1:
         total = 0.0
         for sign, term in terms:
-            v = parse_number(term, angle, variables)
-            if v is None:
-                return None
-            total += sign * v
+            total += sign * _parse(term, angle, variables)
         return total
     units_alt = "|".join(re.escape(u) for u in sorted(_UNITS, key=len, reverse=True))
     # a single trailing unit applies to the whole expression: "1/2 in" -> (1/2)*25.4
     m = re.match(r"^(.*?)\s*(" + units_alt + r")$", t)
     if m and m.group(1) and not re.search(r"\d\s*(" + units_alt + r")(?![A-Za-z])", m.group(1)):
-        inner = parse_number(m.group(1), angle, variables)
-        return None if inner is None else inner * _UNITS[m.group(2)]
+        return _parse(m.group(1), angle, variables) * _UNITS[m.group(2)]
 
     # otherwise apply units attached to individual numbers: "1in + 5mm"
     def unit_sub(m):
@@ -112,7 +139,22 @@ def parse_number(text, angle=False, variables=None):
     t = re.sub(pattern, unit_sub, t)
     try:
         return _eval(ast.parse(t, mode="eval"))
-    except Exception:
+    except ExprLimitError:
+        raise
+    except Exception as e:
+        raise ExprError(str(e) or "bad expression") from e
+
+
+def parse_number(text, angle=False, variables=None, *, strict=False):
+    """Returns a float in mm (or degrees), or None if the text can't be parsed
+    (including when it uses a variable that isn't defined). Pass strict=True to raise ExprError (with a
+    human-readable message, see _parse) instead of returning None -- for callers that want to report why
+    evaluation failed, such as Variable Studio naming the row."""
+    try:
+        return _parse(text, angle, variables)
+    except ExprError:
+        if strict:
+            raise
         return None
 
 

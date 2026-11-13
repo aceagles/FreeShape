@@ -1,5 +1,5 @@
 """FolderDocument: the folder-level Document -- a folder on disk holding `document.json` plus one file per
-tab (a Part Studio, an Assembly or a Drawing). Headless -- no Qt.
+tab (a Part Studio, an Assembly, a Drawing or a Variable Studio). Headless -- no Qt.
 
 Note the name clash this module works around: `freeshape.document.Document` is a *Part Studio*, not this
 folder-level Document. That class keeps its name (and its own `document` file format / migration chain --
@@ -31,14 +31,16 @@ from . import kernel as K
 from .assembly import AssemblyDoc
 from .document import Document
 from .drawing import DrawingDoc
+from .variable_studio import VariableStudioDoc
 
 MANIFEST_NAME = "document.json"
 FORMAT = "freeshape-document"
 FORMAT_VERSION = 1
 
-EXTENSIONS = {"studio": ".fshape", "assembly": ".fasm", "drawing": ".fdwg"}
-FACTORIES = {"studio": Document, "assembly": AssemblyDoc, "drawing": DrawingDoc}
-LOADERS = {"studio": Document.load, "assembly": AssemblyDoc.load, "drawing": DrawingDoc.load}
+EXTENSIONS = {"studio": ".fshape", "assembly": ".fasm", "drawing": ".fdwg", "variables": ".fvars"}
+FACTORIES = {"studio": Document, "assembly": AssemblyDoc, "drawing": DrawingDoc, "variables": VariableStudioDoc}
+LOADERS = {"studio": Document.load, "assembly": AssemblyDoc.load, "drawing": DrawingDoc.load,
+           "variables": VariableStudioDoc.load}
 
 
 def _atomic_write(path, text):

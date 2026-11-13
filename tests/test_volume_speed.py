@@ -86,12 +86,15 @@ def test_bevel_gear_is_integrated_about_a_moved_reference_point():
     assert len(K.faces(K._gk_shape(solid))) == len(K.faces(solid))
 
 
-def test_shapes_with_no_plane_through_the_reference_point_are_left_alone():
+def test_polyhedra_with_no_plane_through_the_reference_point_are_left_alone():
+    """Curved shapes are always moved (a symmetry plane through the point also stalls the integrator: hex screw)."""
     box = BRepPrimAPI_MakeBox(gp_Pnt(1, 2, 3), 10, 20, 30).Shape()
     assert K._gk_shape(box) is box
     assert K.volume(box) == pytest.approx(6000.0, abs=1e-9)
+    assert K.mass_props(box)["centroid"] == pytest.approx([6.0, 12.0, 18.0], abs=1e-9)
     bored = bevel_gear(15, 1.0, 5.0, bore=3.0).solid
-    assert K._gk_shape(bored) is bored
+    assert K._gk_shape(bored) is not bored
+    assert len(K.faces(K._gk_shape(bored))) == len(K.faces(bored))
 
 
 def test_half_cylinder_with_every_vertex_on_its_flat_face():

@@ -349,11 +349,14 @@ def _gk_shape(shape):
     """`shape` as the adaptive volume integrator should get it: itself, or a compound of it and one free vertex.
 
     OpenCascade sums each face's volume about one reference point, the mean of the shape's vertex positions
-    (roughBaryCenter in BRepGProp.cxx: every occurrence counts). A plane face through that point adds exactly
-    nothing; the integrator computes rounding noise for it and its stopping test, relative to that value, is
-    never met, so it refines for minutes. A bevel gear has 30 such faces (the flat strips containing the gear
-    axis). The extra vertex moves the mean off every plane face; a closed solid's volume and centre of mass do
-    not depend on the reference point. Shapes with no plane face through the point are returned as they are."""
+    (roughBaryCenter in BRepGProp.cxx: every occurrence counts). When that point sits where a face's
+    contribution is exactly zero or the shape is symmetric about it, the integrator computes rounding noise
+    for that face and its stopping test, relative to that value, is never met, so it refines for seconds to
+    minutes. Planes through the point (30 flat strips of a bevel gear) are one case; a hex recess in a screw
+    head, whose vertex mean lies on the plane y = 0, is another (ISO 10642 M4x12: 5.2 s, ISO 4762: 2.1 s, both
+    0.00 s once the point is off the symmetry planes). The extra vertex moves the mean by a fixed generic
+    offset; a closed solid's volume and centre of mass do not depend on the reference point. A polyhedron with
+    no plane through the point is left alone: the move adds rounding noise (1e-16) to its centre of mass."""
     pts = []
     exp = TopExp_Explorer(shape, TopAbs_VERTEX)
     while exp.More():
@@ -363,13 +366,15 @@ def _gk_shape(shape):
         return shape
     pts = np.array(pts)
     ref, size = pts.mean(axis=0), float(np.linalg.norm(np.ptp(pts, axis=0)))
-    planes = [ad.Plane() for ad in map(BRepAdaptor_Surface, faces(shape)) if ad.GetType() == GeomAbs_Plane]
+    surfaces = [BRepAdaptor_Surface(f) for f in faces(shape)]
+    planes = [ad.Plane() for ad in surfaces if ad.GetType() == GeomAbs_Plane]
 
     def degenerate(p):
         p = gp_Pnt(*p)
         return any(pl.Distance(p) < 1e-6 * size for pl in planes)
 
-    if size <= 0 or not degenerate(ref):
+    # A polyhedron is moved only when a plane passes through the point; any curved face is always moved.
+    if size <= 0 or (len(planes) == len(surfaces) and not degenerate(ref)):
         return shape
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
     for k in range(1, 9):

@@ -270,3 +270,15 @@ def test_both_appear_in_the_bill_of_materials_with_a_designation():
     assert [(r["name"], r["qty"], r["source"]) for r in rows] == [
         ("ISO 10642 M5 x 16", 3, "Standard part"), ("ISO 8734 4 mm x 20", 1, "Standard part")]
     assert all(r["volume"] and r["volume"] > 0 for r in rows)
+
+
+def test_mass_properties_of_the_screw_do_not_take_seconds():
+    """The hex recess left the mean of the vertices on a symmetry plane, and the adaptive integrator took 5 s on
+    this screw (kernel._gk_shape). The bound is far above the measured 0.01 s and below the 5 s it took."""
+    import time
+    shape = part(CSK).build({"size": "M4", "length": 12})
+    t0 = time.time()
+    mp = K.mass_props(shape)
+    assert time.time() - t0 < 2.5
+    assert mp["volume"] == pytest.approx(190.966417, rel=1e-6)
+    assert mp["centroid"][2] == pytest.approx(-4.845897, abs=1e-5)

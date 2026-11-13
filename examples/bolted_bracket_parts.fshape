@@ -1,0 +1,500 @@
+{
+ "format": "freeshape",
+ "version": 2,
+ "name": "Bolted bracket parts",
+ "uid": "c1d2916e069f4ee1912227c6a18d8f7c",
+ "features": [
+  {
+   "id": "F1",
+   "type": "sketch",
+   "name": "Plate",
+   "suppressed": false,
+   "params": {
+    "plane": {
+     "kind": "std",
+     "name": "Top"
+    },
+    "sketch": {
+     "points": {
+      "origin": [
+       0.0,
+       0.0
+      ],
+      "p1": [
+       -10.0,
+       -25.0
+      ],
+      "p2": [
+       70.0,
+       -25.0
+      ],
+      "p3": [
+       70.0,
+       25.0
+      ],
+      "p4": [
+       -10.0,
+       25.0
+      ]
+     },
+     "entities": {
+      "l5": {
+       "type": "line",
+       "p1": "p1",
+       "p2": "p2",
+       "construction": false
+      },
+      "l6": {
+       "type": "line",
+       "p1": "p2",
+       "p2": "p3",
+       "construction": false
+      },
+      "l7": {
+       "type": "line",
+       "p1": "p3",
+       "p2": "p4",
+       "construction": false
+      },
+      "l8": {
+       "type": "line",
+       "p1": "p4",
+       "p2": "p1",
+       "construction": false
+      }
+     },
+     "constraints": []
+    }
+   }
+  },
+  {
+   "id": "F2",
+   "type": "extrude",
+   "name": "Extrude 1",
+   "suppressed": false,
+   "params": {
+    "regions": [
+     {
+      "sketch": "F1",
+      "c": [
+       30.0,
+       1.7763568394002508e-16,
+       0.0
+      ],
+      "area": 3999.999999999999,
+      "loops": 1,
+      "edges": 4,
+      "name": "l5;SKT;:HF1:4,E;:M;:L(l6;SKT;:HF1:4,E;:M;:HF1:3,E|l7;SKT;:HF1:4,E;:M;:HF1:3,E|l8;SKT;:HF1:4,E;:M;:HF1:3,E);:HF1:58,F",
+      "bb": [
+       [
+        -10.0000001,
+        -25.0000001,
+        -1e-07
+       ],
+       [
+        70.0000001,
+        25.0000001,
+        1e-07
+       ]
+      ]
+     }
+    ],
+    "faces": [],
+    "end": "blind",
+    "depth": 6.0,
+    "depth2": 10.0,
+    "second": false,
+    "flip": false,
+    "op": "new"
+   }
+  },
+  {
+   "id": "F3",
+   "type": "sketch",
+   "name": "Bracket profile",
+   "suppressed": false,
+   "params": {
+    "plane": {
+     "kind": "std",
+     "name": "Front"
+    },
+    "sketch": {
+     "points": {
+      "origin": [
+       0.0,
+       0.0
+      ],
+      "p1": [
+       100.0,
+       0.0
+      ],
+      "p2": [
+       160.0,
+       0.0
+      ],
+      "p3": [
+       160.0,
+       6.0
+      ],
+      "p4": [
+       106.0,
+       6.0
+      ],
+      "p5": [
+       106.0,
+       30.0
+      ],
+      "p6": [
+       100.0,
+       30.0
+      ]
+     },
+     "entities": {
+      "l7": {
+       "type": "line",
+       "p1": "p1",
+       "p2": "p2",
+       "construction": false
+      },
+      "l8": {
+       "type": "line",
+       "p1": "p2",
+       "p2": "p3",
+       "construction": false
+      },
+      "l9": {
+       "type": "line",
+       "p1": "p3",
+       "p2": "p4",
+       "construction": false
+      },
+      "l10": {
+       "type": "line",
+       "p1": "p4",
+       "p2": "p5",
+       "construction": false
+      },
+      "l11": {
+       "type": "line",
+       "p1": "p5",
+       "p2": "p6",
+       "construction": false
+      },
+      "l12": {
+       "type": "line",
+       "p1": "p6",
+       "p2": "p1",
+       "construction": false
+      }
+     },
+     "constraints": []
+    }
+   }
+  },
+  {
+   "id": "F4",
+   "type": "extrude",
+   "name": "Extrude 2",
+   "suppressed": false,
+   "params": {
+    "regions": [
+     {
+      "sketch": "F3",
+      "c": [
+       122.28571428571429,
+       0.0,
+       7.285714285714286
+      ],
+      "area": 504.0,
+      "loops": 1,
+      "edges": 6,
+      "name": "l10;SKT;:HF3:4,E;:M;:L(l11;SKT;:HF3:4,E;:M;:HF3:3,E|l12;SKT;:HF3:4,E;:M;:HF3:3,E|l7;SKT;:HF3:4,E;:M;:HF3:3,E|l8;SKT;:HF3:4,E;:M;:HF3:3,E);:HF3:76,F",
+      "bb": [
+       [
+        99.9999999,
+        -1e-07,
+        -1e-07
+       ],
+       [
+        160.0000001,
+        1e-07,
+        30.0000001
+       ]
+      ]
+     }
+    ],
+    "faces": [],
+    "end": "symmetric",
+    "depth": 40.0,
+    "depth2": 10.0,
+    "second": false,
+    "flip": false,
+    "op": "new"
+   }
+  },
+  {
+   "id": "F5",
+   "type": "sketch",
+   "name": "M4 hole positions",
+   "suppressed": false,
+   "params": {
+    "plane": {
+     "kind": "std",
+     "name": "Top"
+    },
+    "sketch": {
+     "points": {
+      "origin": [
+       0.0,
+       0.0
+      ],
+      "p1": [
+       15.0,
+       -12.0
+      ],
+      "p3": [
+       15.0,
+       12.0
+      ],
+      "p5": [
+       50.0,
+       -12.0
+      ],
+      "p7": [
+       50.0,
+       12.0
+      ],
+      "p9": [
+       115.0,
+       -12.0
+      ],
+      "p11": [
+       115.0,
+       12.0
+      ],
+      "p13": [
+       150.0,
+       -12.0
+      ],
+      "p15": [
+       150.0,
+       12.0
+      ]
+     },
+     "entities": {
+      "pt2": {
+       "type": "point",
+       "p": "p1",
+       "construction": true
+      },
+      "pt4": {
+       "type": "point",
+       "p": "p3",
+       "construction": true
+      },
+      "pt6": {
+       "type": "point",
+       "p": "p5",
+       "construction": true
+      },
+      "pt8": {
+       "type": "point",
+       "p": "p7",
+       "construction": true
+      },
+      "pt10": {
+       "type": "point",
+       "p": "p9",
+       "construction": true
+      },
+      "pt12": {
+       "type": "point",
+       "p": "p11",
+       "construction": true
+      },
+      "pt14": {
+       "type": "point",
+       "p": "p13",
+       "construction": true
+      },
+      "pt16": {
+       "type": "point",
+       "p": "p15",
+       "construction": true
+      }
+     },
+     "constraints": []
+    }
+   }
+  },
+  {
+   "id": "F6",
+   "type": "hole",
+   "name": "M4 clearance holes",
+   "suppressed": false,
+   "params": {
+    "sketch": "F5",
+    "standard": "clearance",
+    "size": "M4",
+    "fit": "normal",
+    "diameter": 5.0,
+    "model_thread": false,
+    "thread_clearance": 0.0,
+    "left_hand": false,
+    "depth": 10.0,
+    "end": "through",
+    "style": "simple",
+    "tip": true,
+    "counterbore_dia": 9.0,
+    "counterbore_depth": 3.0,
+    "countersink_dia": 10.0
+   }
+  },
+  {
+   "id": "F7",
+   "type": "sketch",
+   "name": "M3 hole positions",
+   "suppressed": false,
+   "params": {
+    "plane": {
+     "kind": "std",
+     "name": "Top"
+    },
+    "sketch": {
+     "points": {
+      "origin": [
+       0.0,
+       0.0
+      ],
+      "p1": [
+       132.5,
+       -12.0
+      ],
+      "p3": [
+       132.5,
+       12.0
+      ]
+     },
+     "entities": {
+      "pt2": {
+       "type": "point",
+       "p": "p1",
+       "construction": true
+      },
+      "pt4": {
+       "type": "point",
+       "p": "p3",
+       "construction": true
+      }
+     },
+     "constraints": []
+    }
+   }
+  },
+  {
+   "id": "F8",
+   "type": "hole",
+   "name": "M3 tapped holes",
+   "suppressed": false,
+   "params": {
+    "sketch": "F7",
+    "standard": "tapped",
+    "size": "M3",
+    "fit": "normal",
+    "diameter": 5.0,
+    "model_thread": false,
+    "thread_clearance": 0.0,
+    "left_hand": false,
+    "depth": 10.0,
+    "end": "through",
+    "style": "simple",
+    "tip": true,
+    "counterbore_dia": 9.0,
+    "counterbore_depth": 3.0,
+    "countersink_dia": 10.0
+   }
+  },
+  {
+   "id": "F9",
+   "type": "sketch",
+   "name": "Upright hole position",
+   "suppressed": false,
+   "params": {
+    "plane": {
+     "kind": "std",
+     "name": "Right"
+    },
+    "sketch": {
+     "points": {
+      "origin": [
+       0.0,
+       0.0
+      ],
+      "p1": [
+       0.0,
+       20.0
+      ]
+     },
+     "entities": {
+      "pt2": {
+       "type": "point",
+       "p": "p1",
+       "construction": true
+      }
+     },
+     "constraints": []
+    }
+   }
+  },
+  {
+   "id": "F10",
+   "type": "hole",
+   "name": "2.5 mm hole",
+   "suppressed": false,
+   "params": {
+    "sketch": "F9",
+    "standard": "custom",
+    "size": "M4",
+    "fit": "normal",
+    "diameter": 2.5,
+    "model_thread": false,
+    "thread_clearance": 0.0,
+    "left_hand": false,
+    "depth": 10.0,
+    "end": "through",
+    "style": "simple",
+    "tip": true,
+    "counterbore_dia": 9.0,
+    "counterbore_depth": 3.0,
+    "countersink_dia": 10.0
+   }
+  }
+ ],
+ "rollback": null,
+ "overrides": {
+  "F2/1": {
+   "name": "Plate",
+   "color": [
+    0.62,
+    0.66,
+    0.72
+   ]
+  },
+  "F4/1": {
+   "name": "Bracket",
+   "color": [
+    0.36,
+    0.56,
+    0.86
+   ]
+  }
+ },
+ "hidden": [],
+ "hidden_features": [
+  "F3",
+  "F5",
+  "F7",
+  "F9"
+ ],
+ "part_aliases": {}
+}

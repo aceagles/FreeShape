@@ -1,0 +1,226 @@
+{
+ "format": "freeshape-assembly",
+ "version": 3,
+ "name": "Bolted bracket",
+ "uid": "07946e3cfd054950ad1930e3eb444ea8",
+ "instances": [
+  {
+   "id": "I1",
+   "name": "Plate <1>",
+   "source": {
+    "kind": "studio",
+    "uid": "c1d2916e069f4ee1912227c6a18d8f7c",
+    "part": "F2/1",
+    "path": "bolted_bracket_parts.fshape",
+    "studio_name": "Bolted bracket parts",
+    "relpath": "bolted_bracket_parts.fshape"
+   },
+   "T": [
+    [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     1.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "fixed": true,
+   "hidden": false,
+   "part_name": "Plate",
+   "_brep": "eJzFV01z2yAQvfMrOLZx5eEbdEzt9NRpOnUmPXZUR00y47E9TtNO/n1hkWxhAcKnJhkixLK8t7tvsZcfv7X7H8tD87f5uWlXT82+RWhxvVpcL2/w3W6/2+we3/A9/4Dfrd/j2327xYvmZd08tOjzbt38ft5tXzBFFOHgh4ZTTCbnKG8w7XDCwZRDhdHi9fCnZQ8vmBlEcUUJZtLuqyi2Uw0z+0xwt1jZeTfVfkbsHDFMnR2Dtcq9YnMmkZtxVc+FEIRKpYwSXHDvgGFJLt5iT7n8kMvPSMDS8mImyS1JJrlDLtpBsZozw6mRnGiqa2kUc1shYZ2b7vm/GUL12dojw9o72vUFd/aqe1Od6jC00acaJmelGnEdMworod/WAa/8OsT/mPqsjc/1lJsCL+4kVYAma+PRTLnJm9iXes48oCoipWOcJSsy897KnOWtvu42b4+7LV9i0j/fbu8Oz8328XXTtW6CVq+HX83aVl49rKljZXaVU/V9kBx/z6MR1B9sG+zttw/rmB5LrttxymyaVS7XF+6iEwHM1MNFmwZ6qnq+dMB6lBJ0BxfxC1YM3beIthXRqE8NIs6CUELtH7pCNw8Ig4U/3J7WOVeosyOEoJlykqqU65pXodOq0CuLeQUOioDXyB4fFUls4Fyf7mcRYG7lCn1/7kG4FYilrGE0dpzZ0R30qbFwj0cNnUkNbo78dHHMRISdhJRJmWLny9gAO9axMyTiAjiesZMCVjxHDuz4iB0P2bERu9LkqRg9SJ5MJk8P6PE4PdW7GNODtAk/QvLEOHkioCd88iJIzKCMRLyMOjIygsR0wfUY3CjDOJ4aeEkoax/K8FavHTTZaySyprpqGa2RAVToIhWMIYlKnKX+dJkUNQSSxKUzmE1fNlnMEHgxLoGK17Ewl0KmSVh1BrJlqqcxc2dTcR3BrGJxLsWcwUVzoFlX4XnQ0DBgPAftC2aoLBYqS0DZu5DOOEiASxhjfcnJ1PciL1knFxqXiyoJCk/zdl2FphZFiWIYNBhWj4PCTEoxRahFGrXMoVYlmmEKUKsI6mhrKgWdCJjDpXOgTYloGDQnFmlOLNqcSkEn4uVw1RnQjJSIhkF3YpHuROuIaOhANNxtmjENIwiIgYCoGYvG33P+SofbpRfN0H0daJKq1G1H3ZHnHzBH320RtzGwXYUtvoBQpjcEHYFndTOjvmPAZzMqRpGSIRWepGKKqdheICwVdTkVkhXTjPq2BxmC55CKCqmQJJW6mIptEMpSKUvj8HR/LyUlNvOtG5qHGRHRAZHkZynQQhkPqwhjeZTlMOAhsqqb+csHSlCOeJjw6oL11dPAh4QASPjkLOCZe2FC9Kj/ngWVCzn3Fnaw/We1Az8EXPuuZXNu//8DK8StDw=="
+  },
+  {
+   "id": "I2",
+   "name": "Bracket <1>",
+   "source": {
+    "kind": "studio",
+    "uid": "c1d2916e069f4ee1912227c6a18d8f7c",
+    "part": "F4/1",
+    "path": "bolted_bracket_parts.fshape",
+    "studio_name": "Bolted bracket parts",
+    "relpath": "bolted_bracket_parts.fshape"
+   },
+   "T": [
+    [
+     1.0,
+     0.0,
+     0.0,
+     -100.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     1.0,
+     6.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "fixed": false,
+   "hidden": false,
+   "part_name": "Bracket",
+   "_brep": "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"
+  }
+ ],
+ "mates": [
+  {
+   "id": "M3",
+   "type": "fastened",
+   "name": "Fastened 1",
+   "a": {
+    "inst": "I1",
+    "kind": "edge",
+    "index": 16,
+    "click": null,
+    "ref": {
+     "kind": "edge",
+     "len": 14.137166941154069,
+     "c": [
+      15.000000000000014,
+      -12.0,
+      6.0
+     ],
+     "type": 1,
+     "r": 2.25,
+     "center": [
+      15.0,
+      -12.0,
+      6.0
+     ],
+     "axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "bb": [
+      [
+       -10.0000001,
+       -25.0000001,
+       -1e-07
+      ],
+      [
+       70.0000001,
+       25.0000001,
+       6.0000001
+      ]
+     ]
+    },
+    "frame": {
+     "o": [
+      15.0,
+      -12.0,
+      6.0
+     ],
+     "z": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "x": [
+      1.0,
+      0.0,
+      0.0
+     ],
+     "what": "circular edge"
+    },
+    "x_ref": [
+     1.0,
+     0.0
+    ]
+   },
+   "b": {
+    "inst": "I2",
+    "kind": "edge",
+    "index": 17,
+    "click": null,
+    "ref": {
+     "kind": "edge",
+     "len": 14.137166941154069,
+     "c": [
+      115.0,
+      -12.0,
+      0.0
+     ],
+     "type": 1,
+     "r": 2.25,
+     "center": [
+      115.0,
+      -12.0,
+      0.0
+     ],
+     "axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "bb": [
+      [
+       99.9999999,
+       -20.0000001,
+       -1e-07
+      ],
+      [
+       160.0000001,
+       20.0000001,
+       30.0000001
+      ]
+     ]
+    },
+    "frame": {
+     "o": [
+      115.0,
+      -12.0,
+      0.0
+     ],
+     "z": [
+      -0.0,
+      -0.0,
+      -1.0
+     ],
+     "x": [
+      1.0,
+      0.0,
+      0.0
+     ],
+     "what": "circular edge"
+    },
+    "x_ref": [
+     1.0,
+     0.0
+    ]
+   },
+   "flip": false,
+   "offset": 0.0,
+   "angle": 0.0,
+   "suppressed": false
+  }
+ ],
+ "blobs": {}
+}

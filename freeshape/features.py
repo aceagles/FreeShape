@@ -979,6 +979,59 @@ def run_variable_studio_ref(state, f):
     state.vars.update(values)
 
 
+# ---- saved copy of a Derived feature (I1.3): what it built, kept as blobs so the part stays when its source is gone
+_COPY_PARAMS = ("resolved", "saved", "saved_get")      # params the document hands a feature, never saved
+
+
+def saved_copy_key(f):
+    """What a saved copy was made for: the feature's own params (source with its configuration, ticked parts,
+    placement). A copy is shown only while this still matches, so editing the feature drops a stale copy."""
+    import hashlib
+    import json
+    p = {k: v for k, v in (f.get("params") or {}).items() if k not in _COPY_PARAMS}
+    return hashlib.sha256(json.dumps(p, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def saved_copy_record(state, fid, key):
+    """(entry, blobs) of the parts feature `fid` made in `state`, for a document's `python_builds`: per part its
+    BREP and name map as blobs (pyfeature.host.build_record) plus its name and colour; `key` is saved_copy_key.
+    None when a part is not one solid (restoring takes one solid per part) or the feature made no part."""
+    from .pyfeature import host
+    entry, blobs = host.build_record(state, fid, {})
+    if not entry["parts"] or any(len(K.solids(state.parts[r["id"]].shape)) != 1 for r in entry["parts"]):
+        return None
+    del entry["plugin"]
+    entry["key"] = key
+    for rec in entry["parts"]:
+        part = state.parts[rec["id"]]
+        rec["name"], rec["color"] = part.name, list(part.color)
+    return entry, blobs
+
+
+def restore_saved_copy(state, f, entry, get):
+    """Put the parts of a saved copy into `state` as run_derived does: part `<fid>/<k>` with its saved name map,
+    name and colour. `get(key)` returns a blob's bytes (hash-checked). Raises K.KernelError when it is damaged."""
+    from .pyfeature import host
+
+    class _Blobs:
+        @staticmethod
+        def get(key, max_bytes=None):
+            return get(key)
+    host.restore(state, f, entry, _Blobs)
+    for rec in entry["parts"]:
+        part = state.parts[rec["id"]]
+        color = tuple(rec["color"]) if isinstance(rec.get("color"), list) else part.color
+        state.parts[part.id] = Part(part.id, rec.get("name") or part.name, part.shape, color)
+        state.old_ids.pop(part.id, None)
+    state.feature_part_counts.pop(f["id"], None)
+
+
+def saved_copy_notice(f):
+    src = (f.get("params") or {}).get("source") or {}
+    label = src.get("studio_name") or src.get("tab") or "(none linked)"
+    return f"Derived source “{label}” is missing: showing the copy saved with this file, which may be stale"
+
+
 def run_derived(state, f):
     """Bring parts and sketches of another Part Studio into this one, with their element names (ADR 0003).
     PartStudioDoc.compute hands in the source's links.StudioPackage as params["resolved"] (None: the link found
@@ -994,6 +1047,13 @@ def run_derived(state, f):
     label = src.get("studio_name") or src.get("tab") or "(none linked)"
     if src.get("document") and not src.get("version"):         # another Document is only ever linked at a Version
         raise K.KernelError(f"Derived source “{label}”: the link to Document “{src['document']}” has no Version pinned")
+    if pkg is None and p.get("saved"):                          # the source is missing: show the saved copy (I1.3)
+        try:
+            restore_saved_copy(state, f, p["saved"], p["saved_get"])
+        except K.KernelError as e:
+            raise K.KernelError(f"Derived source “{label}” is missing, and the copy saved with this file "
+                                f"cannot be read") from e
+        return                                                  # saved after placement: nothing moves again
     if pkg is None and src.get("document"):
         raise K.KernelError(f"Derived source “{label}”: Document not found: “{src['document']}” (or its Version "
                             f"“{src.get('version')}” or the Part Studio in it is not there)")

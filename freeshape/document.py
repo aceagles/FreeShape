@@ -13,7 +13,8 @@ from . import blobstore
 from . import kernel as K
 from . import migrations as M
 from .features import (RUNNERS, FEATURE_LABELS, ModelState, PartMap, default_params, Part, prepare,
-                       carry_face_colors, context_blobs, context_listing, check_reference_parts, REFERENCE_ONLY)
+                       carry_face_colors, context_blobs, context_listing, check_reference_parts, REFERENCE_ONLY,
+                       saved_copy_key, saved_copy_record, saved_copy_notice)
 from .expr import parse_number
 from . import pyfeature   # registers the bundled Python-feature plugins in any process that rebuilds
 
@@ -187,6 +188,7 @@ class PartStudioDoc:
         # configuration table: {"rows": [{"name", "vars": {name: expr}, "suppress": [fid]}], "active": index}
         self.configs: dict = {"rows": [], "active": 0}
         self.plugin_fallback: dict = {}           # plugin feature id -> saved copy of what it made (from the file)
+        self._on_copy: dict = {}                  # derived feature id -> True while its last build used the saved copy
         self.path = None
         self.blob_view = None     # this tab's blobs in a Document store (docstore.DocumentStore.blobs), for no path
         self.dirty = False
@@ -495,7 +497,21 @@ class PartStudioDoc:
             except K.KernelError:
                 pass
         h.update(json.dumps(None if pkg is None else pkg.digest_for(src.get("part"))).encode())
+        entry = self._saved_copy(f) if pkg is None and f.get("type") == "derived" else None
+        if f.get("type") == "derived":
+            self._on_copy[f["id"]] = entry is not None
+        if entry is not None:       # the source is missing: build from the copy saved with the file (I1.3)
+            h.update(json.dumps(entry, sort_keys=True).encode())
+            return dict(f, params=dict(f["params"], resolved=None, saved=entry, saved_get=self._blob_get))
         return dict(f, params=dict(f["params"], resolved=pkg))
+
+    def _saved_copy(self, f):
+        """The saved copy of the derived feature `f` (its entry in python_builds) when it was made for the
+        feature as it is now -- same source (configuration included), parts and placement -- else None."""
+        entry = self.python_builds.get(f.get("id"))
+        if isinstance(entry, dict) and entry.get("key") == saved_copy_key(f):
+            return entry
+        return None
 
     def _has_blob(self, key):
         if key in self._blob_bytes:
@@ -706,7 +722,12 @@ class PartStudioDoc:
 
     def notices(self) -> dict:
         """{feature id: text}: pyfeature.notices for this Part Studio, locked features included."""
-        return pyfeature.notices(self.features, self.locked_builds())
+        out = pyfeature.notices(self.features, self.locked_builds())
+        for f in self.features:
+            if f.get("type") == "derived" and not f.get("suppressed") and f["id"] not in self.errors \
+                    and self._on_copy.get(f["id"]):
+                out[f["id"]] = saved_copy_notice(f)
+        return out
 
     # ------------------------------------------------------------------ folders
     def folder_members(self, folder_id):
@@ -865,6 +886,9 @@ class PartStudioDoc:
         (kept as it is). A feature's parts are those with id `<fid>/...` in the (cached) state right after it."""
         builds, blobs = {}, {}
         for i, f in enumerate(self.features):
+            if f.get("type") == "derived" and not f.get("suppressed"):
+                self._derived_build(f, i, builds, blobs)
+                continue
             if not pyfeature.is_python_type(f.get("type")) or f.get("suppressed"):
                 continue
             fid = f["id"]
@@ -891,6 +915,28 @@ class PartStudioDoc:
                 builds[fid] = memo[1]
                 blobs.update(memo[2])
         return builds, blobs
+
+    def _derived_build(self, f, i, builds, blobs):
+        """Add the saved copy of the derived feature `f` (index `i`) to `builds` and `blobs`: the parts it builds
+        now, or, while its source is missing and it shows its copy, that copy as it is. A feature in error
+        keeps no entry."""
+        fid, errors = f["id"], {}
+        state = self.compute(self.features, i + 1, errors)
+        if fid in errors:
+            return
+        if self._on_copy.get(fid):
+            entry = builds[fid] = self.python_builds[fid]
+            for rec in entry["parts"]:
+                for k in (rec["brep"], rec["names"]):
+                    if k in self._blob_bytes:
+                        blobs[k] = self._blob_bytes[k]
+            return
+        memo = self._build_memo.get(fid)
+        if memo is None or memo[0] is not state:
+            memo = self._build_memo[fid] = (state, *(saved_copy_record(state, fid, saved_copy_key(f)) or (None, {})))
+        if memo[1] is not None:
+            builds[fid] = memo[1]
+            blobs.update(memo[2])
 
     def _import_key(self, text):
         """The blob key of an "import" feature's inline base64 STEP file (as a feature made by the Import command

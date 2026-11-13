@@ -1373,7 +1373,7 @@ def _export_dxf_ezdxf(doc: DrawingDoc, path, full_size=False):
         if a["type"] == "note":
             continue
         try:
-            _ezdxf_dim(doc, msp, a, k, sc, full_size)
+            _ezdxf_dim(doc, msp, a, k, sc)
         except Exception:
             # if AutoCAD-style can't be made for this one, draw it as lines and text like on screen
             items = []
@@ -1390,14 +1390,16 @@ def _export_dxf_ezdxf(doc: DrawingDoc, path, full_size=False):
     out.saveas(path)
 
 
-def _ezdxf_dim(doc, msp, a, k, sc, full_size):
+def _ezdxf_dim(doc, msp, a, k, sc):
     g = doc.dim_geometry(a)
     if g is None:
         return
     kind, data, value = g
     lost = any(isinstance(a.get(x), dict) and a[x].get("lost") for x in ("a", "b", "b2"))
     S = lambda p: (float(p[0]) * k, float(p[1]) * k)
-    ov = {"dimlfac": 1.0 if full_size else 1.0 / sc, "dimtxt": TEXT_H * k, "dimasz": ARROW_L * k,
+    v = doc.view(a.get("view"))
+    sv = doc.view_scale(v) if v is not None else sc      # the view's own scale, else the sheet's
+    ov = {"dimlfac": 1.0 / (sv * k), "dimtxt": TEXT_H * k, "dimasz": ARROW_L * k,
           "dimexo": GAP * k, "dimexe": OVERSHOOT * k, "dimgap": 0.8 * k, "dimtad": 1, "dimtih": 0, "dimtoh": 0,
           "dimtxsty": "Standard", "dimclrd": 0, "dimclre": 0, "dimclrt": 0, "dimdsep": ord("."),
           "dimtmove": 1}

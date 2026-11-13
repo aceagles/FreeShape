@@ -352,6 +352,52 @@ class LinkResolver:
         return p.shape
 
 
+# ------------------------------------------------------------------ what a tab consumes
+SOURCE_FEATURES = {"variable_studio_ref": "source"}     # feature type -> the params key holding its source
+
+
+def feature_source(feature):
+    """The source dict a studio feature consumes, or None (a feature type outside SOURCE_FEATURES, no source)."""
+    key = SOURCE_FEATURES.get(feature.get("type")) if isinstance(feature, dict) else None
+    src = (feature.get("params") or {}).get(key) if key else None
+    return src if isinstance(src, dict) else None
+
+
+def source_edit(edit):
+    """The source dict an engine edit hands a tab (add_feature, replace_feature, set_source, or a set_param
+    that sets a whole source key), else None."""
+    if not isinstance(edit, dict):
+        return None
+    op = edit.get("op")
+    if op in ("add_feature", "replace_feature"):
+        return feature_source(edit.get("feature"))
+    if op == "set_source":
+        return edit.get("source") if isinstance(edit.get("source"), dict) else None
+    if op == "set_param":
+        key = edit.get("key")
+        key = key[0] if isinstance(key, (list, tuple)) and len(key) == 1 else key
+        if key in SOURCE_FEATURES.values() and isinstance(edit.get("value"), dict):
+            return edit["value"]
+    return None
+
+
+def tab_sources(kind, data):
+    """Every source dict of a tab's JSON (or of a loaded document, which has the same attributes): an
+    assembly's instances, a drawing's source, a studio's features listed in SOURCE_FEATURES."""
+    def get(name, default):
+        v = data.get(name, default) if isinstance(data, dict) else getattr(data, name, default)
+        return default if v is None else v
+    if kind == "assembly":
+        srcs = [i.get("source") for i in get("instances", [])]
+    elif kind == "drawing":
+        srcs = [get("source", None)]
+    elif kind == "studio":
+        srcs = [feature_source(f) for f in get("features", [])]
+    else:
+        srcs = []
+    return [s for s in srcs if isinstance(s, dict)]
+
+
 # ------------------------------------------------------------------ cross-Document pins
 def cross_sources(folder):
     """Every cross-Document source the Document's assemblies and drawings hold: (tab, source) pairs."""
@@ -359,9 +405,7 @@ def cross_sources(folder):
     for tab in folder.tabs:
         if tab.doc is None:
             continue
-        srcs = [i["source"] for i in tab.doc.instances] if tab.kind == "assembly" else \
-            [tab.doc.source] if tab.kind == "drawing" and tab.doc.source is not None else []
-        out += [(tab, s) for s in srcs if is_cross_link(s, folder.id)]
+        out += [(tab, s) for s in tab_sources(tab.kind, tab.doc) if is_cross_link(s, folder.id)]
     return out
 
 
@@ -443,13 +487,7 @@ def migrate_links_to_tab_ids(folder):
         doc = tab.doc
         if doc is None:
             continue
-        if tab.kind == "assembly":
-            sources = [i["source"] for i in doc.instances]
-        elif tab.kind == "drawing" and doc.source is not None:
-            sources = [doc.source]
-        else:
-            continue
-        changed = sum(_to_tab_link(folder, s) for s in sources)
+        changed = sum(_to_tab_link(folder, s) for s in tab_sources(tab.kind, doc))
         if changed:
             doc.dirty = True
             n += changed
@@ -519,11 +557,8 @@ def repair_source(resolver, src, part_name=False):
 def repair_links(resolver, doc):
     """repair_source for every source a document holds -- every instance of an AssemblyDoc, or the single
     source of a DrawingDoc. Called from MainWindow's save path (and autosave), never from resolving."""
-    if doc.kind == "assembly":
-        for inst in doc.instances:
-            repair_source(resolver, inst["source"])
-    elif doc.kind == "drawing" and doc.source is not None:
-        repair_source(resolver, doc.source, part_name=True)
+    for src in tab_sources(doc.kind, doc):
+        repair_source(resolver, src, part_name=doc.kind == "drawing")
 
 
 # ------------------------------------------------------------------ the Link graph

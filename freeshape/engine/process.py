@@ -131,18 +131,11 @@ def _file_sources(kind, d, path):
     if kind == "variables":
         return []
     try:
-        d = M.migrate(kind, copy.deepcopy(d), path)
+        d = M.migrate("document" if kind == "studio" else kind, copy.deepcopy(d), path)
     except Exception:            # noqa: BLE001 -- the worker's own load reports a bad file
         return []
-    if kind == "studio":
-        srcs = [f.get("params", {}).get("source") for f in d.get("features", [])
-                if f.get("type") == "variable_studio_ref"]
-    else:
-        srcs = [i.get("source") for i in d.get("instances", [])] if kind == "assembly" else [d.get("source")]
     out = []
-    for src in srcs:
-        if not isinstance(src, dict):
-            continue
+    for src in links.tab_sources(kind, d):
         src = dict(src)
         if src.get("relpath") and not (src.get("path") and os.path.exists(src["path"])):    # as the loaders do
             cand = os.path.normpath(os.path.join(os.path.dirname(path), src["relpath"]))
@@ -379,14 +372,9 @@ class ProcessEngine(Engine):
         """Send one edit to the tab's worker; the Future gives the tab's new revision, or raises EngineError
         for an edit the tab refuses and TabErrored if the worker died first."""
         t = self._get(tab)
-        if isinstance(edit, dict) and edit.get("op") == "set_source" and isinstance(edit.get("source"), dict):
-            if edit["source"] not in t.sources:
-                t.sources.append(copy.deepcopy(edit["source"]))      # so its input goes with the edit
-        if isinstance(edit, dict) and edit.get("op") in ("add_feature", "replace_feature"):
-            f = edit.get("feature")
-            src = f.get("params", {}).get("source") if isinstance(f, dict) and f.get("type") == "variable_studio_ref" else None
-            if isinstance(src, dict) and src not in t.sources:
-                t.sources.append(copy.deepcopy(src))                 # so its input goes with the edit
+        src = links.source_edit(edit)
+        if src is not None and src not in t.sources:
+            t.sources.append(copy.deepcopy(src))                     # so its input goes with the edit
         logged = copy.deepcopy(edit)
         fut, out, epoch = self._submit(t, "edit", edit), Future(), t.epoch
 

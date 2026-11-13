@@ -23,6 +23,7 @@ from dataclasses import asdict
 from types import SimpleNamespace
 
 from .. import kernel as K
+from .. import links
 from .. import naming as N
 from ..features import Part, PartMap
 from .contract import EngineError, plain
@@ -215,17 +216,9 @@ class _Worker:
         """The parent's view of this tab: name, path, uid, revision, and the link sources it holds."""
         t = self.engine._get(self.tab)
         doc = t.doc
-        if t.kind == "assembly":
-            sources = [i.get("source") for i in doc.instances]
-        elif t.kind == "drawing":
-            sources = [doc.source]
-        elif t.kind == "studio":
-            sources = [f["params"].get("source") for f in doc.features if f.get("type") == "variable_studio_ref"]
-        else:
-            sources = []
         return {"name": str(doc.name), "path": doc.path, "uid": getattr(doc, "uid", None),
                 "revision": t.revision, "pid": os.getpid(),
-                "sources": plain([s for s in sources if isinstance(s, dict)])}
+                "sources": plain(links.tab_sources(t.kind, doc))}
 
     def upstream(self):
         """This tab's outputs as another tab consumes them: parts without meshes, variables, placements."""

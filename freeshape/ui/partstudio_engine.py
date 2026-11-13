@@ -33,6 +33,7 @@ from PySide6.QtCore import QCoreApplication, QObject, Signal
 
 from .. import features as F
 from .. import kernel as K
+from .. import links
 from .. import naming as N
 from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
@@ -243,8 +244,7 @@ class StudioEngine(QObject):
         for attempt in (0, 1):
             try:
                 if rec.tab is None:
-                    refs = [f.get("params", {}).get("source") for f in snap["features"]
-                            if f.get("type") == "variable_studio_ref" and not f.get("suppressed")]
+                    refs = links.tab_sources("studio", snap)
                     rec.tab, rec.have = self.live.open_new(eng, "studio", rec, str(snap["name"]), refs), _EMPTY
                 for edit in plan_edits(rec.have, snap):
                     self.live.submit(eng, rec.tab, edit, rebuilt)
@@ -441,15 +441,7 @@ class LiveTabs:
     @staticmethod
     def sources(doc):
         """The link sources a tab consumes."""
-        kind = getattr(doc, "kind", None)
-        if kind == "studio":
-            return [f.get("params", {}).get("source") for f in doc.features
-                    if f.get("type") == "variable_studio_ref" and not f.get("suppressed")]
-        if kind == "assembly":
-            return [i.get("source") for i in doc.instances]
-        if kind == "drawing":
-            return [doc.source]
-        return []
+        return links.tab_sources(getattr(doc, "kind", None), doc)
 
     def source_tabs(self, doc):
         out = []

@@ -30,7 +30,6 @@ from .. import links
 KINDS = ("studio", "assembly", "drawing", "variables")
 _FORMAT_KIND = {"freeshape": "studio", A.FILE_FORMAT: "assembly", D.FILE_FORMAT: "drawing",
                 VARIABLES_FORMAT: "variables"}
-REF_TYPE = "variable_studio_ref"
 
 
 def file_kind(path):
@@ -107,7 +106,7 @@ class StudioTab(_Tab):
     OPS = STUDIO_OPS
 
     def _refs(self):
-        return [f for f in self.doc.features if f.get("type") == REF_TYPE and not f.get("suppressed")]
+        return [f for f in self.doc.features if links.feature_source(f) is not None and not f.get("suppressed")]
 
     def _track(self):
         """Rebuild (cheap: cached) while recording which Variable Studio tabs the references read."""
@@ -421,7 +420,7 @@ class InProcessEngine(Engine):
             if kind == "studio":
                 doc = Document.load(path)
                 doc.var_inputs = self.inputs.variables
-                if any(f.get("type") == REF_TYPE for f in doc.features):
+                if any(links.feature_source(f) is not None for f in doc.features):
                     doc.rebuild()            # the load ran without the resolver
             elif kind == "variables":
                 doc = VariableStudioDoc.load(path)

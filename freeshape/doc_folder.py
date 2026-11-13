@@ -37,7 +37,7 @@ from . import kernel as K
 from .assembly import AssemblyDoc
 from .document import Document
 from .drawing import DrawingDoc
-from .links import LinkResolver, migrate_links_to_tab_ids
+from .links import LinkResolver, migrate_links_to_tab_ids, tab_sources
 from .variable_studio import VariableStudioDoc
 
 MANIFEST_NAME = "document.json"
@@ -177,13 +177,7 @@ class FolderDocument:
         for tab in self.tabs:
             if tab.doc is None:
                 continue
-            if tab.kind == "assembly":
-                sources = [i["source"] for i in tab.doc.instances]
-            elif tab.kind == "drawing" and tab.doc.source is not None:
-                sources = [tab.doc.source]
-            else:
-                continue
-            for src in sources:
+            for src in tab_sources(tab.kind, tab.doc):
                 if src.get("kind") not in ("studio", "assembly"):
                     continue
                 try:

@@ -8,6 +8,14 @@ saving rather than on every resolve.
 reloaded from disk, and a `flat_pattern_of` callback so a flat pattern already computed for the viewport is
 reused too. Without those, everything falls back to loading straight from disk, cached by path and mtime --
 which is exactly what the tests use.
+
+Inside a folder Document (`folder=` a doc_folder.FolderDocument) a source stores `{"tab": <tab id>, "part": ...}`
+instead of uid + path, and the tab id is looked up in the Document's manifest, so renaming a tab's file or linking
+a tab that has never been saved cannot break the link. `"document"` (the Document id) and `"version"` are reserved
+for I2.7 and ignored here. A legacy uid + path link inside a Document is converted to a tab id on open (see
+`migrate_links_to_tab_ids`), and one whose path resolves outside the Document folder is never read -- the
+instance is reported unresolved with an error naming the path, since a received Document could otherwise point a
+link at any file on the machine. Loose files outside any Document keep uid + path.
 """
 from __future__ import annotations
 
@@ -34,6 +42,17 @@ def _translate_part(studio, pid):
     return getattr(studio, "part_aliases", {}).get(pid, pid)
 
 
+def studio_source(tab, part=None):
+    """The source dict an assembly instance or drawing stores to link a Part Studio tab of a Document: the tab
+    id and part id only -- no uid and no path, so it holds for a tab that has never been saved."""
+    return {"kind": "studio", "tab": tab.id, "part": part, "studio_name": tab.name}
+
+
+def assembly_source(tab):
+    """The source dict a drawing stores to link an Assembly tab of a Document."""
+    return {"kind": "assembly", "tab": tab.id, "name": tab.name}
+
+
 def _default_flat_pattern_of(state, pid):
     from . import sheetmetal as SM
     return SM.flat_pattern(state.parts[pid].shape, state.sheet[pid])
@@ -44,7 +63,8 @@ class LinkResolver:
     DrawingDoc.resolver (use resolve_source / resolve_drawing_source directly for that)."""
 
     def __init__(self, find_open_studio=None, find_open_assembly=None, flat_pattern_of=None, load_document=None,
-                 load_assembly=None):
+                 load_assembly=None, folder=None):
+        self.folder = folder       # the open FolderDocument whose manifest resolves tab ids, if any
         self.find_open_studio = find_open_studio or _no_open_doc
         self.find_open_assembly = find_open_assembly or _no_open_doc
         self.flat_pattern_of = flat_pattern_of or _default_flat_pattern_of
@@ -56,6 +76,39 @@ class LinkResolver:
     def _default_load_assembly(self, path):
         from .assembly import AssemblyDoc
         return AssemblyDoc.load(path, resolver=self.resolve_source)
+
+    # ------------------------------------------------------------------ inside a Document
+    def _outside_folder(self, path):
+        root = os.path.realpath(self.folder.path)
+        full = os.path.realpath(os.path.join(root, path))     # an absolute path replaces the folder
+        return os.path.commonpath([root, full]) != root
+
+    def _folder_doc(self, src, kind):
+        """The tab document a source names inside the open Document, or None when the source is not a
+        Document link at all (no tab id, and a legacy uid/path that isn't one of the Document's tabs and
+        lies inside its folder -- the old uid/path flow then applies). Raises KernelError for a tab id the
+        manifest doesn't have, a tab that failed to open, and a legacy path outside the Document folder,
+        which is refused before any file is touched."""
+        folder = self.folder
+        if folder is None:
+            return None
+        tid = src.get("tab")
+        label = src.get("studio_name") or src.get("name") or "?"
+        if tid is not None:
+            tab = folder.tab(tid)
+            if tab is None:
+                raise K.KernelError(f"Tab “{tid}” (“{label}”) is no longer in the Document")
+            if tab.kind != kind:
+                raise K.KernelError(f"Tab “{tid}” (“{tab.name}”) is not a {kind}")
+            if tab.doc is None:
+                raise K.KernelError(f"Tab “{tid}” (“{tab.name}”) could not be opened: "
+                                    f"{folder.errors.get(tid, 'unknown error')}")
+            return tab.doc
+        path = src.get("path")
+        if path and self._outside_folder(path):
+            raise K.KernelError(f"Link path “{path}” is outside the Document folder; not opened")
+        tab = _tab_for_legacy(folder, src, kind)
+        return tab.doc if tab is not None else None
 
     # ------------------------------------------------------------------ finding documents
     def studio_by_uid(self, uid, path=None, load=False):
@@ -72,6 +125,13 @@ class LinkResolver:
         if doc is not None or not (load and path and os.path.exists(path)):
             return doc
         return self._load_cached(path, self._load_assembly)
+
+    def _studio_for(self, src):
+        return self._folder_doc(src, "studio") or self.studio_by_uid(src.get("uid"), src.get("path"), load=True)
+
+    def _assembly_for(self, src):
+        return self._folder_doc(src, "assembly") or self.assembly_by_uid(src.get("uid"), src.get("path"),
+                                                                         load=True)
 
     def _load_cached(self, path, loader):
         ap = os.path.abspath(path)
@@ -90,7 +150,7 @@ class LinkResolver:
     def resolve_source(self, src):
         """The Part Studio part an assembly instance links to. Read-only: a stale uid/path resolved via its
         fallback (by path, then by loading the file) is not written back -- see repair_links."""
-        studio = self.studio_by_uid(src.get("uid"), src.get("path"), load=True)
+        studio = self._studio_for(src)
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
         p = studio.state.parts.get(_translate_part(studio, src.get("part")))
@@ -108,19 +168,19 @@ class LinkResolver:
         return self._resolve_studio_shape(src)
 
     def _resolve_assembly_shape(self, src):
-        asm = self.assembly_by_uid(src.get("uid"), src.get("path"), load=True)
+        asm = self._assembly_for(src)
         if asm is None:
             raise K.KernelError(f"Assembly “{src.get('name', '?')}” isn't open")
         items = [(id(asm.parts[i["id"]].shape), tuple(np.round(np.array(i["T"], float).ravel(), 9)))
                  for i in asm.visible_instances() if i["id"] in asm.parts]
-        key = ("asm", src.get("uid"), tuple(items))
+        key = ("asm", asm.uid, tuple(items))
         if key not in self._shape_cache:
             self._shape_cache[key] = K.compound([K.located(asm.parts[i["id"]].shape, np.array(i["T"], float))
                                                  for i in asm.visible_instances() if i["id"] in asm.parts])
         return self._shape_cache[key]
 
     def _resolve_studio_shape(self, src):
-        studio = self.studio_by_uid(src.get("uid"), src.get("path"), load=True)
+        studio = self._studio_for(src)
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
         if src.get("part") in (None, "*"):
@@ -151,7 +211,80 @@ class LinkResolver:
 
 
 # ------------------------------------------------------------------ save-time link repair
+def _tab_for_legacy(folder, src, kind):
+    """The Document tab a legacy uid + path source names: a tab whose document has that uid, else the tab whose
+    file is that path. Reads no file -- only compares against what the manifest and the open tabs hold."""
+    uid = src.get("uid")
+    for tab in folder.tabs:
+        if tab.kind == kind and tab.doc is not None and uid and getattr(tab.doc, "uid", None) == uid:
+            return tab
+    path = src.get("path")
+    if path:
+        full = os.path.realpath(os.path.join(folder.path, path))
+        for tab in folder.tabs:
+            if tab.kind == kind and tab.file and \
+                    os.path.realpath(os.path.join(folder.path, tab.file)) == full:
+                return tab
+    return None
+
+
+def _to_tab_link(folder, src):
+    """The uid + path -> tab id step of the link-format rewrite: turn a legacy source into `{tab, part}`,
+    translating its part id through the studio's alias table (the same `_translate_part` step as a plain
+    repair) so the file moves to tab ids and new-syntax part ids in a single save. True if it changed."""
+    kind = src.get("kind")
+    if kind not in ("studio", "assembly") or src.get("tab") is not None:
+        return False
+    tab = _tab_for_legacy(folder, src, kind)
+    if tab is None:
+        return False
+    for k in ("uid", "path", "relpath"):
+        src.pop(k, None)
+    src["tab"] = tab.id
+    if kind == "studio":
+        src["studio_name"] = tab.name
+        src["part"] = _translate_part(tab.doc, src.get("part")) if tab.doc is not None else src.get("part")
+    else:
+        src["name"] = tab.name
+    return True
+
+
+def migrate_links_to_tab_ids(folder):
+    """Convert every legacy uid + path source held by the Document's assemblies and drawings to a tab id, and
+    mark each changed tab dirty so the next save writes it. Run once as a Document opens; idempotent. Returns
+    the number of sources converted."""
+    n = 0
+    for tab in folder.tabs:
+        doc = tab.doc
+        if doc is None:
+            continue
+        if tab.kind == "assembly":
+            sources = [i["source"] for i in doc.instances]
+        elif tab.kind == "drawing" and doc.source is not None:
+            sources = [doc.source]
+        else:
+            continue
+        changed = sum(_to_tab_link(folder, s) for s in sources)
+        if changed:
+            doc.dirty = True
+            n += changed
+    return n
+
+
 def _repair_studio_link(resolver, src, part_name=False):
+    if resolver.folder is not None:
+        _to_tab_link(resolver.folder, src)
+        if src.get("tab") is not None:
+            tab = resolver.folder.tab(src["tab"])
+            if tab is None or tab.doc is None:
+                return
+            src["studio_name"] = tab.name
+            src["part"] = _translate_part(tab.doc, src.get("part"))
+            if part_name:
+                p = tab.doc.state.parts.get(src.get("part"))
+                if p is not None:
+                    src["part_name"] = p.name
+        return
     studio = resolver.studio_by_uid(src.get("uid"), src.get("path"), load=True)
     if studio is None:
         return
@@ -170,6 +303,12 @@ def _repair_studio_link(resolver, src, part_name=False):
 
 
 def _repair_assembly_link(resolver, src):
+    if resolver.folder is not None:
+        _to_tab_link(resolver.folder, src)
+        tab = resolver.folder.tab(src["tab"]) if src.get("tab") is not None else None
+        if tab is not None:
+            src["name"] = tab.name
+        return
     asm = resolver.assembly_by_uid(src.get("uid"), src.get("path"), load=True)
     if asm is None:
         return

@@ -31,6 +31,7 @@ from . import kernel as K
 from .assembly import AssemblyDoc
 from .document import Document
 from .drawing import DrawingDoc
+from .links import LinkResolver, migrate_links_to_tab_ids
 from .variable_studio import VariableStudioDoc
 
 MANIFEST_NAME = "document.json"
@@ -70,6 +71,30 @@ class FolderDocument:
         self.tabs: list[Tab] = []
         self.errors: dict[str, str] = {}
         self._counter = 0
+        self.resolver = LinkResolver(folder=self)    # resolves tab-id links through this manifest
+
+    def _attach(self, tab):
+        """Point a tab's document at this Document's resolver (assemblies and drawings hold links)."""
+        if tab.kind == "assembly" and tab.doc is not None:
+            tab.doc.resolver = self.resolver.resolve_source
+        elif tab.kind == "drawing" and tab.doc is not None:
+            tab.doc.resolver = self.resolver.resolve_drawing_source
+
+    def remove_tab(self, tab_id):
+        """Drop a tab from the manifest (its file stays on disk). Links to it then report the missing tab."""
+        tab = self.tab(tab_id)
+        if tab is None:
+            raise K.KernelError(f"No tab {tab_id!r} in the Document")
+        self.tabs.remove(tab)
+        self.errors.pop(tab_id, None)
+
+    def refresh_links(self):
+        """Re-read every assembly's and drawing's links against the current tabs."""
+        for tab in self.tabs:
+            if tab.kind == "assembly" and tab.doc is not None:
+                tab.doc.refresh(solve=False, notify=False)
+            elif tab.kind == "drawing" and tab.doc is not None:
+                tab.doc.refresh(notify=False)
 
     # ------------------------------------------------------------------ ids / tabs
     def new_tab_id(self):
@@ -96,6 +121,7 @@ class FolderDocument:
         tab = Tab(self.new_tab_id(), kind, self._unique_filename(doc.name, EXTENSIONS[kind]), doc.name)
         tab.doc = doc
         self.tabs.append(tab)
+        self._attach(tab)
         return tab
 
     def tab(self, tab_id):
@@ -174,6 +200,11 @@ class FolderDocument:
                 doc.errors[tab_id] = str(e)
         nums = [int("".join(c for c in (t.id or "") if c.isdigit()) or 0) for t in doc.tabs]
         doc._counter = max(nums + [0])
+        for tab in doc.tabs:
+            doc._attach(tab)
+        # the uid + path -> tab id step of the link-format migration (see links.py), once every tab is loaded
+        migrate_links_to_tab_ids(doc)
+        doc.refresh_links()
         return doc
 
     def save(self):

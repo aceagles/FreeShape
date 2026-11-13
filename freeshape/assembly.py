@@ -598,7 +598,7 @@ class AssemblyDoc:
     def _source_key(self, src):
         if src.get("kind") == "step":
             return ("step", src.get("blob"), src.get("index", 0))
-        return ("studio", src.get("uid"), src.get("part"))
+        return ("studio", src.get("tab") or src.get("uid"), src.get("part"))
 
     def instance_color(self, inst):
         """The instance's own colour, else its part's — except plain default-grey parts, which get a colour

@@ -25,8 +25,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
+import tempfile
 import uuid
+import weakref
 
+from . import doc_registry as R
+from . import gitstore as G
 from . import kernel as K
 from .assembly import AssemblyDoc
 from .document import Document
@@ -51,6 +57,28 @@ def _atomic_write(path, text):
     os.replace(tmp, path)
 
 
+def _rmtree(path):
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _peek_id(folder):
+    """The id in a folder's document.json, or None. Reads one regular file; runs no git and loads nothing."""
+    p = os.path.join(folder, MANIFEST_NAME)
+    try:
+        if os.path.islink(p) or os.path.getsize(p) > (1 << 20):
+            return None
+        with open(p) as fh:
+            doc_id = json.load(fh).get("id")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return doc_id if isinstance(doc_id, str) else None
+
+
+def _attribute_lines():
+    """`.gitattributes` for a new Document: no automatic merge of the manifest or any tab file."""
+    return [f"{MANIFEST_NAME} -merge"] + [f"*{ext} -merge" for ext in EXTENSIONS.values()]
+
+
 class Tab:
     """One row of document.json. `doc` is the loaded Document / AssemblyDoc / DrawingDoc once opened, or
     `None` if its file was refused -- see `FolderDocument.errors`."""
@@ -72,6 +100,12 @@ class FolderDocument:
         self.errors: dict[str, str] = {}
         self._counter = 0
         self.resolver = LinkResolver(folder=self)    # resolves tab-id links through this manifest
+        self.trusted = False      # git may run in self.path: the app created it or imported it (see open_document)
+        self.read_only = False    # an opened version
+        self.version = None       # {name, commit, note, time} of an opened version
+        self.registry = None
+        self.git_error = None     # why a new Document got no repository (git missing or too old)
+        self._scratch = None
 
     def _attach(self, tab):
         """Point a tab's document at this Document's resolver (assemblies and drawings hold links)."""
@@ -82,6 +116,7 @@ class FolderDocument:
 
     def remove_tab(self, tab_id):
         """Drop a tab from the manifest (its file stays on disk). Links to it then report the missing tab."""
+        self._check_writable()
         tab = self.tab(tab_id)
         if tab is None:
             raise K.KernelError(f"No tab {tab_id!r} in the Document")
@@ -115,6 +150,7 @@ class FolderDocument:
 
     def add_tab(self, kind, name=None):
         """Create a new, empty tab of the given kind ("studio" / "assembly" / "drawing") and return it."""
+        self._check_writable()
         doc = FACTORIES[kind]()
         if name:
             doc.name = name
@@ -155,14 +191,77 @@ class FolderDocument:
 
     # ------------------------------------------------------------------ create / open / save
     @classmethod
-    def create(cls, path, name=None):
+    def create(cls, path, name=None, registry=None):
+        """Make a new Document folder: manifest, a git repository with `.gitattributes`, and the trust marker in the
+        registry. A folder that already has a `.git` is not ours to initialise: it is neither initialised nor
+        trusted (open it with open_document, which imports it)."""
         os.makedirs(path, exist_ok=True)
         doc = cls()
         doc.path = path
         if name:
             doc.name = name
         doc._write_manifest()
+        if not os.path.lexists(os.path.join(path, ".git")):
+            try:
+                G.init_repo(path)
+                G.ensure_attributes(path, _attribute_lines())
+                doc.trusted = True
+            except G.GitUnavailable as e:
+                doc.git_error = str(e)
+                doc.trusted = True            # no repository to protect; versions then report the error
+            doc.registry = registry or R.default_registry()
+            try:
+                doc.registry.register_created(doc.id, path)
+            except OSError:
+                pass
         return doc
+
+    @classmethod
+    def open_document(cls, path, registry=None, managed_root=None):
+        """Open a Document the way the app should: a folder the app created (or already imported) opens in place;
+        anything else is first imported with `git clone --no-local` into `managed_root`, and the app works only in
+        the clone, never running git in the received folder. A received folder with no commits, or no repository,
+        is copied without its `.git` and given a fresh one. Uncommitted edits in a received folder are not imported."""
+        registry = registry or R.default_registry()
+        real = os.path.realpath(path)
+        doc_id = _peek_id(real)
+        if doc_id and registry.is_trusted(doc_id, real):
+            target = real
+        else:
+            target = cls._import(real, registry, managed_root or R.managed_root())
+        doc = cls.open(target)
+        doc.trusted = True
+        doc.registry = registry
+        return doc
+
+    @classmethod
+    def _import(cls, source, registry, root):
+        existing = registry.import_for_source(source)
+        if existing:
+            return existing
+        os.makedirs(root, exist_ok=True)
+        stem = re.sub(r"[^A-Za-z0-9_-]", "_", _peek_id(source) or "")[:40] or "document"
+        n, name = 1, stem
+        while os.path.lexists(os.path.join(root, name)):
+            n += 1
+            name = f"{stem}-{n}"
+        dest = os.path.join(os.path.realpath(root), name)
+        try:
+            if os.path.lexists(os.path.join(source, ".git")):
+                G.clone(source, root, name)
+                if G.head(dest) is None or _peek_id(dest) is None:
+                    _rmtree(dest)
+                    G.adopt_plain_folder(source, root, name)
+            else:
+                G.adopt_plain_folder(source, root, name)
+            doc_id = _peek_id(dest)
+            if doc_id is None:
+                raise K.KernelError("Not a FreeShape Document")
+        except Exception:
+            _rmtree(dest)
+            raise
+        registry.register_import(doc_id, source, dest)
+        return dest
 
     @classmethod
     def open(cls, path):
@@ -207,7 +306,12 @@ class FolderDocument:
         doc.refresh_links()
         return doc
 
+    def _check_writable(self):
+        if self.read_only:
+            raise K.KernelError("This is a read-only view of a version; it cannot be edited or saved")
+
     def save(self):
+        self._check_writable()
         if self.path is None:
             raise K.KernelError("Document has no folder to save to")
         os.makedirs(self.path, exist_ok=True)
@@ -228,3 +332,64 @@ class FolderDocument:
         data = {"format": FORMAT, "version": FORMAT_VERSION, "id": self.id, "name": self.name,
                 "tabs": [{"id": t.id, "kind": t.kind, "file": t.file, "name": t.name} for t in self.tabs]}
         _atomic_write(os.path.join(self.path, MANIFEST_NAME), json.dumps(data, indent=1))
+
+    # ------------------------------------------------------------------ versions (git; see gitstore.py)
+    def _git_ready(self):
+        if not self.trusted:
+            raise K.KernelError("Versions need a Document the app created or imported: open it with open_document")
+        if self.path is None or not G.is_repo(self.path):
+            raise G.GitError(self.git_error or "This Document folder has no repository")
+
+    def create_version(self, name, note=""):
+        """Save, then commit everything and tag the commit (annotated, carrying `note`). Saving alone never commits."""
+        self._check_writable()
+        self._git_ready()
+        G.check_name(name)
+        if any(v["name"] == name for v in G.list_tags(self.path)):
+            raise G.GitError(f"A version named {name!r} already exists")
+        self.save()
+        G.commit_all(self.path, note or name)
+        G.tag(self.path, name, note)
+        return next(v for v in G.list_tags(self.path) if v["name"] == name)
+
+    def versions(self):
+        """Versions, oldest first: dicts {name, commit, note, time}."""
+        self._git_ready()
+        return G.list_tags(self.path)
+
+    def open_version(self, name):
+        """A read-only FolderDocument of version `name`: every tab loaded and every intra-Document link resolved from
+        the files at that commit. The files are read raw from git (no filters) into a scratch folder, removed
+        by close() or when the view is dropped."""
+        self._git_ready()
+        commit = G.resolve_version(self.path, name)
+        scratch = tempfile.mkdtemp(prefix="freeshape-version-")
+        try:
+            folder = os.path.join(scratch, "Document")
+            os.makedirs(folder)
+            G.read_tree(self.path, commit, folder)
+            view = FolderDocument.open(folder)
+        except (OSError, ValueError) as e:
+            _rmtree(scratch)
+            raise K.KernelError(f"Version {name!r} is not a readable Document: {e}") from e
+        except Exception:
+            _rmtree(scratch)
+            raise
+        view.read_only = True
+        view.version = next((v for v in G.list_tags(self.path) if v["name"] == name),
+                            {"name": name, "commit": commit, "note": "", "time": 0})
+        view._scratch = scratch
+        weakref.finalize(view, _rmtree, scratch)
+        return view
+
+    def close(self):
+        """Release a version view's scratch folder."""
+        if self._scratch:
+            _rmtree(self._scratch)
+            self._scratch = None
+
+    def push(self, remote):
+        """Push the history and version tags to a local bare repository (a folder path)."""
+        self._check_writable()
+        self._git_ready()
+        G.push(self.path, remote)

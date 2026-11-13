@@ -552,6 +552,23 @@ Split and merge are the same mechanism read in two directions, so they are descr
   silent wrong match the rejected alternatives section of ADR 0003 rules out. The signature is used
   only for a legacy reference that carries no name at all, and the result is flagged as recovered.
 
+### I1.12 Reference format and policy
+
+* **A reference is `{name, signature}`.** `make_ref` (faces, edges) and `make_vertex_ref` store the
+  signature fields flat, as before, and add a `name` key when the part's element map names the picked
+  element. The viewport's `pick_to_item` passes the map, so every picked face, edge and vertex carries
+  its name. A part with no map (`state.named(pid)` is None) gives a signature-only reference.
+* **`resolve` and `resolve_point` apply the section 6 policy.** A reference with a `name` resolves to
+  the element of that name in its part's map (any part's map if the part id is gone) and to nothing
+  else; no match raises a `KernelError` that contains the stored name, so the feature shows red. A
+  reference with no `name` is matched by signature (`_score`, or position for a vertex) and the
+  feature being run is added to `ModelState.recovered`; the feature list shows it with a warning
+  marker. This is the same rule `resolve_regions` applies to sketch regions.
+* **Which feature to flag.** Runners do not pass their id, so `prepare` records the feature it is
+  about to run in `state.current_fid` and `resolve` falls back to it. An explicit `fid=` wins.
+* **Not ported from FreeCAD.** FreeCAD logs `missing element reference` and re-binds to a nearby
+  index (see above); FreeShape raises instead (ADR 0003).
+
 ## 7. Copies
 
 * **Mirror.** A mirror is a real kernel operation: a `BRepBuilderAPI_Transform` named through

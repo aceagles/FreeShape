@@ -267,9 +267,15 @@ class ModelState:
 
 # --------------------------------------------------------------------------- reference resolution
 
-def make_ref(part_id, sub, kind, part_shape=None):
+def make_ref(part_id, sub, kind, part_shape=None, named=None):
+    """A reference to one face or edge: its signature (flat fields) and, when `named` (the part's
+    NamedShape, i.e. `state.named(part_id)`) holds a name for `sub`, that name under `name`.
+    A reference without a name is a legacy reference (docs/reference/element-naming.md, section 6)."""
     info = K.face_info(sub) if kind == "face" else K.edge_info(sub)
     ref = {"part": part_id, **info}
+    name = named.name_of(sub) if named is not None else None
+    if name:
+        ref["name"] = name
     if part_shape is not None:
         lo, hi = K.bbox(part_shape)
         ref["bb"] = [lo.tolist(), hi.tolist()]
@@ -301,9 +307,47 @@ def _score(info, ref, scale, bb=None):
     return s
 
 
-def resolve(state: ModelState, ref, kind):
-    """Find the face/edge in the current model best matching a stored signature.
-    Returns (part_id, subshape) or raises KernelError."""
+def _mark_recovered(state, fid=None):
+    """Flag the feature being run as having found a reference only by signature. `fid` defaults to
+    the feature `prepare` last set up on this state (runners do not pass their id)."""
+    fid = fid or getattr(state, "current_fid", None)
+    if fid is not None:
+        state.recovered.add(fid)
+
+
+def _named_lookup(state, ref, letter):
+    """(part id, sub-shape or vertex) of the element a name refers to, or None when no part's element
+    map has that name. A reference's own part is searched when it still exists, else every part."""
+    pids = [ref["part"]] if ref.get("part") in state.parts else list(state.parts)
+    for pid in pids:
+        nm = state.named(pid)
+        if nm is None:
+            continue
+        for sub, name in nm.named(letter):
+            if name == ref["name"]:
+                return pid, sub
+    return None
+
+
+def _lost_element(kind, ref):
+    return K.KernelError(f"{kind.capitalize()} {ref['name']} is gone: the model no longer has an element "
+                         "of that name")
+
+
+def resolve(state: ModelState, ref, kind, fid=None):
+    """The face/edge a reference points at. Returns (part_id, subshape) or raises KernelError.
+
+    Policy (ADR 0003, docs/reference/element-naming.md, section 6): a reference that carries a name
+    resolves to the element of that name and to nothing else; a name missing from the rebuilt maps is
+    an error naming the lost element, never a nearest match. Only a legacy reference with no name uses
+    the geometric `_score` matcher, and then feature `fid` (default: the feature running) is flagged
+    recovered."""
+    if ref.get("name"):
+        hit = _named_lookup(state, ref, N.FACE if kind == "face" else N.EDGE)
+        if hit is None:
+            raise _lost_element(kind, ref)
+        pid, sub = hit
+        return pid, (K._as_face(sub) if kind == "face" else K._as_edge(sub))
     parts = [state.parts[ref["part"]]] if ref.get("part") in state.parts else list(state.parts.values())
     if not parts:
         raise K.KernelError("Missing reference: no parts")
@@ -324,6 +368,7 @@ def resolve(state: ModelState, ref, kind):
                 best, best_s = (p.id, s), sc
     if best is None or best_s > 0.6:
         raise K.KernelError(f"Missing {kind} reference")
+    _mark_recovered(state, fid)
     return best
 
 
@@ -352,16 +397,32 @@ def resolve_plane(state: ModelState, ref) -> K.Plane:
     raise K.KernelError("Unknown plane reference")
 
 
-def make_vertex_ref(part_id, pos, part_shape=None):
+def make_vertex_ref(part_id, pos, part_shape=None, named=None):
+    """A reference to a vertex at `pos`; carries the vertex's name when `named` has one there."""
     ref = {"kind": "vertex", "part": part_id, "c": [float(x) for x in pos]}
+    if named is not None:
+        for v, name in named.named(N.VERTEX):
+            if np.linalg.norm(_vertex_pos(v) - np.asarray(pos, float)) < 1e-7:
+                ref["name"] = name
+                break
     if part_shape is not None:
         lo, hi = K.bbox(part_shape)
         ref["bb"] = [lo.tolist(), hi.tolist()]
     return ref
 
 
-def resolve_point(state: ModelState, ref) -> np.ndarray:
-    """The position of the model vertex best matching a stored vertex reference."""
+def _vertex_pos(v):
+    return K._np(K.BRep_Tool.Pnt_s(K._as_vertex(v)))
+
+
+def resolve_point(state: ModelState, ref, fid=None) -> np.ndarray:
+    """The position of the vertex a stored vertex reference points at. Same policy as `resolve`: a
+    name is found or the feature errors; a nameless reference is matched by position and flagged."""
+    if ref.get("name"):
+        hit = _named_lookup(state, ref, N.VERTEX)
+        if hit is None:
+            raise _lost_element("vertex", ref)
+        return _vertex_pos(hit[1])
     parts = [state.parts[ref["part"]]] if ref.get("part") in state.parts else list(state.parts.values())
     if not parts:
         raise K.KernelError("Missing vertex reference: no parts")
@@ -382,6 +443,7 @@ def resolve_point(state: ModelState, ref) -> np.ndarray:
                 best, best_s = v, sc
     if best is None or best_s > 0.6:
         raise K.KernelError("Missing vertex reference")
+    _mark_recovered(state, fid)
     return np.asarray(best, float)
 
 
@@ -784,7 +846,9 @@ NUMERIC_KEYS = {"depth", "depth2", "angle", "radius", "distance", "thickness", "
 
 
 def prepare(f, state):
-    """A copy of feature f with every expression evaluated against the variables defined so far."""
+    """A copy of feature f with every expression evaluated against the variables defined so far.
+    Also records which feature is about to run, so `resolve` can flag it recovered."""
+    state.current_fid = f.get("id")
     p = f.get("params", {})
     if not any(isinstance(p.get(k), str) for k in NUMERIC_KEYS):
         return f

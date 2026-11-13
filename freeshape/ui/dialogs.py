@@ -58,9 +58,13 @@ def region_touching(sr, eid):
     return None if best is None else best[1]
 
 
-def pick_to_item(vp, pick: Pick, want: set):
-    """Convert a viewport pick into a (kind, ref) item for a selection field."""
+def pick_to_item(vp, pick: Pick, want: set, state=None):
+    """Convert a viewport pick into a (kind, ref) item for a selection field.
+
+    `state` is the ModelState the viewport is showing; with it a picked face, edge or vertex stores
+    the element's name next to its signature (a part without a map gives a signature-only reference)."""
     k = pick.kind
+    names = (lambda pid: state.named(pid)) if state is not None else (lambda pid: None)
     if k == "region" and "region" in want:
         fid, ri = pick.key
         for sfid, sr, _ in vp.sketches:
@@ -73,14 +77,14 @@ def pick_to_item(vp, pick: Pick, want: set):
             return None
         face = K.faces(shape)[fi]
         if "face" in want:
-            return ("face", F.make_ref(pid, face, "face", shape))
+            return ("face", F.make_ref(pid, face, "face", shape, names(pid)))
         if "plane" in want:
             pl = K.planar_face_plane(face)
             if pl is not None:
-                return ("plane", {"kind": "face", "face": F.make_ref(pid, face, "face", shape),
+                return ("plane", {"kind": "face", "face": F.make_ref(pid, face, "face", shape, names(pid)),
                                   "origin": pl.origin.tolist(), "xdir": pl.xdir.tolist()})
         if "edge" in want:          # selecting a face selects all of its edges (fillet/chamfer)
-            return ("edges", [F.make_ref(pid, e, "edge", shape) for e in K.edges(face)])
+            return ("edges", [F.make_ref(pid, e, "edge", shape, names(pid)) for e in K.edges(face)])
         if "part" in want:
             return ("part", pid)
     if k == "part" and "part" in want:
@@ -92,9 +96,9 @@ def pick_to_item(vp, pick: Pick, want: set):
             return None
         edge = K.edges(shape)[ei]
         if "edge" in want:
-            return ("edge", F.make_ref(pid, edge, "edge", shape))
+            return ("edge", F.make_ref(pid, edge, "edge", shape, names(pid)))
         if "axis" in want:
-            return ("axis", {"kind": "edge", "edge": F.make_ref(pid, edge, "edge", shape)})
+            return ("axis", {"kind": "edge", "edge": F.make_ref(pid, edge, "edge", shape, names(pid))})
     if k == "sketch_line" and "region" in want:
         # clicking a sketch's line (or circle) picks the closed area it bounds
         fid, eid = pick.key
@@ -112,7 +116,7 @@ def pick_to_item(vp, pick: Pick, want: set):
         pid, ei = pick.key
         shape = vp.part_shapes.get(pid)
         if shape is not None:
-            return ("path", {"kind": "edge", "edge": F.make_ref(pid, K.edges(shape)[ei], "edge", shape)})
+            return ("path", {"kind": "edge", "edge": F.make_ref(pid, K.edges(shape)[ei], "edge", shape, names(pid))})
     if k == "sketch_line" and "axis" in want:
         fid, eid = pick.key
         return ("axis", {"kind": "sketch_line", "sketch": fid, "line": eid})
@@ -124,7 +128,7 @@ def pick_to_item(vp, pick: Pick, want: set):
         pts = K.vertex_points(shape)
         if vi >= len(pts):
             return None
-        return ("vertex", F.make_vertex_ref(pid, pts[vi], shape))
+        return ("vertex", F.make_vertex_ref(pid, pts[vi], shape, names(pid)))
     if k == "plane" and "plane" in want:
         key = pick.key
         if key[0] == "std":
@@ -1089,7 +1093,7 @@ class FeatureDialog(_ResizableFrame):
         fld = self.active_field
         if fld is None:
             return
-        item = pick_to_item(self.main.viewport, pick, fld.want)
+        item = pick_to_item(self.main.viewport, pick, fld.want, self.base_state)
         if item is None:
             if pick.kind == "sketch_line" and "region" in fld.want:
                 try:
@@ -1110,7 +1114,7 @@ class FeatureDialog(_ResizableFrame):
             for i, pk in enumerate(picks):
                 if i in used or (not fld.multi and fld.items):
                     continue
-                item = pick_to_item(self.main.viewport, pk, fld.want)
+                item = pick_to_item(self.main.viewport, pk, fld.want, self.base_state)
                 if item is None:
                     continue
                 used.add(i)
@@ -1345,7 +1349,7 @@ class SketchDialog(_ResizableFrame):
         self.main.sketch_waiting_for_plane = True
 
     def handle_pick(self, pick):
-        item = pick_to_item(self.main.viewport, pick, {"plane"})
+        item = pick_to_item(self.main.viewport, pick, {"plane"}, getattr(self.main.doc, "state", None))
         if item:
             self.plane_field.items = [item]
             self.plane_field.set_active(False)

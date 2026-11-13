@@ -121,6 +121,31 @@ class RollbackBar(QFrame):
         self.setCursor(Qt.SizeVerCursor)
 
 
+RECOVERED_TIP = ("Recovered: a reference in this feature has no element name, so it was matched by its "
+                 "shape and may point at the wrong element. Re-select it to store its name.")
+
+
+def _warning_icon(size=32):
+    """The warning marker of a feature whose reference was recovered by signature: an amber triangle."""
+    ic = QIcon()
+    for scale in (1, 2):
+        pm = QPixmap(size * scale, size * scale)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.scale(size * scale / 32, size * scale / 32)
+        p.setPen(QPen(QColor("#8a5100"), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setBrush(QColor("#f9ab00"))
+        p.drawPolygon([QPointF(16, 4), QPointF(29, 27), QPointF(3, 27)])
+        p.setPen(QPen(QColor("#3c2600"), 2.4, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(16, 11), QPointF(16, 19))
+        p.drawPoint(QPointF(16, 23.2))
+        p.end()
+        pm.setDevicePixelRatio(scale)
+        ic.addPixmap(pm)
+    return ic
+
+
 class FeatureList(_EyeMixin, QListWidget):
     eyeClicked = Signal(str)                 # "std_plane:Top" / "feature:F3"
     editRequested = Signal(str)
@@ -180,6 +205,11 @@ class FeatureList(_EyeMixin, QListWidget):
                 it.setForeground(QColor("#d93025"))
                 it.setIcon(icon("error"))
                 it.setToolTip(err)
+            elif f["id"] in getattr(doc.state, "recovered", ()) and not f.get("suppressed"):
+                # a reference found only by its geometric signature: the result is a best guess
+                it.setForeground(QColor("#b06000"))
+                it.setIcon(_warning_icon())
+                it.setToolTip(RECOVERED_TIP)
             elif f.get("suppressed"):
                 it.setForeground(QColor("#9aa3ae"))
                 font = QFont()

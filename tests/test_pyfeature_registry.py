@@ -263,10 +263,10 @@ def test_unknown_or_pathlike_types_import_nothing(boxes, tmp_path, monkeypatch, 
 
 def test_missing_plugin_message():
     doc = Document()
-    doc.features = [{"id": "F1", "type": "py:gears/spur", "name": "Spur gear 1", "suppressed": False,
-                     "params": {}, "plugin": {"id": "gears", "version": "1.0.0"}}]
+    doc.features = [{"id": "F1", "type": "py:absent/spur", "name": "Spur gear 1", "suppressed": False,
+                     "params": {}, "plugin": {"id": "absent", "version": "1.0.0"}}]
     doc.rebuild()
-    assert doc.errors == {"F1": 'Python feature "Spur gear 1" needs plugin "gears" 1.0.0, which is not installed'}
+    assert doc.errors == {"F1": 'Python feature "Spur gear 1" needs plugin "absent" 1.0.0, which is not installed'}
 
 
 def test_make_feature_of_unregistered_python_type_raises():
@@ -356,10 +356,10 @@ def test_version_notice_acknowledge_and_undo(boxes):
 
 
 def test_missing_plugin_notice():
-    feats = [{"id": "F1", "type": "py:gears/spur", "name": "Spur gear 1", "suppressed": False, "params": {},
-              "plugin": {"id": "gears", "version": "1.0.0"}},
+    feats = [{"id": "F1", "type": "py:absent/spur", "name": "Spur gear 1", "suppressed": False, "params": {},
+              "plugin": {"id": "absent", "version": "1.0.0"}},
              {"id": "F2", "type": "extrude", "name": "Extrude 1", "suppressed": False, "params": {}}]
-    assert pyfeature.notices(feats) == {"F1": 'needs plugin "gears" 1.0.0, which is not installed'}
+    assert pyfeature.notices(feats) == {"F1": 'needs plugin "absent" 1.0.0, which is not installed'}
 
 
 # --------------------------------------------------------------------------- static checks

@@ -217,3 +217,17 @@ def test_icon_broken_svg_falls_back(tmp_path, monkeypatch, svg, name):
     assert not ic.isNull()
     c = _centre_colour(ic)
     assert (c.red(), c.green(), c.blue()) != (204, 0, 0)
+
+
+def test_notices_for_document_includes_locked_text(boxes, tmp_path):
+    from freeshape.document import Document
+    doc = Document()
+    f = doc.make_feature("py:boxes/box")
+    doc.add_feature(f)
+    path = str(tmp_path / "studio.fshape")
+    doc.save(path)
+    pyfeature.unregister_plugin("boxes")
+    loaded = Document.load(path)
+    text = 'locked: plugin "boxes" 1.0.0 is not installed; showing its last build'
+    assert pyfeature_ui.notices_for(loaded) == {f["id"]: text}
+    assert pyfeature_ui.notices_for(loaded.features)[f["id"]].startswith("needs plugin")

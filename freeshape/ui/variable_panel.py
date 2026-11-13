@@ -1,12 +1,13 @@
-"""VariablePanel: a standalone table widget over a VariableStudioDoc -- add, edit and delete rows of
-`{name, expression}`. No MainWindow wiring here; opening this as a tab is I3.8's job."""
+"""VariablePanel: a table widget over a VariableStudioDoc -- add, edit and delete rows of `{name, expression}`.
+VariableTabs (I3.8) shows one per Variable Studio tab of the window."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QPushButton, QTableWidget,
-                                QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QPushButton, QStackedWidget,
+                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..expr import fmt
+from ..variable_studio import VariableStudioDoc
 
 NAME, EXPR, VALUE = range(3)
 
@@ -88,3 +89,76 @@ class VariablePanel(QWidget):
                 self.table.setItem(r, VALUE, value_item)
         finally:
             self._loading = False
+
+
+# =========================================================================== the window's Variable Studio tabs (I3.8)
+
+class VariableTabs:
+    """A Variable Studio tab of the window: a VariablePanel in a page of the window's view stack, with empty pages
+    in the toolbar and left-panel stacks. `prepare` gives the document the few attributes the window's generic tab
+    code reads (kind, listeners, notify, an empty model state); an edit in the table notifies the document's
+    listeners, one of which sends the change to the engine (partstudio_engine.LiveTabs)."""
+
+    def __init__(self, window):
+        self.w = window
+        self.stack = QStackedWidget()
+        self.panels = {}                       # id(doc) -> (doc, VariablePanel)
+        self.view_index = window.view_stack.addWidget(self.stack)
+        self.tool_index = window.tool_stack.addWidget(QWidget())
+        self.left_index = window.left_stack.addWidget(QWidget())
+
+    @staticmethod
+    def is_variables(doc):
+        return getattr(doc, "kind", None) == "variables"
+
+    def prepare(self, doc):
+        """Make a VariableStudioDoc usable as a window tab (no-op for any other document)."""
+        if not isinstance(doc, VariableStudioDoc) or self.is_variables(doc):
+            return
+        import uuid
+        from ..features import ModelState
+        doc.kind, doc.uid = "variables", uuid.uuid4().hex
+        doc.listeners = []
+        doc.notify = lambda d=doc: [cb() for cb in list(d.listeners)]
+        doc.tab_id = getattr(doc, "tab_id", None)
+        # the Part-Studio-shaped attributes some generic window code looks at (as AssemblyDoc has)
+        doc.state, doc.features, doc.errors = ModelState(), [], {}
+        doc.hidden_parts, doc.hidden_features = set(), set()
+        doc.views = doc.rows                   # one list: so `MainWindow._has_content` sees the rows
+        doc.can_undo = doc.can_redo = lambda: False
+        self.prune()
+
+    def prune(self):
+        """Drop the panels of tabs the window no longer has."""
+        live = {id(d) for d in self.w.docs.values()}
+        for key in [k for k in self.panels if k not in live]:
+            _doc, panel = self.panels.pop(key)
+            self.stack.removeWidget(panel)
+            panel.deleteLater()
+
+    def panel_for(self, doc):
+        hit = self.panels.get(id(doc))
+        if hit is None:
+            panel = VariablePanel(doc)
+            panel.changed.connect(lambda d=doc: d.notify())
+            self.stack.addWidget(panel)
+            hit = self.panels[id(doc)] = (doc, panel)
+        return hit[1]
+
+    def show(self, doc):
+        """The tab of `doc` became the current one."""
+        w = self.w
+        panel = self.panel_for(doc)
+        panel.refresh()
+        self.stack.setCurrentWidget(panel)
+        w.view_stack.setCurrentIndex(self.view_index)
+        w.tool_stack.setCurrentIndex(self.tool_index)
+        w.left_stack.setCurrentIndex(self.left_index)
+        w.viewport.drag_handler = None
+        self.on_changed(doc)
+
+    def on_changed(self, doc):
+        w = self.w
+        w.doc_label.setText(doc.name + ("  •" if doc.dirty else ""))
+        w.setWindowTitle(f"{doc.name} — Variable Studio")
+        w._refresh_tab_title(doc)

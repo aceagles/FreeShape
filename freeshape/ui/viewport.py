@@ -1995,6 +1995,18 @@ class Viewport(QOpenGLWidget):
             return
         super().keyPressEvent(e)
 
+    def highlighted_triangles(self):
+        """[(part id, start, end)]: the triangle ranges (into that part's mesh) drawn in the selection / hover
+        colour for face picks -- the same ranges the draw pass uses."""
+        out = []
+        for pk in list(self.selection) + ([self.hover] if self.hover is not None else []):
+            if pk.kind != "face":
+                continue
+            m = next((m for pid, m, _c in self.parts if pid == pk.key[0]), None)
+            if m is not None and pk.key[1] < len(m.face_ranges):
+                out.append((pk.key[0], *m.face_ranges[pk.key[1]]))
+        return out
+
     def set_hover_none(self):
         if self.hover is not None:
             self.hover = None

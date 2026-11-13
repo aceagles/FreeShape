@@ -19,6 +19,12 @@ previews with `Document.compute`. Opening a file also builds it once in `Documen
 from __future__ import annotations
 
 import copy
+import hashlib
+import itertools
+import json
+import os
+import shutil
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -28,7 +34,7 @@ from PySide6.QtCore import QCoreApplication, QObject, Signal
 from .. import features as F
 from .. import kernel as K
 from .. import naming as N
-from ..engine import ProcessEngine, TabErrored
+from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
@@ -75,12 +81,28 @@ def plan_edits(have, want):
 def kernel_mesh(m, nfaces):
     """A K.Mesh from the engine's MeshOut: its triangles are grouped by face, so each face's range is a count."""
     tf = np.asarray(m.tri_face, np.int32) - 1
-    counts = np.bincount(tf, minlength=nfaces) if len(tf) else np.zeros(nfaces, np.int64)
-    ends = np.cumsum(counts)
-    ranges = list(zip((ends - counts).tolist(), ends.tolist()))
+    ranges = [tuple(r) for r in getattr(m, "face_ranges", None) or ()]      # the engine's own ranges
+    if len(ranges) != nfaces:                                              # an older mesh: count them
+        counts = np.bincount(tf, minlength=nfaces) if len(tf) else np.zeros(nfaces, np.int64)
+        ends = np.cumsum(counts)
+        ranges = list(zip((ends - counts).tolist(), ends.tolist()))
     return K.Mesh(np.asarray(m.verts, np.float32), np.asarray(m.normals, np.float32),
                   np.asarray(m.tris, np.uint32), tf, ranges, [np.asarray(p, np.float32) for p in m.edge_polys],
                   np.asarray(m.vertices, np.float32))
+
+
+def element_name(state, pid, kind, index):
+    """The element name of the `index`-th (1-based, MapShapes order) face / edge / vertex of part `pid`, from
+    the element-name map the engine returned for it (None: no map, or that element has no name)."""
+    return ((getattr(state, "engine_names", None) or {}).get(pid) or {}).get(kind, {}).get(index)
+
+
+def element_index(state, pid, kind, name):
+    """The 1-based index of the element called `name` in part `pid` (None: no such name)."""
+    for i, n in ((getattr(state, "engine_names", None) or {}).get(pid) or {}).get(kind, {}).items():
+        if n == name:
+            return i
+    return None
 
 
 def mesh_hash(m):
@@ -95,8 +117,11 @@ def mesh_hash(m):
 # =========================================================================== per-tab record
 
 class _Rec:
-    def __init__(self, doc):
+    def __init__(self, doc, kind="studio"):
         self.doc = doc
+        self.kind = kind             # "studio" | "variables" | "assembly" | "drawing" (the last three: see LiveTabs)
+        self.want_tab = None         # the engine tab id to ask for: the manifest tab id of a Document tab
+        self.sig = None              # assembly / drawing: the links its engine copy was opened with
         self.tab = None              # engine tab id (engine thread only)
         self.have = _EMPTY           # what the engine tab holds (engine thread only)
         self.cache = {}              # part hash -> (shape, K.Mesh) (engine thread only)
@@ -113,6 +138,8 @@ class _Result:
     def __init__(self, snap, out, parts):
         self.snap, self.errors, self.variables, self.revision = snap, dict(out.errors), dict(out.variables), out.revision
         self.parts = parts           # [(PartOut, shape, K.Mesh)]
+        self.rebuilt = []            # tab ids the engine rebuilt because this tab's output changed (Link graph)
+        self.extra = []              # [(rec, _Result)] for the Part Studios among them
 
 
 # =========================================================================== the client
@@ -133,13 +160,19 @@ class StudioEngine(QObject):
         self.broken = None           # why the engine could not be used, once it could not
         self._closed = False
         self._finished.connect(self._on_finished)
+        self.live = LiveTabs(self)   # Variable Studio / Assembly / Drawing tabs and the Link graph (I3.8)
 
     # ------------------------------------------------------------------ tabs
     def attach(self, doc):
-        """Make this Part Studio an engine client: its rebuilds go to the engine from now on."""
-        if self._closed or self.broken or id(doc) in self._recs:
-            return
+        """Make this Part Studio an engine client: its rebuilds go to the engine from now on. Any other tab kind
+        goes to `LiveTabs`."""
+        if getattr(doc, "kind", "studio") != "studio":
+            return self.live.attach(doc)
+        if self._closed or self.broken or id(doc) in self._recs or getattr(doc, "read_only_version", None):
+            return                   # (a read-only version has its own links: its tabs rebuild in the window)
+        self.live.attach_upstream(doc)
         rec = self._recs[id(doc)] = _Rec(doc)
+        rec.want_tab = self.live.tab_id(doc)
         doc.rebuild = lambda rec=rec: self._rebuild(rec)
         self._request(rec)
 
@@ -172,7 +205,7 @@ class StudioEngine(QObject):
         rec.doc.notify()
 
     def _request(self, rec):
-        rec.want, rec.dirty = snapshot(rec.doc), True
+        rec.want, rec.dirty = (snapshot(rec.doc) if rec.kind == "studio" else self.live.snapshot(rec)), True
         self._pump(rec)
 
     def _pump(self, rec):
@@ -204,12 +237,15 @@ class StudioEngine(QObject):
 
     def _job(self, rec, snap):
         eng = self._get_engine()
+        if rec.kind != "studio":
+            return self.live.job(eng, rec, snap)
+        rebuilt = []
         for attempt in (0, 1):
             try:
                 if rec.tab is None:
-                    rec.tab, rec.have = eng.new_tab("studio", name=str(snap["name"])), _EMPTY
+                    rec.tab, rec.have = self.live.open_new(eng, "studio", rec, str(snap["name"])), _EMPTY
                 for edit in plan_edits(rec.have, snap):
-                    eng.submit_edit(rec.tab, edit)
+                    self.live.submit(eng, rec.tab, edit, rebuilt)
                 rec.have = snap
                 out = eng.outputs(rec.tab)
                 break
@@ -221,6 +257,12 @@ class StudioEngine(QObject):
                 except Exception:   # noqa: BLE001
                     pass
                 rec.tab = None
+        res = self._decode(rec, snap, out)
+        res.rebuilt, res.extra = rebuilt, self.live.collect(eng, rec, rebuilt)
+        return res
+
+    def _decode(self, rec, snap, out):
+        """The parts of a StudioOutputs as shapes and meshes (a part that did not change is not decoded again)."""
         parts, cache = [], {}
         for p in out.parts:
             hit = rec.cache.get(p.hash)
@@ -243,10 +285,15 @@ class StudioEngine(QObject):
         try:
             res = fut.result()
         except BaseException as e:      # noqa: BLE001 -- the engine failed: the tab goes back to rebuilding here
+            if rec.kind != "studio":    # only this tab's engine copy is lost: it refreshes on every change instead
+                self.live.mirror_failed(rec, e)
+                return
             self._failed(rec, e)
             return
-        if rec.alive and not rec.dirty:     # a newer request is already on its way: skip drawing this one
-            self._apply(rec, res)
+        applied = []
+        if rec.kind == "studio" and rec.alive and not rec.dirty:   # else a newer request is on its way: skip drawing
+            applied.append(self.live.apply(rec, res))
+        self.live.finished(rec, res, applied)
         self._pump(rec)
         self.prune()
 
@@ -258,7 +305,9 @@ class StudioEngine(QObject):
             self._drop(r)
         self.window.status.showMessage(msg)
         for r in recs:
-            r.doc.rebuild()
+            if r.kind == "studio":
+                r.doc.rebuild()
+        self.live.refresh_consumers([], [], force=True)
 
     def _apply(self, rec, res):
         doc = rec.doc
@@ -269,6 +318,7 @@ class StudioEngine(QObject):
             names = {(_LETTER[k], i): n for k, d in p.names.items() for i, n in d.items()}
             if names:
                 st.set_named(p.id, N.NamedShape(shape, names))
+        st.engine_names = {p.id: p.names for p, *_ in res.parts}      # the engine's name maps, for picking
         st.vars = dict(res.variables)
         n = len(res.snap["features"]) if res.snap["rollback"] is None else min(res.snap["rollback"],
                                                                                  len(res.snap["features"]))
@@ -289,6 +339,7 @@ class StudioEngine(QObject):
                 rec.meshes[p.id] = mesh_hash(mesh)
         rec.revision = res.revision
         doc.notify()
+
 
     # ------------------------------------------------------------------ what is displayed
     def displayed(self, doc):
@@ -317,3 +368,317 @@ class StudioEngine(QObject):
 
         self._pool.submit(close).result()
         self._pool.shutdown(wait=True)
+        self.live.cleanup()
+
+
+# =========================================================================== I3.8: the other tab kinds, and live updates
+
+def plan_rows(have, want):
+    """The Variable Studio edits that turn a tab holding rows `have` into one holding `want`: drop surplus rows
+    from the end, rewrite the rows that differ, add the missing ones."""
+    cur, edits = list(have), []
+    while len(cur) > len(want):
+        edits.append({"op": "remove_row", "index": len(cur) - 1})
+        cur.pop()
+    for i, row in enumerate(want):
+        if i >= len(cur):
+            edits.append({"op": "add_row", "name": row.get("name", ""), "expression": row.get("expression", "")})
+        elif cur[i] != row:
+            e = {"op": "set_row", "index": i}
+            for k in ("name", "expression"):
+                if cur[i].get(k) != row.get(k):
+                    e[k] = row.get(k, "")
+            edits.append(e)
+    return edits
+
+
+def geometry_hash(shape):
+    """A hash of what a shape looks like -- solid count, volume, bounding box, to 1e-4 -- for shapes that are
+    built again on each side (a Drawing's model is a compound made where it is drawn), so that their BREP text
+    cannot be compared."""
+    lo, hi = K.bbox(shape)
+    key = [len(K.solids(shape)), round(float(K.volume(shape)), 4)] + [round(float(x), 4) for x in (*lo, *hi)]
+    return hashlib.sha256(repr(key).encode()).hexdigest()
+
+
+class _Done:
+    """The result of a job on a Variable Studio, Assembly or Drawing tab."""
+
+    def __init__(self, rebuilt, extra):
+        self.rebuilt, self.extra = rebuilt, extra
+
+class LiveTabs:
+    """What `StudioEngine` adds in I3.8, so that the window's tabs are one Link graph.
+
+    Every tab of an open Document -- Part Studio, Variable Studio, Assembly, Drawing -- has an engine tab named
+    by its manifest tab id, which is also what the links inside the Document name. A Variable Studio is edited
+    with row edits; an Assembly or Drawing is opened in the engine from a copy of the window's document and
+    opened again when its links change (the engine only needs them: the window keeps the placements and mates).
+    An edit to any tab goes to the engine, which rebuilds the tabs that consume it (`rebuild_dependents`, once
+    each, upstream first); the job returns their ids, and `finished` then draws the Part Studios among them and
+    refreshes the Assemblies and Drawings -- no tab switch needed. An Assembly or Drawing that is not a tab of
+    a Document (a loose file) has no engine copy: it refreshes whenever a Part Studio's parts change.
+
+    The engine thread runs `job`, `open_new`, `submit` and `collect`; everything else runs on the GUI thread."""
+
+    def __init__(self, engine):
+        self.engine = engine
+        self._tmp = None
+        self._files = itertools.count(1)
+        self._ids = itertools.count(1)
+        self._attaching = set()
+        self._hashes = {}                    # id(shape) -> (shape, sha256 of its BREP text)
+        self.cycle = None                    # the last LinkCycleError message, if an edit made one
+
+    # ------------------------------------------------------------------ ids and links (GUI thread)
+    def tab_id(self, doc):
+        """The manifest tab id of a document that is a tab of the open Document, else None."""
+        tab = self.engine.window._folder_tab(doc)
+        return tab.id if tab is not None else None
+
+    @staticmethod
+    def sources(doc):
+        """The link sources a tab consumes."""
+        kind = getattr(doc, "kind", None)
+        if kind == "studio":
+            return [f.get("params", {}).get("source") for f in doc.features
+                    if f.get("type") == "variable_studio_ref" and not f.get("suppressed")]
+        if kind == "assembly":
+            return [i.get("source") for i in doc.instances]
+        if kind == "drawing":
+            return [doc.source]
+        return []
+
+    def source_tabs(self, doc):
+        out = []
+        for s in self.sources(doc):
+            if isinstance(s, dict) and s.get("tab") and not s.get("document") and s["tab"] not in out:
+                out.append(s["tab"])
+        return out
+
+    def attach_upstream(self, doc):
+        """Make the tabs `doc` consumes engine tabs first, so that they are open in the engine before it is."""
+        w = self.engine.window
+        if w.folder is None or id(doc) in self._attaching:
+            return
+        self._attaching.add(id(doc))
+        try:
+            for tid in self.source_tabs(doc):
+                tab = w.folder.tab(tid)
+                if tab is not None and tab.doc is not None and tab.doc is not doc:
+                    self.engine.attach(tab.doc)
+        finally:
+            self._attaching.discard(id(doc))
+
+    def attach(self, doc):
+        """A Variable Studio, Assembly or Drawing tab of the open Document joins the engine."""
+        eng = self.engine
+        tid = self.tab_id(doc)
+        if eng._closed or eng.broken or id(doc) in eng._recs or tid is None or getattr(doc, "read_only_version", None):
+            return
+        self.attach_upstream(doc)
+        rec = eng._recs[id(doc)] = _Rec(doc, doc.kind)
+        rec.want_tab = tid
+        doc.listeners.append(lambda d=doc: self.changed(d))
+        eng._request(rec)
+
+    def changed(self, doc):
+        """The window's document changed: send the engine what it needs of it."""
+        eng = self.engine
+        rec = eng._recs.get(id(doc))
+        if rec is None or not rec.alive or eng._closed:
+            return
+        if rec.kind != "variables" and self.signature(rec) == (rec.want or {}).get("sig"):
+            return                           # the links did not change: the engine copy is as good as it was
+        eng._request(rec)
+
+    def snapshot(self, rec):
+        doc = rec.doc
+        if rec.kind == "variables":
+            return {"rows": [dict(r) for r in doc.rows], "name": doc.name}
+        sig = self.signature(rec)
+        snap = {"sig": sig, "name": doc.name}
+        if sig != rec.sig or rec.tab is None:
+            snap["json"] = doc.to_json(embed=False)
+        return snap
+
+    @staticmethod
+    def signature(rec):
+        doc = rec.doc
+        if rec.kind == "assembly":
+            return json.dumps([[i["id"], i["source"]] for i in doc.instances], sort_keys=True, default=str)
+        return json.dumps(doc.source, sort_keys=True, default=str)
+
+    def reset(self, old_docs):
+        """The files under every tab changed at once (Workspace switch, merge): close the engine tabs of the old
+        documents now, so that the new ones open under the same ids on a clean Link graph."""
+        eng = self.engine
+        for d in old_docs:
+            rec = eng._recs.pop(id(d), None)
+            if rec is not None:
+                eng._drop(rec)
+
+    # ------------------------------------------------------------------ the engine thread
+    def open_new(self, eng, kind, rec, name):
+        tid = rec.want_tab or f"L{next(self._ids)}"
+        if any(t[0] == tid for t in eng.tabs()):          # a tab of a document that was dropped meanwhile
+            for other in list(self.engine._recs.values()):
+                if other is not rec and other.tab == tid:
+                    other.tab = None
+            try:
+                eng.close_tab(tid)
+            except Exception:                              # noqa: BLE001
+                pass
+        return eng.new_tab(kind, name=name, tab=tid)
+
+    def submit(self, eng, tab, edit, rebuilt):
+        """eng.submit_edit, noting the tabs it rebuilt in `rebuilt`. A circular link is not fatal: the edit is
+        applied and the cycle is reported."""
+        try:
+            eng.submit_edit(tab, edit)
+        except LinkCycleError as e:
+            self.cycle = str(e)
+        for t in eng.rebuild_order():
+            if t not in rebuilt:
+                rebuilt.append(t)
+
+    def job(self, eng, rec, snap):
+        rebuilt = []
+        for attempt in (0, 1):
+            try:
+                if rec.kind == "variables":
+                    if rec.tab is None:
+                        rec.tab, rec.have = self.open_new(eng, "variables", rec, str(snap["name"])), []
+                    for edit in plan_rows(rec.have, snap["rows"]):
+                        self.submit(eng, rec.tab, edit, rebuilt)
+                    rec.have = snap["rows"]
+                elif rec.tab is None or "json" in snap:
+                    self._reopen(eng, rec, snap)
+                break
+            except TabErrored:
+                if attempt:
+                    raise
+                try:
+                    eng.close_tab(rec.tab)
+                except Exception:                           # noqa: BLE001
+                    pass
+                rec.tab, rec.sig = None, None
+                if rec.kind != "variables":
+                    snap = dict(snap, json=rec.doc.to_json(embed=False))
+        return _Done(rebuilt, self.collect(eng, rec, rebuilt))
+
+    def _reopen(self, eng, rec, snap):
+        """Open (again) the engine copy of an Assembly or Drawing from the window's document."""
+        if rec.tab is not None:
+            try:
+                eng.close_tab(rec.tab)
+            except Exception:                               # noqa: BLE001
+                pass
+            rec.tab = None
+        if self._tmp is None:
+            self._tmp = tempfile.mkdtemp(prefix="freeshape-live-")
+        ext = ".fasm" if rec.kind == "assembly" else ".fdwg"
+        path = os.path.join(self._tmp, f"{rec.want_tab}-{next(self._files)}{ext}")
+        with open(path, "w") as fh:
+            fh.write(snap["json"])
+        if any(t[0] == rec.want_tab for t in eng.tabs()):
+            eng.close_tab(rec.want_tab)
+        rec.tab = eng.open_tab(path, tab=rec.want_tab)
+        rec.sig = snap["sig"]
+
+    def collect(self, eng, rec, rebuilt):
+        """[(rec, _Result)] for the Part Studios of the window that the engine rebuilt: their parts changed with
+        the Variable Studio they read, without any edit of their own."""
+        out = []
+        for other in list(self.engine._recs.values()):
+            if other is not rec and other.kind == "studio" and other.tab in rebuilt and other.tab is not None:
+                out.append((other, self.engine._decode(other, other.have, eng.outputs(other.tab))))
+        return out
+
+    # ------------------------------------------------------------------ back on the GUI thread
+    def apply(self, rec, res):
+        """Draw a Part Studio's result; (tab id, first result?, did its parts change?)."""
+        first, old = rec.revision is None, dict(rec.shown)
+        if len(self._hashes) > 2048:
+            self._hashes.clear()
+        for p, shape, _mesh in res.parts:                   # the engine's own hash of each shape it handed over
+            self._hashes[id(shape)] = (shape, p.hash)
+        self.engine._apply(rec, res)
+        return (rec.want_tab or rec.tab, first, rec.shown != old)
+
+    def finished(self, rec, res, applied):
+        eng = self.engine
+        for other, res2 in getattr(res, "extra", ()):
+            if other.alive and not other.dirty and id(other.doc) in eng._recs:
+                applied.append(self.apply(other, res2))
+        self.refresh_consumers(getattr(res, "rebuilt", ()), applied)
+
+    def mirror_failed(self, rec, exc):
+        eng = self.engine
+        if eng._recs.get(id(rec.doc)) is rec:
+            eng._recs.pop(id(rec.doc))
+        eng._drop(rec)
+        eng.window.status.showMessage(f"The engine could not follow “{rec.doc.name}” ({type(exc).__name__}: {exc}); "
+                                      "it now refreshes whenever a Part Studio changes", 10000)
+        self.refresh_consumers([], [], force=True)
+
+    def refresh_consumers(self, rebuilt, applied, force=False):
+        """Refresh the window's Assemblies and Drawings that the engine says are out of date: the tabs it
+        rebuilt, and the tabs that consume a Part Studio that has just drawn its first result. A document that has
+        no engine copy refreshes whenever a Part Studio's parts changed."""
+        eng, w = self.engine, self.engine.window
+        rebuilt = set(rebuilt)
+        fresh = {tid for tid, first, _ in applied if first and tid}
+        any_changed = force or any(changed or first for _, first, changed in applied)
+        if not (rebuilt or fresh or any_changed):
+            return
+        docs = [d for d in list(w.docs.values()) if getattr(d, "kind", "") in ("assembly", "drawing")
+                and not getattr(d, "read_only_version", None)]
+        docs.sort(key=lambda d: d.kind != "assembly")       # a drawing of an assembly after the assembly
+        for d in docs:
+            tab = w._folder_tab(d)
+            if tab is not None and id(d) in eng._recs:
+                due = tab.id in rebuilt or any(t in fresh for t in self.source_tabs(d))
+                if due and any(t in fresh for t in self.source_tabs(d)):
+                    fresh.add(tab.id)
+            else:
+                due = any_changed
+            if due:
+                try:
+                    d.refresh(notify=True)
+                except Exception as e:                      # noqa: BLE001 -- the document shows its own error
+                    w.status.showMessage(f"Could not refresh “{d.name}”: {e}", 8000)
+
+    # ------------------------------------------------------------------ what is displayed
+    def hash_of(self, shape):
+        hit = self._hashes.get(id(shape))
+        if hit is None or hit[0] is not shape:
+            from ..engine.encode import brep_text
+            hit = self._hashes[id(shape)] = (shape, hashlib.sha256(brep_text(shape)).hexdigest())
+        return hit[1]
+
+    # ------------------------------------------------------------------ what is displayed
+    def displayed(self, doc, geometry=False):
+        """What the window shows of a tab, as hashes of the shapes it holds: {part id: hash} for a Part Studio,
+        {instance id: hash of its part} for an Assembly, `geometry_hash` of the model drawn for a Drawing, {name: value}
+        for a Variable Studio. A shape the engine handed over has the engine's hash of it; any other (a read-only
+        version's tabs rebuild in the window) is hashed here, which gives another value for the same shape unless
+        `geometry` asks for `geometry_hash` throughout."""
+        kind = getattr(doc, "kind", "studio")
+        hash_of = geometry_hash if geometry else self.hash_of
+        if kind == "assembly":
+            return {i["id"]: hash_of(doc.parts[i["id"]].shape) for i in doc.instances if i["id"] in doc.parts}
+        if kind == "drawing":
+            return None if doc.shape is None else geometry_hash(doc.shape)
+        if kind == "variables":
+            return dict(doc.values()[0])
+        return {p.id: hash_of(p.shape) for p in doc.state.parts.values()}
+
+    def link_edges(self, doc):
+        """[(consumer tab id, upstream tab id)] of the engine's Link graph, read on the engine thread."""
+        return self.engine.in_engine(doc, lambda e, tab: e.link_edges())
+
+    def cleanup(self):
+        if self._tmp is not None:
+            shutil.rmtree(self._tmp, ignore_errors=True)
+            self._tmp = None

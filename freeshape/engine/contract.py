@@ -5,6 +5,9 @@ machine boundary unchanged.
 
 Outputs
 -------
+A Variable Studio tab ("variables") returns `VariablesOutputs`; a Part Studio holding a "variable_studio_ref"
+feature reads its variables, live and unsaved, and lists that tab in `consumes`.
+
 A part crosses as `PartOut`: its BREP (`brep`, zlib-compressed OCCT BREP text -- the same encoding as
 `kernel.shape_to_brep`, so `kernel.shape_from_brep(part.brep)` rebuilds it), a content hash of that BREP
 text, a mesh for display, and its element-name map.
@@ -46,6 +49,15 @@ class TabErrored(EngineError):
         self.reason = reason
 
 
+class LinkCycleError(EngineError):
+    """Tabs that consume each other, directly or through a chain. `tabs` lists the cycle, first tab repeated last.
+    Raised by `submit_edit` after the edit itself has been applied; nothing is rebuilt for the cycle."""
+
+    def __init__(self, tabs, message):
+        super().__init__(message)
+        self.tabs = list(tabs)
+
+
 # =========================================================================== edits
 
 STUDIO_OPS = {
@@ -80,6 +92,12 @@ DRAWING_OPS = {
     "undo": "", "redo": "",
     "save": "path (optional)",
 }
+VARIABLES_OPS = {
+    "add_row": "name, expression, index (optional; default: at the end)",
+    "set_row": "index, plus name and / or expression",
+    "remove_row": "index",
+    "save": "path (optional)",
+}
 
 
 # =========================================================================== outputs
@@ -95,6 +113,8 @@ class MeshOut:
     tri_face: np.ndarray
     edge_polys: list
     vertices: np.ndarray
+    # face_ranges[i - 1] = (start, end): the triangles of face i are tris[start:end] (tri_face == i there)
+    face_ranges: list = field(default_factory=list)
 
 
 @dataclass
@@ -178,6 +198,13 @@ class AssemblyOutputs(TabOutputs):
 
 
 @dataclass
+class VariablesOutputs(TabOutputs):
+    """A Variable Studio tab. `errors` maps a row index (as a str) to its message."""
+    variables: dict = field(default_factory=dict)      # name -> number, every row that evaluated
+    rows: list = field(default_factory=list)           # [{"name", "expression"}], in evaluation order
+
+
+@dataclass
 class DrawingOutputs(TabOutputs):
     source: dict | None = None
     sheet: dict = field(default_factory=dict)
@@ -245,6 +272,29 @@ class Engine(abc.ABC):
     @abc.abstractmethod
     def outputs(self, tab) -> TabOutputs:
         ...
+
+    # ------------------------------------------------------------------ the Link graph
+    def rebuild_dependents(self, tab) -> list:
+        """Rebuild the tabs that consume `tab`, each once, after the tabs they consume, and only those whose
+        consumed output changed. `submit_edit` calls this; returns the tab ids rebuilt, in order."""
+        return []
+
+    def rebuild_count(self, tab) -> int:
+        """How many times the engine rebuilt `tab` because an output it consumed changed (its own edits do
+        not count: see `revision`)."""
+        return self.links.graph.rebuilds.get(tab, 0)
+
+    def rebuild_counts(self) -> dict:
+        """{tab id: rebuild_count} for every tab rebuilt so far."""
+        return dict(self.links.graph.rebuilds)
+
+    def rebuild_order(self) -> list:
+        """The tab ids the last `rebuild_dependents` rebuilt, in the order it rebuilt them."""
+        return list(self.links.graph.last_order)
+
+    def link_edges(self) -> list:
+        """[(consumer tab id, upstream tab id)]: every output one tab has been handed from another."""
+        return self.links.graph.edges()
 
     def close(self) -> None:
         """Close every tab (and so, in the process executor, end every worker)."""

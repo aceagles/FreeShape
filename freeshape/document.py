@@ -279,6 +279,24 @@ class Document:
         self.notify()
 
     # ------------------------------------------------------------------ rebuild
+    var_inputs = None   # (source dict) -> {name: value} of the Variable Studio it names, or None; the engine sets it
+
+    def _ref_inputs(self, f):
+        """The variables a "variable_studio_ref" feature consumes (None if its link finds nothing)."""
+        src = (f.get("params") or {}).get("source")
+        vals = self.var_inputs(src) if self.var_inputs is not None and isinstance(src, dict) else None
+        return None if vals is None else {str(k): float(v) for k, v in vals.items()}
+
+    def _with_consumed_inputs(self, h, f):
+        """Cache-key step for cross-tab inputs: mixes the variables a "variable_studio_ref" feature reads into
+        the running hash `h`, so a changed input misses from that feature on. Returns the feature to run
+        (with the values as params["resolved"]); any other feature comes back unchanged."""
+        if f.get("type") != "variable_studio_ref" or f.get("suppressed"):
+            return f
+        ref = self._ref_inputs(f)
+        h.update(json.dumps(ref, sort_keys=True).encode())
+        return dict(f, params=dict(f["params"], resolved=ref))
+
     @staticmethod
     def _key(prefix_json: str) -> str:
         return hashlib.sha1(prefix_json.encode()).hexdigest()
@@ -293,6 +311,7 @@ class Document:
             h.update(json.dumps(f, sort_keys=True).encode())
             if pyfeature.is_python_type(f.get("type")):
                 h.update(self._python_key(f).encode())
+            f = self._with_consumed_inputs(h, f)
             key = h.hexdigest()
             if key in self._cache:
                 state, err = self._cache[key]

@@ -605,6 +605,13 @@ Split and merge are the same mechanism read in two directions, so they are descr
   about to run in `state.current_fid` and `resolve` falls back to it. An explicit `fid=` wins.
 * **Not ported from FreeCAD.** FreeCAD logs `missing element reference` and re-binds to a nearby
   index (see above); FreeShape raises instead (ADR 0003).
+* **A severed solid is one lookup scope.** When a cut severs a part into several solids,
+  `set_part_shape` keeps the part id for one piece and gives the others `<id>.<i>`. FreeCAD keeps
+  such a result as one shape with one map, so a name is found wherever it is. `_named_lookup` does
+  the same: after the reference's own part it searches the other pieces of the same solid (the id
+  without its `.<i>` suffixes, and every id that extends it). Parts that were never one solid are
+  not searched. Not covered: a later feature stamps only the piece it runs on, so names stored
+  after such a feature can differ per piece (tests/test_severed_solid_refs.py, the xfail case).
 
 ### I1.13 Connectors and dimension ends
 

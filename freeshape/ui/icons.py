@@ -156,6 +156,11 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(ORANGE, 2.2))
         p.drawLine(QPointF(8, 9), QPointF(22, 9))
         p.drawLine(QPointF(22, 9), QPointF(27, 6))
+    elif name == "delete_part":
+        _box(p, 4, 10, 18, 16, 6)
+        p.setPen(_pen(RED, 2.8))
+        p.drawLine(QPointF(14, 14), QPointF(27, 27))
+        p.drawLine(QPointF(27, 14), QPointF(14, 27))
     elif name == "search":
         p.setPen(_pen(INK, 2.2))
         p.setBrush(Qt.NoBrush)

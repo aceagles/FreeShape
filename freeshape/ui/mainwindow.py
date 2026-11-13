@@ -435,6 +435,8 @@ class MainWindow(QMainWindow):
             C("offset_surface", "Offset surface", "Make a new surface a set distance from selected faces (flat or "
               "curved). The result is a surface body you can use as a reference or delete faces from.",
               lambda: F_("offset_surface"), "offset face surface copy shell skin"),
+            C("delete_part", "Delete part", "Remove the selected parts from the model from this point on.",
+              lambda: F_("delete_part"), "remove erase discard body"),
             C("sm_base", "Sheet metal", "A flat sheet from a sketch with thickness, bend radius and K-factor.",
               lambda: F_("sm_base"), "bracket enclosure"),
             C("sm_flange", "Flange", "Bend the sheet up along edges.", lambda: F_("sm_flange"), "sheet metal bend"),
@@ -547,7 +549,8 @@ class MainWindow(QMainWindow):
                           ("delete_face", "Delete face — remove fillets, chamfers, bosses and holes from "
                                           "imported parts (heal, cap or leave open)"),
                           ("move_face", "Move face — push or pull flat faces"),
-                          ("offset_surface", "Offset surface — a new surface a set distance from faces")):
+                          ("offset_surface", "Offset surface — a new surface a set distance from faces"),
+                          ("delete_part", "Delete part — remove parts from the model from here on")):
             self._tb(h, name, tip, lambda _=False, n=name: self.start_feature(n))
         h.addWidget(_sep())
         self._tb(h, "sm_base", "Sheet metal — a flat sheet from a sketch (thickness, bend radius, K-factor)",

@@ -50,6 +50,7 @@ FEATURE_LABELS = {
     "variable_studio_ref": "Variable Studio reference",
     "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
+    "delete_part": "Delete part",
 }
 
 # ISO metric screw data (coarse threads).  clearance: close / normal / loose (ISO 273)
@@ -1116,6 +1117,14 @@ def run_offset_surface(state, f):
         state.set_named(state.new_part(res, f["id"]).id, named)
 
 
+def run_delete_part(state, f):
+    ids = _selected_parts(state, f["params"])
+    for i in ids:
+        state.parts.pop(i, None)
+        state.names.pop(i, None)
+        state.sheet.pop(i, None)
+
+
 def run_plane(state, f):
     state.planes[f["id"]] = build_plane(state, f["params"])
 
@@ -1625,6 +1634,7 @@ RUNNERS = {
     "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
+    "delete_part": run_delete_part,
 }
 
 
@@ -1643,6 +1653,7 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "delete_face": {"faces": [], "mode": "heal"},
         "move_face": {"faces": [], "distance": 2.0, "flip": False},
         "offset_surface": {"faces": [], "distance": 2.0, "flip": False},
+        "delete_part": {"parts": []},
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
         "mirror": {"parts": [], "plane": {"kind": "std", "name": "Right"}, "op": "add"},
         "linear_pattern": {"parts": [], "direction": {"kind": "std", "name": "X"}, "count": 3,

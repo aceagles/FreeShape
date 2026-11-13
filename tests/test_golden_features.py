@@ -879,8 +879,9 @@ def import_step_block():
 def test_every_runner_is_characterised():
     used = {f["type"] for fn, _ in CASES.values() for f in _built(fn.__name__).features}
     # variable_studio_ref reads another tab, so it is characterised in test_variable_studio_ref.py
+    # delete_part only removes parts, so it has no result to fingerprint: tests/test_delete_part.py
     # Python features (py:*) are covered by their plugins' own tests, e.g. tests/test_gears_plugin.py
-    left = {t for t in F.RUNNERS if not t.startswith("py:")} - used - {"variable_studio_ref"}
+    left = {t for t in F.RUNNERS if not t.startswith("py:")} - used - {"variable_studio_ref", "delete_part"}
     assert left == set(), sorted(left)
 
 

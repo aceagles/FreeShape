@@ -467,6 +467,9 @@ SCHEMAS = {
         _num("distance", "Distance (outwards)"),
         _check("flip", "Flip direction"),
     ],
+    "delete_part": [
+        _sel("parts", "Parts to delete", {"part"}),
+    ],
     "plane": [
         _choice("type", "Plane type", F.PLANE_TYPES),
         _sel("refs_sel", "Planes, faces, edges and vertices", {"plane", "face", "edge", "vertex"}),
@@ -602,7 +605,7 @@ def params_to_fields(ftype, p):
     if ftype == "draft":
         f["faces"] = [("face", r) for r in p.get("faces", [])]
         f["neutral_sel"] = [("plane", p["neutral"])] if p.get("neutral") else []
-    if ftype in ("split", "move"):
+    if ftype in ("split", "move", "delete_part"):
         f["parts"] = [("part", i) for i in p.get("parts", [])]
     if ftype == "split":
         f["plane_sel"] = [("plane", p["plane"])] if p.get("plane") else []
@@ -653,7 +656,7 @@ def fields_to_params(ftype, fields, p):
         p["faces"] = [r for k, r in fields.get("faces", [])]
         sel = fields.get("neutral_sel", [])
         p["neutral"] = sel[0][1] if sel else {"kind": "std", "name": "Top"}
-    if ftype in ("split", "move"):
+    if ftype in ("split", "move", "delete_part"):
         p["parts"] = [r for k, r in fields.get("parts", [])]
     if ftype == "split":
         sel = fields.get("plane_sel", [])

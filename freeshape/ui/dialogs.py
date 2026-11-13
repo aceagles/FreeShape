@@ -581,6 +581,7 @@ SCHEMAS = {
         {"t": "derived_source", "key": "source", "label": "Part Studio"},
         {"t": "derived_checks", "key": "parts", "label": "Parts"},
         {"t": "derived_checks", "key": "sketches", "label": "Sketches"},
+        {"t": "derived_connectors", "key": "connectors", "label": "Mate connectors"},
     ],
     "hole": [
         {"t": "sketch_choice", "key": "sketch", "label": "Sketch with hole centres"},
@@ -1048,6 +1049,8 @@ class FeatureDialog(_ResizableFrame):
             return self._make_derived_source(spec, p, row, h)
         if t == "derived_checks":
             return self._make_derived_checks(spec, p, row, h)
+        if t == "derived_connectors":
+            return self._make_derived_connectors(spec, p, row, h)
         return None
 
     # ------------------------------------------------------------------ Derived rows (I1.9)
@@ -1073,7 +1076,7 @@ class FeatureDialog(_ResizableFrame):
     def _make_derived_source(self, spec, p, row, h):
         from .. import links as L
         self._derived_fills = []
-        self._derived_owned = ["parts", "sketches"]      # params keys that belong to the source and are cleared with it
+        self._derived_owned = ["parts", "sketches", "connectors"]      # params keys that belong to the source and are cleared with it
         cb = QComboBox()
         cb.addItem("— choose a Part Studio —", None)
         for t_ in self._derived_tabs():
@@ -1143,6 +1146,78 @@ class FeatureDialog(_ResizableFrame):
         self._derived_fills.append(fill)
         fill()
         return row
+
+    def _make_derived_connectors(self, spec, p, row, h):
+        """The Mate connectors tick list (I3.6): the source's published connectors, shown "name (part)". A connector
+        arrives on its part, so ticking one whose part is not ticked is refused, and unticking a part unticks its
+        connectors; the note under the source says which."""
+        h.setDirection(QBoxLayout.TopToBottom)
+        key = spec["key"]
+        lst = QListWidget()
+        lst.setMaximumHeight(120)
+        h.addWidget(lst)
+        self.widgets[key] = lst
+        owner = {}                      # connector id -> its source part id (resolved through aliases)
+
+        def part_ticked(cid):
+            pkg_ids = self.feature["params"].get("parts") or []
+            return owner.get(cid) is None or owner[cid] in [self._derived_alias(i) for i in pkg_ids]
+
+        def read():
+            self.feature["params"][key] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
+                                           if lst.item(i).checkState() == Qt.Checked]
+            self._set_unlisted()
+
+        def changed(it):
+            cid = it.data(Qt.UserRole)
+            if it.checkState() == Qt.Checked and not part_ticked(cid):
+                lst.blockSignals(True)
+                it.setCheckState(Qt.Unchecked)
+                lst.blockSignals(False)
+                self._derived_note.setText(f"⚠ Tick part {owner[cid]} first: a connector comes in with its part.")
+                return
+            read()
+
+        def parts_changed(_it=None):
+            dropped = False
+            lst.blockSignals(True)
+            for i in range(lst.count()):
+                it = lst.item(i)
+                if it.checkState() == Qt.Checked and not part_ticked(it.data(Qt.UserRole)):
+                    it.setCheckState(Qt.Unchecked)
+                    dropped = True
+            lst.blockSignals(False)
+            if dropped:
+                self._derived_note.setText("⚠ Connectors on a part you unticked were unticked too.")
+                read()
+
+        def fill():
+            pkg, _why = self._derived_package()
+            self._derived_aliases = dict(pkg.aliases) if pkg is not None else {}
+            published = {} if pkg is None else dict(pkg.connectors)
+            owner.clear()
+            owner.update({i: self._derived_alias(c["part"]) for i, c in published.items()})
+            ticked = list(self.feature["params"].get(key) or [])
+            lst.blockSignals(True)
+            lst.clear()
+            parts = {} if pkg is None else {i: v.name for i, v in pkg.parts.items()}
+            for i, c in list(published.items()) + [(i, None) for i in ticked if i not in published]:
+                it = QListWidgetItem(f"{c['name']}  ({parts.get(c['part'], c['part'])})" if c is not None
+                                     else f"{i}  (no longer published)")
+                it.setData(Qt.UserRole, i)
+                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Checked if i in ticked else Qt.Unchecked)
+                lst.addItem(it)
+            lst.blockSignals(False)
+        lst.itemChanged.connect(changed)
+        if "parts" in self.widgets:
+            self.widgets["parts"].itemChanged.connect(parts_changed)
+        self._derived_fills.append(fill)
+        fill()
+        return row
+
+    def _derived_alias(self, pid):
+        return getattr(self, "_derived_aliases", {}).get(pid, pid)
 
     # ------------------------------------------------------------------ Variable Studio reference rows
     def _variable_tabs(self):

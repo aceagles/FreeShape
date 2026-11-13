@@ -982,6 +982,18 @@ def run_derived(state, f):
         if out is None:
             raise K.KernelError(f"Sketch {sid} is no longer published by “{label}”")
         state.sketches[f"{fid}:{sid}"] = _derived_sketch(out, fid, label)
+    # ---- mate connectors (I3.6): a ticked source connector arrives as state.connectors["<fid>:<cid>"], on the
+    # derived part, at its published frame. Placement below moves it with the part.
+    for cid in p.get("connectors") or []:
+        c = (getattr(pkg, "connectors", None) or {}).get(cid)
+        if c is None:
+            raise K.KernelError(f"Mate connector {cid} is no longer published by “{label}”")
+        ticked = [pkg.aliases.get(pid, pid) for pid in p.get("parts") or []]
+        if c["part"] not in ticked:
+            raise K.KernelError(f"Mate connector {cid} “{c['name']}” is on part {c['part']}, which this Derived "
+                                f"does not bring in: tick that part too")
+        state.connectors[f"{fid}:{cid}"] = {"name": str(c["name"]), "part": f"{fid}/{ticked.index(c['part']) + 1}",
+                                            "frame": {k: [float(v) for v in c["frame"][k]] for k in ("o", "z", "x")}}
     # ---- placement (I4.1): one rigid move of everything this Derived owns, worked out once, applied last
     trsf = _derived_placement(state, p, pkg, label)
     if trsf is not None:

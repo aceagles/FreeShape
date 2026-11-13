@@ -181,3 +181,92 @@ def test_a_studio_without_derived_builds_the_same_hashes():
 
 
 BASELINE = {"F2/1": "e316e0027921118426ca125327a8b985487e931d98134ca6ed91d45ed7c988c3"}
+
+
+# ---------------------------------------------------------------------------- mate connectors (I3.6)
+def connector_in(tab, pid="F2/1", name="Top"):
+    from test_derived_placement import top_face_connector
+    return top_face_connector(tab.doc, pid, name)["id"]
+
+
+def test_a_derived_connector_has_the_source_frame_and_is_published(tmp_path):
+    from freeshape.engine.encode import connector_out
+    fd = make_folder(tmp_path)
+    src, sid = box_studio(fd)
+    cid = connector_in(src)
+    use = fd.add_tab("studio", "Use")
+    f = derive(use, src)
+    f["params"]["connectors"] = [cid]
+    use.doc.rebuild()
+    fid = f["id"]
+    assert not use.doc.errors, use.doc.errors
+    got = use.doc.state.connectors[f"{fid}:{cid}"]
+    want = src.doc.state.connectors[cid]
+    assert got["part"] == f"{fid}/1" and got["name"] == "Top" and got["frame"] == want["frame"]
+    assert f"{fid}:{cid}" in {c.id for c in [connector_out(k, v) for k, v in use.doc.state.connectors.items()]}
+    # a studio's published connectors: what the resolver (and so an Assembly) reads
+    from freeshape.links import LinkResolver
+    pkg = fd.resolver.resolve_studio(L.studio_source(use))
+    assert pkg.connectors[f"{fid}:{cid}"]["frame"] == want["frame"]
+    assert [c["id"] for c in fd.resolver.resolve_connectors(L.studio_source(use, part=f"{fid}/1"))] == [f"{fid}:{cid}"]
+
+
+def test_the_derived_connector_follows_a_source_edit_that_moves_it(tmp_path):
+    fd = make_folder(tmp_path)
+    src, sid = box_studio(fd)
+    cid = connector_in(src)
+    use = fd.add_tab("studio", "Use")
+    f = derive(use, src)
+    f["params"]["connectors"] = [cid]
+    use.doc.rebuild()
+    key = f"{f['id']}:{cid}"
+    before = list(use.doc.state.connectors[key]["frame"]["o"])
+    set_width(src, 30)
+    fd.refresh_links()
+    after = use.doc.state.connectors[key]["frame"]["o"]
+    assert not use.doc.errors and abs(after[0] - before[0] - 5) < 1e-6
+    assert after == src.doc.state.connectors[cid]["frame"]["o"]
+
+
+def test_a_connector_without_its_part_or_no_longer_published_is_red(tmp_path):
+    fd = make_folder(tmp_path)
+    src, sid = box_studio(fd)
+    cid = connector_in(src)
+    use = fd.add_tab("studio", "Use")
+    f = derive(use, src, parts=())
+    f["params"]["connectors"] = [cid]
+    use.doc.rebuild()
+    assert cid in use.doc.errors[f["id"]] and "tick that part" in use.doc.errors[f["id"]]
+    f["params"]["parts"] = ["F2/1"]
+    f["params"]["connectors"] = ["F99"]
+    use.doc.rebuild()
+    assert "F99" in use.doc.errors[f["id"]] and "no longer published" in use.doc.errors[f["id"]]
+
+
+def test_an_assembly_mate_on_a_derived_connector_solves(tmp_path):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from freeshape import assembly as A
+    from test_connector_frames import assembly, bottom_face, src as src_of
+    fd = make_folder(tmp_path)
+    src, sid = box_studio(fd)
+    cid = connector_in(src)
+    use = fd.add_tab("studio", "Use")
+    f = derive(use, src)
+    f["params"]["connectors"] = [cid]
+    use.doc.rebuild()
+    key = f"{f['id']}:{cid}"
+    block = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 20, 10, 8).Shape()
+    a = assembly(use.doc, {"block": block})
+    a.connector_resolver = lambda s: [{"id": k, "name": c["name"], "frame": c["frame"]}
+                                      for k, c in use.doc.state.connectors.items()]
+    ip = a.insert(src_of("plate"))
+    a.set_fixed(ip, True)
+    ib = a.insert(src_of("block"))
+    m = a.make_mate("fastened")
+    m["a"] = a.named_connector(ip, key)
+    m["b"] = a.connector(ib, "face", bottom_face(block))
+    a.add_mate(m)
+    a.solve()
+    assert not a.errors, a.errors
+    assert abs(a.T(ib)[2, 3] - use.doc.state.connectors[key]["frame"]["o"][2]) < 1e-6

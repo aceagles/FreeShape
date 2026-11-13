@@ -122,34 +122,46 @@ def test_a_derived_connector_moves_with_the_derived(tmp_path):
     fid = f["id"]
     use.doc.features.remove(f)
     use.doc.features.append(f)
+    f["params"]["connectors"] = [cid]
     f["params"]["placement"] = {"location": loc["id"], "base": cid}
-    # a connector that arrives with the derived part (I3.6) is any entry of state.connectors on a part `<fid>/k`;
-    # put one in by wrapping the runner so the entry exists when the placement runs
-    pkg_frame = src.doc.state.connectors[cid]["frame"]
-    real = F.RUNNERS["derived"]
-
-    def with_connector(state, feat):
-        real_place = F._place_derived
-
-        def place(state_, fid_, trsf):
-            state_.connectors["D1"] = {"name": "in", "part": f"{fid_}/1", "frame": copy.deepcopy(pkg_frame)}
-            return real_place(state_, fid_, trsf)
-        F._place_derived = place
-        try:
-            return real(state, feat)
-        finally:
-            F._place_derived = real_place
-    F.RUNNERS["derived"] = with_connector
-    try:
-        use.doc.rebuild()
-    finally:
-        F.RUNNERS["derived"] = real
+    use.doc.rebuild()
     assert not use.doc.errors, use.doc.errors
-    o, z, x = frame_of(use.doc.state.connectors["D1"])
+    o, z, x = frame_of(use.doc.state.connectors[f"{fid}:{cid}"])
     want = frame_of(use.doc.state.connectors[loc["id"]])
     assert np.linalg.norm(o - want[0]) < 1e-6
     assert np.dot(z, want[1]) > 0.999999 and np.dot(x, want[2]) > 0.999999
 
+
+def test_a_derived_connector_is_a_placement_location_and_a_placement_base(tmp_path):
+    fd = make_folder(tmp_path)
+    src, sid, cid = src_with_connector(fd)
+    mid = fd.add_tab("studio", "Mid")
+    d1 = derive(mid, src)
+    d1["params"]["connectors"] = [cid]
+    mid.doc.rebuild()
+    key = f"{d1['id']}:{cid}"
+    assert not mid.doc.errors and key in mid.doc.state.connectors
+    # as a location: a second Derived of the source is placed on the first one's connector
+    d2 = derive(mid, src)
+    d2["params"]["placement"] = {"location": key, "base": cid}
+    mid.doc.rebuild()
+    assert not mid.doc.errors, mid.doc.errors
+    assert np.allclose(centre(mid.doc.state.parts[f"{d2['id']}/1"].shape),
+                       centre(mid.doc.state.parts[f"{d1['id']}/1"].shape), atol=1e-6)
+    # as a base: a studio derives Mid's derived part and connector, and is placed by that connector
+    use = fd.add_tab("studio", "Use")
+    ex = local_box(use)
+    loc = side_face_connector(use.doc, ex["id"] + "/1", 0, 1)
+    d3 = derive(use, mid, parts=(f"{d1['id']}/1",), sketches=())
+    d3["params"]["connectors"] = [key]
+    use.doc.features.remove(d3)
+    use.doc.features.append(d3)
+    d3["params"]["placement"] = {"location": loc["id"], "base": key}
+    use.doc.rebuild()
+    assert not use.doc.errors, use.doc.errors
+    o, z, x = frame_of(use.doc.state.connectors[f"{d3['id']}:{key}"])
+    want = frame_of(use.doc.state.connectors[loc["id"]])
+    assert np.linalg.norm(o - want[0]) < 1e-6 and np.dot(z, want[1]) > 0.999999
 
 def test_moving_the_location_moves_the_derived_without_the_source_rebuilding(tmp_path):
     fd = make_folder(tmp_path)

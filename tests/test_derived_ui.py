@@ -221,3 +221,49 @@ def test_a_red_derived_shows_its_message_in_the_feature_list_tooltip(win):
     tips = [lst.item(i).toolTip() for i in range(lst.count())]
     assert msg in tips
     _undo_all(w)
+
+
+def _source_connector(w, name="Top"):
+    from test_derived_placement import top_face_connector
+    cid = top_face_connector(w.src_tab.doc, "F2/1", name)["id"]
+    assert w.studio_engine.settle(120)
+    return cid
+
+
+def _drop_source_connector(w, cid):
+    w.src_tab.doc.delete_features([cid])
+
+
+def test_the_connector_list_refuses_a_connector_without_its_part(win):
+    w = win
+    cid = _source_connector(w)
+    try:
+        w.start_feature("derived")
+        d = w.dialog
+        _choose(w, w.src_tab)
+        conns = d.widgets["connectors"]
+        assert [i for i, _ in _ticks(conns)] == [cid] and conns.item(0).text().startswith("Top")
+        conns.item(0).setCheckState(Qt.Checked)                      # its part is not ticked: refused
+        assert _ticks(conns) == [(cid, False)] and d.feature["params"]["connectors"] == []
+        assert "Tick part F2/1 first" in d._derived_note.text()
+        _tick_all(d.widgets["parts"])
+        conns.item(0).setCheckState(Qt.Checked)
+        assert d.feature["params"]["connectors"] == [cid]
+        d.widgets["parts"].item(0).setCheckState(Qt.Unchecked)       # unticking the part unticks its connector
+        assert _ticks(conns) == [(cid, False)] and d.feature["params"]["connectors"] == []
+        _tick_all(d.widgets["parts"])
+        conns.item(0).setCheckState(Qt.Checked)
+        _choose(w, w.spare_tab)                                      # another source clears the connector ticks
+        assert d.feature["params"]["connectors"] == [] and conns.count() == 0
+        _choose(w, w.src_tab)
+        _tick_all(d.widgets["parts"])
+        conns.item(0).setCheckState(Qt.Checked)
+        w.commit_dialog()
+        assert w.studio_engine.settle(120)
+        f = _derived(w)[0]
+        assert not w.use.errors.get(f["id"]) and f["params"]["connectors"] == [cid]
+        assert f"{f['id']}:{cid}" in w.use.state.connectors
+        _undo_all(w)
+    finally:
+        _drop_source_connector(w, cid)
+        w.studio_engine.settle(120)

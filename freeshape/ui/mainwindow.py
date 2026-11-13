@@ -3270,7 +3270,7 @@ class MainWindow(QMainWindow):
 
     def export(self, part_ids, fmt_=None):
         if self.is_dwg:
-            self.dwg.export(fmt_ if fmt_ in ("dxf", "pdf") else None)
+            self.dwg.export(fmt_ if fmt_ in ("dxf", "pdf", "svg", "png") else None)
             return
         if self.is_asm:
             if not self.doc.instances:

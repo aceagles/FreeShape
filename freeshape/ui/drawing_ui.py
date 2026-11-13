@@ -191,6 +191,63 @@ def export_pdf(doc, path, groups=None):
     paint_groups(p, groups, dpmm, print_mode=True)
     p.end()
 
+def export_svg(doc, path, groups=None):
+    """SVG at true size: width/height in mm and a viewBox in the same units (1 user unit = 1 mm)."""
+    from PySide6.QtSvg import QSvgGenerator
+    groups = groups or build_groups(doc.items())
+    W, H = doc.sheet_size()
+    dpi = 960  # internal resolution; the mm width/height below make it independent of this
+    wpx, hpx = round(W / 25.4 * dpi), round(H / 25.4 * dpi)
+    gen = QSvgGenerator()
+    gen.setFileName(path)
+    gen.setSize(QSize(wpx, hpx))
+    gen.setViewBox(QRectF(0, 0, wpx, hpx))
+    gen.setResolution(dpi)
+    gen.setTitle(doc.title_value("title"))
+    gen.setDescription("FreeShape drawing")
+    p = QPainter(gen)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    k = wpx / W
+    p.setTransform(QTransform(k, 0, 0, -k, 0, H * k))
+    p.fillRect(QRectF(0, 0, W, H), QColor("white"))
+    paint_groups(p, groups, k, print_mode=True)
+    p.end()
+    _svg_set_mm_size(path, W, H)
+
+
+def _svg_set_mm_size(path, W, H):
+    """Rewrite the root element's size to millimetres and the viewBox to the sheet in mm."""
+    import re
+    with open(path, encoding="utf-8") as f:
+        txt = f.read()
+    m = re.search(r"<svg\b[^>]*>", txt)
+    head = m.group(0)
+    vb = re.search(r'viewBox="([^"]*)"', head)
+    new = re.sub(r'\s(width|height)="[^"]*"', "", head)
+    new = re.sub(r'\sviewBox="[^"]*"', "", new)
+    new = new[:-1] + f' width="{W:g}mm" height="{H:g}mm" viewBox="{vb.group(1) if vb else "0 0 %g %g" % (W, H)}">'
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(txt.replace(head, new, 1))
+
+
+def export_png(doc, path, dpi=200, groups=None):
+    """The sheet only (no margin), white, at `dpi`; the pixel size is the sheet size at that resolution."""
+    groups = groups or build_groups(doc.items())
+    W, H = doc.sheet_size()
+    k = dpi / 25.4
+    img = QImage(max(1, round(W * k)), max(1, round(H * k)), QImage.Format_ARGB32)
+    img.fill(QColor("white"))
+    dpm = round(dpi / 25.4 * 1000)
+    img.setDotsPerMeterX(dpm)
+    img.setDotsPerMeterY(dpm)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setTransform(QTransform(img.width() / W, 0, 0, -img.height() / H, 0, img.height()))
+    paint_groups(p, groups, img.width() / W, print_mode=True)
+    p.end()
+    if not img.save(path, "PNG"):
+        raise OSError(f"could not write {path}")
+
 
 # =========================================================================== the canvas
 class DrawingCanvas(QWidget):
@@ -1714,19 +1771,24 @@ class DrawingController:
             m = QMenu(self.w)
             m.addAction(icon("dxf", 16), "DXF (AutoCAD)…", lambda: self.export("dxf"))
             m.addAction(icon("pdf", 16), "PDF…", lambda: self.export("pdf"))
+            m.addAction(icon("pdf", 16), "SVG…", lambda: self.export("svg"))
+            m.addAction(icon("pdf", 16), "PNG (200 dpi)…", lambda: self.export("png"))
             from PySide6.QtGui import QCursor
             m.exec(QCursor.pos())
             return
         if not self.wait_exact():
             return
-        if fmt_ == "pdf":
-            path, _ = QFileDialog.getSaveFileName(self.w, "Export PDF", base + ".pdf", "PDF (*.pdf)")
+        if fmt_ in ("pdf", "svg", "png"):
+            ext = "." + fmt_
+            path, _ = QFileDialog.getSaveFileName(self.w, f"Export {fmt_.upper()}", base + ext,
+                                                  f"{fmt_.upper()} (*{ext})")
             if not path:
                 return
-            if not path.lower().endswith(".pdf"):
-                path += ".pdf"
+            if not path.lower().endswith(ext):
+                path += ext
             try:
-                export_pdf(doc, path, self.canvas.groups())
+                fn = {"pdf": export_pdf, "svg": export_svg, "png": export_png}[fmt_]
+                fn(doc, path, groups=self.canvas.groups())
                 self.w.status.showMessage(f"Exported {path}", 5000)
             except Exception as e:
                 QMessageBox.critical(self.w, "FreeShape", f"Export failed:\n{e}")

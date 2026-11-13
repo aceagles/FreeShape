@@ -676,7 +676,7 @@ def _same_source(a, b):
         return False
     if a.get("kind") == "studio":
         return a.get("uid") == b.get("uid") and a.get("tab") == b.get("tab") and a.get("part") == b.get("part") \
-            and bool(a.get("flat")) == bool(b.get("flat"))
+            and bool(a.get("flat")) == bool(b.get("flat")) and (a.get("config") or "") == (b.get("config") or "")
     return a.get("uid") == b.get("uid") and a.get("tab") == b.get("tab")
 
 

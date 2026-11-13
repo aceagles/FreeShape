@@ -3625,16 +3625,22 @@ class MainWindow(QMainWindow):
             if d is None:
                 continue
             if d.kind == "studio" and any(not p.reference for p in d.state.parts.values()):
-                base = self.studio_link(d)
-                entries = []
-                if sum(not p.reference for p in d.state.parts.values()) > 1:
-                    entries.append(("All parts", {**base, "part": "*"}))
-                for p in (p for p in d.state.parts.values() if not p.reference):
-                    entries.append((p.name, {**base, "part": p.id, "part_name": p.name}))
-                    if p.id in getattr(d.state, "sheet", {}):
-                        entries.append((p.name + " — flat pattern", {**base, "part": p.id, "part_name": p.name,
-                                                                      "flat": True}))
-                out.append((d.name, "part", entries))
+                # one group per configuration (as the Assembly insert panel lists them), or just the studio
+                for cfg in (d.config_names() or [None]):
+                    st = d.state_for(cfg) if cfg else d.state
+                    own = [p for p in st.parts.values() if not p.reference]
+                    if not own:
+                        continue
+                    base = self.studio_link(d, **({"config": cfg} if cfg else {}))
+                    entries = []
+                    if len(own) > 1:
+                        entries.append(("All parts", {**base, "part": "*"}))
+                    for p in own:
+                        entries.append((p.name, {**base, "part": p.id, "part_name": p.name}))
+                        if p.id in getattr(st, "sheet", {}):
+                            entries.append((p.name + " — flat pattern", {**base, "part": p.id, "part_name": p.name,
+                                                                          "flat": True}))
+                    out.append((d.name + (f" · {cfg}" if cfg else ""), "configs" if cfg else "part", entries))
             elif d.kind == "assembly" and d.instances:
                 out.append((d.name, "assembly", [("Whole assembly", self.assembly_link(d))]))
         return out
@@ -3652,7 +3658,8 @@ class MainWindow(QMainWindow):
             if self.doc.kind == "studio":
                 own = [i for i, p in self.doc.state.parts.items() if not p.reference]
                 only = own[0] if len(own) == 1 else "*"
-                preselect = self.studio_link(self.doc, only)
+                preselect = self.studio_link(self.doc, only, **(
+                    {"config": self.doc.active_config()} if self.doc.config_names() else {}))
             else:
                 preselect = self.assembly_link(self.doc)
         dlg = NewDrawingDialog(self, sources, preselect, self.settings)
@@ -3666,6 +3673,8 @@ class MainWindow(QMainWindow):
         g = DrawingDoc()
         self._dwg_counter = getattr(self, "_dwg_counter", 0) + 1
         g.name = (src.get("part_name") or src.get("name") or src.get("studio_name") or f"Drawing {self._dwg_counter}")
+        if src.get("config"):
+            g.name += f" · {src['config']}"
         if src.get("exploded"):
             g.name += " exploded"
         if src.get("flat"):

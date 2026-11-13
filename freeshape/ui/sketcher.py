@@ -229,6 +229,7 @@ class Sketcher:
 
     def snap(self, vp, x, y, anchor_uv=None, exclude=()):
         """Returns (uv, snap) where snap is ('point', pid) / ('on', eid) / None.
+        A level / plumb alignment does not cancel 'on': the point goes where the alignment line crosses the curve.
         Also sets self.infer to 'H'/'V' when the rubber band is near horizontal/vertical."""
         uv = self.uv(vp, x, y)
         self.infer = None
@@ -290,10 +291,52 @@ class Sketcher:
                 else:
                     self._infer_cons.append(("horizontal" if axis == "H" else "vertical", ref))
         h = self.hit(vp, x, y, kinds=("entity",), exclude=exclude)
-        if h and self.sk.entities[h[1]]["type"] != "point" and not pick:
-            uv = self._project_on(h[1], uv)
-            return uv, ("on", h[1])
+        if h and self.sk.entities[h[1]]["type"] != "point":
+            if not pick:
+                uv = self._project_on(h[1], uv)
+                return uv, ("on", h[1])
+            on = self._aligned_on(vp, h[1], uv, pick, x, y)     # level / plumb and on the curve: where they cross
+            if on is not None:
+                return on, ("on", h[1])
         return uv, None
+
+    ALIGNED_ON_PX = 12.0
+
+    def _aligned_on(self, vp, eid, uv, pick, x, y):
+        """The point of entity `eid` that keeps the horizontal / vertical alignment in `pick` (`uv` is already
+        aligned), or None when the alignment line does not cross the entity within ALIGNED_ON_PX of the cursor.
+        With both axes aligned the point is already decided: it counts only if it lies on the entity."""
+        sk = self.sk
+        e = sk.entities[eid]
+        uv = np.asarray(uv, float)
+        if len(pick) == 2:
+            p = self._project_on(eid, uv)
+            return uv if np.linalg.norm(p - uv) < 1e-7 else None
+        j = 0 if "V" in pick else 1              # the coordinate the alignment holds: u for plumb, v for level
+        k = 1 - j
+        cands = []
+        if e["type"] == "line":
+            a, b = sk.P(e["p1"]), sk.P(e["p2"])
+            d = b - a
+            if abs(d[j]) > 1e-12:
+                t = (uv[j] - a[j]) / d[j]
+                if -1e-9 <= t <= 1 + 1e-9:
+                    cands.append(a + t * d)
+        elif e["type"] in ("circle", "arc"):
+            c, r = sk.P(e["c"]), sk.radius(eid)
+            off = uv[j] - c[j]
+            if abs(off) <= r:
+                for sgn in (1.0, -1.0):
+                    q = np.array(uv)
+                    q[k] = c[k] + sgn * math.sqrt(r * r - off * off)
+                    cands.append(q)
+        best = (self.ALIGNED_ON_PX, None)
+        for q in cands:
+            sq = self.scr(vp, q)
+            dist = math.hypot(sq[0] - x, sq[1] - y)
+            if dist < best[0]:
+                best = (dist, q)
+        return best[1]
 
     def _tangent_infer(self, vp, x, y, uv, A, exclude=()):
         """Tangent inference for the line being drawn from A: (uv, circle/arc id, "dir"|"on") or None.
@@ -1366,7 +1409,9 @@ class Sketcher:
                 return True
             eid = h[1]
             self._prompt(vp, uv, "Offset distance (negative = other side)", self._nice(vp, 30),
-                         lambda d: OPS.offset(self.sk, eid, d), allow_negative=True)
+                         lambda d: OPS.offset(self.sk, eid, d), allow_negative=True,
+                         expr_target=lambda: next((c for c in reversed(self.sk.constraints)
+                                                   if c["type"] == "offset"), None))
             return True
         if t == "slot":
             _uv, snap = self.snap(vp, x, y, self.temp[0][0] if self.temp else None)
@@ -2122,6 +2167,8 @@ class Sketcher:
             text = "Ø" + fmt(val)
         elif t == "radius":
             text = "R" + fmt(val)
+        elif t == "offset":
+            text = fmt(abs(val))                # the side is held by the constraint, not by the value's sign
         else:
             text = fmt(val)
         if c.get("expr"):
@@ -2203,6 +2250,26 @@ class Sketcher:
                 arrow(S(A2), S(B2))
                 arrow(S(B2), S(A2))
                 label_at = self._dim_label_at(S, A2, B2, pos)
+        elif t == "offset":
+            # drawn across the gap of the first (new, source) pair: square to a line, radial for an arc or circle
+            en, es = sk.entities[R[0]], sk.entities[R[1]]
+            if es["type"] == "line":
+                A, B = sk.P(es["p1"]), sk.P(es["p2"])
+                du = (B - A) / max(np.linalg.norm(B - A), 1e-12)
+                M = (sk.P(en["p1"]) + sk.P(en["p2"])) / 2
+                if pos is not None:
+                    M = M + du * float((pos - M) @ du)          # slid along the line to where it was placed
+                F = A + float((M - A) @ du) * du
+            else:
+                C = sk.P(es["c"])
+                v = (pos - C) if pos is not None else np.array([1.0, 1.0])
+                n = np.linalg.norm(v)
+                u = v / n if n > 1e-12 else np.array([1.0, 0.0])
+                M, F = C + u * sk.radius(R[0]), C + u * sk.radius(R[1])
+            p.drawLine(S(M), S(F))
+            arrow(S(M), S(F))
+            arrow(S(F), S(M))
+            label_at = self._dim_label_at(S, M, F, pos)
         elif t in ("radius", "diameter"):
             e = sk.entities[R[0]]
             C = sk.P(e["c"])

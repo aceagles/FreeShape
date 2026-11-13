@@ -117,3 +117,46 @@ def test_existing_point_wins_over_vertical_alignment_inference():
     s.mouse_press(VP, 412, 203, _Ev())
     assert len(sk.points) == n
     assert not any(c["type"] in ("vertical", "horizontal") and len(c["refs"]) == 2 for c in sk.constraints)
+
+
+# ---------------------------------------------------------------- a level / plumb line ending on a curve
+def _cons(sk):
+    return [(c["type"], tuple(c["refs"])) for c in sk.constraints]
+
+
+def test_a_plumb_line_ending_on_a_circle_is_vertical_and_coincident():
+    sk = Sketch()
+    circ = sk.add_circle("origin", 20)
+    s = _sketcher(sk)
+    s.set_tool("line")
+    _click(s, 450, 300)                         # start at (5, 0), inside the circle
+    _click(s, 452, 107)                         # a little off plumb, on the circle near its top
+    ln = next(i for i, e in sk.entities.items() if e["type"] == "line")
+    end = sk.entities[ln]["p2"]
+    assert ("vertical", (ln,)) in _cons(sk) and ("point_on", (end, circ)) in _cons(sk)
+    assert np.allclose(sk.P(end), [5, (400 - 25) ** 0.5], atol=1e-6)
+
+
+def test_a_level_line_ending_on_a_line_is_horizontal_and_coincident():
+    sk = Sketch()
+    wall = sk.add_line(sk.add_point(10, -10), sk.add_point(10, 10))
+    s = _sketcher(sk)
+    s.set_tool("line")
+    _click(s, 430, 270)                         # start at (3, 3)
+    _click(s, 500, 269)                         # a little off level, on the wall (away from its midpoint)
+    ln = next(i for i, e in sk.entities.items() if e["type"] == "line" and i != wall)
+    end = sk.entities[ln]["p2"]
+    assert ("horizontal", (ln,)) in _cons(sk) and ("point_on", (end, wall)) in _cons(sk)
+    assert np.allclose(sk.P(end), [10, 3], atol=1e-6)
+
+
+def test_a_crossing_too_far_from_the_cursor_keeps_only_the_alignment():
+    sk = Sketch()
+    sk.add_line(sk.add_point(-10, 20), sk.add_point(30, 20))
+    s = _sketcher(sk)
+    s.ALIGNED_ON_PX = 0.0                       # no crossing counts as near the cursor
+    s.set_tool("line")
+    _click(s, 450, 300)                         # start at (5, 0)
+    _click(s, 451, 100)                         # on the line, a little off plumb
+    kinds = [c for c, _r in _cons(sk)]
+    assert "vertical" in kinds and "point_on" not in kinds

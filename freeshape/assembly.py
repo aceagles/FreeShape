@@ -441,7 +441,8 @@ def is_sketch_source(source):
 
 def capture_context(asm, iid):
     """Plain data for editing instance `iid` in context (ADR 0004): every other instance with a part, as it
-    stands now. Each neighbour has its id, name, content hash (sha256 of its BREP bytes), BREP bytes,
+    stands now. A Sketch instance is a neighbour like a part (its shape is edges and vertices, its element names
+    are empty); `iid` itself must be a part instance. Each neighbour has its id, name, content hash (sha256 of its BREP bytes), BREP bytes,
     element names (as `_named` has them, {} when the part has none) and `T`, its placement relative to `iid`
     (inverse of `iid`'s transform times the neighbour's, 4x4 nested lists). `solved` is False while any
     mate is shown red. Reads the current state; changes nothing."""
@@ -449,6 +450,8 @@ def capture_context(asm, iid):
     from . import blobstore
     if asm.instance(iid) is None:
         raise K.KernelError(f"No instance {iid}")
+    if asm.is_sketch_instance(iid):
+        raise K.KernelError("A Context belongs to a part: it can't be taken from a Sketch instance")
     inv = np.linalg.inv(asm.T(iid))
     neighbours = []
     for inst in asm.instances:

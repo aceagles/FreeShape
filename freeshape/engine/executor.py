@@ -433,7 +433,7 @@ class InProcessEngine(Engine):
         self.inputs.commit(tab, used)
         return tab
 
-    def new_tab(self, kind, name=None, tab=None):
+    def new_tab(self, kind, name=None, tab=None, sources=()):
         if kind not in KINDS:
             raise EngineError(f"unknown tab kind {kind!r}")
         if kind == "studio":

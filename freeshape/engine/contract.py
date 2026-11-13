@@ -254,8 +254,9 @@ class Engine(abc.ABC):
         """Open the Part Studio / Assembly / Drawing at `path`; returns its tab id (`tab` if given)."""
 
     @abc.abstractmethod
-    def new_tab(self, kind, name=None, tab=None) -> str:
-        """A new empty tab of `kind` ("studio" | "assembly" | "drawing")."""
+    def new_tab(self, kind, name=None, tab=None, sources=()) -> str:
+        """A new empty tab of `kind` ("studio" | "assembly" | "drawing"). `sources` are the link sources it
+        already consumes (a reopened tab): the process executor records their edges at once, before any edit."""
 
     @abc.abstractmethod
     def close_tab(self, tab) -> None:

@@ -357,10 +357,12 @@ class ProcessEngine(Engine):
         t.sources = _file_sources(kind, d, path)
         return self._register(t, tab)
 
-    def new_tab(self, kind, name=None, tab=None):
+    def new_tab(self, kind, name=None, tab=None, sources=()):
         if kind not in KINDS:
             raise EngineError(f"unknown tab kind {kind!r}")
-        return self._register(_Tab(kind, None, None, name), tab)
+        t = _Tab(kind, None, None, name)
+        t.sources = [copy.deepcopy(s) for s in sources if isinstance(s, dict)]
+        return self._register(t, tab)
 
     def close_tab(self, tab):
         """Drop the tab and end its worker (killed if it has not finished within STOP_GRACE_S)."""
@@ -431,7 +433,9 @@ class ProcessEngine(Engine):
         t = self._get(tab)
         self._stop(t)
         try:
-            self._start(t, *self._upstream(t))
+            upstream = self._upstream(t)
+            self._start(t, *upstream)
+            self._record_inputs(t, upstream[0])
         except BrokenProcessPool as e:
             self._died(t, e)
             raise TabErrored(t.tab, t.error) from e

@@ -243,7 +243,9 @@ class StudioEngine(QObject):
         for attempt in (0, 1):
             try:
                 if rec.tab is None:
-                    rec.tab, rec.have = self.live.open_new(eng, "studio", rec, str(snap["name"])), _EMPTY
+                    refs = [f.get("params", {}).get("source") for f in snap["features"]
+                            if f.get("type") == "variable_studio_ref" and not f.get("suppressed")]
+                    rec.tab, rec.have = self.live.open_new(eng, "studio", rec, str(snap["name"]), refs), _EMPTY
                 for edit in plan_edits(rec.have, snap):
                     self.live.submit(eng, rec.tab, edit, rebuilt)
                 rec.have = snap
@@ -519,7 +521,7 @@ class LiveTabs:
                 eng._drop(rec)
 
     # ------------------------------------------------------------------ the engine thread
-    def open_new(self, eng, kind, rec, name):
+    def open_new(self, eng, kind, rec, name, sources=()):
         tid = rec.want_tab or f"L{next(self._ids)}"
         if any(t[0] == tid for t in eng.tabs()):          # a tab of a document that was dropped meanwhile
             for other in list(self.engine._recs.values()):
@@ -529,7 +531,7 @@ class LiveTabs:
                 eng.close_tab(tid)
             except Exception:                              # noqa: BLE001
                 pass
-        return eng.new_tab(kind, name=name, tab=tid)
+        return eng.new_tab(kind, name=name, tab=tid, sources=sources)
 
     def submit(self, eng, tab, edit, rebuilt):
         """eng.submit_edit, noting the tabs it rebuilt in `rebuilt`. A circular link is not fatal: the edit is

@@ -822,6 +822,43 @@ class AssemblyDoc:
                "plugin_version": info.version if info else "", "params": copy.deepcopy(clean)}
         return self.insert(src, T)
 
+    def standard_notices(self):
+        """{instance id: {"stored", "installed", "text"}} for each Standard part instance whose stored
+        plugin_version differs from the installed Plugin's. The instance still builds with the installed code;
+        the notice is not an error. Same wording as pyfeature registry.notices: "made with fasteners 0.9.0,
+        rebuilt with 1.0.0". An instance whose type or Plugin is not installed is unresolved (its own error in
+        `errors`) and gets no version notice. Computed on demand; the stored version is never changed here."""
+        from .pyfeature import registry
+        out = {}
+        for inst in self.instances:
+            src = inst["source"]
+            if src.get("kind") != "standard" or registry.standard_part(src.get("type")) is None:
+                continue
+            pid = src["type"].split("/")[0][len(registry.STANDARD_PREFIX):]
+            info = registry.plugin(pid)
+            stored = src.get("plugin_version") or ""
+            if info is None or stored == info.version:
+                continue
+            out[inst["id"]] = {"stored": stored, "installed": info.version,
+                               "text": f"made with {pid} {stored or '(no version)'}, rebuilt with {info.version}"}
+        return out
+
+    def acknowledge_standard_versions(self, iids=None):
+        """Write the installed Plugin version into the marked Standard part instances in `iids` (all marked
+        ones when None), in one undo checkpoint, which clears their notices. Ids that are not marked, not
+        Standard parts or do not exist are ignored. Returns the list of instance ids changed, in document
+        order; no checkpoint is made when it is empty."""
+        notices = self.standard_notices()
+        want = set(notices) if iids is None else set(notices) & set(iids)
+        changed = [i["id"] for i in self.instances if i["id"] in want]
+        if not changed:
+            return []
+        self.checkpoint()
+        for iid in changed:
+            self.instance(iid)["source"]["plugin_version"] = notices[iid]["installed"]
+        self.notify()
+        return changed
+
     def delete_instances(self, ids):
         self.checkpoint()
         ids = set(ids)

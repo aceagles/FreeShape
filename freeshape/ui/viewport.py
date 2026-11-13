@@ -20,6 +20,13 @@ from .camera import Camera, STANDARD_VIEWS, basis
 PLANE_HALF = 75.0          # the default planes are 150 x 150 mm
 
 
+def _default_popup(vp, x, y, rows, on_hover, on_choose, on_close):
+    from .select_other import SelectOtherPopup
+    p = SelectOtherPopup(rows, on_hover, on_choose, on_close, parent=vp)
+    p.popup_at(vp.mapToGlobal(QPoint(int(x), int(y))))
+    return p
+
+
 @dataclass(frozen=True)
 class Pick:
     kind: str           # face | edge | vertex | region | plane | sketch_line | part | sketch_point
@@ -156,6 +163,11 @@ class Viewport(QOpenGLWidget):
         self._manip_hover = None
         self.selection: list[Pick] = []
         self.hover: Pick | None = None
+        self.hover_through = False                  # True only while the Select other list is open: hover ignores depth
+        self._other_popup = None
+        self.owner_name = None                      # Pick -> name of the part / sketch / plane it belongs to
+        self.popup_factory = None                   # (vp, x, y, rows, on_hover, on_choose, on_close); None = real popup
+        self._cursor_xy = None                      # last mouse position, for the backtick key
         self.select_filter: set | None = None     # None = default selectable kinds
         self.user_filter: set | None = None       # kinds the user left switched on in the selection dropdown
         self._box_start = None                    # left-drag rubber-band selection: press point
@@ -702,6 +714,12 @@ class Viewport(QOpenGLWidget):
             return theme.HOVER
         return None
 
+    def _depth(self, pick):
+        """Switch the depth test off while drawing the hovered pick if the Select other list is open, so the
+        highlight shows through what covers it. Call _depth(None) afterwards to switch it back on."""
+        through = pick is not None and self.hover_through and pick == self.hover and pick not in self.selection
+        (GL.glDisable if through else GL.glEnable)(GL.GL_DEPTH_TEST)
+
     SEE_THROUGH_FACE_ALPHA = 0.35
     REFERENCE_FACE_ALPHA = 0.3       # Context (reference) bodies
     SEE_THROUGH_EDGE_ALPHA = 0.45
@@ -787,8 +805,10 @@ class Viewport(QOpenGLWidget):
                     a_, b_ = m.face_ranges[pk.key[1]]
                     col = self._sel_color(pk)
                 if b_ > a_ and col:
+                    self._depth(pk)
                     GL.glColor4f(*col, 1.0)
                     GL.glDrawElements(GL.GL_TRIANGLES, (b_ - a_) * 3, GL.GL_UNSIGNED_INT, self._idx_ptr(base + a_))
+                    self._depth(None)
             self._unbind_batch()
             self._use_shiny(False)
         GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
@@ -814,7 +834,9 @@ class Viewport(QOpenGLWidget):
                 GL.glLineWidth(4.0)
                 GL.glColor3f(*col)
                 GL.glDepthRange(0, 0.99999)
+                self._depth(pk)
                 self._draw_polyline(m.edge_polys[pk.key[1]])
+                self._depth(None)
                 GL.glDepthRange(0, 1)
         GL.glLineWidth(1.4)
 
@@ -926,7 +948,9 @@ class Viewport(QOpenGLWidget):
                     GL.glVertex3f(*sr.plane.to_world(*pts[0]))
                     GL.glEnd()
                 else:
+                    self._depth(pk)
                     self._draw_polyline([sr.plane.to_world(u, v) for u, v in pts])
+                    self._depth(None)
                 GL.glDisable(GL.GL_LINE_STIPPLE)
         GL.glDepthRange(0, 1)
 
@@ -966,7 +990,9 @@ class Viewport(QOpenGLWidget):
                 else:
                     GL.glColor4f(*theme.REGION, 0.42 if (self.sketcher and self.sketcher.fid == fid) else 0.32)
                 GL.glDepthRange(0, 0.9993)
+                self._depth(pk)
                 self._draw_mesh(m)
+                self._depth(None)
                 GL.glDepthRange(0, 1)
         if self.preview_tool is not None:
             GL.glColor4f(0.9, 0.25, 0.2, 0.25)
@@ -977,6 +1003,7 @@ class Viewport(QOpenGLWidget):
                 col = self._sel_color(pk)
                 corners = [pl.to_world(u, v) for u, v in ((-half, -half), (half, -half), (half, half), (-half, half))]
                 GL.glColor4f(*(col or theme.PLANE), 0.45 if col else 0.14)
+                self._depth(pk)
                 GL.glBegin(GL.GL_QUADS)
                 for c in corners:
                     GL.glVertex3f(*c)
@@ -984,6 +1011,7 @@ class Viewport(QOpenGLWidget):
                 GL.glColor4f(*(col or (0.35, 0.55, 0.85)), 0.9)
                 GL.glLineWidth(2.5 if col else 1.0)
                 self._draw_polyline(corners, closed=True)
+                self._depth(None)
         GL.glDepthMask(GL.GL_TRUE)
 
         # ---- measured distance
@@ -1718,6 +1746,7 @@ class Viewport(QOpenGLWidget):
     def mouseMoveEvent(self, e):
         pos = e.position()
         x, y = pos.x(), pos.y()
+        self._cursor_xy = (x, y)
         if self._last is not None and self._press is not None:
             dx, dy = x - self._last[0], y - self._last[1]
             if abs(x - self._press[0]) + abs(y - self._press[1]) > 3:
@@ -1836,7 +1865,7 @@ class Viewport(QOpenGLWidget):
     def _do_hover(self):
         self._hover_pending = False
         xy = getattr(self, "_hover_xy", None)
-        if xy is None or self._press is not None or self.sketcher:
+        if xy is None or self._press is not None or self.sketcher or self.hover_through:
             return
         if self.snap_provider is not None and self.snap_points and self._snap_near(*xy) is not None:
             # a dot is under the cursor: keep the hovered face/edge so the dots do not vanish at its boundary
@@ -2032,7 +2061,11 @@ class Viewport(QOpenGLWidget):
         if self._moved:
             return
         self.last_click = (pos.x(), pos.y())
-        pk = self.pick(pos.x(), pos.y())
+        self.click_pick(self.pick(pos.x(), pos.y()), e.modifiers())
+
+    def click_pick(self, pk, mods=Qt.NoModifier):
+        """What a left click on `pk` (None = empty space) does: an open feature dialog takes it, else it toggles in
+        the selection. Select other calls this too, so a chosen row can't behave differently from a click."""
         if self.pick_handler is not None:
             if pk is not None:
                 self.pick_handler(pk)
@@ -2041,10 +2074,66 @@ class Viewport(QOpenGLWidget):
             self.update()
             return
         if pk is None:
-            if not (e.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)) and self.select_filter is None:
+            if not (mods & (Qt.ShiftModifier | Qt.ControlModifier)) and self.select_filter is None:
                 self.clear_selection()
             return
         self.toggle(pk)
+
+    # ================================================================== select other
+    def other_label(self, pk):
+        """'Face of Part 1', 'Sketch region of Sketch 2', 'Plane Top': kind, then the owner as the left panel names
+        it (owner_name is set by the main window)."""
+        owner = self.owner_name(pk) if self.owner_name else None
+        if pk.kind == "plane":
+            return f"Plane {owner}" if owner else "Plane"
+        return f"{pk.label()} of {owner}" if owner else pk.label()
+
+    def select_other_rows(self, x, y):
+        """[(label, Pick)] for everything under (x, y), front to back, filter honoured. Labels that repeat get a
+        running number (Face of Part 1 (1), Face of Part 1 (2))."""
+        picks = self.pick_all(x, y)
+        labels = [self.other_label(pk) for pk in picks]
+        total = {t: labels.count(t) for t in labels}
+        seen = {}
+        rows = []
+        for pk, t in zip(picks, labels):
+            if total[t] > 1:
+                seen[t] = seen.get(t, 0) + 1
+                t = f"{t} ({seen[t]})"
+            rows.append((t, pk))
+        return rows
+
+    def open_select_other(self, x, y):
+        """Pop up the list for (x, y); a list of fewer than two rows is not worth showing and returns None."""
+        rows = self.select_other_rows(x, y)
+        if len(rows) < 2:
+            return None
+        self._close_select_other()
+        factory = self.popup_factory or _default_popup
+        self._other_popup = factory(self, x, y, rows, self._other_hover, self._other_choose, self._other_closed)
+        return self._other_popup
+
+    def _close_select_other(self):
+        p, self._other_popup = self._other_popup, None
+        if p is not None and hasattr(p, "close"):
+            p.close()
+
+    def _other_hover(self, pk):
+        self.hover_through = True
+        if pk != self.hover:
+            self.hover = pk
+            self.hoverChanged.emit(pk)
+        self.update()
+
+    def _other_choose(self, pk, mods=Qt.NoModifier):
+        self.click_pick(pk, mods)
+
+    def _other_closed(self):
+        """Runs before the choice when a row is chosen, so the highlight is already back to normal."""
+        self._other_popup = None
+        self.hover_through = False
+        self.set_hover_none()
+        self.update()
 
     def mouseDoubleClickEvent(self, e):
         pos = e.position()
@@ -2145,6 +2234,9 @@ class Viewport(QOpenGLWidget):
             self.pan_step(h, -v)       # Onshape: the model moves with the arrow (camera moves the other way)
             return
         plain = not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+        if k == Qt.Key_QuoteLeft and not self.sketcher and self._cursor_xy:      # Onshape's Select other key
+            self.open_select_other(*self._cursor_xy)
+            return
         if k == Qt.Key_Space and plain and not e.isAutoRepeat():
             self.clear_selection()                       # Space: deselect all, even what is off-screen
             self.set_hover_none()

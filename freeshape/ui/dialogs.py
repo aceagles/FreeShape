@@ -491,6 +491,14 @@ SCHEMAS = {
         _num("spacing", "Distance"),
         _num("count", "Instance count", unit=""),
         _check("flip", "Opposite direction"),
+        _check("dir2_on", "Second direction"),
+        _sel("dir2_sel", "Second direction (edge or sketch line)", {"axis"}, multi=False,
+             visible=lambda p: p.get("dir2_on")),
+        _choice("dir2_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")],
+                visible=lambda p: p.get("dir2_on")),
+        _num("spacing2", "Distance 2", visible=lambda p: p.get("dir2_on")),
+        _num("count2", "Instance count 2", unit="", visible=lambda p: p.get("dir2_on")),
+        _check("flip2", "Opposite second direction", visible=lambda p: p.get("dir2_on")),
     ],
     "circular_pattern": [
         _ops([("new", "New"), ("add", "Add")]),
@@ -632,6 +640,8 @@ def params_to_fields(ftype, p):
         f["parts"] = [("part", i) for i in p.get("parts", [])]
         d = p.get("direction") or {}
         f["dir_sel"] = [("axis", d)] if d and d.get("kind") != "std" else []
+        d2 = p.get("dir2") or {}
+        f["dir2_sel"] = [("axis", d2)] if d2 and d2.get("kind") != "std" else []
     if ftype == "circular_pattern":
         f["parts"] = [("part", i) for i in p.get("parts", [])]
         a = p.get("axis") or {}
@@ -705,6 +715,12 @@ def fields_to_params(ftype, fields, p):
             p["dir_std"] = ""
         else:
             p["direction"] = {"kind": "std", "name": p.get("dir_std") or "X"}
+        sel2 = fields.get("dir2_sel", [])
+        if sel2:
+            p["dir2"] = sel2[0][1]
+            p["dir2_std"] = ""
+        else:
+            p["dir2"] = {"kind": "std", "name": p.get("dir2_std") or "Y"}
     if ftype == "circular_pattern":
         sel = fields.get("axis_sel", [])
         if sel:
@@ -960,7 +976,7 @@ class FeatureDialog(_ResizableFrame):
                     if has_vars(txt):
                         self._set(k, txt.strip())        # keep the expression so it follows the variable
                     else:
-                        self._set(k, int(round(v)) if k == "count" else v)
+                        self._set(k, int(round(v)) if k in ("count", "count2") else v)
             self.widgets[spec["key"]] = ed
             ed.textEdited.connect(lambda _t, f=done: f())
             ed.editingFinished.connect(lambda ed=ed, k=spec["key"]: ed.setText(_show(self.feature["params"].get(k, 0))))
@@ -1152,9 +1168,9 @@ class FeatureDialog(_ResizableFrame):
     def _set(self, key, value):
         p = self.feature["params"]
         p[key] = value
-        if key in ("axis_std", "dir_std") and value:
+        if key in ("axis_std", "dir_std", "dir2_std") and value:
             # choosing a world axis replaces a picked axis
-            fk = "axis_sel" if key == "axis_std" else "dir_sel"
+            fk = {"axis_std": "axis_sel", "dir_std": "dir_sel", "dir2_std": "dir2_sel"}[key]
             if fk in self.fields:
                 self.fields[fk].items = []
         fields = {k: f.items for k, f in self.fields.items()}

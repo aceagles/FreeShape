@@ -860,7 +860,8 @@ NUMERIC_KEYS = {"depth", "depth2", "angle", "radius", "distance", "thickness", "
                 "diameter", "counterbore_dia", "counterbore_depth", "dx", "dy", "dz", "rotate",
                 "draft", "pitch", "twist", "scale_end", "major", "length", "clearance", "thread_clearance",
                 "countersink_dia", "k", "relief_scale",
-                "scale"}
+                "scale",
+                "count2", "spacing2"}
 
 
 def prepare(f, state):
@@ -1154,8 +1155,11 @@ def _pattern_instance_name(state, fid, pid, copy, history, op, k):
     """The names of instance k (1-based; 0 is the source) of a pattern. The instance index goes in
     the tag ("F5_2"), so it is part of every name of that copy and a change of count leaves the
     other instances' names alone. FreeCAD's `;:C<n>` disambiguator (spec section 7) is not an index
-    to read back; this keeps the same one-name-per-instance effect with an index that is stable."""
-    return name_feature(state, f"{fid}_{k}", [pid], copy, history, op)
+    to read back; this keeps the same one-name-per-instance effect with an index that is stable.
+    k may be a pair (k1, k2) for a two-direction grid: the tag is then "F5_1_2". A single index
+    keeps the tag exactly as before."""
+    tag = "_".join(str(i) for i in k) if isinstance(k, tuple) else str(k)
+    return name_feature(state, f"{fid}_{tag}", [pid], copy, history, op)
 
 
 def run_linear_pattern(state, f):
@@ -1167,6 +1171,24 @@ def run_linear_pattern(state, f):
         d = -d
     n = int(p.get("count", 3))
     sp = float(p.get("spacing", 20))
+    n2 = int(p.get("count2", 1))
+    if n2 > 1 and p.get("dir2_on", True):
+        _, d2 = resolve_axis(state, p.get("dir2") or {"kind": "std", "name": "Y"})
+        if p.get("flip2"):
+            d2 = -d2
+        sp2 = float(p.get("spacing2", sp))
+        copies, named = [], []
+        for i in ids:
+            for k1 in range(n):
+                for k2 in range(n2):
+                    if k1 == 0 and k2 == 0:
+                        continue      # the seed is instance (0, 0)
+                    c, h = K.pattern_translate(state.parts[i].shape, d * sp * k1 + d2 * sp2 * k2,
+                                               with_history=True)
+                    named.append(_pattern_instance_name(state, f["id"], i, c, h, "linear_pattern", (k1, k2)))
+                    copies.append(c)
+        apply_body(state, K.compound(copies), p.get("op", "add"), f["id"], None, named)
+        return
     copies, named = [], []
     for i in ids:
         for k in range(1, n):
@@ -1666,7 +1688,8 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
         "mirror": {"parts": [], "plane": {"kind": "std", "name": "Right"}, "op": "add"},
         "linear_pattern": {"parts": [], "direction": {"kind": "std", "name": "X"}, "count": 3,
-                           "spacing": 30.0, "flip": False, "op": "new"},
+                           "spacing": 30.0, "flip": False, "op": "new",
+                           "dir2_on": False, "count2": 2, "spacing2": 30.0},
         "circular_pattern": {"parts": [], "axis": {"kind": "std", "name": "Z"}, "count": 6,
                              "angle": 360.0, "op": "new"},
         "boolean": {"op": "union", "tools": [], "targets": [], "keep_tools": False},

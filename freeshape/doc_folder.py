@@ -163,6 +163,53 @@ class FolderDocument:
     def tab(self, tab_id):
         return next((t for t in self.tabs if t.id == tab_id), None)
 
+    def adopt_tab(self, doc, kind, tab_id=None, name=None, file=None):
+        """Register an already-built document as a tab (a tab made in the UI, or one recovered after a crash).
+        A recovered tab passes the id it had so keyed recents and autosaves still point at it."""
+        if tab_id is not None and self.tab(tab_id) is not None:
+            raise K.KernelError(f"Tab {tab_id!r} already exists in the Document")
+        name = name or doc.name
+        tab = Tab(tab_id or self.new_tab_id(), kind, file or self._unique_filename(name, EXTENSIONS[kind]), name)
+        self._resolve_tab_path(tab.file, f"tab {tab.id!r}")     # the file name comes from an autosave: check it
+        tab.doc = doc
+        self.tabs.append(tab)
+        self._attach(tab)
+        return tab
+
+    def add_files(self, paths):
+        """Add loose .fshape / .fasm / .fdwg files to the Document as new tabs. Each is copied into the folder
+        (the original is only read, never changed, since loose files outside may still link to it by uid and
+        path), then every legacy uid + path link in the copies is rewritten to tab ids. All the files go in
+        before the links are converted, so an assembly added with its Part Studios finds them. Returns the
+        new tabs."""
+        kinds = {ext: kind for kind, ext in EXTENSIONS.items() if kind != "variables"}
+        added = []
+        for src in paths:
+            ext = os.path.splitext(src)[1].lower()
+            kind = kinds.get(ext)
+            if kind is None:
+                raise K.KernelError(f"Can't add {os.path.basename(src)}: only .fshape, .fasm and .fdwg files")
+            with open(src) as fh:
+                data = json.load(fh)
+            name = os.path.splitext(os.path.basename(src))[0]
+            file = self._unique_filename(name, ext)
+            while os.path.exists(os.path.join(self.path, file)):
+                self._counter += 1
+                file = self._unique_filename(f"{name} {self._counter}", ext)
+            tab_id = self.new_tab_id()
+            data["_tab_id"] = tab_id
+            _atomic_write(os.path.join(self.path, file), json.dumps(data, indent=1))
+            tab = Tab(tab_id, kind, file, name)
+            tab.doc = LOADERS[kind](os.path.join(self.path, file))
+            tab.doc.name = name
+            self.tabs.append(tab)
+            self._attach(tab)
+            added.append(tab)
+        migrate_links_to_tab_ids(self)
+        self.refresh_links()
+        self.save()
+        return added
+
     # ------------------------------------------------------------------ untrusted-path checks
     def _resolve_tab_path(self, rel, label):
         """Join `rel` onto the folder after structural checks that need no filesystem access: no absolute

@@ -611,9 +611,9 @@ def _same_source(a, b):
     if a.get("kind") != b.get("kind"):
         return False
     if a.get("kind") == "studio":
-        return a.get("uid") == b.get("uid") and a.get("part") == b.get("part") and \
-            bool(a.get("flat")) == bool(b.get("flat"))
-    return a.get("uid") == b.get("uid")
+        return a.get("uid") == b.get("uid") and a.get("tab") == b.get("tab") and a.get("part") == b.get("part") \
+            and bool(a.get("flat")) == bool(b.get("flat"))
+    return a.get("uid") == b.get("uid") and a.get("tab") == b.get("tab")
 
 
 class SheetDialog(QDialog):

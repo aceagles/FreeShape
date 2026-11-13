@@ -32,6 +32,12 @@ def thumb_path(path):
     return os.path.join(thumbs_dir(), key + ".png")
 
 
+def keyed_thumb_path(doc_id, tab_id):
+    """The thumbnail of one tab of a Document, keyed by Document id + tab id (not by file path)."""
+    key = hashlib.sha1(f"document:{doc_id}:{tab_id}".encode()).hexdigest()[:20]
+    return os.path.join(thumbs_dir(), key + ".png")
+
+
 def ago(t):
     if not t:
         return ""
@@ -54,9 +60,12 @@ class Card(QFrame):
     clicked = Signal(str)
     menuRequested = Signal(str, object)
 
-    def __init__(self, path, opened_at):
+    def __init__(self, path, opened_at, document=None):
+        """document: for a Document folder, {"id", "name", "tab"} -- its card shows the thumbnail of the tab
+        last worked on, keyed by Document id + tab id."""
         super().__init__()
         self.path = path
+        self.document = document
         self.setObjectName("homeCard")
         self.setFixedWidth(CARD_W)
         self.setCursor(Qt.PointingHandCursor)
@@ -68,7 +77,7 @@ class Card(QFrame):
         self.thumb.setObjectName("homeThumb")
         self.thumb.setFixedSize(CARD_W - 16, THUMB_H)
         self.thumb.setAlignment(Qt.AlignCenter)
-        tp = thumb_path(path)
+        tp = keyed_thumb_path(document["id"], document.get("tab")) if document else thumb_path(path)
         ext = os.path.splitext(path)[1].lower()
         if exists and os.path.exists(tp):
             pm = QPixmap(tp).scaled(CARD_W - 16, THUMB_H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
@@ -79,19 +88,21 @@ class Card(QFrame):
                 "import" if ext in (".step", ".stp") else "part"
             self.thumb.setPixmap(icon(name, 64).pixmap(64, 64))
         lay.addWidget(self.thumb)
-        title = QLabel(os.path.basename(path))
+        label = (document.get("name") if document else None) or os.path.basename(path)
+        title = QLabel(label)
         title.setObjectName("homeCardTitle")
         fm = QFontMetrics(title.font())
-        title.setText(fm.elidedText(os.path.basename(path), Qt.ElideMiddle, CARD_W - 20))
+        title.setText(fm.elidedText(label, Qt.ElideMiddle, CARD_W - 20))
         lay.addWidget(title)
         folder = QLabel()
         folder.setObjectName("homeMuted")
         folder.setText(QFontMetrics(folder.font()).elidedText(os.path.dirname(path), Qt.ElideLeft, CARD_W - 20))
         lay.addWidget(folder)
-        meta = [KINDS.get(ext, "File")]
+        meta = ["Document" if document else KINDS.get(ext, "File")]
         if exists:
             meta.append(ago(opened_at))
-            meta.append(size_text(os.path.getsize(path)))
+            if not document:
+                meta.append(size_text(os.path.getsize(path)))
         else:
             meta.append("file not found")
         m = QLabel("  ·  ".join(x for x in meta if x))
@@ -113,6 +124,8 @@ class HomePage(QWidget):
     openPath = Signal(str)
     newStudio = Signal()
     newAssembly = Signal()
+    newDocument = Signal()
+    openDocument = Signal()
     openDialog = Signal()
     importStep = Signal()
     backToWork = Signal()
@@ -197,7 +210,9 @@ class HomePage(QWidget):
         dl.addWidget(dt)
         br = QHBoxLayout()
         br.addStretch(1)
-        for text, sig, primary, ic_name in (("New Part Studio", self.newStudio, True, "part"),
+        for text, sig, primary, ic_name in (("New Document", self.newDocument, True, "part"),
+                                            ("Open Document…", self.openDocument, False, None),
+                                            ("New Part Studio", self.newStudio, False, "part"),
                                             ("New Assembly", self.newAssembly, False, "assembly"),
                                             ("Open…", self.openDialog, False, None),
                                             ("Import STEP…", self.importStep, False, "import")):
@@ -256,7 +271,8 @@ class HomePage(QWidget):
 
     # ------------------------------------------------------------------ content
     def set_recent(self, items, back_name=None):
-        """items: [(path, opened_at)] newest first. back_name: the open tab to offer going back to."""
+        """items: [(path, opened_at)] or [(path, opened_at, document_info)] newest first; document_info marks a
+        Document folder (see Card). back_name: the open tab to offer going back to."""
         self._recent = list(items)
         if back_name:
             self.back.setText(f"← Back to “{back_name}”")
@@ -276,11 +292,14 @@ class HomePage(QWidget):
             if it.widget():
                 it.widget().deleteLater()
         q = self.search.text().strip().lower()
-        items = [(p, t) for p, t in self._recent if not q or q in os.path.basename(p).lower()]
+        def label(it):
+            info = it[2] if len(it) > 2 else None
+            return ((info or {}).get("name") or os.path.basename(it[0])).lower()
+        items = [it for it in self._recent if not q or q in label(it)]
         cols = self._columns()
         self._cols = cols
-        for i, (path, t) in enumerate(items):
-            c = Card(path, t)
+        for i, it in enumerate(items):
+            c = Card(it[0], it[1], it[2] if len(it) > 2 else None)
             c.clicked.connect(self.openPath.emit)
             c.menuRequested.connect(self._card_menu)
             self.grid.addWidget(c, i // cols, i % cols)

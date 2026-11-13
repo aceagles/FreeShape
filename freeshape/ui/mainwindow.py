@@ -19,6 +19,7 @@ from .. import features as F
 from ..document import Document
 from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
+from .. import doc_folder
 from .. import links
 from ..sketch import Sketch
 from . import theme, navstyles
@@ -68,6 +69,7 @@ class MainWindow(QMainWindow):
         self.resize(1440, 900)
         self.doc = None             # the document in the current tab
         self.docs = {}              # tab key -> Document
+        self.folder = None          # the open folder Document (doc_folder.FolderDocument), if any
         self._views = {}            # tab key -> saved camera state
         self._studio_counter = 0
         self.mode = "idle"          # idle | dialog | sketch
@@ -191,6 +193,8 @@ class MainWindow(QMainWindow):
         hp.openPath.connect(self.open_any)
         hp.newStudio.connect(self._home_new_studio)
         hp.newAssembly.connect(self.new_assembly)
+        hp.newDocument.connect(self._home_new_document)
+        hp.openDocument.connect(self.open_document_dialog)
         hp.openDialog.connect(self.open_dialog)
         hp.importStep.connect(self.import_step)
         hp.backToWork.connect(self.show_workspace)
@@ -255,6 +259,9 @@ class MainWindow(QMainWindow):
         self._add_action(m, "New Assembly", self.new_assembly, "Ctrl+Shift+N")
         self._add_action(m, "New Drawing…", lambda: self.new_drawing())
         self._add_action(m, "Open…", self.open_dialog, "Ctrl+O")
+        self._add_action(m, "New Document folder…", self._home_new_document)
+        self._add_action(m, "Open Document folder…", self.open_document_dialog)
+        self._add_action(m, "Add files to Document…", self.add_to_document)
         self.recent_menu = m.addMenu("Open recent")
         self.recent_menu.aboutToShow.connect(self._fill_recent)
         self._add_action(m, "Close tab", lambda: self.close_tab(self.tabs.currentIndex()), "Ctrl+W")
@@ -1250,7 +1257,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ home page
     def _refresh_home(self):
         times = self._recent_times()
-        items = [(p, times.get(os.path.abspath(p), 0)) for p in self._recent()]
+        items = [(p, times.get(os.path.abspath(p), 0), self._document_info(p)) for p in self._recent()]
         back = None
         for i in range(self.tabs.count()):
             d = self.docs.get(self.tabs.tabData(i))
@@ -1289,6 +1296,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, APP_NAME, f"“{os.path.basename(path)}” can't be found — it may have "
                                     "been moved or deleted.")
             return
+        if os.path.isdir(path):
+            if self.open_document(path):
+                self.show_workspace()
+            return
         ext = os.path.splitext(path)[1].lower()
         if ext in (".step", ".stp"):
             if self.mode != "idle":
@@ -1302,7 +1313,7 @@ class MainWindow(QMainWindow):
         self.show_workspace()
 
     def _thumb_key(self, doc):
-        return doc.path or getattr(doc, "_thumb_for", None)
+        return self._doc_key(doc) or doc.path or getattr(doc, "_thumb_for", None)
 
     def _update_thumbnail(self, doc=None):
         """Save a picture of the current model for its card on the home page."""
@@ -1313,10 +1324,16 @@ class MainWindow(QMainWindow):
         key = self._thumb_key(doc)
         if not key:
             return
+        if isinstance(key, tuple):
+            self._note_document_tab(self.folder, key[1])     # the tab its recent card shows
         try:
             img = self.dwg.thumbnail() if doc.kind == "drawing" else self.viewport.render_thumbnail()
             if img is not None:
-                img.save(thumb_path(key))
+                if isinstance(key, tuple):               # a Document tab: keyed by Document id + tab id
+                    from .home import keyed_thumb_path
+                    img.save(keyed_thumb_path(*key))
+                else:
+                    img.save(thumb_path(key))
         except Exception:
             pass
 
@@ -1342,6 +1359,294 @@ class MainWindow(QMainWindow):
             a.setToolTip(path)
         m.addSeparator()
         m.addAction("Clear list", self._clear_recent)
+
+    # ================================================================== folder Documents
+    def _folder_tab(self, doc):
+        """The manifest tab (doc_folder.Tab) this document is, or None for a loose file."""
+        tid = getattr(doc, "tab_id", None)
+        if self.folder is None or tid is None:
+            return None
+        tab = self.folder.tab(tid)
+        return tab if tab is not None and tab.doc is doc else None
+
+    def _doc_key(self, doc):
+        """(Document id, tab id) for a Document tab -- what recents, thumbnails and autosaves are keyed by."""
+        tab = self._folder_tab(doc)
+        return (self.folder.id, tab.id) if tab is not None else None
+
+    def _resolver_for(self, doc):
+        return self.folder.resolver if self._folder_tab(doc) is not None else self.resolver
+
+    def studio_link(self, studio, part=None, **extra):
+        """The source an assembly instance or drawing stores for a Part Studio tab: tab id + part inside a
+        Document, uid + path for a loose file."""
+        tab = self._folder_tab(studio)
+        if tab is not None:
+            return {**links.studio_source(tab, part), **extra}
+        return {"kind": "studio", "uid": studio.uid, "part": part, "path": studio.path,
+                "studio_name": studio.name, **extra}
+
+    def assembly_link(self, asm):
+        tab = self._folder_tab(asm)
+        if tab is not None:
+            return links.assembly_source(tab)
+        return {"kind": "assembly", "uid": asm.uid, "path": asm.path, "name": asm.name}
+
+    def show_linked_studio(self, src):
+        """The Part Studio a source names, switched to (a Document tab by id, else the loose uid + path way)."""
+        if src.get("tab") is not None and self.folder is not None:
+            tab = self.folder.tab(src["tab"])
+            if tab is None or tab.doc is None:
+                return None
+            if self._tab_index(tab.doc) < 0:
+                self._add_tab(tab.doc)
+            else:
+                self.tabs.setCurrentIndex(self._tab_index(tab.doc))
+            return tab.doc
+        return self.studio_by_uid(src.get("uid"), src.get("path"), load=True, show=True)
+
+    def _register_in_document(self, doc, like=None):
+        """A tab made while a Document is open goes into that Document (`like`: the tab it copies, else the
+        current one)."""
+        ref = like if like is not None else self.doc
+        if ref is None or self._folder_tab(ref) is None:
+            return
+        tab = self.folder.adopt_tab(doc, doc.kind)
+        doc.tab_id = tab.id
+        if doc.kind == "assembly":
+            doc.refresh(solve=False, notify=False)
+        elif doc.kind == "drawing":
+            doc.refresh(notify=False)
+
+    def _document_info(self, path):
+        """{"id", "name", "tab"} for a recent entry that is a Document folder, else None."""
+        import json
+        manifest = os.path.join(path, doc_folder.MANIFEST_NAME)
+        if not os.path.isfile(manifest):
+            return None
+        try:
+            with open(manifest) as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        did = data.get("id")
+        info = self._recent_documents().get(did, {}) if isinstance(did, str) else {}
+        return {"id": did, "name": data.get("name") or os.path.basename(path), "tab": info.get("tab")}
+
+    def _recent_documents(self):
+        import json
+        try:
+            v = json.loads(str(self.settings.value("recent_documents", "{}")))
+        except Exception:
+            return {}
+        return v if isinstance(v, dict) else {}
+
+    def _note_document_tab(self, fd, tab_id):
+        """Remember which tab of a Document was worked on last, keyed by Document id (its card's thumbnail)."""
+        import json
+        if fd is None:
+            return
+        docs = self._recent_documents()
+        docs[fd.id] = {"path": os.path.abspath(fd.path), "name": fd.name, "tab": tab_id}
+        self.settings.setValue("recent_documents", json.dumps(docs))
+
+    def _pick_new_document_path(self):
+        path, _ = QFileDialog.getSaveFileName(self, "New Document (a folder)",
+                                              self._dialog_dir("doc", "Document 1"), "Document folder")
+        return path
+
+    def _pick_document_path(self):
+        return QFileDialog.getExistingDirectory(self, "Open Document folder", self._dialog_dir("doc"))
+
+    def _pick_files_to_add(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "Add to Document", self._dialog_dir("doc"),
+                                                "FreeShape files (*.fshape *.fasm *.fdwg)")
+        return paths
+
+    def _home_new_document(self):
+        self._leave_modes()
+        path = self._pick_new_document_path()
+        if path:
+            self.create_document(path)
+
+    def open_document_dialog(self):
+        self._leave_modes()
+        path = self._pick_document_path()
+        if path:
+            self.open_any(path)
+
+    def create_document(self, path, name=None):
+        """Make a new Document folder with one empty Part Studio tab and open it."""
+        if os.path.isdir(path) and os.listdir(path):
+            QMessageBox.warning(self, APP_NAME, f"“{os.path.basename(path)}” already has files in it. "
+                                "Pick a new folder name for the Document.")
+            return None
+        if not self._close_document():
+            return None
+        try:
+            fd = doc_folder.FolderDocument.create(path, name or os.path.basename(os.path.normpath(path)))
+            tab = fd.add_tab("studio", "Part Studio 1")
+            tab.doc.rebuild()
+            fd.save()
+        except (K.KernelError, OSError) as e:
+            QMessageBox.critical(self, APP_NAME, f"Could not create the Document:\n{e}")
+            return None
+        self._adopt_document(fd)
+        self.show_workspace()
+        return fd
+
+    def open_document(self, path):
+        """Open a Document folder: one tab per manifest entry."""
+        if self.folder is not None and os.path.abspath(self.folder.path) == os.path.abspath(path):
+            return self.folder
+        if not self._close_document():
+            return None
+        try:
+            fd = doc_folder.FolderDocument.open(path)
+        except (K.KernelError, OSError, ValueError) as e:
+            QMessageBox.critical(self, APP_NAME, f"Could not open the Document {path}:\n{e}")
+            return None
+        self._adopt_document(fd)
+        self.show_workspace()
+        if fd.errors:
+            QMessageBox.warning(self, APP_NAME, "Some tabs could not be opened:\n\n" + "\n".join(
+                f"• {fd.tab(t).name if fd.tab(t) else t}: {m}" for t, m in fd.errors.items()))
+        return fd
+
+    def _adopt_document(self, fd):
+        """Show every tab of an opened Document and make it the open Document."""
+        self.folder = fd
+        fd.resolver.flat_pattern_of = self.flat_pattern_of
+        loose_blank = [d for d in self.docs.values() if self._is_pristine(d)]
+        for tab in fd.tabs:
+            if tab.doc is not None:
+                tab.doc.tab_id = tab.id
+                tab.doc.name = tab.name or tab.doc.name         # the manifest names the tab
+                self._add_tab(tab.doc, switch=False)
+        last = self._recent_documents().get(fd.id, {}).get("tab")
+        active = fd.tab(last) if fd.tab(last) is not None and fd.tab(last).doc is not None else \
+            next((t for t in fd.tabs if t.doc is not None), None)
+        if active is not None:
+            self.tabs.setCurrentIndex(self._tab_index(active.doc))
+        for d in loose_blank:
+            i = self._tab_index(d)
+            if i >= 0:
+                self.tabs.removeTab(i)
+            self.docs.pop(id(d), None)
+            self._views.pop(id(d), None)
+        self._note_document_tab(fd, active.id if active is not None else None)
+        self._add_recent(fd.path)
+
+    def _close_document(self):
+        """Close the open Document's tabs (asking about unsaved ones). False if the person cancelled."""
+        fd = self.folder
+        if fd is None:
+            return True
+        self._leave_modes()
+        shown = [t.doc for t in fd.tabs if t.doc is not None and self._tab_index(t.doc) >= 0]
+        for doc in shown:
+            if doc.dirty and self._has_content(doc):
+                self.tabs.setCurrentIndex(self._tab_index(doc))
+                if not self._confirm_discard(doc):
+                    return False
+        if self.tabs.count() == len(shown):
+            self._add_tab(self._new_document(), switch=False)
+            self.tabs.setCurrentIndex(self.tabs.count() - 1)
+        for doc in shown:
+            self._drop_autosave(doc)
+            self._remove_tab_silently(doc)
+        self.folder = None
+        return True
+
+    def _remove_tab_silently(self, doc):
+        i = self._tab_index(doc)
+        if i >= 0:
+            self.tabs.removeTab(i)
+        self.docs.pop(id(doc), None)
+        self._views.pop(id(doc), None)
+
+    def add_to_document(self, paths=None):
+        """Copy loose .fshape / .fasm / .fdwg files into the open Document and rewrite the links in the copies
+        to tab ids. The originals are not touched. Saves the Document, since the copies are new files."""
+        if self.folder is None:
+            QMessageBox.information(self, APP_NAME, "Open or create a Document first, then add files to it.")
+            return []
+        if paths is None:
+            paths = self._pick_files_to_add()
+        if not paths:
+            return []
+        self._leave_modes()
+        for tab in self.folder.tabs:                          # the folder save below writes every dirty tab
+            if tab.doc is not None:
+                tab.name = tab.doc.name
+        try:
+            added = self.folder.add_files(paths)
+        except (K.KernelError, OSError, ValueError) as e:
+            QMessageBox.warning(self, APP_NAME, f"Couldn't add to the Document:\n{e}")
+            return []
+        for tab in added:
+            tab.doc.tab_id = tab.id
+            self._add_tab(tab.doc, switch=False)
+        for tab in self.folder.tabs:
+            if tab.doc is not None:
+                self._refresh_tab_title(tab.doc)
+        self.tabs.setCurrentIndex(self._tab_index(added[0].doc))
+        self._on_doc_changed()
+        self.status.showMessage(f"Added {len(added)} file(s) to the Document", 5000)
+        return added
+
+    def _save_document(self):
+        fd = self.folder
+        for tab in fd.tabs:
+            if tab.doc is not None:
+                tab.name = tab.doc.name
+                if tab.kind in ("assembly", "drawing"):
+                    links.repair_links(fd.resolver, tab.doc)
+        try:
+            fd.save()
+        except OSError as e:
+            QMessageBox.critical(self, APP_NAME, f"Could not save:\n{e}")
+            return False
+        for tab in fd.tabs:
+            if tab.doc is not None:
+                self._refresh_tab_title(tab.doc)
+                self._drop_autosave(tab.doc)
+        self._on_doc_changed()
+        self._update_thumbnail()
+        self._add_recent(fd.path)
+        self.status.showMessage(f"Saved {fd.path}", 4000)
+        return True
+
+    def _recover_document_tab(self, path, meta):
+        """Put an autosaved Document tab back into its Document. False if the Document is gone (the caller then
+        recovers it as a loose file)."""
+        info = meta["document"]
+        folder = info.get("path")
+        if not folder or not os.path.isfile(os.path.join(folder, doc_folder.MANIFEST_NAME)):
+            return False
+        if self.folder is None or self.folder.id != info.get("id"):
+            self.open_document(folder)
+            if self.folder is None or self.folder.id != info.get("id"):
+                return False
+        kind = info.get("kind")
+        if kind not in doc_folder.LOADERS:
+            return False
+        doc = doc_folder.LOADERS[kind](path)
+        doc.name = info.get("tab_name") or meta.get("name") or doc.name
+        doc.dirty = True
+        old = None
+        tab = self.folder.tab(info.get("tab"))
+        if tab is None:
+            tab = self.folder.adopt_tab(doc, kind, info.get("tab"), doc.name, info.get("file"))
+        else:
+            old, tab.doc = tab.doc, doc
+            self.folder._attach(tab)
+        doc.tab_id = tab.id
+        self._add_tab(doc)
+        if old is not None:
+            self._remove_tab_silently(old)
+        self.folder.refresh_links()
+        return True
 
     # ================================================================== autosave & recovery
     @staticmethod
@@ -1400,8 +1705,12 @@ class MainWindow(QMainWindow):
         return sorted(out)
 
     def _autosave_path(self, doc):
+        import re
         import uuid
-        if not getattr(doc, "_autosave_id", None):
+        key = self._doc_key(doc)
+        if key:                                          # a Document tab: one file per Document id + tab id
+            doc._autosave_id = ".".join(re.sub(r"[^A-Za-z0-9_-]", "_", str(k)) for k in key)
+        elif not getattr(doc, "_autosave_id", None):
             doc._autosave_id = uuid.uuid4().hex
         ext = {"assembly": ".fasm", "drawing": ".fdwg"}.get(doc.kind, ".fshape")
         return os.path.join(self.autosave_dir(), doc._autosave_id + ext)
@@ -1412,9 +1721,14 @@ class MainWindow(QMainWindow):
             if not (doc.dirty and self._has_content(doc)):
                 continue
             try:
-                links.repair_links(self.resolver, doc)
+                links.repair_links(self._resolver_for(doc), doc)
                 d = json.loads(doc.to_json())
                 d["autosave"] = {"path": doc.path, "name": doc.name, "time": time.time()}
+                tab = self._folder_tab(doc)
+                if tab is not None:
+                    d["autosave"]["document"] = {"id": self.folder.id, "name": self.folder.name,
+                                                 "path": self.folder.path, "tab": tab.id, "kind": tab.kind,
+                                                 "file": tab.file, "tab_name": tab.name}
                 tmp = self._autosave_path(doc) + ".tmp"
                 with open(tmp, "w") as fh:
                     json.dump(d, fh)
@@ -1439,7 +1753,10 @@ class MainWindow(QMainWindow):
             try:
                 with open(f) as fh:
                     meta = json.load(fh).get("autosave", {})
-                names.append(f"• {meta.get('name', 'Untitled')}  —  saved {time.strftime('%d %b %H:%M', time.localtime(meta.get('time', 0)))}")
+                where = meta.get("document")
+                label = f"{meta.get('name', 'Untitled')}" + (
+                    f" (tab “{where.get('tab_name')}” of Document “{where.get('name')}”)" if where else "")
+                names.append(f"• {label}  —  saved {time.strftime('%d %b %H:%M', time.localtime(meta.get('time', 0)))}")
             except Exception:
                 names.append("• (unreadable)")
         r = QMessageBox.question(
@@ -1450,6 +1767,9 @@ class MainWindow(QMainWindow):
                 try:
                     with open(f) as fh:
                         meta = json.load(fh).get("autosave", {})
+                    if meta.get("document") and self._recover_document_tab(f, meta):
+                        os.remove(f)
+                        continue
                     doc = AssemblyDoc.load(f, resolver=self._resolve_source) if f.endswith(".fasm") \
                         else DrawingDoc.load(f, resolver=self._resolve_drawing_source,
                                                       hlr_async=self.dwg.request_exact) if f.endswith(".fdwg") \
@@ -1833,11 +2153,11 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction("Mass properties", lambda: self._mass_props(pid))
         m.addAction(icon("drawing", 16), "Create drawing…", lambda: self.new_drawing(
-            {"kind": "studio", "uid": self.doc.uid, "part": pid}))
+            self.studio_link(self.doc, pid)))
         if pid in getattr(self.doc.state, "sheet", {}):
             m.addAction(icon("flat_dxf", 16), "Export flat pattern (DXF)…", lambda: self.export_flat_dxf(pid))
             m.addAction(icon("drawing", 16), "Create drawing of the flat pattern…", lambda: self.new_drawing(
-                {"kind": "studio", "uid": self.doc.uid, "part": pid, "flat": True}))
+                self.studio_link(self.doc, pid, flat=True)))
         m.addAction("Export STEP…", lambda: self.export([pid], "step"))
         m.addAction("Export STL…", lambda: self.export([pid], "stl"))
         m.exec(gpos)
@@ -2061,10 +2381,11 @@ class MainWindow(QMainWindow):
         key = id(doc)
         self.docs[key] = doc
         doc.listeners.append(lambda d=doc: self._doc_changed_from(d))
-        if doc.kind == "assembly":
+        if doc.kind == "assembly" and self._folder_tab(doc) is None:
             doc.resolver = self._resolve_source
         if doc.kind == "drawing":
-            doc.resolver = self._resolve_drawing_source
+            if self._folder_tab(doc) is None:
+                doc.resolver = self._resolve_drawing_source
             doc.hlr_async = self.dwg.request_exact
         i = self.tabs.addTab(icon({"assembly": "assembly", "drawing": "drawing"}.get(doc.kind, "part"), 16), doc.name)
         self.tabs.setTabData(i, key)
@@ -2189,6 +2510,7 @@ class MainWindow(QMainWindow):
             g.resolver = self._resolve_drawing_source
             g.refresh(notify=False)
             g.dirty = True
+            self._register_in_document(g, like=src)
             self._add_tab(g)
             return
         if src.kind == "assembly":
@@ -2200,6 +2522,7 @@ class MainWindow(QMainWindow):
             a.resolver = self._resolve_source
             a.refresh(solve=False, notify=False)
             a.dirty = True
+            self._register_in_document(a, like=src)
             self._add_tab(a)
             return
         doc = Document()
@@ -2211,11 +2534,14 @@ class MainWindow(QMainWindow):
         doc.name = src.name + " (copy)"
         doc.rebuild()
         doc.dirty = True
+        self._register_in_document(doc, like=src)
         self._add_tab(doc)
 
     def new_doc(self):
         self._leave_modes()
-        self._add_tab(self._new_document())
+        doc = self._new_document()
+        self._register_in_document(doc)
+        self._add_tab(doc)
 
     def new_assembly(self):
         self._leave_modes()
@@ -2223,6 +2549,7 @@ class MainWindow(QMainWindow):
         a = AssemblyDoc()
         a.name = f"Assembly {self._asm_counter}"
         a.resolver = self._resolve_source
+        self._register_in_document(a)
         self._add_tab(a)
         QTimer.singleShot(0, lambda: self.viewport.set_standard_view("Isometric", animate=False))
         if self.studio_docs() and any(d.state.parts for d in self.studio_docs()):
@@ -2236,7 +2563,7 @@ class MainWindow(QMainWindow):
             if d is None:
                 continue
             if d.kind == "studio" and d.state.parts:
-                base = {"kind": "studio", "uid": d.uid, "path": d.path, "studio_name": d.name}
+                base = self.studio_link(d)
                 entries = []
                 if len(d.state.parts) > 1:
                     entries.append(("All parts", {**base, "part": "*"}))
@@ -2247,8 +2574,7 @@ class MainWindow(QMainWindow):
                                                                       "flat": True}))
                 out.append((d.name, "part", entries))
             elif d.kind == "assembly" and d.instances:
-                out.append((d.name, "assembly", [("Whole assembly", {"kind": "assembly", "uid": d.uid,
-                                                                      "path": d.path, "name": d.name})]))
+                out.append((d.name, "assembly", [("Whole assembly", self.assembly_link(d))]))
         return out
 
     def new_drawing(self, preselect=None):
@@ -2261,9 +2587,11 @@ class MainWindow(QMainWindow):
                                     "one of your open Part Studios or Assemblies.")
             return
         if preselect is None and self.doc is not None and self.doc.kind in ("studio", "assembly"):
-            preselect = {"kind": self.doc.kind, "uid": self.doc.uid, "part": "*"}
-            if self.doc.kind == "studio" and len(self.doc.state.parts) == 1:
-                preselect["part"] = next(iter(self.doc.state.parts))
+            if self.doc.kind == "studio":
+                only = next(iter(self.doc.state.parts)) if len(self.doc.state.parts) == 1 else "*"
+                preselect = self.studio_link(self.doc, only)
+            else:
+                preselect = self.assembly_link(self.doc)
         dlg = NewDrawingDialog(self, sources, preselect, self.settings)
         if dlg.exec() != QDialog.Accepted:
             return
@@ -2284,6 +2612,8 @@ class MainWindow(QMainWindow):
             self.settings.setValue(k, v)
         g.resolver = self._resolve_drawing_source
         g.hlr_async = self.dwg.request_exact
+        if src.get("tab") is not None and self.folder is not None:       # a Document tab: resolve by tab id
+            g.resolver = self.folder.resolver.resolve_drawing_source
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             g.refresh(notify=False)
@@ -2292,7 +2622,13 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         g.dirty = True
+        if src.get("tab") is not None:
+            self._register_in_document(g, like=self._source_tab_doc(src))
         self._add_tab(g)
+
+    def _source_tab_doc(self, src):
+        tab = self.folder.tab(src.get("tab")) if self.folder is not None and src.get("tab") else None
+        return tab.doc if tab is not None else None
 
     def _resolve_drawing_source(self, src):
         return self.resolver.resolve_drawing_source(src)
@@ -2423,6 +2759,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(60, lambda: self.viewport.set_standard_view("Isometric", animate=False))
 
     def save(self):
+        if self._folder_tab(self.doc) is not None:
+            return self._save_document()
         if not self.doc.path:
             return self.save_as()
         if self.is_asm or self.is_dwg:
@@ -2446,6 +2784,8 @@ class MainWindow(QMainWindow):
         return True
 
     def save_as(self):
+        if self._folder_tab(self.doc) is not None:       # a Document's tabs save with the Document
+            return self._save_document()
         ext = ".fdwg" if self.is_dwg else ".fasm" if self.is_asm else ".fshape"
         filt = "FreeShape drawings (*.fdwg)" if self.is_dwg else "FreeShape assemblies (*.fasm)" if self.is_asm \
             else "FreeShape documents (*.fshape)"

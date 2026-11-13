@@ -923,8 +923,7 @@ class AssemblyController:
             gap = max(0.15 * float(np.linalg.norm(shi - slo)), 5.0)
             shift = A.translation([hi[0] + gap - slo[0], 0, lo[2] - slo[2]])
         for pid in pids:
-            src = {"kind": "studio", "uid": studio.uid, "part": pid, "path": studio.path,
-                   "studio_name": studio.name}
+            src = self.w.studio_link(studio, pid)
             try:
                 T = shift if part_ids is None and doc.instances and shift is not None else None
                 if part_ids is None and not doc.instances:
@@ -1355,7 +1354,7 @@ class AssemblyController:
         if src.get("kind") != "studio":
             self.w.status.showMessage("This part came from a STEP file — there's no Part Studio to open", 5000)
             return
-        studio = self.w.studio_by_uid(src.get("uid"), src.get("path"), load=True, show=True)
+        studio = self.w.show_linked_studio(src)
         if studio is None:
             QMessageBox.information(self.w, "Open Part Studio", "The Part Studio for this part isn't open and its "
                                     "file can't be found.")

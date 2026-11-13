@@ -36,6 +36,16 @@ class EngineError(Exception):
     """An edit the engine cannot apply, or a tab it does not have."""
 
 
+class TabErrored(EngineError):
+    """The tab's worker process died (the process executor). The tab stays open, holding every edit it had,
+    until `restart(tab)` rebuilds it or `close_tab(tab)` drops it."""
+
+    def __init__(self, tab, reason):
+        super().__init__(f"tab {tab!r} stopped: {reason}")
+        self.tab = tab
+        self.reason = reason
+
+
 # =========================================================================== edits
 
 STUDIO_OPS = {
@@ -235,3 +245,14 @@ class Engine(abc.ABC):
     @abc.abstractmethod
     def outputs(self, tab) -> TabOutputs:
         ...
+
+    def close(self) -> None:
+        """Close every tab (and so, in the process executor, end every worker)."""
+        for tab, *_rest in list(self.tabs()):
+            self.close_tab(tab)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()

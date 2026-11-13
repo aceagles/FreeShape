@@ -90,6 +90,13 @@ class Encoder:
             self._brep[id(shape)] = hit
         return hit[1], hit[2]
 
+    def seed(self, shape, data, digest):
+        """Record a shape rebuilt from (compressed BREP `data`, `digest`) -- a part another tab sent -- so it
+        is passed on with the very bytes and hash it came with, never re-written."""
+        if len(self._brep) >= _CACHE_LIMIT:
+            self._brep.clear()
+        self._brep[id(shape)] = (shape, data, digest)
+
     def mesh(self, shape, digest):
         if not self.meshes:
             return None
@@ -101,15 +108,15 @@ class Encoder:
             self._mesh[digest] = hit
         return hit
 
-    def part(self, part, hidden=False) -> PartOut:
-        """A features.Part as output, in its own coordinates."""
+    def part(self, part, hidden=False, mesh=True) -> PartOut:
+        """A features.Part as output, in its own coordinates (`mesh=False`: without its display mesh)."""
         data, digest = self.brep(part.shape)
         fc = None
         if part.face_colors:      # kept 0-based by features.py; 1-based here, like every output index
             fc = {int(i) + 1: tuple(float(c) for c in rgb) for i, rgb in part.face_colors.items()}
         return PartOut(id=str(part.id), name=str(part.name), color=tuple(float(c) for c in part.color),
                        hidden=bool(hidden), brep=data, hash=digest, names=element_names(part),
-                       mesh=self.mesh(part.shape, digest), face_colors=fc)
+                       mesh=self.mesh(part.shape, digest) if mesh else None, face_colors=fc)
 
 
 def sketch_out(fid, name, result) -> SketchOut:

@@ -1,5 +1,7 @@
-"""freeshape/engine: the tab engine's `submit_edit(tab, edit)` -> `outputs(tab)` contract, run in process.
-Outputs must be plain picklable data (ADR 0002) and part element indices must survive a BREP round trip."""
+"""freeshape/engine: the tab engine's `submit_edit(tab, edit)` -> `outputs(tab)` contract. Every test that
+drives an engine runs on both executors: `inprocess` (every tab in this process) and `process` (one worker
+process per tab, process.py). Outputs must be plain picklable data (ADR 0002) and part element indices must
+survive a BREP round trip. Crash, restart and lifecycle tests of the process executor: test_engine_process.py."""
 import dataclasses
 import os
 import pickle
@@ -14,7 +16,7 @@ from conftest import (ANALYTIC, EXAMPLES_DIR, ROOT, add, assert_golden, block_do
 from freeshape import kernel as K
 from freeshape import naming as N
 from freeshape.engine import (AssemblyOutputs, DrawingOutputs, EngineError, InProcessEngine, PartOut,
-                              StudioOutputs)
+                              ProcessEngine, StudioOutputs)
 from freeshape.engine.encode import Encoder
 
 HINGE_ASM = os.path.join(EXAMPLES_DIR, "hinge.fasm")
@@ -28,6 +30,24 @@ def depth(v):
 
 def hashes(out):
     return {p.id: p.hash for p in out.parts}
+
+
+ENGINES = {"inprocess": InProcessEngine, "process": ProcessEngine}
+
+
+@pytest.fixture(params=sorted(ENGINES))
+def make_engine(request):
+    """make_engine() -> a new engine of the parametrised executor; every one is closed (its workers ended)
+    when the test ends, passed or failed."""
+    made = []
+
+    def make():
+        made.append(ENGINES[request.param]())
+        return made[-1]
+
+    yield make
+    for e in made:
+        e.close()
 
 
 def _tab_of(engine, kind):
@@ -93,8 +113,8 @@ def assert_plain_and_pickles(out):
 
 # =========================================================================== Part Studio tabs
 
-def test_studio_edit_returns_parts_as_brep_and_hash():
-    e = InProcessEngine()
+def test_studio_edit_returns_parts_as_brep_and_hash(make_engine):
+    e = make_engine()
     tab = e.open_tab(HINGE_STUDIO)
     assert e.submit_edit(tab, depth(12)) == 1
     out = e.outputs(tab)
@@ -113,14 +133,15 @@ def test_studio_edit_returns_parts_as_brep_and_hash():
     assert all(s.regions and len(s.plane["normal"]) == 3 for s in out.sketches)
 
 
-def test_same_edit_gives_same_hash_and_a_dimension_change_does_not():
-    e = InProcessEngine()
+def test_same_edit_gives_same_hash_and_a_dimension_change_does_not(make_engine):
+    e = make_engine()
     tab = e.open_tab(HINGE_STUDIO)
     e.submit_edit(tab, depth(12))
     first = hashes(e.outputs(tab))
     e.submit_edit(tab, depth(12))
     assert hashes(e.outputs(tab)) == first
-    # a fresh engine building the same edit from the file writes the very same BREP text
+    # a fresh engine building the same edit from the file writes the very same BREP text (in process: the
+    # two executors must agree)
     e2 = InProcessEngine()
     t2 = e2.open_tab(HINGE_STUDIO)
     e2.submit_edit(t2, depth(12))
@@ -146,8 +167,8 @@ def test_meshing_does_not_change_the_hash():
 
 # =========================================================================== plain, picklable outputs
 
-def test_every_output_is_plain_data_and_survives_pickle():
-    e = InProcessEngine()
+def test_every_output_is_plain_data_and_survives_pickle(make_engine):
+    e = make_engine()
     asm = e.open_tab(HINGE_ASM)
     studio = _tab_of(e, "studio")
     dwg = e.new_tab("drawing")
@@ -178,8 +199,8 @@ def test_engine_has_no_qt():
 
 # =========================================================================== assembly tabs and cross-tab inputs
 
-def test_assembly_tab_returns_instance_outputs():
-    e = InProcessEngine()
+def test_assembly_tab_returns_instance_outputs(make_engine):
+    e = make_engine()
     asm = e.open_tab(HINGE_ASM)
     out = e.outputs(asm)
     assert isinstance(out, AssemblyOutputs) and not out.errors
@@ -199,8 +220,8 @@ def test_assembly_tab_returns_instance_outputs():
     assert out.instances[0].part == plate.hash
 
 
-def test_assembly_sees_an_unsaved_upstream_edit():
-    e = InProcessEngine()
+def test_assembly_sees_an_unsaved_upstream_edit(make_engine):
+    e = make_engine()
     asm = e.open_tab(HINGE_ASM)
     studio = _tab_of(e, "studio")
     with open(HINGE_STUDIO) as fh:
@@ -220,9 +241,9 @@ def test_assembly_sees_an_unsaved_upstream_edit():
         assert fh.read() == on_disk
 
 
-def test_assembly_opened_after_the_studio_uses_the_open_tab(tmp_path):
+def test_assembly_opened_after_the_studio_uses_the_open_tab(make_engine, tmp_path):
     """Already-open upstream tab wins over the file on disk, even when it was opened first."""
-    e = InProcessEngine()
+    e = make_engine()
     studio = e.open_tab(HINGE_STUDIO, tab="hinge-parts")
     e.submit_edit(studio, depth(12))
     asm = e.open_tab(HINGE_ASM)
@@ -233,8 +254,8 @@ def test_assembly_opened_after_the_studio_uses_the_open_tab(tmp_path):
     assert hi[2] - lo[2] == pytest.approx(12)
 
 
-def test_assembly_edits_apply_and_undo():
-    e = InProcessEngine()
+def test_assembly_edits_apply_and_undo(make_engine):
+    e = make_engine()
     asm = e.open_tab(HINGE_ASM)
     assert e.submit_edit(asm, {"op": "set_hidden", "instance": "I2", "value": True}) == 1
     assert [i.hidden for i in e.outputs(asm).instances] == [False, True, False]
@@ -248,8 +269,8 @@ def test_assembly_edits_apply_and_undo():
         e.submit_edit(asm, {"op": "set_hidden", "instance": "I99", "value": True})
 
 
-def test_drawing_follows_its_studio():
-    e = InProcessEngine()
+def test_drawing_follows_its_studio(make_engine):
+    e = make_engine()
     studio = e.open_tab(HINGE_STUDIO)
     dwg = e.new_tab("drawing")
     e.submit_edit(dwg, {"op": "set_source", "source": {"kind": "studio", "path": HINGE_STUDIO, "part": "F2/1"}})
@@ -262,8 +283,8 @@ def test_drawing_follows_its_studio():
     assert e.outputs(dwg).model == next(p.hash for p in e.outputs(studio).parts if p.id == "F2/1")
 
 
-def test_bad_edits_raise():
-    e = InProcessEngine()
+def test_bad_edits_raise(make_engine):
+    e = make_engine()
     tab = e.open_tab(HINGE_STUDIO)
     with pytest.raises(EngineError):
         e.submit_edit(tab, {"op": "move_instance"})
@@ -274,10 +295,10 @@ def test_bad_edits_raise():
     assert e.outputs(tab).revision == 0
 
 
-def test_save_writes_the_edit(tmp_path):
+def test_save_writes_the_edit(make_engine, tmp_path):
     path = str(tmp_path / "parts.fshape")
     shutil.copy(HINGE_STUDIO, path)
-    e = InProcessEngine()
+    e = make_engine()
     tab = e.open_tab(path)
     e.submit_edit(tab, depth(12))
     e.submit_edit(tab, {"op": "save"})
@@ -302,11 +323,11 @@ def _props(sub, kind):
     return info["area" if kind == "face" else "len"], np.asarray(info["c"])
 
 
-def test_element_indices_survive_a_brep_round_trip(tmp_path):
+def test_element_indices_survive_a_brep_round_trip(make_engine, tmp_path):
     doc = _hole_and_fillet_doc()
     path = str(tmp_path / "holed.fshape")
     doc.save(path)
-    e = InProcessEngine()
+    e = make_engine()
     out = e.outputs(e.open_tab(path))
     assert len(out.parts) == 1 and not out.errors
     before = only_part(doc).shape

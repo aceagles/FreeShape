@@ -574,6 +574,27 @@ def mate_values(m, FA, FB):
 
 # =========================================================================== the document
 
+ANIMATE_PLAYBACKS = ("single", "reciprocate", "loop")
+ANIMATE_MAX_RANGE = 36000.0   # degrees (or mm): the widest range one Animate run covers
+
+
+def animate_values(start, end, steps, playback):
+    """Values an Animate run steps through: `steps` evenly spaced values from start to end ("single" and "loop",
+    where the caller repeats the sequence), or that sequence followed by its reverse without repeating the end
+    value ("reciprocate"). Raises ValueError for steps below 2, an unknown playback, or a range over 36000."""
+    if playback not in ANIMATE_PLAYBACKS:
+        raise ValueError(f"Unknown playback {playback!r}")
+    steps = int(steps)
+    if steps < 2:
+        raise ValueError("Animate needs at least 2 steps")
+    if abs(float(end) - float(start)) > ANIMATE_MAX_RANGE:
+        raise ValueError(f"Animate range is limited to {ANIMATE_MAX_RANGE:g}")
+    seq = [float(v) for v in np.linspace(float(start), float(end), steps)]
+    if playback == "reciprocate":
+        seq += seq[-2::-1]
+    return seq
+
+
 class AssemblyDoc:
     kind = "assembly"
 
@@ -603,6 +624,7 @@ class AssemblyDoc:
         self._limit_holds: dict = {}             # mate id -> {dof: bound}; active limits, set only inside a solve
         self.dof = 0
         self._undo: list[str] = []
+        self._animate = None                     # snapshot taken by begin_animate, in memory only
         self._redo: list[str] = []
         self._counter = 0
         # Part-Studio-shaped attributes some generic window code looks at
@@ -1241,6 +1263,48 @@ class AssemblyDoc:
         out = self._drive_steps(m, dof, float(target))
         self.notify()
         return out
+
+    # ------------------------------------------------------------------ animate
+    def begin_animate(self):
+        """Remember instance transforms and mate values so end_animate can put them back. No undo checkpoint.
+        A second call while an animation is open keeps the first snapshot."""
+        if getattr(self, "_animate", None) is not None:
+            return
+        self._animate = {
+            "T": {i["id"]: json.dumps(i["T"]) for i in self.instances},
+            "values": {m["id"]: json.dumps(m.get("values")) for m in self.mates},
+            "errors": dict(self.errors), "conflicts": set(self._conflicts), "dof": self.dof, "dirty": self.dirty,
+        }
+
+    def animate_frame(self, mid, dof, value):
+        """Pose mate `mid` at `value` through the drive stepping. No checkpoint. Returns the value reached,
+        which differs from `value` when a step could not hold. Notifies so views redraw."""
+        m = self.mate(mid)
+        if m is None:
+            raise ValueError(f"No mate {mid!r}")
+        if dof not in MATE_VALUE_DOFS.get(m["type"], ()):
+            raise ValueError(f"Mate {mid!r} ({m['type']}) has no freedom {dof!r}")
+        self.begin_animate()
+        reached, _ok = self._drive_steps(m, dof, float(value))
+        self.notify()
+        return reached
+
+    def end_animate(self):
+        """Put back what begin_animate saw, exactly, and notify. Does nothing when no animation is open.
+        Relations are not touched, and the undo stack is not either."""
+        snap = getattr(self, "_animate", None)
+        if snap is None:
+            return
+        self._animate = None
+        for i in self.instances:
+            if i["id"] in snap["T"]:
+                i["T"] = json.loads(snap["T"][i["id"]])
+        for m in self.mates:
+            if m["id"] in snap["values"]:
+                m["values"] = json.loads(snap["values"][m["id"]])
+        self.errors, self._conflicts = snap["errors"], snap["conflicts"]
+        self.dof, self.dirty = snap["dof"], snap["dirty"]
+        self.notify()
 
     # ------------------------------------------------------------------ relations (ADR 0005)
     def relation(self, rid):

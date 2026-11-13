@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeShape viewer</title>
+<style>
+:root { color-scheme: light dark; --bg:#ffffff; --panel:#f5f6f8; --text:#1f2328; --muted:#6a737d; --border:#d5d9de;
+  --accent:#1f6fd1; --sel:#e3eefb; --err:#d93025; --cv-top:#ffffff; --cv-bottom:#ffffff; }
+@media (prefers-color-scheme: dark) { :root { --bg:#1b1d21; --panel:#23262b; --text:#e6e8eb; --muted:#9aa3ad;
+  --border:#383c43; --accent:#5aa0f0; --sel:#22324a; --err:#ff7b72; --cv-top:#383c42; --cv-bottom:#1c1e22; } }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+  font: 14px/1.4 system-ui, sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+h1 { font-size: 16px; margin: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 12px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+main { flex: 1; display: flex; min-height: 0; }
+nav { width: 220px; flex: none; overflow-y: auto; border-right: 1px solid var(--border); background: var(--panel); }
+nav button { display: flex; width: 100%; gap: 8px; align-items: baseline; text-align: left; border: 0;
+  border-radius: 0; border-bottom: 1px solid var(--border); background: none; padding: 8px 12px; }
+nav button.sel { background: var(--sel); }
+nav .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+nav .kind { color: var(--muted); font-size: 12px; }
+nav .bad { color: var(--err); font-weight: bold; }
+section { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#stage { flex: 1; min-height: 0; position: relative;
+  background: linear-gradient(var(--cv-top), var(--cv-bottom)); }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+#info { max-height: 30%; overflow-y: auto; padding: 6px 12px; border-top: 1px solid var(--border);
+  font-size: 13px; min-height: 2.2em; }
+#info div { white-space: pre-wrap; overflow-wrap: anywhere; }
+#info .err { color: var(--err); }
+#info .dim { color: var(--muted); }
+@media (max-width: 600px) { main { flex-direction: column; } nav { width: auto; max-height: 30%;
+  border-right: 0; border-bottom: 1px solid var(--border); } }
+</style>
+</head>
+<body>
+<header><h1 id="doc">FreeShape</h1><button id="reload" type="button">Reload</button></header>
+<main>
+<nav id="tabs"></nav>
+<section>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="info"></div>
+</section>
+</main>
+<script>
+"use strict";
+// Plain WebGL 1 viewer. Orthographic, Z up, millimetres, like the desktop app (freeshape/ui/camera.py).
+// Right-drag orbits (about the fit centre), Ctrl+right-drag and middle-drag pan, the wheel zooms towards the
+// cursor, left-drag also orbits. Text from Document files only ever goes in through textContent.
+const ID_OK = /^[A-Za-z0-9_-]{1,64}$/;
+const ISO_BACK = [1, -1, 1], ISO_UP = [0, 0, 1];      // desktop STANDARD_VIEWS["Isometric"]
+const ZOOM_PER_NOTCH = 0.88, ORBIT_RAD_PER_PX = 0.008, MAX_VERTS = 65535;
+const $ = (id) => document.getElementById(id);
+const cv = $("cv"), infoEl = $("info"), tabsEl = $("tabs");
+let gl = null, prog = null, loc = {}, glLost = false;
+let tabs = [], current = null, doc = null, loadSeq = 0, fitted = null;
+let items = [];                                          // drawable parts: {chunks, edges, color, matrix}
+const cam = { R: [0, 0, 0, 0, 0, 0, 0, 0, 0], target: [0, 0, 0], scale: 1, centre: [0, 0, 0], radius: 1 };
+
+// ---------------------------------------------------------------- small vector helpers (row-major 3x3 as 9 numbers)
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit = (a) => { const n = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / n, a[1] / n, a[2] / n]; };
+const rows = (R) => [R.slice(0, 3), R.slice(3, 6), R.slice(6, 9)];
+function basis(back, up) {                               // rows: right, up, back (world -> view)
+  const b = unit(back), r = unit(cross(up, b));
+  return [].concat(r, cross(b, r), b);
+}
+function rotAxis(axis, ang) {                            // same matrix as camera.rot_axis, row-major
+  const [x, y, z] = unit(axis), c = Math.cos(ang), s = Math.sin(ang), C = 1 - c;
+  return [c + x * x * C, x * y * C - z * s, x * z * C + y * s,
+          y * x * C + z * s, c + y * y * C, y * z * C - x * s,
+          z * x * C - y * s, z * y * C + x * s, c + z * z * C];
+}
+const mulV = (M, v) => [dot(M.slice(0, 3), v), dot(M.slice(3, 6), v), dot(M.slice(6, 9), v)];
+const mulM = (A, B) => { const o = []; for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++)
+  o.push(A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j]); return o; };
+const transpose = (A) => [A[0], A[3], A[6], A[1], A[4], A[7], A[2], A[5], A[8]];
+
+// ---------------------------------------------------------------- messages
+function say(text, cls) {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = text;
+  infoEl.appendChild(d);
+}
+const clearInfo = () => { infoEl.textContent = ""; };
+
+// ---------------------------------------------------------------- GL setup
+const VS = "attribute vec3 aPos; attribute vec3 aNor; uniform mat4 uVP; uniform mat4 uM; uniform mat3 uR;" +
+  "varying vec3 vN; void main() { vec4 w = uM * vec4(aPos, 1.0);" +
+  "vN = uR * (mat3(uM[0].xyz, uM[1].xyz, uM[2].xyz) * aNor); gl_Position = uVP * w; }";
+// Two-sided light in eye space with the desktop's two directional lights and ambient term (viewport.py _setup_camera).
+const FS = "precision mediump float; varying vec3 vN; uniform vec4 uColor; uniform int uFlat;" +
+  "void main() { if (uFlat == 1) { gl_FragColor = uColor; return; }" +
+  "vec3 n = normalize(vN); if (n.z < 0.0) n = -n;" +
+  "float l = 0.45 + 0.55 * max(dot(n, normalize(vec3(0.35, 0.6, 1.0))), 0.0)" +
+  " + 0.30 * max(dot(n, normalize(vec3(-0.7, -0.2, 0.6))), 0.0);" +
+  "gl_FragColor = vec4(min(uColor.rgb * l, vec3(1.0)), 1.0); }";
+
+function shader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error("shader: " + gl.getShaderInfoLog(s));
+  return s;
+}
+function initGL() {
+  prog = gl.createProgram();
+  gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error("link: " + gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  for (const n of ["uVP", "uM", "uR", "uColor", "uFlat"]) loc[n] = gl.getUniformLocation(prog, n);
+  loc.aPos = gl.getAttribLocation(prog, "aPos"); loc.aNor = gl.getAttribLocation(prog, "aNor");
+  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
+  gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);   // faces sit just behind their edges
+  gl.clearColor(0, 0, 0, 0);                                   // the page gradient shows through
+}
+function makeBuf(target, data) {
+  const b = gl.createBuffer();
+  gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW);
+  return b;
+}
+function freeItems() {
+  if (gl && !glLost) for (const it of items) {
+    for (const c of it.chunks) { gl.deleteBuffer(c.pos); gl.deleteBuffer(c.nor); gl.deleteBuffer(c.idx); }
+    if (it.edges) gl.deleteBuffer(it.edges.buf);
+  }
+  items = [];
+}
+
+// ---------------------------------------------------------------- mesh upload
+// 16-bit indices work everywhere, so a mesh over 65,535 vertices is split into chunks of triangles with their own
+// small vertex tables (no extension needed). The server gives one normal per vertex, one vertex per face corner at
+// hard edges, so shading follows the faces as it does on the desktop.
+function buildChunks(m) {
+  const P = m.positions, N = m.normals, I = m.indices, chunks = [];
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < P.length; i += 3) for (let k = 0; k < 3; k++) {
+    if (P[i + k] < lo[k]) lo[k] = P[i + k];
+    if (P[i + k] > hi[k]) hi[k] = P[i + k];
+  }
+  let map = new Map(), pos = [], nor = [], idx = [];
+  const flush = () => {
+    if (!idx.length) return;
+    chunks.push({ pos: makeBuf(gl.ARRAY_BUFFER, new Float32Array(pos)), nor: makeBuf(gl.ARRAY_BUFFER, new Float32Array(nor)),
+                  idx: makeBuf(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx)), n: idx.length });
+    map = new Map(); pos = []; nor = []; idx = [];
+  };
+  for (let t = 0; t + 2 < I.length; t += 3) {
+    let fresh = 0;
+    for (let k = 0; k < 3; k++) if (!map.has(I[t + k])) fresh++;
+    if (map.size + fresh > MAX_VERTS) flush();
+    for (let k = 0; k < 3; k++) {
+      const v = I[t + k];
+      if (!map.has(v)) {
+        map.set(v, pos.length / 3);
+        pos.push(P[3 * v], P[3 * v + 1], P[3 * v + 2]); nor.push(N[3 * v], N[3 * v + 1], N[3 * v + 2]);
+      }
+      idx.push(map.get(v));
+    }
+  }
+  flush();
+  return { chunks, lo, hi };
+}
+function buildEdges(list) {
+  const seg = [];
+  for (const p of list || []) for (let i = 0; i + 5 < p.length; i += 3)
+    seg.push(p[i], p[i + 1], p[i + 2], p[i + 3], p[i + 4], p[i + 5]);
+  return seg.length ? { buf: makeBuf(gl.ARRAY_BUFFER, new Float32Array(seg)), n: seg.length / 3 } : null;
+}
+const IDENT = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+function applyM(M, p) {                                  // column-major 4x4 times a point
+  return [M[0] * p[0] + M[4] * p[1] + M[8] * p[2] + M[12], M[1] * p[0] + M[5] * p[1] + M[9] * p[2] + M[13],
+          M[2] * p[0] + M[6] * p[1] + M[10] * p[2] + M[14]];
+}
+function upload(d) {
+  freeItems();
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  const cache = new Map();
+  let tris = 0;
+  for (const e of d.meshes) {
+    if (e.hidden || !e.mesh || !e.mesh.indices || !e.mesh.indices.length) continue;
+    const key = e.part == null ? "e:" + e.id : "p:" + e.part;        // instances of a part share GL buffers
+    if (!cache.has(key)) cache.set(key, Object.assign(buildChunks(e.mesh), { edges: buildEdges(e.mesh.edges) }));
+    const b = cache.get(key), M = e.matrix && e.matrix.length === 16 ? e.matrix : IDENT;
+    items.push({ chunks: b.chunks, edges: b.edges, color: e.color, matrix: M });
+    tris += e.mesh.indices.length / 3;
+    for (let c = 0; c < 8; c++) {                        // box corners after the placement (a slight over-estimate)
+      const q = applyM(M, [c & 1 ? b.hi[0] : b.lo[0], c & 2 ? b.hi[1] : b.lo[1], c & 4 ? b.hi[2] : b.lo[2]]);
+      for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], q[k]); hi[k] = Math.max(hi[k], q[k]); }
+    }
+  }
+  return { lo, hi, tris, count: items.length };
+}
+
+// ---------------------------------------------------------------- camera
+function size() { return [Math.max(cv.clientWidth, 1), Math.max(cv.clientHeight, 1)]; }
+function fit(lo, hi) {                                   // desktop Camera.fit_target, in the isometric view
+  if (!isFinite(lo[0])) { lo = [-1, -1, -1]; hi = [1, 1, 1]; }
+  const R = basis(ISO_BACK, ISO_UP), [r0, r1] = rows(R), [w, h] = size();
+  const c = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let i = 0; i < 8; i++) {
+    const d = [i & 1 ? hi[0] - c[0] : lo[0] - c[0], i & 2 ? hi[1] - c[1] : lo[1] - c[1], i & 4 ? hi[2] - c[2] : lo[2] - c[2]];
+    x0 = Math.min(x0, dot(d, r0)); x1 = Math.max(x1, dot(d, r0)); y0 = Math.min(y0, dot(d, r1)); y1 = Math.max(y1, dot(d, r1));
+  }
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  cam.R = R; cam.centre = c; cam.radius = Math.max(Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 2, 1e-3);
+  cam.target = [0, 1, 2].map((k) => c[k] + mx * r0[k] + my * r1[k]);
+  cam.scale = Math.max(Math.max(x1 - x0, 1e-3) / Math.max(w - 120, 50), Math.max(y1 - y0, 1e-3) / Math.max(h - 120, 50));
+}
+function orbit(dx, dy) {                                 // desktop Camera.orbit, pivot = the fit centre
+  const [right, up] = rows(cam.R);
+  const Rw = mulM(rotAxis(up, -dx * ORBIT_RAD_PER_PX), rotAxis(right, -dy * ORBIT_RAD_PER_PX));
+  cam.R = mulM(cam.R, transpose(Rw));
+  const d = mulV(Rw, [0, 1, 2].map((k) => cam.target[k] - cam.centre[k]));
+  cam.target = [0, 1, 2].map((k) => cam.centre[k] + d[k]);
+}
+function pan(dx, dy) {
+  const [right, up] = rows(cam.R);
+  cam.target = [0, 1, 2].map((k) => cam.target[k] - right[k] * dx * cam.scale + up[k] * dy * cam.scale);
+}
+function zoom(factor, sx, sy) {                          // towards the cursor: the point under it stays put
+  const [right, up] = rows(cam.R), [w, h] = size();
+  const at = (s) => [0, 1, 2].map((k) => cam.target[k] + right[k] * (sx - w / 2) * s - up[k] * (sy - h / 2) * s);
+  const before = at(cam.scale);
+  cam.scale = Math.min(Math.max(cam.scale * factor, 1e-5), 1e4);
+  const after = at(cam.scale);
+  cam.target = [0, 1, 2].map((k) => cam.target[k] + before[k] - after[k]);
+}
+
+// ---------------------------------------------------------------- drawing
+function draw() {
+  if (!gl || glLost) return;
+  const dpr = window.devicePixelRatio || 1, [w, h] = size();
+  const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+  if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
+  gl.viewport(0, 0, pw, ph);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const [r0, r1, r2] = rows(cam.R), hw = w * cam.scale / 2, hh = h * cam.scale / 2;
+  const tl = Math.hypot(cam.target[0] - cam.centre[0], cam.target[1] - cam.centre[1], cam.target[2] - cam.centre[2]);
+  const half = 2 * (cam.radius + tl) + 1;
+  const vp = new Float32Array(16), sc = [hw, hh, -half];
+  [r0, r1, r2].forEach((r, i) => {                       // column-major; z is flipped so the eye looks down -z
+    for (let c = 0; c < 3; c++) vp[c * 4 + i] = r[c] / sc[i];
+    vp[12 + i] = -dot(r, cam.target) / sc[i];
+  });
+  vp[15] = 1;
+  gl.uniformMatrix4fv(loc.uVP, false, vp);
+  gl.uniformMatrix3fv(loc.uR, false, new Float32Array(transpose(cam.R)));
+  const dark = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches;
+  const edge = dark ? [0.04, 0.04, 0.05, 1] : [0.10, 0.11, 0.13, 1];   // desktop theme.EDGE, dark and light
+  gl.enableVertexAttribArray(loc.aPos);
+  for (const it of items) {
+    gl.uniformMatrix4fv(loc.uM, false, new Float32Array(it.matrix));
+    gl.uniform4f(loc.uColor, it.color[0], it.color[1], it.color[2], 1);
+    gl.uniform1i(loc.uFlat, 0);
+    gl.enable(gl.POLYGON_OFFSET_FILL);
+    gl.enableVertexAttribArray(loc.aNor);
+    for (const c of it.chunks) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, c.pos); gl.vertexAttribPointer(loc.aPos, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, c.nor); gl.vertexAttribPointer(loc.aNor, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, c.idx);
+      gl.drawElements(gl.TRIANGLES, c.n, gl.UNSIGNED_SHORT, 0);
+    }
+    if (it.edges) {
+      gl.disable(gl.POLYGON_OFFSET_FILL); gl.disableVertexAttribArray(loc.aNor);
+      gl.uniform1i(loc.uFlat, 1); gl.uniform4f(loc.uColor, edge[0], edge[1], edge[2], 1);
+      gl.vertexAttrib3f(loc.aNor, 0, 0, 1);
+      gl.bindBuffer(gl.ARRAY_BUFFER, it.edges.buf); gl.vertexAttribPointer(loc.aPos, 3, gl.FLOAT, false, 0, 0);
+      gl.drawArrays(gl.LINES, 0, it.edges.n);
+    }
+  }
+}
+let queued = false;
+function redraw() {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; draw(); });
+}
+
+// ---------------------------------------------------------------- data
+function tabUrl(id, leaf) {
+  if (typeof id !== "string" || !ID_OK.test(id)) throw new Error("refusing a tab id with unexpected characters");
+  return "/tabs/" + encodeURIComponent(id) + "/" + leaf;
+}
+async function getJson(url) {
+  let r;
+  try { r = await fetch(url, { cache: "no-store" }); } catch (e) { throw new Error("request failed: " + e.message); }
+  let body = null, text = "";
+  try { text = await r.text(); body = JSON.parse(text); } catch (e) { body = null; }
+  if (!r.ok) throw new Error("HTTP " + r.status + " " + ((body && body.error) || r.statusText || text.slice(0, 200)));
+  if (body === null) throw new Error("the reply was not JSON");
+  return body;
+}
+function renderTabs() {
+  tabsEl.textContent = "";
+  for (const t of tabs) {
+    const b = document.createElement("button"), n = document.createElement("span"), k = document.createElement("span");
+    b.type = "button"; b.className = t.id === current ? "sel" : "";
+    n.className = "name"; n.textContent = String(t.name); k.className = "kind"; k.textContent = String(t.kind);
+    b.appendChild(n); b.appendChild(k);
+    if (t.state !== "ok") {
+      const m = document.createElement("span");
+      m.className = "bad"; m.textContent = "!"; m.title = "state: " + String(t.state); b.appendChild(m);
+    }
+    b.addEventListener("click", () => select(t.id));
+    tabsEl.appendChild(b);
+  }
+}
+async function loadTabs() {
+  const d = await getJson("/tabs");
+  $("doc").textContent = String((d.document && d.document.name) || "FreeShape");
+  document.title = $("doc").textContent + " - FreeShape viewer";
+  tabs = Array.isArray(d.tabs) ? d.tabs.filter((t) => t && typeof t.id === "string" && ID_OK.test(t.id)) : [];
+  if (!tabs.some((t) => t.id === current)) current = null;
+  if (current === null) {
+    const first = tabs.find((t) => t.kind === "studio" || t.kind === "assembly") || tabs[0];
+    current = first ? first.id : null;
+  }
+  renderTabs();
+}
+async function loadMesh(refit) {
+  const seq = ++loadSeq, tab = tabs.find((t) => t.id === current);
+  clearInfo(); freeItems(); doc = null; redraw();
+  if (!tab) { say("This Document has no tabs.", "dim"); return; }
+  if (tab.kind !== "studio" && tab.kind !== "assembly") {
+    say(String(tab.name) + " (" + String(tab.kind) + ")"); say("This tab has no 3D view.", "dim"); return;
+  }
+  let d;
+  try { d = await getJson(tabUrl(tab.id, "mesh.json")); } catch (e) { if (seq === loadSeq) say(e.message, "err"); return; }
+  if (seq !== loadSeq) return;                           // a newer request replaced this one
+  doc = d; show(refit);
+}
+function show(refit) {
+  if (!gl || glLost) { clearInfo(); say(glLost ? "The WebGL context was lost; waiting for it to come back." :
+    "WebGL is not available in this browser, so the model cannot be drawn.", "err"); return; }
+  let r;
+  try { r = upload(doc); } catch (e) { clearInfo(); say("Could not draw the model: " + e.message, "err"); return; }
+  if (refit || fitted !== current) { fit(r.lo, r.hi); fitted = current; }
+  clearInfo();
+  const errs = doc.errors || {};
+  for (const k of Object.keys(errs)) say(k + ": " + String(errs[k]), "err");
+  say(r.count ? r.count + " drawn, " + r.tris + " triangles" : "Nothing to draw in this tab.", "dim");
+  redraw();
+}
+async function select(id) {
+  current = id; fitted = null; renderTabs();
+  await loadMesh(true);
+}
+async function reload() {
+  try { await loadTabs(); } catch (e) { clearInfo(); say(e.message, "err"); return; }
+  await loadMesh(false);
+}
+
+// ---------------------------------------------------------------- input
+let drag = null;
+cv.addEventListener("contextmenu", (e) => e.preventDefault());
+cv.addEventListener("mousedown", (e) => {
+  const mode = e.button === 1 ? "pan" : e.button === 2 ? (e.ctrlKey ? "pan" : "orbit") : e.button === 0 ? "orbit" : null;
+  if (!mode) return;
+  e.preventDefault(); drag = { mode, x: e.clientX, y: e.clientY };
+});
+window.addEventListener("mousemove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.mode === "orbit") orbit(dx, dy); else pan(dx, dy);
+  redraw();
+});
+window.addEventListener("mouseup", () => { drag = null; });
+cv.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const mult = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 300 : 1;     // lines or pages to pixels
+  let notches = -e.deltaY * mult / 100;                                  // 100 px is one mouse notch
+  notches = Math.max(-1, Math.min(1, notches));
+  if (!notches) return;
+  const b = cv.getBoundingClientRect();
+  zoom(Math.pow(ZOOM_PER_NOTCH, notches), e.clientX - b.left, e.clientY - b.top);
+  redraw();
+}, { passive: false });
+cv.addEventListener("dblclick", () => { if (doc) show(true); });         // fit again
+window.addEventListener("resize", redraw);
+if (window.ResizeObserver) new ResizeObserver(redraw).observe(cv);
+if (window.matchMedia) matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
+$("reload").addEventListener("click", reload);
+
+// ---------------------------------------------------------------- start
+cv.addEventListener("webglcontextlost", (e) => {
+  e.preventDefault(); glLost = true; items = []; clearInfo();
+  say("The WebGL context was lost; waiting for it to come back.", "err");
+});
+cv.addEventListener("webglcontextrestored", () => {
+  try { initGL(); glLost = false; if (doc) show(false); else clearInfo(); } catch (e) { say(e.message, "err"); }
+});
+try {
+  gl = cv.getContext("webgl", { antialias: true }) || cv.getContext("experimental-webgl", { antialias: true });
+  if (gl) initGL();
+} catch (e) { gl = null; }
+if (!gl) say("WebGL is not available in this browser, so models cannot be drawn.", "err");
+reload();
+</script>
+</body>
+</html>

@@ -9,7 +9,7 @@ The server binds 127.0.0.1 and nothing else; there is no option for another addr
 (ADR 0010). `--host` exists only to refuse: `127.0.0.1` and `localhost` are accepted (both bind 127.0.0.1).
 
 Routes (an exact table; no part of a request is ever joined to a file path):
-    GET  /                      a short plain-text page (I5.5 replaces it with the viewer)
+    GET  /                      the viewer page (freeshape/static/viewer.html, package data; 404 if not installed)
     GET  /health                {"ok", "version", "qt_imported", "qt_modules"}
     GET  /tabs                  {"document": {"id", "name"}, "tabs": [session.tabs() entries]}
     GET  /tabs/<id>/outputs     the tab's outputs in the engine wire format (application/octet-stream)
@@ -43,8 +43,19 @@ READY_PREFIX = "FREESHAPE_SERVE_READY"
 _TAB_PATH = re.compile(r"^/tabs/([A-Za-z0-9_-]{1,64})/(outputs|mesh\.json|edit)$")
 _FIXED = {"/": ("GET",), "/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
 _EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST"}
+_VIEWER_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
+               "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 _REMOTE_MESSAGE = ("remote access needs authentication that does not exist yet; "
                    "serve binds 127.0.0.1 only (use a port forward or the tunnel)")
+
+
+def _viewer_page():
+    """The viewer page bytes read from the package data, or None when the file is not installed."""
+    try:
+        from importlib import resources
+        return resources.files("freeshape").joinpath("static/viewer.html").read_bytes()
+    except (OSError, ModuleNotFoundError, FileNotFoundError):
+        return None
 
 
 def _qt_modules():
@@ -278,8 +289,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _handle(self, route, tab, body):
         srv = self.server
         if route == "/":
-            self._send(200, b"FreeShape serve is running. The viewer page is not installed yet; "
-                            b"see /tabs and /tabs/<id>/mesh.json.\n", "text/plain; charset=utf-8")
+            page = _viewer_page()
+            if page is None:
+                self._send(404, b"The viewer page is not installed; see /tabs and /tabs/<id>/mesh.json.\n",
+                           "text/plain; charset=utf-8")
+            else:
+                self._send(200, page, "text/html; charset=utf-8", [("Content-Security-Policy", _VIEWER_CSP)])
         elif route == "/health":
             from . import __version__
             qt = _qt_modules()

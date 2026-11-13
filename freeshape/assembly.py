@@ -53,6 +53,15 @@ def _upgrade_part_id_syntax(data):
 
 
 M.register("assembly", _upgrade_part_id_syntax)
+
+
+def _add_groups(data):
+    """Assembly file version 2 -> 3 (I4.1): add the empty list of groups (rigid sets of instances)."""
+    data.setdefault("groups", [])
+    return data
+
+
+M.register("assembly", _add_groups)
 INSTANCE_COLORS = [(0.60, 0.74, 0.85), (0.72, 0.74, 0.78), (0.86, 0.66, 0.40), (0.56, 0.78, 0.56),
                    (0.85, 0.55, 0.55), (0.70, 0.60, 0.85), (0.50, 0.78, 0.78), (0.85, 0.78, 0.45)]
 
@@ -486,6 +495,7 @@ class AssemblyDoc:
         self.name = "Assembly 1"
         self.instances: list[dict] = []
         self.mates: list[dict] = []
+        self.groups: list[dict] = []             # {"id", "name", "instances": [ids]}; an instance is in at most one
         self.blobs: dict[str, str] = {}          # embedded STEP files (base64), keyed by content hash
         self.path = None
         self.dirty = False
@@ -514,7 +524,7 @@ class AssemblyDoc:
     # ------------------------------------------------------------------ ids
     def new_id(self, prefix):
         self._counter += 1
-        used = {i["id"] for i in self.instances} | {m["id"] for m in self.mates}
+        used = {i["id"] for i in self.instances} | {m["id"] for m in self.mates} | {g["id"] for g in self.groups}
         while f"{prefix}{self._counter}" in used:
             self._counter += 1
         return f"{prefix}{self._counter}"
@@ -530,11 +540,13 @@ class AssemblyDoc:
 
     # ------------------------------------------------------------------ undo / redo
     def _snapshot(self):
-        return json.dumps({"instances": self.instances, "mates": self.mates, "name": self.name})
+        return json.dumps({"instances": self.instances, "mates": self.mates, "name": self.name,
+                           "groups": self.groups})
 
     def _restore(self, snap):
         d = json.loads(snap)
         self.instances, self.mates = d["instances"], d["mates"]
+        self.groups = d.get("groups", [])
 
     def checkpoint(self):
         self._undo.append(self._snapshot())
@@ -804,6 +816,44 @@ class AssemblyDoc:
         self.mates = [m for m in self.mates if m["a"]["inst"] not in ids and m["b"]["inst"] not in ids]
         for i in ids:
             self.parts.pop(i, None)
+        for g in self.groups:
+            g["instances"] = [i for i in g["instances"] if i not in ids]
+        self.groups = [g for g in self.groups if len(g["instances"]) >= 2]   # a group needs two members
+        self.solve()
+        self.notify()
+
+    def group_of(self, iid):
+        """The group an instance belongs to, or None."""
+        return next((g for g in self.groups if iid in g["instances"]), None)
+
+    def add_group(self, instance_ids):
+        """Make a group of instances: they move as one rigid body in the solver. Returns the group id."""
+        ids = list(dict.fromkeys(instance_ids))
+        if len(ids) < 2:
+            raise ValueError("A group needs at least two instances")
+        for iid in ids:
+            if self.instance(iid) is None:
+                raise ValueError(f"No instance {iid}")
+            g = self.group_of(iid)
+            if g is not None:
+                raise ValueError(f"{self.instance(iid)['name']} is already in {g['name']}")
+        self.checkpoint()
+        used = {int("".join(c for c in g["name"] if c.isdigit()) or 0) for g in self.groups}
+        n = 1
+        while n in used:
+            n += 1
+        gid = self.new_id("G")
+        self.groups.append({"id": gid, "name": f"Group {n}", "instances": ids})
+        self.solve()
+        self.notify()
+        return gid
+
+    def delete_group(self, gid):
+        """Dissolve a group; its instances stay where they are."""
+        if not any(g["id"] == gid for g in self.groups):
+            raise ValueError(f"No group {gid}")
+        self.checkpoint()
+        self.groups = [g for g in self.groups if g["id"] != gid]
         self.solve()
         self.notify()
 
@@ -965,6 +1015,14 @@ class AssemblyDoc:
             inst["T"] = orthonormalize(M @ np.array(inst["T"], float)).tolist()
 
     def _active_mates(self):
+        # a mate between two members of one group can't move either of them: leave it out and say why
+        for k in [k for k, v in self.errors.items() if v.startswith("Both ends are in ")]:
+            self.errors.pop(k)
+        for m in self.mates:
+            if m.get("a") and m.get("b"):
+                g = self.group_of(m["a"]["inst"])
+                if g is not None and m["b"]["inst"] in g["instances"]:
+                    self.errors[m["id"]] = f"Both ends are in {g['name']}, which moves as one body"
         return [m for m in self.mates if not m.get("suppressed") and m.get("a") and m.get("b")
                 and m["a"]["inst"] in self.parts and m["b"]["inst"] in self.parts
                 and m["id"] not in self.errors]
@@ -1010,23 +1068,29 @@ class AssemblyDoc:
 
     def _solve_core(self, mates, drag, iters, keep):
         """One least-squares solve over the given mates. Returns the ids of mates left unsatisfied."""
-        fixed = {i["id"] for i in self.instances if i.get("fixed")}
+        # a group is one body: its members share one set of six variables, and one fixed member fixes all
+        gkey = {iid: g["id"] for g in self.groups for iid in g["instances"]}
+        body = lambda iid: gkey.get(iid, iid)
+        fixed = {body(i["id"]) for i in self.instances if i.get("fixed")}
         involved = set()
         for m in mates:
-            involved |= {m["a"]["inst"], m["b"]["inst"]}
+            involved |= {body(m["a"]["inst"]), body(m["b"]["inst"])}
         if drag is not None:
-            involved.add(drag["inst"])
-        free = [i["id"] for i in self.instances if i["id"] in involved and i["id"] not in fixed
-                and i["id"] in self.parts]
+            involved.add(body(drag["inst"]))
+        members: dict = {}
+        for i in self.instances:
+            if i["id"] in self.parts:
+                members.setdefault(body(i["id"]), []).append(i["id"])
+        free = [k for k in members if k in involved and k not in fixed]
         L = self.length_scale()
         frames = {m["id"]: (frame_from_json(m["a"]["frame"]), frame_from_json(m["b"]["frame"])) for m in mates}
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
         if not free:
             return self._failing(mates, Ts, frames, L)
         pivots = {}
-        for iid in free:
-            a, b = K.bbox(self.world_shape(iid))
-            pivots[iid] = (a + b) / 2
+        for key in free:
+            boxes = [K.bbox(self.world_shape(iid)) for iid in members[key]]
+            pivots[key] = (np.min([b[0] for b in boxes], axis=0) + np.max([b[1] for b in boxes], axis=0)) / 2
         n = 6 * len(free)
         # rotations are measured in mm of arc at the part's size, and cost a little more than sliding
         # (while dragging, much more: parts should slide with the mouse and only turn when a mate makes them)
@@ -1035,20 +1099,21 @@ class AssemblyDoc:
         cost = np.ones(n)
         for k, iid in enumerate(free):
             cost[6 * k:6 * k + 3] = rot_cost
-            if keep is not None and iid == keep:
+            if keep is not None and iid == body(keep):
                 cost[6 * k:6 * k + 6] *= 50.0
 
         def apply(Ts0, x):
             out = dict(Ts0)
-            for k, iid in enumerate(free):
+            for k, key in enumerate(free):
                 w = x[6 * k:6 * k + 3] / L
                 v = x[6 * k + 3:6 * k + 6]
-                c = pivots[iid]
+                c = pivots[key]
                 R = rodrigues(w)
                 D = np.eye(4)
                 D[:3, :3] = R
                 D[:3, 3] = c - R @ c + v
-                out[iid] = D @ Ts0[iid]
+                for iid in members[key]:
+                    out[iid] = D @ Ts0[iid]
             return out
 
         def drag_res(Ts_):
@@ -1148,8 +1213,9 @@ class AssemblyDoc:
                     alpha *= 0.5
                 if not ok:
                     break
-        for iid in free:
-            self.instance(iid)["T"] = orthonormalize(cur[iid]).tolist()
+        for key in free:
+            for iid in members[key]:
+                self.instance(iid)["T"] = orthonormalize(cur[iid]).tolist()
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
         return self._failing(mates, Ts, frames, L)
 
@@ -1334,7 +1400,7 @@ class AssemblyDoc:
                             pass
         used = {i["source"]["blob"] for i in self.instances if i["source"].get("kind") == "step"}
         return json.dumps({"format": FILE_FORMAT, "version": M.latest_version("assembly"), "name": self.name,
-                           "uid": self.uid, "instances": insts, "mates": self.mates,
+                           "uid": self.uid, "instances": insts, "mates": self.mates, "groups": self.groups,
                            "blobs": {k: v for k, v in self.blobs.items() if k in used}}, indent=1)
 
     def save(self, path=None):
@@ -1358,6 +1424,7 @@ class AssemblyDoc:
         a.uid = d.get("uid") or a.uid
         a.instances = d.get("instances", [])
         a.mates = d.get("mates", [])
+        a.groups = d.get("groups", [])
         a.blobs = d.get("blobs", {})
         a.path = path
         base = os.path.dirname(os.path.abspath(path))
@@ -1367,7 +1434,7 @@ class AssemblyDoc:
                 cand = os.path.normpath(os.path.join(base, src["relpath"]))
                 if os.path.exists(cand):
                     src["path"] = cand
-        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0) for x in a.instances + a.mates]
+        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0) for x in a.instances + a.mates + a.groups]
         a._counter = max(nums + [0])
         a.resolver = resolver
         a.refresh(solve=False, notify=False)

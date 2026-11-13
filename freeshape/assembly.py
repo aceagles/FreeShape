@@ -72,6 +72,15 @@ def _upgrade_mate_values(data):
 
 
 M.register("assembly", _upgrade_mate_values)
+
+
+def _add_mate_limits(data):
+    """Assembly file version 4 -> 5 (I5.1): a mate may carry "limits", {dof: [min, max]} with either end null.
+    Older files have none, so this step only marks the version."""
+    return data
+
+
+M.register("assembly", _add_mate_limits)
 INSTANCE_COLORS = [(0.60, 0.74, 0.85), (0.72, 0.74, 0.78), (0.86, 0.66, 0.40), (0.56, 0.78, 0.56),
                    (0.85, 0.55, 0.55), (0.70, 0.60, 0.85), (0.50, 0.78, 0.78), (0.85, 0.78, 0.45)]
 
@@ -520,6 +529,7 @@ class AssemblyDoc:
         self._step_cache: dict[str, list] = {}
         self.errors: dict[str, str] = {}         # instance / mate id -> message
         self._conflicts: set = set()             # mates left out because they can't hold with the others
+        self._limit_holds: dict = {}             # mate id -> {dof: bound}; active limits, set only inside a solve
         self.dof = 0
         self._undo: list[str] = []
         self._redo: list[str] = []
@@ -976,6 +986,102 @@ class AssemblyDoc:
             m["values"] = {n: (float(old[n]) + _wrap_deg(v - float(old[n])) if n.startswith("r") and n in old else v)
                            for n, v in new.items()}
 
+    def set_limits(self, mid, dof, lo, hi):
+        """Limit one freedom of a mate to [lo, hi] (either end None for no bound; both None removes the limit).
+        Values are unwrapped Mate values, so a rotation limit may span more than one turn."""
+        m = self.mate(mid)
+        if m is None:
+            raise ValueError(f"No mate {mid}")
+        names = MATE_VALUE_DOFS.get(m["type"], ())
+        if not names:
+            raise ValueError(f"A {m['type']} mate has no freedoms to limit")
+        if dof not in names:
+            raise ValueError(f"A {m['type']} mate has no freedom {dof!r}; it has {', '.join(names)}")
+        lo = None if lo is None else float(lo)
+        hi = None if hi is None else float(hi)
+        if lo is not None and hi is not None and lo > hi:
+            raise ValueError(f"Limit minimum {lo} is above maximum {hi}")
+        self.checkpoint()
+        limits = dict(m.get("limits") or {})
+        if lo is None and hi is None:
+            limits.pop(dof, None)
+        else:
+            limits[dof] = [lo, hi]
+        if limits:
+            m["limits"] = limits
+        else:
+            m.pop("limits", None)
+        self.solve()
+        self.notify()
+
+    def _hold_residuals(self, m, FA, FB, L):
+        """Residuals holding mate m's active limits (self._limit_holds) at their bounds. A rotation is measured
+        unwrapped against the stored value, as _update_mate_values does, and counted in mm of arc."""
+        holds = self._limit_holds.get(m["id"])
+        if not holds:
+            return np.zeros(0)
+        new = mate_values(m, FA, FB)
+        stored = m.get("values") or {}
+        out = []
+        for dof, bound in holds.items():
+            v = new[dof]
+            if dof.startswith("r"):
+                if dof in stored:
+                    v = float(stored[dof]) + _wrap_deg(v - float(stored[dof]))
+                out.append(np.radians(v - bound) * L)
+            else:
+                out.append(v - bound)
+        return np.array(out, float)
+
+    @staticmethod
+    def _limit_violations(mates, holds):
+        """{mate id: {dof: nearer bound}} for each limited freedom outside its range that is not already held.
+        Compares the stored (unwrapped) Mate values, so call it after _update_mate_values."""
+        out = {}
+        for m in mates:
+            vals = m.get("values") or {}
+            for dof, (lo, hi) in (m.get("limits") or {}).items():
+                if dof not in vals or dof in holds.get(m["id"], {}):
+                    continue
+                v = float(vals[dof])
+                if lo is not None and v < float(lo) - 1e-9:
+                    out.setdefault(m["id"], {})[dof] = float(lo)
+                elif hi is not None and v > float(hi) + 1e-9:
+                    out.setdefault(m["id"], {})[dof] = float(hi)
+        return out
+
+    def _enforce_limits(self, mates, iters=40, keep=None, drag=None):
+        """Active-set limit enforcement after a solve that has already run over `mates` and stored their values.
+        Each round holds every newly violated freedom at its nearer bound and solves again, for at most as many
+        rounds as there are limited freedoms. With no limits on `mates` it does nothing at all. A round whose solve
+        leaves a mate unsatisfied is undone and enforcement stops (I5.2 reports such limits as conflicts).
+        Returns the holds that ended active, {mate id: {dof: bound}}."""
+        limited = sum(len(m.get("limits") or {}) for m in mates)
+        if not limited:
+            return {}
+        holds: dict = {}
+        try:
+            for _round in range(limited):
+                new = self._limit_violations(mates, holds)
+                if not new:
+                    break
+                trial = {k: dict(v) for k, v in holds.items()}
+                for mid, d in new.items():
+                    trial.setdefault(mid, {}).update(d)
+                before = {i["id"]: list(i["T"]) for i in self.instances}
+                self._limit_holds = trial
+                bad = self._solve_core(mates, drag, iters, keep)
+                if bad:
+                    for i in self.instances:
+                        i["T"] = before[i["id"]]
+                    break
+                holds = trial
+                self._limit_holds = {}
+                self._update_mate_values(mates)
+        finally:
+            self._limit_holds = {}
+        return holds
+
     def add_mate(self, m, checkpoint=True):
         if checkpoint:
             self.checkpoint()
@@ -1127,6 +1233,8 @@ class AssemblyDoc:
             FB = transform_frame(Ts[m["b"]["inst"]], frames[m["id"]][1])
             out.append(mate_residuals(m, FA, FB, L))
             out.append(self._drive_residual(m, FA, FB, L))
+            if self._limit_holds:
+                out.append(self._hold_residuals(m, FA, FB, L))
         return np.concatenate(out) if out else np.zeros(0)
 
     def solve(self, drag=None, iters=40, keep=None):
@@ -1160,6 +1268,7 @@ class AssemblyDoc:
                 else:
                     good.append(m)
         self._update_mate_values([m for m in mates if m["id"] not in self._conflicts])
+        self._enforce_limits([m for m in mates if m["id"] not in self._conflicts], iters, keep)
         self._update_status()
         return not self._conflicts and not bad
 

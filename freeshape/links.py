@@ -489,6 +489,88 @@ def tab_sources(kind, data):
     return [s for s in srcs if isinstance(s, dict)]
 
 
+# ------------------------------------------------------------------ the dependency view
+# Display label of each kind of link, keyed by the SOURCE_FEATURES type that holds it. A new source feature type
+# (the Derived feature) gets its label with one line here; a type with no line shows under its own type name.
+SOURCE_FEATURE_LABELS = {"variable_studio_ref": "Variable Studio reference"}
+ASSEMBLY_INSTANCE, DRAWING_SOURCE, CONTEXT_KIND = "Assembly instance", "Drawing source", "Context"
+
+
+def _tab_uses(folder, tab):
+    """What `tab` reads, as dependency entries with a `target` tab id (None for another Document), built from
+    tab_sources' kinds: assembly instances, a drawing's source, the SOURCE_FEATURES features of a studio. A Part
+    Studio's Context features (reference only, never in SOURCE_FEATURES) are listed too."""
+    found = []                                            # (kind label, source dict, feature id)
+    doc = tab.doc
+    if doc is not None and tab.kind == "studio":
+        for f in doc.features:
+            src = feature_source(f)
+            if src is not None:
+                found.append((SOURCE_FEATURE_LABELS.get(f["type"], f["type"]), src, f["id"]))
+    elif doc is not None:
+        label = ASSEMBLY_INSTANCE if tab.kind == "assembly" else DRAWING_SOURCE
+        found = [(label, s, None) for s in tab_sources(tab.kind, doc)]
+    out = []
+    for label, src, fid in found:
+        e = {"kind": label, "feature": fid, "document": None, "document_name": None, "target": src.get("tab"),
+             "name": src.get("studio_name") or src.get("name") or "?", "pinned": None, "latest": None}
+        if is_cross_link(src, folder.id):
+            st = folder.resolver.link_status(src)
+            e.update(document=src.get("document"), pinned=st["pinned"], latest=st["latest"])
+            try:
+                e["document_name"] = folder.resolver._other_document(src.get("document"))[1].name
+            except (K.KernelError, AttributeError):
+                pass
+            e["state"] = "error" if st["error"] else "update available" if st["update_available"] else "pinned"
+            e["error"] = st["error"]
+        else:
+            other = folder.tab(src.get("tab")) if src.get("tab") is not None else None
+            if other is not None:
+                e["name"] = other.name
+            e["state"] = "missing" if other is None else "error" if other.doc is None else "live"
+            e["error"] = folder.errors.get(src.get("tab")) if e["state"] == "error" else None
+        out.append(e)
+    if doc is not None and tab.kind == "studio":
+        for f in doc.features:
+            if f.get("type") != "context":
+                continue
+            want = (f.get("params") or {}).get("assembly")
+            asm = next((t for t in folder.tabs if t.kind == "assembly"
+                        and want and want in (t.id, getattr(t.doc, "uid", None))), None)
+            try:
+                state = folder.context_status(tab.id, f["id"])
+            except K.KernelError:
+                state = "assembly missing"
+            out.append({"kind": CONTEXT_KIND, "feature": f["id"], "document": None, "document_name": None,
+                        "target": asm.id if asm else None, "name": asm.name if asm else "?", "pinned": None,
+                        "latest": None, "state": state, "error": None})
+    return out
+
+
+def dependency_view(folder, tab_id):
+    """{uses: [...], used_by: [...]} for a tab of the Document: every entry names the other tab (`tab`, `name`;
+    `document` and `document_name` too for another Document, with its `pinned` Version), the `kind` of link and its
+    `state`: live, pinned, update available (`latest` is the newer Version), missing or error for a Link; current,
+    out of date or assembly missing for a Context. `label` is the state as shown ("pinned v1", "update available
+    v2"). A query: nothing is rebuilt or changed. Another Document's tabs never appear under used_by."""
+    tab = folder.tab(tab_id)
+    if tab is None:
+        raise K.KernelError(f"No tab {tab_id!r} in the Document")
+    def shown(e, tab_id, name):
+        e = dict(e, tab=tab_id, name=name)
+        e.pop("target", None)
+        s = e["state"]
+        e["label"] = (f"pinned {e['pinned']}" if s == "pinned" else
+                      f"update available {e['latest']}" if s == "update available" else s)
+        return e
+    uses = [shown(e, e["target"], e["name"]) for e in _tab_uses(folder, tab)]
+    used_by = []
+    for other in folder.tabs:
+        if other is not tab:
+            used_by += [shown(e, other.id, other.name) for e in _tab_uses(folder, other) if e["target"] == tab_id and not e["document"]]
+    return {"uses": uses, "used_by": used_by}
+
+
 # ------------------------------------------------------------------ cross-Document pins
 def cross_sources(folder):
     """Every cross-Document source the Document's assemblies and drawings hold: (tab, source) pairs."""

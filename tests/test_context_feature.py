@@ -108,8 +108,8 @@ def test_capture_is_small():
 
 
 def test_not_a_link_and_no_part_studio_change():
-    from freeshape import links          # links.SOURCE_FEATURES does not exist yet (S1); links names no context
-    assert "context" not in open(links.__file__).read()
+    from freeshape import links          # a Context is listed by the dependency view but is not a Link source
+    assert "context" not in links.SOURCE_FEATURES
     plain = block_doc()
     withctx, _ = studio_with_context(capture()[0])
     first = f"{plain.features[1]['id']}/1"

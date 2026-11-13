@@ -26,7 +26,7 @@ from ..sketch import Sketch
 from . import theme, navstyles
 from .icons import icon
 from .viewport import Viewport, Pick
-from .panels import LeftPanel, STD_PLANES, DocTabBar
+from .panels import LeftPanel, STD_PLANES, DocTabBar, DependenciesPanel
 from .dialogs import FeatureDialog, SketchDialog, pick_to_item
 from .section import SectionPanel
 from .sketcher import Sketcher, CONSTRAINT_TOOLS
@@ -148,7 +148,15 @@ class MainWindow(QMainWindow):
         self.left_stack.addWidget(self.left)
         self.left_stack.addWidget(self.asm.panel)
         self.left_stack.addWidget(self.dwg.panel)
-        split.addWidget(self.left_stack)
+        self.dependencies = DependenciesPanel()                 # I6.3: what this tab uses / what uses it
+        self.dependencies.tabRequested.connect(self._open_dependency_tab)
+        left_col = QWidget()
+        lcl = QVBoxLayout(left_col)
+        lcl.setContentsMargins(0, 0, 0, 0)
+        lcl.setSpacing(0)
+        lcl.addWidget(self.left_stack, 1)
+        lcl.addWidget(self.dependencies)
+        split.addWidget(left_col)
         center = QWidget()
         cl = QVBoxLayout(center)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -767,7 +775,29 @@ class MainWindow(QMainWindow):
         sc("Escape", self._escape)
 
     # ================================================================== doc → view
+    def _dependency_view(self):
+        """links.dependency_view of the current tab, or None (a loose file, no Document)."""
+        tab = self._folder_tab(self.doc) if self.doc is not None else None
+        if tab is None:
+            return None
+        try:
+            return links.dependency_view(self.folder, tab.id)
+        except K.KernelError:
+            return None
+
+    def _dependency_marks(self):
+        """{feature id: state label} for the Derived, Variable Studio reference and Context rows of this studio."""
+        view = self._dependency_view()
+        return {e["feature"]: e["label"] for e in view["uses"] if e.get("feature")} if view else {}
+
+    def _open_dependency_tab(self, tab_id):
+        tab = self.folder.tab(tab_id) if self.folder is not None else None
+        i = self._tab_index(tab.doc) if tab is not None and tab.doc is not None else -1
+        if i >= 0:
+            self.tabs.setCurrentIndex(i)
+
     def _on_doc_changed(self):
+        self.dependencies.populate(self._dependency_view())
         if self.var_tabs.is_variables(self.doc):
             self.var_tabs.on_changed(self.doc)
             return
@@ -819,7 +849,7 @@ class MainWindow(QMainWindow):
             editing = self.dialog.feature["id"]
         if self.mode == "sketch" and self.sk_ctx and not self.sk_ctx["is_new"]:
             editing = self.sk_ctx["feature"]["id"]
-        self.left.features.populate(self.doc, editing)
+        self.left.features.populate(self.doc, editing, self._dependency_marks())
         self.left.parts.populate(self.doc)
         self.defined_vars.populate(self.doc, self._studio_variables)
         self.defined_vars_header.setVisible(self.defined_vars.rowCount() > 0)

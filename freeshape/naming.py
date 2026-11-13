@@ -56,13 +56,17 @@ OP_FOR = {
     "mirror": OP_MIRROR,
     "chamfer": "CHF",
     "circular_pattern": "XFM",
+    "delete_face": OP_MAKER,
     "draft": "DFT",
     "fillet": "FLT",
     "flat_pattern": "UNF",
     "import": "IMP",
     "linear_pattern": "XFM",
     "loft": "LFT",
+    "move": "XFM",
+    "offset_surface": "OFS",
     "shell": "THK",
+    "split": "SPT",
     "sweep": "PSH",
 }
 

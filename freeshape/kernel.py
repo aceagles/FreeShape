@@ -967,10 +967,19 @@ def shell(shape, remove_faces, thickness: float, outward=False, with_history=Fal
     return mk.Shape()
 
 
-def delete_faces(shape, faces, mode="heal"):
+def delete_faces(shape, faces, mode="heal", with_history=False):
     """Remove faces from a body (for cleaning up imported parts): heal = the surrounding faces grow to close the
     gap (removes fillets, chamfers, bosses, holes), cap = fill the opening with a flat face, open = leave the
-    void open (the result is an open shell)."""
+    void open (the result is an open shell).
+
+    with_history=True returns (shape, history). The history is the defeaturing's and the refine's for heal;
+    cap and open leave every remaining face as it was, so their history is empty and the names carry over."""
+    if with_history:
+        return _delete_faces(shape, faces, mode, True)
+    return _delete_faces(shape, faces, mode, False)
+
+
+def _delete_faces(shape, faces, mode, with_history):
     faces = list(faces)
     if not faces:
         raise KernelError("Select faces to delete")
@@ -988,7 +997,10 @@ def delete_faces(shape, faces, mode="heal"):
         if not ok or not solids(d.Shape()) or not is_valid(d.Shape()):
             raise KernelError("Couldn't heal over those faces — select the whole fillet / chamfer / hole, "
                               "or try Cap")
-        return clean(d.Shape())
+        if not with_history:
+            return clean(d.Shape())
+        out, refine = clean(d.Shape(), with_history=True)
+        return out, _chain(_maker_history(d, [shape]), refine)
     from OCP.BRepTools import BRepTools_ReShape
     rs = BRepTools_ReShape()
     for f in faces:
@@ -1004,7 +1016,7 @@ def delete_faces(shape, faces, mode="heal"):
         raise KernelError("Those faces can't be deleted from this part")
     opened = compound(shells)
     if mode == "open":
-        return opened
+        return (opened, BRepTools_History()) if with_history else opened
     if mode == "cap":
         from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
@@ -1030,27 +1042,41 @@ def delete_faces(shape, faces, mode="heal"):
         if sh.More():
             sol = BRepBuilderAPI_MakeSolid(_as_shell(sh.Current()))
             if sol.IsDone() and is_valid(sol.Shape()):
-                return sol.Shape()
+                return (sol.Shape(), BRepTools_History()) if with_history else sol.Shape()
         raise KernelError("Couldn't close the part after capping — try Heal or Leave open")
     raise KernelError("Unknown delete-face mode")
 
 
-def move_face(shape, face, distance):
-    """Push (distance > 0) or pull (distance < 0) a flat face along its normal, growing or cutting the body."""
+def move_face(shape, face, distance, with_history=False):
+    """Push (distance > 0) or pull (distance < 0) a flat face along its normal, growing or cutting the body.
+
+    with_history=True returns (shape, history, tool, tool_history): the body the face was extruded into
+    (None when the distance is zero) and the extrusion's history, then the fuse or cut and the refine
+    composed into `history`, which maps the part and the tool to the result."""
     info = face_info(face)
     if "n" not in info:
         raise KernelError("Move face works on flat faces")
     n = np.array(info["n"], float)
     if abs(distance) < 1e-9:
-        return shape
+        return (shape, BRepTools_History(), None, None) if with_history else shape
+    if not with_history:
+        if distance > 0:
+            return clean(fuse(shape, extrude([face], n, distance)))
+        return clean(cut(shape, extrude([face], -n, -distance)))
     if distance > 0:
-        return clean(fuse(shape, extrude([face], n, distance)))
-    return clean(cut(shape, extrude([face], -n, -distance)))
+        tool, tool_hist = extrude([face], n, distance, with_history=True)
+        res, h = fuse(shape, tool, with_history=True)
+    else:
+        tool, tool_hist = extrude([face], -n, -distance, with_history=True)
+        res, h = cut(shape, tool, with_history=True)
+    out, refine = clean(res, with_history=True)
+    return out, _chain(h, refine), tool, tool_hist
 
 
-def offset_surface(face, distance):
+def offset_surface(face, distance, with_history=False):
     """A new surface (one face) at `distance` from `face`, measured along the face's outward normal (negative =
-    the other way). Works on flat and curved faces; the result is a surface body, not a solid."""
+    the other way). Works on flat and curved faces; the result is a surface body, not a solid.
+    with_history=True returns (shape, history), the history of the offset maker over `face`."""
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
     from OCP.TopExp import TopExp_Explorer as _E
     from OCP.TopAbs import TopAbs_FACE
@@ -1071,7 +1097,8 @@ def offset_surface(face, distance):
         ex.Next()
     if not faces:
         raise KernelError("Couldn't offset that surface by this distance")
-    return compound(faces)
+    out = compound(faces)
+    return (out, _maker_history(mk, [face])) if with_history else out
 
 
 # --------------------------------------------------------------------------- tessellation
@@ -1576,7 +1603,9 @@ def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=Fa
     return mk.Shape()
 
 
-def split_by_plane(shape, plane: Plane):
+def split_by_plane(shape, plane: Plane, with_history=False):
+    """The solids the plane cuts `shape` into. with_history=True returns (pieces, history, tool): the
+    history of the splitter over the shape and the plane face it cut with, which is `tool`."""
     lo, hi = bbox(shape)
     size = float(np.linalg.norm(hi - lo)) * 2 + 10
     c = plane.origin + ((lo + hi) / 2 - plane.origin) - (((lo + hi) / 2 - plane.origin) @ plane.normal) * plane.normal
@@ -1592,17 +1621,18 @@ def split_by_plane(shape, plane: Plane):
     pieces = solids(sp.Shape())
     if len(pieces) < 2:
         raise KernelError("The plane doesn't cut through the part")
-    return pieces
+    return (pieces, _maker_history(sp, [shape, tool]), tool) if with_history else pieces
 
 
-def transform(shape, translate_v=(0, 0, 0), axis_p=(0, 0, 0), axis_d=(0, 0, 1), angle_deg=0.0):
+def transform(shape, translate_v=(0, 0, 0), axis_p=(0, 0, 0), axis_d=(0, 0, 1), angle_deg=0.0, with_history=False):
     t = gp_Trsf()
     if abs(angle_deg) > 1e-12:
         t.SetRotation(gp_Ax1(_pnt(axis_p), _dir(axis_d)), math.radians(angle_deg))
     m = gp_Trsf()
     m.SetTranslation(_vec(translate_v))
     t = m.Multiplied(t)
-    return BRepBuilderAPI_Transform(shape, t, True).Shape()
+    mk = BRepBuilderAPI_Transform(shape, t, True)
+    return (mk.Shape(), _maker_history(mk, [shape])) if with_history else mk.Shape()
 
 
 def cylinder(base, direction, radius, height):
@@ -1731,19 +1761,29 @@ def threaded_plugs(origin, axis, major, pitch, z0, z1, core_r=None, extend=(True
     return [BRepBuilderAPI_Transform(_threaded_rod(rmin, rmaj, P, a, b, left), _frame(origin, axis), True).Shape()]
 
 
-def cut_internal_thread(shape, origin, axis, major, pitch, z0, z1, **kw):
-    """Tap a thread into `shape`: cut the threaded plug sections out of it, one at a time."""
+def cut_internal_thread(shape, origin, axis, major, pitch, z0, z1, with_history=False, **kw):
+    """Tap a thread into `shape`: cut the threaded plug sections out of it, one at a time.
+    with_history=True returns (shape, history, plugs): the cuts' histories composed in order, and the
+    plugs that were cut (the tools whose faces become the thread's flanks)."""
     n0 = len(faces(shape))
-    for plug in threaded_plugs(origin, axis, major, pitch, z0, z1, **kw):
-        shape = cut(shape, plug, check=True)
+    plugs = threaded_plugs(origin, axis, major, pitch, z0, z1, **kw)
+    steps = []
+    for plug in plugs:
+        if with_history:
+            shape, h = cut(shape, plug, check=True, with_history=True)
+            steps.append(h)
+        else:
+            shape = cut(shape, plug, check=True)
     if len(faces(shape)) <= n0:
         raise KernelError("The thread didn't cut into any material here")
-    return shape
+    return (shape, _chain(*steps), plugs) if with_history else shape
 
 
-def external_thread(shape, origin, axis, shaft_r, pitch, z0, z1, left=False, clearance=0.0):
+def external_thread(shape, origin, axis, shaft_r, pitch, z0, z1, left=False, clearance=0.0, with_history=False):
     """Thread a round shaft: the plain section between z0 and z1 is replaced by an ISO threaded rod
-    whose crests sit on the shaft's surface (less any clearance)."""
+    whose crests sit on the shaft's surface (less any clearance).
+    with_history=True returns (shape, history, tools): the cut and the fuse composed in order, and the
+    sleeve and rod they used."""
     P = float(pitch)
     rmaj = shaft_r - clearance
     T = _frame(origin, axis)
@@ -1754,12 +1794,16 @@ def external_thread(shape, origin, axis, shaft_r, pitch, z0, z1, left=False, cle
     slo, shi = bbox(sleeve)
     if np.all(lo >= slo - 1e-6) and np.all(hi <= shi + 1e-6):
         # the thread runs the whole length of a plain rod: nothing is left of the original, it *is* the rod
-        return rod
-    shape = cut(shape, sleeve, check=True)
-    out = fuse(shape, rod, check=True, single=True)
+        return (rod, BRepTools_History(), [rod]) if with_history else rod
+    if not with_history:
+        shape = cut(shape, sleeve, check=True)
+        out = fuse(shape, rod, check=True, single=True)
+    else:
+        shape, h_cut = cut(shape, sleeve, check=True, with_history=True)
+        out, h_fuse = fuse(shape, rod, check=True, single=True, with_history=True)
     if len(faces(out)) <= n0:
         raise KernelError("Couldn't thread this shaft")
-    return out
+    return (out, _chain(h_cut, h_fuse), [rod, sleeve]) if with_history else out
 
 
 def material_at(shape, point) -> bool:

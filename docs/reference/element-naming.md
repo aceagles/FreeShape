@@ -459,6 +459,43 @@ order of OCCT's sub-shape map. It defines no other order and no seed op.
    reads to the same names. `IMP` is a FreeShape code, since FreeCAD defines none. Each solid of one
    import is a separate part with its own map under the same feature id.
 
+### I1.9 Holes, threads, split, move, face tools, offset surface
+
+Each runner calls its kernel helper with `with_history=True` and then `name_feature` once per step
+(section 4.1). Op codes are FreeCAD's (`/opt/freecad-src/src/Mod/Part/App/TopoShapeOpCode.h:48`).
+
+* **Tools built from nothing.** A hole's cylinders and cones, a thread's rod and sleeve, and the plane
+  face a split cuts with have no names, and FreeCAD gives a nameless maker the code `MAK`
+  (`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1415`). FreeShape seeds each tool
+  element as `<label><kind><position>;MAK;:H<feature id>`, with a label that is fixed per tool
+  (`h2bore`, `s1t2`, `cut`), so the tool's faces carry the feature id and the same name comes back on
+  every rebuild. The tool's own faces then name the walls it leaves behind through the cut's history
+  (`;:M`, then `CUT`). `naming.seed` does the seeding.
+* **Hole** fuses its tools (`fuse_all`, `stamp=False`) and `apply_body` cuts the fused tool from the
+  parts, so the cut is named by the boolean rule of section 4.1. A modelled tapped hole cuts the
+  thread plug straight into the part under op `cut`, plug seeded as above.
+* **Thread** cuts a plug (`cut`) or replaces a shaft section by a threaded rod (`cut` of the sleeve,
+  `fuse` of the rod). Untouched faces keep their names. The rod's end face replaces the shaft's end
+  face when the thread runs to it, so that face is named from the rod, not from the shaft.
+* **Split** (`SPT`, `/opt/freecad-src/src/Mod/Part/App/TopoShapeOpCode.h:93`) names the splitter's whole
+  result and gives each piece the names of its own elements (`NamedShape.restrict`). A face the plane
+  cuts in two is modified into two faces, so the second gets the `;D` fragment of section 1. The face
+  the plane leaves inside the solid is one face shared by both pieces and has the same name in both
+  parts' maps.
+* **Move** (`XFM`, op code `Transform`) adds `;:M;XFM;:H<feature id>` to every element: FreeShape
+  reads the transform's history where FreeCAD re-attaches the map one to one (section 7), the result
+  is the same one fragment. A copy gets the names; the original keeps its own.
+* **Move face** extrudes the picked face (`extrude`, named from the part's map, so the new walls and
+  the moved face take `;:G` names from the face's edges and the face), then fuses or cuts it (`fuse` /
+  `cut`, `stamp=False`) and refines. Faces the move leaves alone keep their names.
+* **Delete face.** FreeCAD's defeaturing returns an unnamed shape
+  (`/opt/freecad-src/src/Mod/Part/App/TopoShape.cpp:3667`), so FreeShape names it with the fallback
+  `MAK` and the defeaturing and refine histories composed. Defeaturing rebuilds every face, so a
+  surviving face keeps its name as the stem of a longer one. Cap and leave-open keep every
+  remaining face as it was.
+* **Offset surface** (`OFS`, `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:2431`) names
+  the new face from the picked face, adding the `OFS` fragment.
+
 ## 5. Split and merge
 
 Split and merge are the same mechanism read in two directions, so they are described together.

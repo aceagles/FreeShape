@@ -1049,7 +1049,10 @@ def run_delete_face(state, f):
         raise K.KernelError("Select faces to delete")
     for pid, fs in groups.items():
         part = state.parts[pid]
-        state.parts[pid] = Part(pid, part.name, K.delete_faces(part.shape, fs, p.get("mode", "heal")), part.color)
+        res, hist = K.delete_faces(part.shape, fs, p.get("mode", "heal"), with_history=True)
+        named = name_feature(state, f["id"], [pid], res, hist, "delete_face", stamp=False)
+        state.parts[pid] = Part(pid, part.name, res, part.color)
+        state.set_named(pid, named)
 
 
 def run_move_face(state, f):
@@ -1061,7 +1064,16 @@ def run_move_face(state, f):
     for r in refs:                     # one at a time: each move changes the part the next face is found in
         pid, face = resolve(state, r, "face")
         part = state.parts[pid]
-        state.parts[pid] = Part(pid, part.name, K.move_face(part.shape, face, dist), part.color)
+        res, hist, tool, tool_hist = K.move_face(part.shape, face, dist, with_history=True)
+        named = None
+        if tool is not None:     # the extruded face names the tool, the tool and the part name the result
+            tool_named = name_feature(state, f["id"], [pid], tool, tool_hist, "extrude")
+            named = name_feature(state, f["id"], [pid, tool_named], res, hist, "fuse" if dist > 0 else "cut",
+                                 stamp=False)
+        elif state.named(pid) is not None:
+            named = state.named(pid)
+        state.parts[pid] = Part(pid, part.name, res, part.color)
+        state.set_named(pid, named)
 
 
 def run_offset_surface(state, f):
@@ -1071,8 +1083,10 @@ def run_offset_surface(state, f):
         raise K.KernelError("Select faces to offset")
     dist = float(p.get("distance", 1)) * (-1 if p.get("flip") else 1)
     for r in refs:                     # each face becomes its own new surface body
-        _pid, face = resolve(state, r, "face")
-        state.new_part(K.offset_surface(face, dist), f["id"])
+        pid, face = resolve(state, r, "face")
+        res, hist = K.offset_surface(face, dist, with_history=True)
+        named = name_feature(state, f["id"], [pid], res, hist, "offset_surface")
+        state.set_named(state.new_part(res, f["id"]).id, named)
 
 
 def run_plane(state, f):
@@ -1202,6 +1216,19 @@ def _import_names(shape, fid):
         return None
 
 
+def _tool_names(state, fid, shape, label):
+    """The NamedShape of a tool body a feature builds from nothing (a hole's cylinder, a thread's rod, the
+    plane face a split cuts with): every element is seeded `<label><kind><position>;MAK;:H<fid>`, so its
+    faces carry the feature id (docs/reference/element-naming.md, I1.9). `label` tells the feature's tools
+    apart (the hole's third counterbore, the first thread rod) and is the same on every rebuild."""
+    keys = N.seed(shape, fid).names
+    labels = {k: f"{label}{k[0].lower()}{k[1]}" for k in keys}
+    try:
+        return N.seed(shape, fid, N.OP_MAKER, labels)
+    except N.NamingError:
+        return N.NamedShape(shape, {})
+
+
 def run_hole(state, f):
     """Holes at sketch points: simple, counterbored or countersunk; custom size or ISO metric."""
     p = f["params"]
@@ -1236,6 +1263,11 @@ def run_hole(state, f):
     if modelled:
         _model_hole_threads(state, f, p, sk, centres, d, through, depth, back, big)
     tools = []
+    seeds = []       # one NamedShape per tool; `tool()` records it, so tool k has the same label every rebuild
+
+    def tool(shape, role):
+        tools.append(shape)
+        seeds.append(_tool_names(state, f["id"], shape, f"h{len(tools)}{role}"))
     from_circles = p.get("standard") == "sketch"
     if from_circles and not any(sizes):
         raise K.KernelError("“Size of the sketch circles” needs circles in the sketch")
@@ -1249,25 +1281,27 @@ def run_hole(state, f):
         if modelled:
             pass                                  # the threaded bore itself was cut above
         elif through:
-            tools.append(K.cylinder(c - d * big, d, dia / 2, big * 2))
+            tool(K.cylinder(c - d * big, d, dia / 2, big * 2), "bore")
         else:
-            tools.append(K.cylinder(start, d, dia / 2, depth + back))
+            tool(K.cylinder(start, d, dia / 2, depth + back), "bore")
         if not through and p.get("tip", True):
             # 118° drill point at the bottom of a blind hole
             tip_h = (dia / 2) / math.tan(math.radians(59))
-            tools.append(K.cone(c + d * depth, d, dia / 2, 0.0, tip_h))
+            tool(K.cone(c + d * depth, d, dia / 2, 0.0, tip_h), "tip")
         if cb:
             cdia, cdep = cb
             if cdia <= dia:
                 raise K.KernelError("Counterbore must be wider than the hole")
-            tools.append(K.cylinder(start, d, cdia / 2, cdep + back))
+            tool(K.cylinder(start, d, cdia / 2, cdep + back), "bore2")
         if cs:
             if cs <= dia:
                 raise K.KernelError("Countersink must be wider than the hole")
             h = (cs - dia) / 2                       # 90° countersink
-            tools.append(K.cone(c - d * back, d, cs / 2 + back, dia / 2, h + back))
+            tool(K.cone(c - d * back, d, cs / 2 + back, dia / 2, h + back), "sink")
     if tools:
-        apply_body(state, K.fuse_all(tools), "remove", f["id"])
+        body, hist = K.fuse_all(tools, with_history=True)
+        named = name_feature(state, f["id"], seeds, body, hist, "fuse_all", stamp=False)
+        apply_body(state, body, "remove", f["id"], None, named)
 
 
 def _material_range(shapes, origin, axis, radius, big):
@@ -1288,7 +1322,7 @@ def _model_hole_threads(state, f, p, sk, centres, d, through, depth, back, big):
     size = p.get("size")
     major, pitch = float(size[1:]), K.ISO_PITCH[size]
     clearance = float(p.get("thread_clearance", 0) or 0)
-    for (u, v) in centres:
+    for ci, (u, v) in enumerate(centres, 1):
         c = np.asarray(sk.plane.to_world(u, v), float)
         rng = _material_range([pt.shape for pt in state.parts.values()], c, d, major / 2 + pitch, big)
         if rng is None:
@@ -1300,9 +1334,12 @@ def _model_hole_threads(state, f, p, sk, centres, d, through, depth, back, big):
             probe = K.cylinder(c + d * z0, d, major / 2 + pitch, z1 - z0)
             if not K.intersects(part.shape, probe):
                 continue
-            new = K.cut_internal_thread(part.shape, c, d, major, pitch, z0, z1,
-                                        extend=(True, through), clearance=clearance, left=bool(p.get("left_hand")))
-            set_part_shape(state, part, new)
+            new, hist, plugs = K.cut_internal_thread(part.shape, c, d, major, pitch, z0, z1, with_history=True,
+                                                     extend=(True, through), clearance=clearance,
+                                                     left=bool(p.get("left_hand")))
+            seeds = [_tool_names(state, f["id"], g, f"c{ci}t{n}") for n, g in enumerate(plugs, 1)]
+            set_part_shape(state, part, new, name_feature(state, f["id"], [part.id] + seeds, new, hist, "cut",
+                                                          stamp=False))
 
 
 def _nearest_size(diameter, internal):
@@ -1341,7 +1378,8 @@ def run_thread(state, f):
         specs = [thread_spec(state, p, face) for face in fs]
         part = state.parts[pid]
         shape = part.shape
-        for sp in specs:
+        named = state.named(pid)       # follows `shape` through the threads, one map per thread
+        for si, sp in enumerate(specs, 1):
             P, ax, p0 = sp["pitch"], sp["axis"], sp["p0"]
             z0, z1 = sp["zmin"], sp["zmax"]
             # which ends open into air? (probe just past each end, inside the thread's depth)
@@ -1362,13 +1400,19 @@ def run_thread(state, f):
                     open_lo = False
             if sp["internal"]:
                 core = sp["r"] + 0.002 if abs(sp["r"] - (sp["major"] / 2 - K.THREAD_H * P)) < 0.01 * P else sp["r"]
-                shape = K.cut_internal_thread(shape, p0, ax, sp["major"], P, z0, z1, core_r=core,
-                                              extend=(open_lo, open_hi), left=left, clearance=clearance)
+                shape, hist, tools = K.cut_internal_thread(shape, p0, ax, sp["major"], P, z0, z1, core_r=core,
+                                                           extend=(open_lo, open_hi), left=left,
+                                                           clearance=clearance, with_history=True)
+                op = "cut"
             else:
                 if abs(sp["major"] / 2 - sp["r"]) > 0.25 * P:
                     raise K.KernelError(f"Shaft Ø{2 * sp['r']:.4g} doesn't suit {sp['size']} — pick the size or use Custom")
-                shape = K.external_thread(shape, p0, ax, sp["r"], P, z0, z1, left=left, clearance=clearance)
-        set_part_shape(state, part, shape)
+                shape, hist, tools = K.external_thread(shape, p0, ax, sp["r"], P, z0, z1, left=left,
+                                                       clearance=clearance, with_history=True)
+                op = "fuse"
+            seeds = [_tool_names(state, f["id"], g, f"s{si}t{n}") for n, g in enumerate(tools, 1)]
+            named = name_feature(state, f["id"], [named] + seeds, shape, hist, op, stamp=False)
+        set_part_shape(state, part, shape, named)
 
 
 # --------------------------------------------------------------------------- sweep / loft / draft / split / move
@@ -1454,14 +1498,17 @@ def run_split(state, f):
     plane = resolve_plane(state, p.get("plane") or {"kind": "std", "name": "Right"})
     for pid in ids:
         part = state.parts[pid]
-        pieces = K.split_by_plane(part.shape, plane)
+        pieces, hist, tool = K.split_by_plane(part.shape, plane, with_history=True)
         if p.get("keep") == "front":
             pieces = [s_ for s_ in pieces if (K.mass_props(s_)["centroid"] - plane.origin) @ plane.normal > 0]
         elif p.get("keep") == "back":
             pieces = [s_ for s_ in pieces if (K.mass_props(s_)["centroid"] - plane.origin) @ plane.normal < 0]
         if not pieces:
             raise K.KernelError("Nothing left on that side of the plane")
-        set_part_shape(state, part, K.compound(pieces) if len(pieces) > 1 else pieces[0])
+        whole = K.compound(pieces) if len(pieces) > 1 else pieces[0]
+        # the splitter's pieces are named together; set_part_shape gives each piece the names of its own elements
+        named = name_feature(state, f["id"], [pid, _tool_names(state, f["id"], tool, "cut")], whole, hist, "split")
+        set_part_shape(state, part, whole, named)
 
 
 def run_move(state, f):
@@ -1474,12 +1521,15 @@ def run_move(state, f):
         a, d = resolve_axis(state, p.get("axis") or {"kind": "std", "name": "Z"})
     for pid in ids:
         part = state.parts[pid]
-        moved = K.transform(part.shape, v, a, d, ang)
+        moved, hist = K.transform(part.shape, v, a, d, ang, with_history=True)
+        named = name_feature(state, f["id"], [pid], moved, hist, "move")
         if p.get("copy"):
             np_ = state.new_part(moved, f["id"], part.color)
             state.parts[np_.id] = Part(np_.id, part.name + " (copy)", moved, part.color, part.face_colors)
+            state.set_named(np_.id, named)
         else:
             state.parts[pid] = Part(pid, part.name, moved, part.color, part.face_colors)
+            state.set_named(pid, named)
 
 
 def run_sm_base(state, f):

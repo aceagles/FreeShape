@@ -54,12 +54,30 @@ def new_window(tmp):
     return app, MW.MainWindow()
 
 
-def run_action(w, name):
-    """Trigger the window's QAction with objectName `name`, as a menu click would."""
+def run_action(w, name, values=None):
+    """Trigger the window's QAction with objectName `name`, as a menu click would. `values`, when given, answers the
+    dialog the action opens: the keyword arguments of OtherDocumentDialog.choose (document, version, tab, part),
+    for "insert_other_document"; the dialog is then accepted without being shown."""
     from PySide6.QtGui import QAction
     act = w.findChild(QAction, name)
     check(act is not None, f"no action named {name!r}")
-    act.trigger()
+    if values is None:
+        act.trigger()
+        return
+    from PySide6.QtWidgets import QDialog
+    from freeshape.ui import document_picker as DP
+    real = DP.OtherDocumentDialog.exec
+    chosen = []
+
+    def answer(self):
+        chosen.append(self.choose(**values))
+        return QDialog.Accepted if chosen[-1] else QDialog.Rejected
+    DP.OtherDocumentDialog.exec = answer
+    try:
+        act.trigger()
+    finally:
+        DP.OtherDocumentDialog.exec = real
+    check(chosen == [True], f"the picker could not choose {values}")
 
 
 def run_command(w, key):
@@ -117,3 +135,128 @@ def run_menu_action(open_menu, name, modules=()):
     check(act is not None, f"the menu has no action named {name!r}")
     act.trigger()
     return act
+
+
+# --- added for ST2 (I2.8) ---
+_OPENED = []
+
+
+def install_open_spy():
+    """In a worker process: record every path passed to the builtin open(). Idempotent."""
+    import builtins
+    if getattr(builtins.open, "_td_spy", False):
+        return
+    real = builtins.open
+
+    def spy(file, *a, **k):
+        _OPENED.append(os.fspath(file) if isinstance(file, (str, bytes, os.PathLike)) else file)
+        return real(file, *a, **k)
+    spy._td_spy = True
+    builtins.open = spy
+    open(os.devnull).close()                  # a control: the spy must record this one
+
+
+def opens_seen():
+    """In a worker process: the paths install_open_spy recorded."""
+    return list(_OPENED)
+
+
+def new_engine_window(tmp):
+    """Like new_window, but the window's tabs build in worker processes (the real app's engine). The calling script
+    must guard its entry point with `if __name__ == "__main__":`, as a worker imports it again."""
+    app, _ = new_window(tmp)
+    from freeshape.ui import mainwindow as MW
+    return app, MW.MainWindow(engine=True)
+
+
+def spy_all_workers(w):
+    """Install the open spy in every worker of the window's tabs that has one."""
+    for tab in w.folder.tabs:
+        rec = w.studio_engine._recs.get(id(tab.doc))
+        if rec is not None and rec.tab is not None:
+            w.studio_engine.in_engine(tab.doc, lambda eng, t: eng.run_in_worker(t, install_open_spy))
+
+
+def worker_opens(w):
+    """Every path opened so far in each worker the spy is in: a list of (tab name, path). Each worker's list starts
+    with the spy's control open of os.devnull, so a worker without the spy shows no entries at all."""
+    out = []
+    for tab in w.folder.tabs:
+        rec = w.studio_engine._recs.get(id(tab.doc))
+        if rec is not None and rec.tab is not None:
+            seen = w.studio_engine.in_engine(tab.doc, lambda eng, t: eng.run_in_worker(t, opens_seen))
+            out += [(tab.name, p) for p in seen if isinstance(p, str)]
+    return out
+
+
+class TwoDocuments:
+    """Library and Project, saved under `root` and registered in the temp registry (FREESHAPE_DATA_DIR, so the
+    window finds them too). Library: Variable Studio Dims (w = 20 mm, t = 3 mm), Part Studio Parts (Plate, a 20 x 20 x
+    10 box, and Rod, a 6 x 6 x 30 box) and Version v1. Project: Part Studios Mine (a 7 x 7 x 3 box) and Use (empty)
+    and Assembly Asm (empty). Library's Parts and Project's Mine are both tab T1: the ids collide on purpose.
+    Nothing is held open: `make_v2()` reopens Library from its folder."""
+
+    def __init__(self, root):
+        from conftest import TOP, add, rect_lines, region_refs, sketch_feature
+        from freeshape import doc_folder as DF
+        from freeshape import doc_registry as R
+        from freeshape import kernel as K
+        from freeshape.engine.encode import Encoder
+        self.reg = R.default_registry()
+        self.lib_path = os.path.join(root, "Library")
+        self.proj_path = os.path.join(root, "Project")
+
+        def box(studio, x, w, depth):
+            sid = sketch_feature(studio, lambda s: rect_lines(s, x, 0, x + w, w), TOP)
+            add(studio, "extrude", regions=region_refs(studio, sid), depth=depth, op="new")
+            check(not studio.errors, studio.errors)
+
+        def parts(studio):
+            return {p.name: (K.volume(p.shape), Encoder(meshes=False).brep(p.shape)[1])
+                    for p in studio.state.parts.values()}
+        lib = DF.FolderDocument.create(self.lib_path, name="Library", registry=self.reg)
+        plates = lib.add_tab("studio", "Parts")
+        box(plates.doc, 0, 20.0, 10.0)
+        box(plates.doc, 30, 6.0, 30.0)
+        dims = lib.add_tab("variables", "Dims")
+        dims.doc.add_row("w", "20 mm")
+        dims.doc.add_row("t", "3 mm")
+        self.lib_id, self.parts_tab, self.dims_tab = lib.id, plates.id, dims.id
+        self.v1 = parts(plates.doc)
+        check(len(self.v1) == 2, self.v1)
+        self.plate = next(iter(plates.doc.state.parts))                  # the first extrude: Plate
+        self.plate_name = plates.doc.state.parts[self.plate].name
+        lib.create_version("v1", "first")
+        lib.save()
+        proj = DF.FolderDocument.create(self.proj_path, name="Project", registry=self.reg)
+        mine = proj.add_tab("studio", "Mine")
+        box(mine.doc, 0, 7.0, 3.0)
+        use = proj.add_tab("studio", "Use")
+        asm = proj.add_tab("assembly", "Asm")
+        self.proj_id, self.mine_tab, self.use_tab, self.asm_tab = proj.id, mine.id, use.id, asm.id
+        self.mine = parts(mine.doc)
+        proj.save()
+        self.v2 = None
+
+    def make_v2(self):
+        """Library v2: Plate 25 mm tall, w = 35 mm. Reopens Library from its folder, as its author would."""
+        from freeshape import doc_folder as DF
+        from freeshape import kernel as K
+        from freeshape.engine.encode import Encoder
+        lib = DF.FolderDocument.open_document(self.lib_path, registry=self.reg)
+        plates, dims = lib.tab(self.parts_tab), lib.tab(self.dims_tab)
+        ext = next(f for f in plates.doc.features if f["type"] == "extrude")
+        ext["params"]["depth"] = 25.0
+        plates.doc.replace_feature(ext)
+        check(not plates.doc.errors, plates.doc.errors)
+        dims.doc.set_row(0, expression="35 mm")
+        part = plates.doc.state.parts[self.plate]
+        self.v2 = (K.volume(part.shape), Encoder(meshes=False).brep(part.shape)[1])
+        lib.create_version("v2", "taller, wider")
+        lib.save()
+
+
+def refresh_workers(w, docs):
+    """Make the workers of `docs` resolve their links again, as the worker's own refresh edit does."""
+    for doc in docs:
+        w.studio_engine.in_engine(doc, lambda eng, t: eng.submit_edit(t, {"op": "refresh"}))

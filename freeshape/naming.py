@@ -46,6 +46,7 @@ OP_EXTRUDE, OP_REVOLVE = "XTR", "RVL"
 OP_FUSE, OP_CUT, OP_COMMON = "FUS", "CUT", "CMN"
 OP_SKETCH, OP_MIRROR, OP_MAKER = "SKT", "MIR", "MAK"
 OP_CONTEXT = "CTX"       # a Context feature restoring a stored neighbour (ADR 0004); FreeShape only
+OP_DERIVED = "DRV"       # a Derived feature bringing a part or sketch from another Part Studio; FreeShape only
 
 OP_FOR = {
     "extrude": OP_EXTRUDE,
@@ -58,6 +59,7 @@ OP_FOR = {
     "chamfer": "CHF",
     "circular_pattern": "XFM",
     "delete_face": OP_MAKER,
+    "derived": OP_DERIVED,
     "draft": "DFT",
     "fillet": "FLT",
     "flat_pattern": "UNF",
@@ -319,6 +321,29 @@ def name_context(shape, names, tag, label) -> NamedShape:
             if any(c in base for c in _RESERVED) or base.split() != [base]:
                 raise NamingError(f"context label {label!r} cannot go in an element name")
         out[key] = _encode(base, "", OP_CONTEXT, tag, key[0])
+    return NamedShape(shape, out)
+
+
+def name_derived(shape, names, tag) -> NamedShape:
+    """The map of a part or sketch a Derived feature brought in. `names` is the source's map as a package
+    publishes it ({"face": {i: name}, "edge": ..., "vertex": ...}, 1-based i into `shape`, which is the very
+    shape the source named). Each element keeps its name one to one and gains a DRV fragment under `tag`, the
+    Derived feature's id. The fragment is appended as it is, never folded into a same-tag fragment: feature
+    ids repeat from studio to studio, so the source may hold an "F3" of its own. A source with no names at all
+    gives a map with none (its references stay signature-only); an element a named source left unnamed is
+    seeded from its position."""
+    el = _Elements(shape)
+    letter_of = {"face": FACE, "edge": EDGE, "vertex": VERTEX}
+    given = {(letter_of[kind], int(i)): n for kind, per in (names or {}).items() if kind in letter_of
+             for i, n in per.items() if n}
+    if not given:
+        return NamedShape(shape, {})
+    text = PREFIX + OP_DERIVED
+    tagtext = _tag_text(tag)
+    out = {}
+    for key in el.keys():
+        base = given.get(key) or f"{key[0].lower()}{key[1]}"
+        out[key] = f"{base}{text}{TAG}{tagtext}:{len(text):x},{key[0]}"
     return NamedShape(shape, out)
 
 

@@ -880,8 +880,9 @@ def test_every_runner_is_characterised():
     used = {f["type"] for fn, _ in CASES.values() for f in _built(fn.__name__).features}
     # variable_studio_ref reads another tab, so it is characterised in test_variable_studio_ref.py
     # context restores a stored capture, so it is characterised in test_context_feature.py
+    # derived reads another tab's package, so it is characterised in test_derived.py
     # Python features (py:*) are covered by their plugins' own tests, e.g. tests/test_gears_plugin.py
-    left = {t for t in F.RUNNERS if not t.startswith("py:")} - used - {"variable_studio_ref", "mate_connector", "context"}
+    left = {t for t in F.RUNNERS if not t.startswith("py:")} - used - {"variable_studio_ref", "mate_connector", "context", "derived"}
     assert left == set(), sorted(left)
 
 

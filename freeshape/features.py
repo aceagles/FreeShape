@@ -49,6 +49,7 @@ FEATURE_LABELS = {
     "linear_pattern": "Linear pattern", "circular_pattern": "Circular pattern",
     "boolean": "Boolean", "import": "Import", "hole": "Hole", "variable": "Variable",
     "variable_studio_ref": "Variable Studio reference",
+    "derived": "Derived",
     "mate_connector": "Mate connector",
     "context": "Context",
     "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
@@ -950,6 +951,58 @@ def run_variable_studio_ref(state, f):
     state.vars.update(values)
 
 
+def run_derived(state, f):
+    """Bring parts and sketches of another Part Studio into this one, with their element names (ADR 0003).
+    Document.compute hands in the source's links.StudioPackage as params["resolved"] (None: the link found
+    nothing) and keys the rebuild on its digest. Nothing else crosses (ADR 0007: no variables).
+
+    Part k (1-based) of params["parts"] becomes part `<fid>/<k>`, so a source that gains parts leaves the ids
+    alone. Its names are the source's, each with a DRV fragment under this feature's id (naming.name_derived).
+    A ticked sketch becomes sketch `<fid>:<sid>`: its regions are rebuilt from the published plane and solved
+    sketch, and must carry the published region names, so extrude takes it like a local sketch."""
+    p, fid = f["params"], f["id"]
+    pkg = p.get("resolved")
+    src = p.get("source") or {}
+    label = src.get("studio_name") or src.get("tab") or "(none linked)"
+    if pkg is None:
+        raise K.KernelError(f"Derived source “{label}” not found. Derived needs the Part Studio to be in a "
+                            f"Document with its source: add this Part Studio to a Document to use Derived")
+    if pkg.error:
+        raise K.KernelError(f"Derived source “{label}” is in error: {pkg.error}")
+    for k, pid in enumerate(p.get("parts") or [], 1):
+        pub = pkg.parts.get(pkg.aliases.get(pid, pid))
+        if pub is None:
+            raise K.KernelError(f"Part {pid} is no longer published by “{label}”")
+        new = f"{fid}/{k}"
+        state.part_counter += 1
+        state.parts[new] = Part(new, pub.name, pub.shape, pub.color)
+        state.set_named(new, N.name_derived(pub.shape, pub.names, fid))
+    for sid in p.get("sketches") or []:
+        out = pkg.sketches.get(sid)
+        if out is None:
+            raise K.KernelError(f"Sketch {sid} is no longer published by “{label}”")
+        state.sketches[f"{fid}:{sid}"] = _derived_sketch(out, fid, label)
+
+
+def _derived_sketch(out, fid, label):
+    """The SketchResult of a published sketch `out` (engine.contract.SketchOut) as run_derived brings it in."""
+    pl = out.plane
+    plane = K.Plane(np.array(pl["origin"], float), np.array(pl["xdir"], float), np.array(pl["normal"], float))
+    sk = Sketch.from_dict(out.sketch)
+    regions = K.sketch_regions(plane, sk.curves())
+    if not regions:
+        return SketchResult(plane, sk, [], [], None, None, [])
+    named = N.name_derived(K.compound(regions), out.names, fid)
+    names = [named.name_of(r) for r in regions]
+    carried = len(regions) == len(out.region_names) and all(
+        n is not None and (want is None or n.startswith(f"{want};{N.OP_DERIVED};")) for n, want in
+        zip(names, out.region_names))
+    if out.names.get("face") and not carried:      # the rebuilt regions are not the published ones, in order
+        raise K.KernelError(f"Sketch {out.id} of “{label}” could not be rebuilt as published")
+    return SketchResult(plane, sk, regions, [region_signature(r) for r in regions], K.bbox(K.compound(regions)),
+                        named, names)
+
+
 def run_mate_connector(state, f):
     """A Mate connector on a face or edge of a part (or on the studio origin, owned by a part).
     The element is found by name (`resolve`); the frame comes from assembly.connector_frame (or snap_frame for a
@@ -1780,6 +1833,7 @@ RUNNERS = {
     "linear_pattern": run_linear_pattern, "circular_pattern": run_circular_pattern,
     "boolean": run_boolean, "import": run_import, "hole": run_hole, "variable": run_variable,
     "variable_studio_ref": run_variable_studio_ref,
+    "derived": run_derived,
     "mate_connector": run_mate_connector,
     "context": run_context,
     "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
@@ -1813,6 +1867,7 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "import": {"data": "", "filename": ""},
         "variable": {"name": "", "expr": "10"},
         "variable_studio_ref": {"source": {}},
+        "derived": {"source": {}, "parts": [], "sketches": [], "connectors": []},
         "mate_connector": {"name": "", "ref": None, "kind": "face", "click": None, "snap": None,
                            "x_ref": None, "flip": False, "owner": None},
         "context": {"assembly": "", "instance": "", "capture": ""},

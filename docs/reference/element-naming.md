@@ -719,6 +719,21 @@ policy above (a stored sub-element name is looked up, never matched by position)
   its index, so the tag of instance *k* (1-based; instance 0 is the source) is `<feature id>_<k>`.
   The same source face has one distinct name per copy, and a change of count leaves the names of the
   other instances alone.
+### I1.7 Derived: parts and sketches from another Part Studio
+
+* A `derived` feature copies a ticked part or sketch of another Part Studio without rebuilding it,
+  which is the rigid-copy case above: no history, the source map re-attached one-to-one. Each
+  element keeps its source name and gains one fragment, op code `DRV` and the Derived feature's id
+  as tag, so `<source name>;DRV;:H<fid>:4,F`. `naming.name_derived` writes it.
+* The fragment is appended as it is and never folded into a same-tag fragment (section 2). Feature
+  ids repeat from studio to studio, so the source may hold an `F3` of its own; folding would drop
+  part of the source's name.
+* The source's names arrive as the package publishes them (`links.PublishedPart.names`,
+  `SketchOut.names`), so the Derived studio never reads the source's own map. A source that keeps a
+  name keeps the derived name; a source with no names gives a derived part with none.
+* A derived sketch's regions are rebuilt from the published plane and solved sketch. They must
+  carry the published region names in order, or the feature fails.
+
 ### I1.11 Sheet metal: base, flange, flat pattern
 
 **Not checked against FreeCAD.** FreeCAD 1.0.2 has no sheet metal code: the SheetMetal workbench is an

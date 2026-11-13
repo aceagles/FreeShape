@@ -19,6 +19,7 @@ link at any file on the machine. Loose files outside any Document keep uid + pat
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 
@@ -92,16 +93,27 @@ class StudioPackage:
     sketches: dict           # sketch feature id -> SketchOut
     aliases: dict = field(default_factory=dict)
     digest: str = ""         # of everything published: parts, their visibility, sketches
+    error: str = ""          # why the studio is in error (its red features), "" when it builds clean
 
     def digest_for(self, part=None):
         """The digest of what a link reading `part` (an id, or None / "*" for the whole studio) takes."""
         from .engine.linkgraph import package_digest
-        return package_digest("studio", self._view(), [part])
+        digest = package_digest("studio", self._view(), [part])
+        if self.error:      # a studio that turns red (or changes why) rekeys its consumers, parts unchanged
+            digest = hashlib.sha1(f"{digest}|{self.error}".encode()).hexdigest()
+        return digest
 
     def _view(self):
         return {"parts": {pid: p.hash for pid, p in self.parts.items()},
                 "hidden": sorted(pid for pid, p in self.parts.items() if p.hidden), "aliases": dict(self.aliases),
                 "sketches": {fid: sk.hash for fid, sk in self.sketches.items()}}
+
+
+def _studio_error(studio):
+    """One line naming the red features of a studio ("Fillet: <message>"), "" when none is red."""
+    errors = getattr(studio, "errors", None) or {}
+    by_id = {f["id"]: f for f in getattr(studio, "features", ())}
+    return "; ".join(f"{by_id.get(fid, {}).get('name', fid)}: {msg}" for fid, msg in errors.items())
 
 
 class LinkResolver:
@@ -347,7 +359,8 @@ class LinkResolver:
                 hash=self._encoder.brep(p.shape)[1])
         sketches = {str(fid): sketch_out(fid, (studio.feature(fid) or {}).get("name", fid), res)
                     for fid, res in st.sketches.items()}
-        pkg = StudioPackage(parts, sketches, dict(getattr(studio, "part_aliases", {})))
+        pkg = StudioPackage(parts, sketches, dict(getattr(studio, "part_aliases", {})),
+                            error=_studio_error(studio))
         pkg.digest = pkg.digest_for(None)
         return pkg
 
@@ -431,7 +444,7 @@ class LinkResolver:
 
 
 # ------------------------------------------------------------------ what a tab consumes
-SOURCE_FEATURES = {"variable_studio_ref": "source"}     # feature type -> the params key holding its source
+SOURCE_FEATURES = {"variable_studio_ref": "source", "derived": "source"}     # feature type -> the params key holding its source
 
 
 def feature_source(feature):

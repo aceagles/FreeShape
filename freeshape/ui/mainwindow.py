@@ -1645,14 +1645,8 @@ class MainWindow(QMainWindow):
 
     def _document_info(self, path):
         """{"id", "name", "tab"} for a recent entry that is a Document folder, else None."""
-        import json
-        manifest = os.path.join(path, doc_folder.MANIFEST_NAME)
-        if not os.path.isfile(manifest):
-            return None
-        try:
-            with open(manifest) as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
+        data = doc_folder.FolderDocument.peek_manifest(path)
+        if data is None:
             return None
         did = data.get("id")
         info = self._recent_documents().get(did, {}) if isinstance(did, str) else {}
@@ -2183,7 +2177,7 @@ class MainWindow(QMainWindow):
         recovers it as a loose file)."""
         info = meta["document"]
         folder = info.get("path")
-        if not folder or not os.path.isfile(os.path.join(folder, doc_folder.MANIFEST_NAME)):
+        if not folder or not doc_folder.FolderDocument.has_manifest_at(folder):
             return False
         if self.folder is None or self.folder.id != info.get("id"):
             self.open_document(folder)
@@ -2192,7 +2186,7 @@ class MainWindow(QMainWindow):
         kind = info.get("kind")
         if kind not in doc_folder.LOADERS:
             return False
-        doc = doc_folder.LOADERS[kind](path)
+        doc = self.folder.recover_tab(kind, os.path.basename(path), info.get("tab"), os.path.dirname(path))
         doc.name = info.get("tab_name") or meta.get("name") or doc.name
         doc.dirty = True
         old = None
@@ -2290,6 +2284,11 @@ class MainWindow(QMainWindow):
                     d["autosave"]["document"] = {"id": self.folder.id, "name": self.folder.name,
                                                  "path": self.folder.path, "tab": tab.id, "kind": tab.kind,
                                                  "file": tab.file, "tab_name": tab.name}
+                if tab is not None:
+                    doc._autosave_id = self.folder.autosave_id(tab.id)
+                    self.folder.autosave_tab(tab.id, tab.kind, json.dumps(d).encode("utf-8"),
+                                             where=self.autosave_dir())
+                    continue
                 tmp = self._autosave_path(doc) + ".tmp"
                 with open(tmp, "w") as fh:
                     json.dump(d, fh)
@@ -2300,6 +2299,10 @@ class MainWindow(QMainWindow):
     def _drop_autosave(self, doc):
         if doc is not None and getattr(doc, "_autosave_id", None):
             try:
+                tab = self._folder_tab(doc)
+                if tab is not None:
+                    self.folder.drop_autosave(tab.id, tab.kind, where=self.autosave_dir())
+                    return
                 os.remove(self._autosave_path(doc))
             except OSError:
                 pass
@@ -2329,7 +2332,7 @@ class MainWindow(QMainWindow):
                     with open(f) as fh:
                         meta = json.load(fh).get("autosave", {})
                     if meta.get("document") and self._recover_document_tab(f, meta):
-                        os.remove(f)
+                        self.folder.discard_autosave(os.path.basename(f), os.path.dirname(f))
                         continue
                     kind = TK.kind_for_path(f)
                     doc = AssemblyDoc.load(f, resolver=self._resolve_source) if kind == "assembly" \

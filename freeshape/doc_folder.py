@@ -339,6 +339,57 @@ class FolderDocument:
         return rec.from_data(store.read_tab(tab.id), path=store.tab_path(tab.id), blobs=store.blobs(tab.id))
 
     @staticmethod
+    def peek_manifest(path):
+        """The parsed manifest of the folder at `path` (a recent entry, not necessarily open), or None when there is
+        none or it cannot be read."""
+        store = DS.FolderStore(path)
+        if not store.has_manifest():
+            return None
+        try:
+            return json.loads(store.read_manifest().decode("utf-8"))
+        except (OSError, ValueError, K.KernelError):
+            return None
+
+    @staticmethod
+    def has_manifest_at(path):
+        """True when the folder at `path` has a readable manifest."""
+        return DS.FolderStore(path).has_manifest()
+
+    def autosave_id(self, tab_id):
+        """What an autosave of a tab is named: Document id and tab id, with anything but letters, digits, '_' and
+        '-' made '_'."""
+        return ".".join(re.sub(r"[^A-Za-z0-9_-]", "_", str(k)) for k in (self.id, tab_id))
+
+    def autosave_key(self, tab_id, kind):
+        """The store's side key for a tab's autosave: `autosave_id` and the kind's extension."""
+        return self.autosave_id(tab_id) + (TK.find(kind) or TK.get("studio")).ext
+
+    def autosave_tab(self, tab_id, kind, data, where=None):
+        """Keep an autosave of a tab (`data`: bytes) in the store's side area; `where` is the folder a store that
+        keeps files writes it to. Returns the key."""
+        key = self.autosave_key(tab_id, kind)
+        self.store.write_side(key, data, where)
+        return key
+
+    def drop_autosave(self, tab_id, kind, where=None):
+        self.store.delete_side(self.autosave_key(tab_id, kind), where)
+
+    def discard_autosave(self, key, where=None):
+        """Drop the autosave kept under `key` (one a crashed run left, so not necessarily this run's)."""
+        self.store.delete_side(key, where)
+
+    def recover_tab(self, kind, key, tab_id=None, where=None):
+        """Load the autosave kept under `key` as a document of `kind`. A store that keeps files loads the file, as
+        a loose file loads; any other store gives its bytes to the kind's `from_data`."""
+        rec, store = TK.get(kind), self.store
+        path = store.side_path(key, where)
+        if path is not None:
+            return rec.load(path)
+        if rec.from_data is None:
+            raise K.KernelError(f"{rec.label}: loads only from a file, and {store.describe()} keeps none")
+        return rec.from_data(store.read_side(key, where), blobs=store.blobs(tab_id))
+
+    @staticmethod
     def _tab_bytes(tab):
         """A tab's data as saved in a Document: the document's own JSON, stamped with the tab id."""
         doc = tab.doc

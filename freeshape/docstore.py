@@ -101,6 +101,61 @@ class DocumentStore(ABC):
         raise K.KernelError(f"tab {tab_id!r}: {self.describe()} keeps no files, and this kind of tab loads "
                             f"only from a file")
 
+    # -- side data (autosaves) and the manifest check ---------------------------------------------------------
+    def has_manifest(self) -> bool:
+        """True when the manifest can be read."""
+        try:
+            self.read_manifest()
+        except (K.KernelError, OSError):
+            return False
+        return True
+
+    def _side_name(self, key):
+        if not key or not isinstance(key, str) or os.path.basename(key) != key or key in (".", ".."):
+            raise K.KernelError(f"side key {key!r}: a plain file name is needed")
+        return key
+
+    def write_side(self, key, data: bytes, where=None) -> None:
+        """Keep `data` under a side key: a copy of a tab's data that is not the tab's data, such as an autosave.
+        A store that keeps files writes it as the file `key` in the folder `where` (the app's autosave folder,
+        outside the Document), by `<path>.tmp` and `os.replace`; any other store holds it in memory and ignores
+        `where`."""
+        name = self._side_name(key)
+        if self.has_folder:
+            os.makedirs(where, exist_ok=True)
+            _atomic_write(os.path.join(where, name), bytes(data).decode("utf-8"))
+        else:
+            self.__dict__.setdefault("_side", {})[name] = bytes(data)
+
+    def read_side(self, key, where=None) -> bytes:
+        """The bytes kept under a side key. Raises K.KernelError when there are none."""
+        name = self._side_name(key)
+        if not self.has_folder:
+            if name not in self.__dict__.get("_side", {}):
+                raise K.KernelError(f"side key {key!r}: nothing is kept under it in {self.describe()}")
+            return self.__dict__["_side"][name]
+        try:
+            with open(os.path.join(where, name), "rb") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            raise K.KernelError(f"side key {key!r}: nothing is kept under it in {where}") from None
+
+    def delete_side(self, key, where=None) -> None:
+        """Drop the data under a side key; nothing happens when there is none."""
+        name = self._side_name(key)
+        if not self.has_folder:
+            self.__dict__.get("_side", {}).pop(name, None)
+            return
+        try:
+            os.remove(os.path.join(where, name))
+        except FileNotFoundError:
+            pass
+
+    def side_path(self, key, where=None):
+        """The file holding a side key's data, or None when the store keeps no files. The path a kind that loads
+        only from a file reads."""
+        return os.path.join(where, self._side_name(key)) if self.has_folder else None
+
     def file_taken(self, file) -> bool:
         """True when `file` would clash with data already in the store under that name."""
         return False

@@ -271,6 +271,21 @@ def test_the_connector_list_refuses_a_connector_without_its_part(win):
 
 # ---- I4.2: Location and Placement base
 
+def _sync(w):
+    """Wait until the engine has answered every edit and the window has applied the answer (I4.2 tests: the Document
+    API returns before the rebuild arrives, and the viewport triads and lists follow it on the event loop)."""
+    assert w.studio_engine.settle(120)
+    QApplication.processEvents()
+    assert w.studio_engine.settle(120)
+
+
+def _commit(w):
+    """Commit the open dialog. Its 90 ms preview timer is stopped first: MainWindow._close_dialog leaves it running,
+    and when it fires after the commit it redraws the viewport from the state before the new feature (stale triads)."""
+    w.dialog._timer.stop()
+    w.commit_dialog()
+
+
 def _in_process(w):
     """The current studio's state built in-process: the engine hands the window parts only, no sketches."""
     return w.use.state_before(len(w.use.features))
@@ -299,7 +314,7 @@ def _local_connector(w, name="Spot", below=None):
     fr = A.connector_frame(part.shape, "face", i)
     c = add(w.use, "mate_connector", name=name, ref=A._ref_signature(part.shape, "face", i, st.named(pid)),
             kind="face", x_ref=A.connector_x_ref(fr), flip=False)
-    assert w.studio_engine.settle(120)
+    _sync(w)
     return box, c["id"]
 
 
@@ -315,7 +330,7 @@ def _combo_data(cb):
 
 def _cleanup_local(w, *fids):
     w.use.delete_features([f for f in fids if f])
-    w.studio_engine.settle(120)
+    _sync(w)
 
 
 def test_location_and_base_are_written_to_placement_and_preview_equals_committed(win):
@@ -338,7 +353,7 @@ def test_location_and_base_are_written_to_placement_and_preview_equals_committed
         assert not d.err.isVisible()
         shown = {pid: _bbox(s) for pid, s in w.viewport.part_shapes.items() if pid.startswith(d.feature["id"] + "/")}
         assert shown
-        w.commit_dialog()
+        _commit(w)
         assert w.studio_engine.settle(120)
         f = _derived(w)[0]
         assert not w.use.errors.get(f["id"]) and f["params"]["placement"] == {"location": loc, "base": cid}
@@ -362,10 +377,11 @@ def test_the_location_list_offers_only_connectors_above_the_derived(win):
         w.start_feature("derived")
         _choose(w, w.src_tab)
         _tick_all(w.dialog.widgets["parts"])
-        w.commit_dialog()
+        _commit(w)
         assert w.studio_engine.settle(120)
         fid = _derived(w)[0]["id"]
         _, below = _local_connector(w, "Below", below=box)
+        _sync(w)
         w.start_feature("derived", edit_fid=fid)
         loc = w.dialog.widgets["location"]
         assert _combo_data(loc) == [None, above]
@@ -389,7 +405,7 @@ def test_a_click_on_a_connector_sets_the_location_and_clearing_it_removes_placem
         _tick_all(d.widgets["parts"])
         d.handle_pick(Pick("overlay", ("placement_loc", loc)))          # the viewport pick of the connector's axes
         assert d.feature["params"]["placement"]["location"] == loc
-        w.commit_dialog()
+        _commit(w)
         assert w.studio_engine.settle(120)
         f = _derived(w)[0]
         assert f["params"]["placement"]["location"] == loc
@@ -398,7 +414,7 @@ def test_a_click_on_a_connector_sets_the_location_and_clearing_it_removes_placem
         assert d.widgets["location"].currentData() == loc
         d.widgets["location"].setCurrentIndex(0)                        # clear it
         assert "placement" not in d.feature["params"]
-        w.commit_dialog()
+        _commit(w)
         assert w.studio_engine.settle(120)
         assert "placement" not in _derived(w)[0]["params"]
         _undo_all(w)

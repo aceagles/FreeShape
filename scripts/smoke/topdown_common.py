@@ -331,3 +331,14 @@ def run_command_with(w, key, values):
     check(w.dialog is not None, f"command {key!r} opened no dialog")
     set_dialog_values(w.dialog, values)
     commit_open_dialog(w)
+
+
+# --- added for ST6 (I6.4) ---
+def st6_wait(app, done, what, seconds=30.0):
+    """Run the Qt event loop until `done()` is true, as the user's wait would; fail after `seconds`."""
+    import time
+    end = time.monotonic() + seconds
+    while not done():
+        check(time.monotonic() < end, f"timed out waiting for {what}")
+        app.processEvents()
+        time.sleep(0.01)

@@ -1438,6 +1438,17 @@ class Viewport(QOpenGLWidget):
     def pick(self, x, y, kinds=None) -> Pick | None:
         allowed = (lambda k: k in kinds) if kinds is not None else self._allowed
         o, d = self.cam.ray(x, y)
+        if allowed("connector") and self.triads:        # a Part Studio dialog asked for mate connectors (Axis tool)
+            best_c = (12.0, None)
+            for tr in self.triads:
+                if tr.get("id") is None:
+                    continue
+                s = self.cam.to_screen(np.asarray(tr["o"], float))
+                dc = float(np.hypot(s[0] - x, s[1] - y))
+                if dc < best_c[0]:
+                    best_c = (dc, Pick("connector", (tr["id"],)))
+            if best_c[1] is not None:
+                return best_c[1]
         if self.overlays and kinds is None:
             hit = self._pick_overlay(x, y, o, d)
             if hit is not None:

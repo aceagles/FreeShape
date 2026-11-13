@@ -189,6 +189,15 @@ def draw(name: str, p: QPainter):
         p.setBrush(QColor(156, 195, 240, 220))
         p.drawPolygon(QPolygonF([QPointF(3, 15), QPointF(11, 4), QPointF(29, 4), QPointF(21, 15)]))
         _arrow(p, 16, 25, 16, 17, ORANGE)
+    elif name == "axis":
+        pen = _pen(BLUE, 1.6)
+        pen.setStyle(Qt.CustomDashLine)
+        pen.setDashPattern([6, 2, 1, 2])           # dash-dot, the centreline convention
+        p.setPen(pen)
+        p.drawLine(QPointF(3, 27), QPointF(29, 5))
+        p.setPen(_pen(BLUE, 1.4))
+        p.setBrush(QColor(156, 195, 240, 180))
+        p.drawEllipse(QPointF(16, 16), 4.5, 4.5)
     elif name == "mirror":
         p.setPen(_pen(INK, 1.3, Qt.DashLine))
         p.drawLine(QPointF(16, 2), QPointF(16, 30))

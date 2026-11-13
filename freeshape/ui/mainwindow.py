@@ -474,6 +474,8 @@ class MainWindow(QMainWindow):
             C("sm_flange", "Flange", "Bend the sheet up along edges.", lambda: F_("sm_flange"), "sheet metal bend"),
             C("plane", "Plane", "Make a datum plane: offset, through a point, line and angle, three points, mid "
               "plane, normal to a curve or tangent to a surface.", lambda: F_("plane"), "datum"),
+            C("axis", "Axis", "Make a construction axis: through an edge, a cylinder, two points or two planes, "
+              "or perpendicular to a face.", lambda: F_("axis"), "datum construction centreline"),
             C("mirror", "Mirror", "Copy parts across a plane.", lambda: F_("mirror"), "symmetry"),
             C("linear_pattern", "Linear pattern", "Repeat parts along a direction.", lambda: F_("linear_pattern"),
               "array copies"),
@@ -689,6 +691,7 @@ class MainWindow(QMainWindow):
         pyfeature_ui.toolbar_button(self, h)
         h.addWidget(_sep())
         self._tb(h, "plane", "Plane", lambda: self.start_feature("plane"))
+        self._tb(h, "axis", "Axis", lambda: self.start_feature("axis"))
         h.addWidget(_sep())
         for name, tip in (("mirror", "Mirror"), ("linear_pattern", "Linear pattern"),
                           ("circular_pattern", "Circular pattern"), ("boolean", "Boolean"),
@@ -1092,7 +1095,7 @@ class MainWindow(QMainWindow):
         ax = p.get("axis") or {}
         if ax.get("kind") == "sketch_line":
             show.add(ax["sketch"])
-        if feature["type"] == "mate_connector":      # every sketch below it, so its geometry can be picked (I1.6)
+        if feature["type"] in ("mate_connector", "axis"):      # every sketch below it, so its geometry can be picked (I1.6)
             show |= set(st.sketches)
         # ...and stay visible after their reference is cleared, so a lost region can be picked again
         self._dialog_sketches = show = getattr(self, "_dialog_sketches", set()) | show

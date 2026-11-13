@@ -154,6 +154,31 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
         if key[0] == "std":
             return ("plane", {"kind": "std", "name": key[1]})
         return ("plane", {"kind": "plane", "fid": key[1]})
+    # the Axis tool's own picks (its refs_sel field asks for these with "sketch_line", "sketch_point",
+    # "axis_feature" and "connector"; revolve and the patterns do not)
+    if k == "sketch_line" and "sketch_line" in want:
+        fid, eid = pick.key
+        return ("sketch_line", {"kind": "sketch_line", "sketch": fid, "line": eid})
+    if k == "sketch_point" and "sketch_point" in want:
+        return _sketch_point_item(vp, pick)
+    if k == "axis" and "axis_feature" in want:
+        return ("axis", {"kind": "axis", "fid": pick.key[0]})
+    if k == "connector" and "connector" in want:
+        return ("connector", {"fid": pick.key[0]})
+    return None
+
+
+def _sketch_point_item(vp, pick):
+    """A sketch point as the ADR 0011 sketch-geometry reference ("sketch" item), as the Mate connector tool stores it."""
+    from .. import sketchref
+    fid, eid = pick.key
+    for sfid, sr, _ in vp.sketches:
+        if sfid == fid:
+            try:
+                d = sketchref.describe(sr.sketch.to_dict(), eid, "point")
+            except K.KernelError:
+                return None
+            return ("sketch", {"sketch": fid, "entity": eid, "role": "point", "etype": d["etype"], "sig": d["sig"]})
     return None
 
 
@@ -183,7 +208,16 @@ def item_label(doc, item):
         return "Planar face"
     if kind == "path":
         return "Sketch curves" if ref["kind"] == "sketch_chain" else "Edge"
+    if kind == "sketch_line":            # the Axis tool's refs
+        f = doc.feature(ref.get("sketch"))
+        return f"{f['name'] if f else 'Sketch'} line"
+    if kind == "connector":
+        f = doc.feature(ref.get("fid"))
+        return f["name"] if f else "Mate connector"
     if kind == "axis":
+        if ref["kind"] == "axis":        # an axis feature (the Axis tool)
+            f = doc.feature(ref.get("fid"))
+            return f["name"] if f else "Axis"
         if ref["kind"] == "std":
             return f"{ref['name']} axis"
         if ref["kind"] == "sketch_line":
@@ -228,6 +262,19 @@ def item_geometry(state, item, plane_half=40.0):
         if kind == "axis":
             a, d = F.resolve_axis(state, ref)
             return ("poly", np.array([a - d * plane_half * 1.5, a + d * plane_half * 1.5]))
+        if kind == "sketch_line":        # the Axis tool's refs
+            a, d = F.resolve_axis(state, ref)
+            return ("poly", np.array([a - d * plane_half * 1.5, a + d * plane_half * 1.5]))
+        if kind == "sketch":
+            c = F._axis_point(state, kind, ref)
+            s = plane_half * 0.06
+            return ("poly", np.array([c - (s, 0, 0), c + (s, 0, 0), c, c - (0, s, 0), c + (0, s, 0), c,
+                                      c - (0, 0, s), c + (0, 0, s)]))
+        if kind == "connector":
+            c, _d = F._connector_axis(state, ref.get("fid"), "z")
+            s = plane_half * 0.06
+            return ("poly", np.array([c - (s, 0, 0), c + (s, 0, 0), c, c - (0, s, 0), c + (0, s, 0), c,
+                                      c - (0, 0, s), c + (0, 0, s)]))
     except K.KernelError:
         return None
     return None
@@ -358,6 +405,20 @@ def _plane_info(p):
         if not items:
             return "Select a plane or face, an edge, or vertices — the plane type is picked from what you select."
         return f"Type: {name}"
+    return ""
+
+
+def _axis_info(p):
+    """What the axis dialog says about the current selection."""
+    items = F.axis_items(p)
+    typ = F.axis_type(p)
+    if not items:
+        return "Select an edge, a round face, two points or two planes. The axis type is picked from what you select."
+    if typ is None:
+        return ("⚠ That selection doesn't fit an axis type. Try an edge, a round face, two points, two planes, "
+                "a point and a face, or a face you click.")
+    if (p.get("type") or "auto") == "auto":
+        return f"Type: {F.AXIS_TYPE_NAMES.get(typ, typ)}"
     return ""
 
 
@@ -495,6 +556,15 @@ SCHEMAS = {
     ],
     "delete_part": [
         _sel("parts", "Parts to delete", {"part"}),
+    ],
+    "axis": [
+        _choice("type", "Axis type", F.AXIS_TYPES),
+        _sel("refs_sel", "Edges, faces, points, planes, axes and connectors",
+             {"face", "edge", "vertex", "plane", "sketch_line", "sketch_point", "axis_feature", "connector"}),
+        {"t": "info", "key": "_info", "text": lambda p: _axis_info(p)},
+        _choice("connector_axis", "Connector axis", [("z", "Z"), ("x", "X"), ("y", "Y")],
+                visible=lambda p: F.axis_type(p) == "connector"),
+        _check("flip", "Opposite direction", visible=lambda p: F.axis_type(p) is not None),
     ],
     "plane": [
         _choice("type", "Plane type", F.PLANE_TYPES),
@@ -692,6 +762,8 @@ def params_to_fields(ftype, p):
         f["faces"] = [("face", r) for r in p.get("faces", [])]
     if ftype == "plane":
         f["refs_sel"] = [(k, r) for k, r in F.plane_items(p)]
+    if ftype == "axis":
+        f["refs_sel"] = [(k, r) for k, r in F.axis_items(p)]
     if ftype == "mirror":
         f["parts"] = [("part", i) for i in p.get("parts", [])]
         f["plane_sel"] = [("plane", p["plane"])] if p.get("plane") else []
@@ -774,6 +846,10 @@ def fields_to_params(ftype, fields, p):
     if ftype == "plane":
         p["refs"] = [{"k": k, "ref": r} for k, r in fields.get("refs_sel", [])]
         p.pop("ref", None)
+    if ftype == "axis":
+        p["refs"] = [{"k": k, "ref": r} for k, r in fields.get("refs_sel", [])]
+        if not any(k == "face" for k, _ in fields.get("refs_sel", [])):
+            p["click"] = None                # the click belongs to a picked face
     if ftype in ("mirror", "linear_pattern", "circular_pattern"):
         p["parts"] = [r for k, r in fields.get("parts", [])]
     if ftype == "mirror":
@@ -1821,6 +1897,14 @@ class FeatureDialog(_ResizableFrame):
             kinds |= {"edge", "sketch_line"}
         if "plane" in want:
             kinds.add("plane")
+        if "sketch_line" in want:
+            kinds.add("sketch_line")
+        if "sketch_point" in want:
+            kinds.add("sketch_point")
+        if "axis_feature" in want:
+            kinds.add("axis")
+        if "connector" in want:
+            kinds.add("connector")
         if "part" in want:
             kinds.add("part")
         if "vertex" in want:
@@ -1885,6 +1969,11 @@ class FeatureDialog(_ResizableFrame):
         if fld is None:
             return
         item = pick_to_item(self.main.viewport, pick, fld.want, self.base_state)
+        if item is not None and self.ftype == "axis" and item[0] == "face" and fld.key == "refs_sel" \
+                and not any(_same(ex, item) for ex in fld.items) and self.main.viewport.last_click:
+            # the point clicked on the face (a face alone gives an axis there, along its normal)
+            click = self.main.viewport.surface_point(*self.main.viewport.last_click)
+            self.feature["params"]["click"] = [float(a) for a in click] if click is not None else None
         if item is None:
             if pick.kind == "sketch_line" and "region" in fld.want:
                 try:

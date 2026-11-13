@@ -448,7 +448,8 @@ class LiveTabs:
     def source_tabs(self, doc):
         out = []
         for s in self.sources(doc):
-            if isinstance(s, dict) and s.get("tab") and not s.get("document") and s["tab"] not in out:
+            if isinstance(s, dict) and s.get("tab") and not s.get("document") and not s.get("version") \
+                    and s["tab"] not in out:
                 out.append(s["tab"])
         return out
 

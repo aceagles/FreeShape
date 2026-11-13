@@ -236,6 +236,8 @@ class ProcessEngine(Engine):
         if document_id != self.document_id or registry is not getattr(self.cross, "registry", None):
             self.document_id = document_id
             self.cross = links.LinkResolver(registry=registry) if registry is not None else None
+            if self.cross is not None:
+                self.cross.own_id = document_id
             self._pinned.clear()
 
     def _external(self, src):
@@ -246,11 +248,11 @@ class ProcessEngine(Engine):
         if kind not in ("studio", "assembly", "variables") or self.cross is None:
             return None
         try:
-            key = (src.get("document"), self.cross.registry.trusted_path(src.get("document")), src.get("version"),
-                   src.get("tab"), kind)
+            doc = src.get("document") or self.document_id      # no Document named: a Version of this one (I1.11)
+            key = (doc, self.cross.registry.trusted_path(doc), src.get("version"), src.get("tab"), kind)
             hit = self._pinned.get(key)
             if hit is None:
-                pkg = cross_package(kind, self.cross._cross_doc(src, kind), self._pin_enc)
+                pkg = cross_package(kind, self.cross._cross_doc(dict(src, document=doc), kind), self._pin_enc)
                 hit = self._pinned[key] = (external_id(src), pkg, package_digest(kind, lean_package(pkg)))
             return hit
         except Exception:               # noqa: BLE001 -- an unreadable pin is the consumer's error, not ours
@@ -261,7 +263,7 @@ class ProcessEngine(Engine):
         if no tab has it. The rule of InProcessEngine.provide; worker._WorkerEngine.provide applies it again
         to what is sent, so both sides agree. A source of another Document names no tab of this one."""
         kind = src.get("kind")
-        if kind not in ("studio", "assembly", "variables") or links.is_cross_link(src, self.document_id):
+        if kind not in ("studio", "assembly", "variables") or links.is_pinned(src, self.document_id):
             return None
         uid, path = src.get("uid"), src.get("path")
         tabs = [t for t in self._tabs.values() if t.kind == kind]
@@ -285,7 +287,7 @@ class ProcessEngine(Engine):
         seen = seen + (t,)
         pkgs, key, wants = {}, [], {}
         for src in list(t.sources):
-            if links.is_cross_link(src, self.document_id):      # a pinned input: its package, and no live edge
+            if links.is_pinned(src, self.document_id):      # a pinned input: its package, and no live edge
                 ext = self._external(src)
                 if ext is not None:
                     wants.setdefault(ext[0], set()).add(norm_key(src.get("part")))

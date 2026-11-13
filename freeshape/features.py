@@ -976,6 +976,9 @@ def run_derived(state, f):
     if pkg is None and src.get("document"):
         raise K.KernelError(f"Derived source “{label}”: Document not found: “{src['document']}” (or its Version "
                             f"“{src.get('version')}” or the Part Studio in it is not there)")
+    if pkg is None and src.get("version"):                      # pinned to a Version of this Document (I1.11)
+        raise K.KernelError(f"Derived source “{label}”: Version “{src['version']}” of this Document is not there "
+                            f"(or the Part Studio is not in it)")
     if pkg is None:
         raise K.KernelError(f"Derived source “{label}” not found. Derived needs the Part Studio to be in a "
                             f"Document with its source: add this Part Studio to a Document to use Derived")

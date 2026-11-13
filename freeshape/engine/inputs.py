@@ -29,8 +29,9 @@ def _refuse_load(path):
 
 def external_id(src):
     """The id a cross-Document source's package goes by in the Link graph and in the consumer's worker: the
-    Document, the pinned Version and the tab. Never a tab id of this Document, so it cannot match a local tab."""
-    return f"{src.get('document')}@{src.get('version')}:{src.get('tab')}"
+    Document (empty for a Version of this Document), the pinned Version and the tab. Never a tab id of this
+    Document, so it cannot match a local tab."""
+    return f"{src.get('document') or ''}@{src.get('version')}:{src.get('tab')}"
 
 
 def cross_package(kind, doc, enc):
@@ -132,7 +133,7 @@ class CrossTabInputs:
         view carries the package the parent sent (`package`); otherwise it is read from the open tab. Raises
         KernelError when no tab matches."""
         with self._resolving(src):
-            if links.is_cross_link(src):         # a pinned Version of another Document: the package the parent sent
+            if links.is_pinned(src):         # a pinned Version of another Document: the package the parent sent
                 return self._external_doc(src, "studio").package
             doc = self._provide("studio", src.get("uid"), src.get("path"), src.get("tab"))
             if doc is None:

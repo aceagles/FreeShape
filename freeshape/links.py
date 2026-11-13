@@ -68,6 +68,13 @@ def is_cross_link(src, own_id=None):
     return bool(doc) and doc != own_id
 
 
+def is_pinned(src, own_id=None):
+    """Whether a source reads a Version: it names another Document (a cross-Document link), or carries a `version` and
+    no `document` (I1.11: a source pinned to a Version of its own Document). A pinned source is read from
+    open_version, so the Link graph holds no live edge for it."""
+    return is_cross_link(src, own_id) or (bool(src.get("version")) and not src.get("document"))
+
+
 def _default_flat_pattern_of(state, pid):
     from . import sheetmetal as SM
     return SM.flat_pattern(state.parts[pid].shape, state.sheet[pid], state.named(pid))
@@ -125,6 +132,7 @@ class LinkResolver:
     def __init__(self, find_open_studio=None, find_open_assembly=None, flat_pattern_of=None, load_document=None,
                  load_assembly=None, folder=None, registry=None):
         self.folder = folder       # the open FolderDocument whose manifest resolves tab ids, if any
+        self.own_id = None         # the id of the Document the tabs belong to, when there is no `folder` (the engine)
         self._registry = registry  # finds another Document by id; default: the open folder's registry
         self._others = {}          # Document id -> (folder path, trusted FolderDocument opened in place)
         self._views = {}           # (Document id, folder path, version name) -> read-only version view
@@ -179,6 +187,11 @@ class LinkResolver:
         """The trusted folder Document registered under `doc_id`. Found through the registry only: the link holds
         no path, and a registry record the app did not make trusted (or whose folder is gone) is not opened.
         Raises KernelError naming the id."""
+        own = self.folder
+        own_id = getattr(own, "id", None) or self.own_id
+        doc_id = doc_id or own_id          # no Document named: a Version of the Document itself (I1.11)
+        if own is not None and own.trusted and own.path and doc_id == own.id:
+            return own.path, own
         reg = self.registry
         if not isinstance(doc_id, str) or reg is None:
             raise K.KernelError(f"Document “{doc_id}” is not in the Document registry")
@@ -189,7 +202,14 @@ class LinkResolver:
         hit = self._others.get(doc_id)
         if hit is None or hit[0] != path:
             from .doc_folder import FolderDocument
-            other = FolderDocument.open_document(path, registry=reg)     # trusted: opens in place, no clone
+            if doc_id == own_id:
+                # The Document itself, read only for its Versions: not opened as a Document, which would load its tabs
+                # and resolve this very pin again without end (a view and a Document still opening are not trusted).
+                other = FolderDocument()
+                other.id, other.path, other.trusted, other.registry = doc_id, path, True, reg
+                other.name = getattr(own, "name", None) or other.name
+            else:
+                other = FolderDocument.open_document(path, registry=reg)     # trusted: opens in place, no clone
             if other.id != doc_id:
                 raise K.KernelError(f"The folder registered for Document “{doc_id}” holds a different Document")
             hit = self._others[doc_id] = (path, other)
@@ -230,7 +250,8 @@ class LinkResolver:
         """Where a cross-Document source stands: {document, pinned, latest, update_available, error}. `latest` is the
         newest Version of the other Document as the registry's folder has it now; a received Document changes only
         when it is imported again. Never raises."""
-        st = {"document": src.get("document"), "pinned": src.get("version"), "latest": None,
+        own = getattr(self.folder, "id", None)
+        st = {"document": src.get("document") or own, "pinned": src.get("version"), "latest": None,
               "update_available": False, "error": None}
         try:
             names = [v["name"] for v in self.link_versions(src)]
@@ -239,7 +260,8 @@ class LinkResolver:
             return st
         st["latest"] = names[-1] if names else None
         if st["pinned"] not in names:
-            st["error"] = f"Version “{st['pinned']}” of Document “{st['document']}” does not exist"
+            st["error"] = (f"Version “{st['pinned']}” of this Document does not exist" if not is_cross_link(src, own) else
+                           f"Version “{st['pinned']}” of Document “{st['document']}” does not exist")
         else:
             st["update_available"] = names[-1] != st["pinned"]
         return st
@@ -261,7 +283,7 @@ class LinkResolver:
         lies inside its folder -- the old uid/path flow then applies). Raises KernelError for a tab id the
         manifest doesn't have, a tab that failed to open, and a legacy path outside the Document folder,
         which is refused before any file is touched."""
-        if is_cross_link(src, getattr(self.folder, "id", None)):
+        if is_pinned(src, getattr(self.folder, "id", None)):
             return self._cross_doc(src, kind)
         folder = self.folder
         if folder is None:
@@ -502,7 +524,7 @@ def tab_sources(kind, data):
 # ------------------------------------------------------------------ the dependency view
 # Display label of each kind of link, keyed by the SOURCE_FEATURES type that holds it. A new source feature type
 # (the Derived feature) gets its label with one line here; a type with no line shows under its own type name.
-SOURCE_FEATURE_LABELS = {"variable_studio_ref": "Variable Studio reference"}
+SOURCE_FEATURE_LABELS = {"variable_studio_ref": "Variable Studio reference", "derived": "Derived"}
 ASSEMBLY_INSTANCE, DRAWING_SOURCE, CONTEXT_KIND = "Assembly instance", "Drawing source", "Context"
 
 
@@ -524,7 +546,7 @@ def _tab_uses(folder, tab):
     for label, src, fid in found:
         e = {"kind": label, "feature": fid, "document": None, "document_name": None, "target": src.get("tab"),
              "name": src.get("studio_name") or src.get("name") or "?", "pinned": None, "latest": None}
-        if is_cross_link(src, folder.id):
+        if is_pinned(src, folder.id):
             st = folder.resolver.link_status(src)
             e.update(document=src.get("document"), pinned=st["pinned"], latest=st["latest"])
             try:
@@ -588,20 +610,20 @@ def cross_sources(folder):
     for tab in folder.tabs:
         if tab.doc is None:
             continue
-        out += [(tab, s) for s in tab_sources(tab.kind, tab.doc) if is_cross_link(s, folder.id)]
+        out += [(tab, s) for s in tab_sources(tab.kind, tab.doc) if is_pinned(s, folder.id)]
     return out
 
 
 def cross_link_updates(folder):
     """The cross-Document pins that have a newer Version: a list of status dicts (see LinkResolver.link_status)
-    each with the `tab` id that holds it. One entry per distinct (Document, pinned Version)."""
+    each with the `tab` id that holds it and `local`: a pin to a Version of the Document itself. One entry per distinct (Document, pinned Version)."""
     seen, out = set(), []
     for tab, src in cross_sources(folder):
         st = folder.resolver.link_status(src)
         key = (st["document"], st["pinned"])
         if st["update_available"] and key not in seen:
             seen.add(key)
-            out.append(dict(st, tab=tab.id))
+            out.append(dict(st, tab=tab.id, local=not is_cross_link(src, folder.id)))
     return out
 
 
@@ -610,7 +632,7 @@ def update_cross_links(folder, document=None):
     mark the holding tabs dirty and rebuild. Returns the number of sources re-pinned."""
     n = 0
     for tab, src in cross_sources(folder):
-        if document is not None and src.get("document") != document:
+        if document is not None and (src.get("document") or folder.id) != document:
             continue
         st = folder.resolver.link_status(src)
         if st["update_available"]:
@@ -728,8 +750,8 @@ def _repair_assembly_link(resolver, src):
 def repair_source(resolver, src, part_name=False):
     """Write back one source's current uid/path/display name, repairing a stale link the way resolving used
     to (for either an assembly instance's source or a drawing's source). Call this only right before saving."""
-    if is_cross_link(src, getattr(resolver.folder, "id", None)):
-        return            # names a tab of another Document: the pin is the link, nothing in this folder to repair
+    if is_pinned(src, getattr(resolver.folder, "id", None)):
+        return            # names a tab of another Document, or of a Version: the pin is the link, nothing in this folder to repair
     kind = src.get("kind")
     if kind == "studio":
         _repair_studio_link(resolver, src, part_name=part_name)

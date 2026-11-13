@@ -10,6 +10,7 @@ from conftest import (TOP, add, rect_lines, region_refs, shape_fingerprint, sket
 from freeshape import doc_folder as DF
 from freeshape import doc_registry as R
 from freeshape import features as F
+from freeshape import kernel as K
 from freeshape import links as L
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -91,6 +92,25 @@ def test_a_version_view_reads_its_own_variables_and_sources(tmp_path, probe):
     assert vdoc.link_inputs is not None and view.resolver.folder is view
     # the Workspace keeps the edited values
     assert live.state.vars["w"] == 50
+    view.close()
+
+
+def test_a_version_view_resolves_a_derived_from_its_own_source(tmp_path):
+    """I1.11: the Derived feature itself (not the probe) reads the Version's source tab, not the Workspace's."""
+    fd, var, src, use = _doc(tmp_path, _reg(tmp_path))
+    d = add(use.doc, "derived", source=L.studio_source(src), parts=[next(iter(src.doc.state.parts))],
+            sketches=[], connectors=[])
+    assert not use.doc.errors, use.doc.errors
+    part = f"{d['id']}/1"
+    v1_vol = round(K.volume(use.doc.state.parts[part].shape), 4)
+    fd.save()
+    fd.create_version("v1")
+    _edit_workspace(fd, var, src)
+    assert round(K.volume(fd.tab(use.id).doc.state.parts[part].shape), 4) != v1_vol
+    view = fd.open_version("v1")
+    vdoc = view.tab(use.id).doc
+    assert not vdoc.errors, vdoc.errors
+    assert round(K.volume(vdoc.state.parts[part].shape), 4) == v1_vol
     view.close()
 
 

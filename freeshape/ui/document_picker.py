@@ -20,12 +20,16 @@ class DocumentVersionPicker(QWidget):
     """Two combos, objectNames `picker_document` and `picker_version`. `selection()` is (document id, Version name)
     or None. Lists the registry's trusted Documents whose folder exists, except `exclude_id` (the open Document).
     `local_label` adds a first choice of that name (`is_local()`, no Version, `selection()` None) for a picker
-    that may also stay in the open Document; the Version combo then starts on a "choose" row, not the newest."""
+    that may also stay in the open Document; the Version combo then starts on a "choose" row, not the newest.
+    `local_versions` (a callable returning the open Document's Version names, newest first; only with `local_label`)
+    makes that choice pinnable: its Version combo is then enabled, with "Follow workspace" (no pin) first and the
+    default, and `local_pin()` is the Version chosen or None. Without it the combo is disabled for the local choice."""
     changed = Signal()
 
-    def __init__(self, registry, exclude_id=None, parent=None, local_label=None):
+    def __init__(self, registry, exclude_id=None, parent=None, local_label=None, local_versions=None):
         super().__init__(parent)
         self.registry = registry
+        self.local_versions = local_versions if local_label else None
         form = QFormLayout(self)
         form.setContentsMargins(0, 0, 0, 0)
         self.doc_combo = QComboBox()
@@ -54,9 +58,12 @@ class DocumentVersionPicker(QWidget):
         self.version_combo.clear()
         self.note.setText("")
         doc = self.doc_combo.currentData()
-        self.version_combo.setEnabled(doc != LOCAL)
+        self.version_combo.setEnabled(doc != LOCAL or self.local_versions is not None)
         if doc == LOCAL:
-            pass
+            if self.local_versions is not None:
+                self.version_combo.addItem("Follow workspace", None)
+                for v in self.local_versions():
+                    self.version_combo.addItem(v, v)
         elif doc is None:
             self.note.setText("No other Documents on this machine.")
         else:
@@ -77,6 +84,18 @@ class DocumentVersionPicker(QWidget):
     def is_local(self):
         """Whether the `local_label` choice is the current one."""
         return self.doc_combo.currentData() == LOCAL
+
+    def local_pin(self):
+        """The Version the local choice is pinned to, or None (follow the Workspace, or not the local choice)."""
+        return self.version_combo.currentData() if self.is_local() and self.local_versions is not None else None
+
+    def set_local_pin(self, version):
+        """Choose the local choice pinned to `version`; a Version the list lacks is kept as a row of its own, so an
+        existing pin is never silently dropped."""
+        self.doc_combo.setCurrentIndex(self.doc_combo.findData(LOCAL))
+        if version and self.version_combo.findData(version) < 0:
+            self.version_combo.addItem(f"{version} (not found)", version)
+        self.version_combo.setCurrentIndex(max(0, self.version_combo.findData(version)))
 
     def selection(self):
         doc, ver = self.doc_combo.currentData(), self.version_combo.currentData()

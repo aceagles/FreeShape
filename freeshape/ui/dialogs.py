@@ -1097,6 +1097,14 @@ class FeatureDialog(_ResizableFrame):
             return [SimpleNamespace(id=t["id"], name=t["name"], kind=t["kind"]) for t in tabs
                     if t.get("kind") == "studio"]
         fd = getattr(self.main, "folder", None)
+        pin = getattr(self, "_derived_pin", None)
+        if pin and fd is not None:                      # pinned to a Version of this Document: that Version's tabs
+            try:
+                tabs = fd.registry.describe(fd.id, pin)["tabs"]
+                return [SimpleNamespace(id=t["id"], name=t["name"], kind=t["kind"]) for t in tabs
+                        if t.get("kind") == "studio"]
+            except (K.KernelError, AttributeError):
+                pass
         mine = self.main._folder_tab(self.doc) if hasattr(self.main, "_folder_tab") else None
         return [t for t in (fd.tabs if fd is not None else []) if t.kind == "studio" and t is not mine]
 
@@ -1126,20 +1134,32 @@ class FeatureDialog(_ResizableFrame):
         which Part Studio tabs `derived_source` lists; the source is re-read when it changes."""
         from .document_picker import DocumentVersionPicker
         fd = self.main.folder
-        pk = DocumentVersionPicker(fd.registry, exclude_id=getattr(fd, "id", None), local_label="This Document")
+        def local_versions():                   # I1.11: newest first; none for a Document without Versions
+            try:
+                return [v["name"] for v in reversed(fd.versions())]
+            except K.KernelError:
+                return []
+        pk = DocumentVersionPicker(fd.registry, exclude_id=getattr(fd, "id", None), local_label="This Document",
+                                   local_versions=local_versions)
         pk.setObjectName("derived_document")
         src = p.get(spec["key"]) or {}
         self._derived_scope = None
+        self._derived_pin = None                # the Version of This Document the source is pinned to, if any
         if src.get("document") and src["document"] != getattr(fd, "id", None):
             pk.select(src["document"], src.get("version"))
             self._derived_scope = (src["document"], src.get("version"))
+        elif src.get("version"):
+            pk.set_local_pin(src["version"])
+            self._derived_pin = src["version"]
         self._derived_picker = pk
 
         def scope_changed():
+            was_local = self._derived_scope is None
             self._derived_scope = None if pk.is_local() else (pk.doc_combo.currentData(), pk.version_combo.currentData())
+            self._derived_pin = pk.local_pin()
             refill = getattr(self, "_derived_refill_tabs", None)
             if refill is not None:
-                refill()
+                refill(keep=was_local and pk.is_local())        # only the pin changed: keep the source and parts
             self._derived_gate()
         pk.changed.connect(scope_changed)
         h.setDirection(QBoxLayout.TopToBottom)
@@ -1181,6 +1201,8 @@ class FeatureDialog(_ResizableFrame):
             if tab is not None:
                 self.feature["params"][key] = (L.studio_source(tab) if scope is None else
                                                L.studio_source(tab, document=scope[0], version=scope[1]))
+                if scope is None and getattr(self, "_derived_pin", None):
+                    self.feature["params"][key]["version"] = self._derived_pin
             elif tid is None:
                 self.feature["params"][key] = {}
             for fill in self._derived_fills:
@@ -1188,8 +1210,20 @@ class FeatureDialog(_ResizableFrame):
             self._set_unlisted()
         cb.currentIndexChanged.connect(chosen)
 
-        def scope_changed():
-            """Another Document or Version: its own tabs, so no source, parts or sketches carry over."""
+        def scope_changed(keep=False):
+            """Another Document or Version: its own tabs, so no source, parts or sketches carry over. `keep`: only the
+            pin of This Document changed, so the source stays on the same tab and takes the new pin (or none)."""
+            cur_src = self.feature["params"].get(key) or {}
+            if keep and cur_src.get("tab"):
+                if self._derived_pin:
+                    cur_src["version"] = self._derived_pin
+                else:
+                    cur_src.pop("version", None)
+                fill_tabs(cur_src["tab"])
+                for fill in self._derived_fills:
+                    fill()
+                self._set_unlisted()
+                return
             for k_ in self._derived_owned:
                 self.feature["params"][k_] = []
             self.feature["params"][key] = {}

@@ -205,9 +205,9 @@ def _draw_sketch(p, sk, w, h):
     o, x, y = _plane_axes(sk.plane)
     lines = []
     for eid, e in s.entities.items():
-        pl = s.polyline(eid)
-        if len(pl) >= 2:
-            lines.append((pl, bool(e.get("construction"))))
+        for pl in s.polylines(eid):                 # text has one outline per glyph loop
+            if len(pl) >= 2:
+                lines.append((pl, bool(e.get("construction"))))
     pts2 = [pl for pl, _ in lines]
     if not pts2:
         return

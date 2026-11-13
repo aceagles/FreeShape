@@ -31,16 +31,26 @@ real parts.
 
 - **Part Studios** — sketches with constraints and dimensions; extrude, revolve, sweep, loft, fillet, chamfer,
   shell, draft, holes (ISO clearance / tapped / counterbore / countersink), real modelled ISO threads, patterns,
-  mirror, booleans, split, variables; rollback bar; STEP import with colours.
+  mirror, booleans, split (with planes, curved faces or sketch curves), variables; rollback bar; **folders** in
+  the feature list; STEP import with colours; export to STEP, STL and **BREP**.
 - **Assemblies** — insert parts (linked to their Part Studios), fastened / revolute / slider / cylindrical /
-  planar / ball mates, drag parts through their mates, an Onshape-style move / rotate triad, interference check,
-  bill of materials, STEP export with structure.
-- **Drawings** — first or third angle views with hidden-line removal, projected and isometric views,
-  dimensions that follow the model, notes, title block; export **DXF with real AutoCAD dimensions** and PDF.
-- **Sheet metal** — flanges, exact flat patterns (K-factor), automatic corner reliefs, flat-pattern DXF with
-  bend lines.
+  planar / ball mates, gear / rack and pinion / screw relations, drag parts through their mates, an Onshape-style
+  move / rotate triad, a standard parts library (ISO screws, nuts, washers, bearings), patterns, exploded views,
+  interference check, bill of materials, STEP export with structure.
+- **Drawings** — first or third angle views with hidden-line removal, projected, isometric, section and detail
+  views, dimensions that follow the model, parts list and balloons, notes, title block; export **DXF with real
+  AutoCAD dimensions** and PDF.
+- **Sheet metal** — flanges, hems, jogs, tabs, convert a plate, exact flat patterns (K-factor), automatic corner
+  reliefs, flat-pattern DXF with bend lines, and nesting on stock sheets for cutting.
+- **Configurations** — many sizes of a part from one table of variables, and derived parts linked from other
+  Part Studios.
+- **Version history** — named versions kept in the file (and one each time you save a change), with a readable
+  *what changed* between any two — features, settings, sketch dimensions, part volumes — and the material added
+  and removed shown in 3D. Restore any version, or open it in a new tab.
+- **Python plugins** — add your own parametric features (with a proper dialog, live preview and expressions) and
+  commands; see [PLUGINS.md](PLUGINS.md). A spur gear feature comes as an example.
 - **Fast to drive** — a **Search tools** box (Ctrl+Space) finds any tool by name, box selection with a Select
-  filter, Space to deselect, arrow keys to turn the view, and smart sketch snapping (see *What's new in 1.8.4*).
+  filter, Space to deselect, arrow keys to turn the view, and smart sketch snapping (see [CHANGES.md](CHANGES.md)).
 - **Feels like Onshape** — view cube, home page with recent projects, mouse controls, dark / light theme,
   autosave and crash recovery, a Windows installer with file icons.
 
@@ -48,24 +58,32 @@ real parts.
 |---|---|---|---|
 | ![](docs/screenshot.png) | ![](docs/images/assembly.png) | ![](docs/images/drawing.png) | ![](docs/images/sheet_metal.png) |
 
-## What's new in 1.8.4
+## What's new in 2.0
 
-- **Box selection** in the 3D view and the sketcher: drag left-to-right (blue, solid) to select what is fully
-  inside, right-to-left (green, dashed) to also select what the box touches. Shift / Ctrl adds to the selection.
-- **Select menu** in the top bar: switch vertices, edges, faces, solids, sketches and planes on or off for clicks
-  and box selection. Vertices can now be selected too.
-- **Search tools** (`Ctrl+Space`, `Alt+C`, or the box in the top bar): type to filter tools and commands, Up / Down
-  to choose, `Enter` starts the tool, `Esc` closes it. Words like "round" find Fillet.
-- **Space bar** deselects everything; the **arrow keys** turn the view 15° per tap (from the Right view, three taps
-  give the edge between Right and Front, six give Front).
-- **Sketch snapping and inference**: hover a point or a line's midpoint, then move level or plumb with it and a
-  yellow dotted guide snaps the new point in line (adding a horizontal / vertical constraint). Lines also snap
-  **tangent** to circles and arcs. A **3-point arc keeps its three points**.
-- **Plane types**: Offset, Plane + point, Line + angle, Point + edge normal, Three points, Mid plane, Curve + point
-  and Tangent. *Automatic* picks the type from what you have selected, and **Sketch** does the same.
-- **Delete face** (heal, cap or leave the void open), **Move face** and **Offset surface**, for cleaning up and
-  editing imported STEP parts.
-- **Resizable feature windows** — drag the edge or corner of a feature or sketch panel.
+The biggest update yet — everything below is new since 1.8.5.
+
+- **Modelling** — sketch **splines, ellipses and text** (real letter outlines you can extrude or engrave);
+  **"Up to" ends** for Extrude and Revolve (next part, face, part or vertex); **feature patterns and mirror**
+  (repeat a hole or pocket, not just whole parts); draw and dimension **from the edges of the face you're
+  sketching on**; **Split** with any surface — curved faces or sketch curves — and several at once, keeping
+  both sides or just the one each arrow points to.
+- **Configurations and derived parts** — one Part Studio, many sizes from a table of variables (M5 × 20,
+  M6 × 30 …), used by assemblies, drawings and parts lists; bring parts from another Part Studio, kept linked.
+- **Assemblies** — a **standard parts library** (ISO screws, nuts, washers, dowels, bearings, heat-set inserts,
+  M2–M20), **exploded views**, **gear / rack and pinion / screw relations**, and **instance patterns**.
+- **Drawings** — **section views** with hatching, **detail views**, a **parts list** and **balloons**.
+- **Sheet metal** — **hems, jogs, tabs**, **convert a plate** to sheet metal, and **nesting for cutting** (parts
+  laid out on stock sheets, with material use, weight and cost, exported to DXF).
+- **Version history** — named versions kept in the file, a readable **what changed** between any two, with the
+  material added and removed shown in 3D; restore or open any version.
+- **Python plugins** — add your own parametric features and commands ([PLUGINS.md](PLUGINS.md)); a spur gear
+  feature comes as an example.
+- **Navigation** — mouse styles (Onshape, Touchpad, FreeCAD's CAD / Gesture / Blender / SolidWorks …), zoom
+  speed and smoother wheel zoom, **N** squares up to a face, Ctrl+Shift+arrow pans, Shift+E / Shift+W extrude or
+  revolve straight from a sketch, dialogs remember the last folder.
+- **Export** — binary STL (about a fifth of the size).
+- **Fixes** — making a sketch line horizontal / vertical no longer squashes it; a centre rectangle's diagonal no
+  longer shows outside its sketch; and many more (see [CHANGES.md](CHANGES.md)).
 
 See [CHANGES.md](CHANGES.md) for the full history.
 
@@ -74,13 +92,13 @@ See [CHANGES.md](CHANGES.md) for the full history.
 Get it from the [**latest release**](https://github.com/richiewillmott/FreeShape/releases/latest) — no Python or anything
 else needed:
 
-- **Windows:** `FreeShape-Setup-1.8.4.exe` — run it and follow the installer (it also updates an older version).
+- **Windows:** `FreeShape-Setup-1.8.5.exe` — run it and follow the installer (it also updates an older version).
   Windows SmartScreen may warn the first time because the installer isn't code-signed yet: click
   **More info → Run anyway**.
-- **Mac (Apple Silicon, M1 or newer):** `FreeShape-1.8.4-mac-arm64.dmg` — open it and drag FreeShape into Applications.
+- **Mac (Apple Silicon, M1 or newer):** `FreeShape-1.8.5-mac-arm64.dmg` — open it and drag FreeShape into Applications.
   It isn't signed by Apple yet, so the first time: right-click FreeShape in Applications → **Open** → **Open**.
-- **Linux:** `FreeShape-1.8.4-x86_64.AppImage` — make it executable and run it:
-  `chmod +x FreeShape-1.8.4-x86_64.AppImage && ./FreeShape-1.8.4-x86_64.AppImage`
+- **Linux:** `FreeShape-1.8.5-x86_64.AppImage` — make it executable and run it:
+  `chmod +x FreeShape-1.8.5-x86_64.AppImage && ./FreeShape-1.8.5-x86_64.AppImage`
   (or right-click → Properties → "Allow executing as program", then double-click). If it says FUSE is missing, run
   it with `--appimage-extract-and-run`, or install `libfuse2` (Ubuntu: `sudo apt install libfuse2t64`).
 
@@ -167,15 +185,18 @@ Things selected before opening a feature are pre-filled. Extrude and Plane show 
   (heal, cap or leave open), push or pull flat faces, or make a surface a set distance from faces.
 - **Mirror**, **Linear pattern**, **Circular pattern** — of parts.
 - **Boolean** — union, subtract, intersect parts.
-- **Import STEP** and **Export STEP / STL** (whole studio or one part from the Parts list).
+- **Import STEP / BREP** and **Export STEP / STL / BREP** (whole studio, or selected parts from the Parts list).
 
 **Feature list** — double-click to edit any feature; the model rolls back while you edit and everything
-after it regenerates when you accept. Right-click for rename, suppress, roll to here, hide/show, delete.
+after it regenerates when you accept. Right-click for rename, suppress, roll to here, hide/show, delete, and
+**Add to new folder** to group features that sit next to each other (collapse a folder with its arrow; right-click
+a folder to rename, suppress all, ungroup or delete it; drag features in and out).
 Drag the blue **rollback bar** to see the model at any point in history; new features are inserted at the bar.
 Features that fail to regenerate turn red — hover them for the reason. Hover or click a feature to see what it
 made highlighted on the model (its faces, or a sketch's curves), like Onshape.
 
-**Parts list** — right-click for rename, colour, hide/isolate, mass properties and per-part export.
+**Parts list** — right-click for rename, colour, hide/isolate, mass properties and per-part export. Select several
+parts (here or in the 3D view) and right-click to hide, isolate, export or **Auto colour** them all at once.
 
 **Measure** — select anything and its size shows bottom-right: face area, edge length and radius, part volume,
 mass and centre of mass. Select two things for the minimum distance, the X/Y/Z offsets, and the angle between them.
@@ -229,7 +250,8 @@ tab puts parts together and lets them move the way the real thing would — like
   duplicate, open its Part Studio, mass properties and the degrees of freedom it has left.
 - **Interference check** — shows in red where parts overlap, with the overlap volume.
 - **Bill of materials** — each different part with its quantity, volume and mass; copy it or save it as CSV.
-- **Export** — STEP keeps the assembly structure, part names and colours; STL is one mesh.
+- **Export** — STEP keeps the assembly structure, part names and colours; STL is one mesh; BREP is the exact
+  OpenCascade geometry (no names or colours).
 
 Assemblies save as `.fasm`. The file links to the Part Studio files and also keeps a copy of every part, so it
 still opens if a Part Studio file goes missing (it says so, and shows the saved copy). Try it with
@@ -287,7 +309,8 @@ Drawings save as `.fdwg` and keep a copy of the model, so they still open if the
 ## Scripting
 
 Everything the UI does goes through a small Python API, so models can be generated from code.
-See `examples/make_bracket.py`.
+See `examples/make_bracket.py`. Inside the app, **plugins** add features and commands, and **Document ▸ Plugins ▸
+Run a Python script…** runs a script against the open Part Studio — both are described in [PLUGINS.md](PLUGINS.md).
 
 ## Honest limits
 

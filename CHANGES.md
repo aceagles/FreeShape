@@ -1,6 +1,188 @@
 # FreeShape revisions
 
-## 1.8.4
+## 2.0.0
+
+The biggest update yet: everyday modelling (splines, ellipses, text, "Up to" ends, feature patterns, sketching
+from a part's edges), configurations and derived parts, assemblies (standard parts, exploded views, relations,
+patterns), drawings (sections, details, parts lists, balloons), sheet metal (hems, jogs, tabs, convert, nesting
+for cutting), version history, Python plugins, and new navigation. It was built and tested in stages — the
+1.9.x previews below — which together make 2.0.0.
+
+### Split, reworked (issue #20)
+- **Split with any surface**: planes, any face — flat or **curved** (a cylinder, cone, sphere, torus or an extruded
+  curve is extended so it cuts right through) — or **sketch curves** (lines, arcs, splines, pushed out both ways
+  into a cutting surface).
+- **As many splitting tools as you like** in one Split. Each has its own **Keep both sides**; untick it and an
+  **arrow** shows which side stays — drag it across, or click **Flip**, to keep the other side. Two crossing
+  planes through a cube give four pieces, or just the one quarter you choose.
+- Splits made before 2.0 open unchanged (their plane becomes the first tool).
+- Sweep can now follow sketch splines too.
+
+### 1.9.5 — stage 5 preview: plugins and version history
+- **Python plugins**: a plugin is a `.py` file in the plugins folder (Document ▸ Plugins ▸ Manage plugins…). It
+  can add
+  - **parametric features**, with the same dialog as built-in ones: numbers (expressions and `#variables`
+    work), choices, tick boxes, selections (faces, edges, vertices, parts, planes, axes, sketch regions) and
+    New / Add / Remove / Intersect. They preview live and rebuild with the model.
+  - **commands**, run once from the jigsaw button on the toolbar or Document ▸ Plugins.
+
+  A small geometry API (`freeshape.api`: boxes, cylinders, polygons, smooth outlines, extrude, revolve, union,
+  subtract, fillet …) keeps plugins short. Documents keep a copy of what each plugin feature made, so they open
+  — unchanged — on a computer without the plugin. **Run a Python script…** runs a script once against the open
+  Part Studio. Two examples come with FreeShape: a **Spur gear** feature (real involute teeth from the module and
+  number of teeth) and a **Part weights** command. See [PLUGINS.md](PLUGINS.md).
+- **Version history** (clock button, or Document ▸ Version history, Ctrl+Alt+H):
+  - **Create version…** keeps the model as it is now, with a name and a description; every save also keeps a
+    version when something changed (the last 50 of those are kept). Versions are saved in the file.
+  - Click a version to see **what changed since**, or Ctrl+click two to compare them, in plain words: features
+    added and removed, renamed, moved, suppressed, each setting that changed ("Depth: 10 mm → 16 mm"), sketch
+    edits ("Added a distance dimension (40 mm)", "Added 2 lines"), variables ("#wall: 3 → 4"), configurations,
+    part names and colours — and each part's volume before and after.
+  - **Show in 3D** shows the material added (green) and removed (red).
+  - **Restore** goes back to a version (undoable; a version of how it was is kept first), and **Open in a new
+    tab** opens an old version beside the current one.
+
+### 1.9.4 — sketching on a part
+- **Draw from the part's edges**, like Onshape: when you sketch on a face, its corners, edge midpoints, circle
+  centres and edges are snap targets for every drawing tool (they light up as you get near). A point placed on
+  a corner, midpoint or centre is fixed there; a point placed on an edge is held on it (a construction copy of
+  the edge is added for it), so the sketch stays attached to the part.
+- **Dimension from the part**: with the Dimension tool, click a corner of the face (or any part edge, as before)
+  and then your sketch geometry.
+- Drawing a horizontal or vertical line up to one of the face's edges ends it exactly on the edge, keeping it
+  level / upright.
+- The dashed diagonal that holds a centre rectangle's centre (and the edge copies made by snapping) only shows
+  while you edit the sketch, not in the 3D view afterwards.
+
+### 1.9.3 — stage 4 preview: configurations, derived parts, more sheet metal
+- **Configurations**: the Configurations button opens a table — each row a configuration (say "M5 × 20",
+  "M6 × 30") setting the studio's variables (values or expressions), plus optional columns that switch features
+  off. Pick the configuration shown from the toolbar. Assemblies insert any configuration (each shows in the
+  Insert panel), drawings can be of any configuration, and parts lists name it ("Spacer (Long)").
+- **Derived parts**: the Derived feature brings parts from another Part Studio (all, or the ones you pick, in
+  any configuration), kept linked: edit them there and they update here. A copy is saved with the document, so it
+  still opens if the other studio isn't there.
+- **Sheet metal**:
+  - **Hem**: fold edges right back over the sheet (180°), with a tight radius (half the thickness unless you
+    choose one).
+  - **Jog**: from an edge the sheet steps up or down by an offset and carries on parallel (two opposite 90°
+    bends).
+  - **Tab**: more sheet in a panel's own plane, from a sketch region drawn on it and touching it; flanges can go
+    on the tab's edges.
+  - **Convert to sheet metal**: a flat plate of even thickness (imported, or extruded) becomes sheet metal —
+    holes and all — so it can get flanges, be unfolded and be nested. Anything that isn't a plate is refused
+    with a clear message.
+  - All of them unfold exactly in the flat pattern (bend allowance from the K-factor) and export to DXF.
+
+### 1.9.2 — stage 3 preview: assemblies
+- **Standard parts library**, made on the spot from ISO size tables (no download, works offline), in the
+  assembly's Insert panel: socket head cap screws (ISO 4762), countersunk screws (ISO 10642), hex head screws
+  (ISO 4017), hex nuts (ISO 4032), washers (ISO 7089), dowel pins (ISO 8734), deep groove ball bearings (623 to
+  6205) and heat-set inserts, M2 to M20, with sensible lengths per size and a quantity. Screws sit with the
+  underside of the head on their origin and nuts / washers / bearings on theirs, so mates are quick. They show in
+  the bill of materials by their proper names, and are saved in the assembly.
+- **Exploded views**: the Explode button opens a panel: *Auto explode* moves every part out from the fixed one —
+  screws come out towards their heads, and stacks (washer, then nut) come apart in order, each clear of the last —
+  or add your own steps (select parts, a direction and a distance). A slider runs between assembled and
+  exploded. Only the display moves; positions and mates don't change. *Drawing of this exploded view* makes a
+  drawing of it, parts list and balloons included.
+- **Relations** between mates: **Gear** (two revolute mates turn together by the ratio of their teeth, opposite
+  ways or the same way for an internal gear), **Rack and pinion** (a revolute drives a slider: one turn moves
+  2π × the pinion radius) and **Screw** (a cylindrical mate moves by its pitch per turn). They keep counting
+  through any number of turns, take away a degree of freedom, and appear in the mates list (double-click to edit).
+- **Instance patterns**: select parts and choose Linear pattern (along X, Y, Z or a mate's axis, count and
+  spacing) or Circular pattern (round X, Y, Z or a revolute / cylindrical mate's axis, count and angle). The
+  copies follow their originals when those move; double-click the pattern to change it; deleting a copy skips it,
+  deleting an original removes its copies.
+
+### Navigation and export (from the 2.0 list)
+- **Binary STL**: exports are binary instead of text, about a fifth of the size for curved parts.
+- **Wheel zoom** follows how far you scroll, at most one notch per wheel event, so high-resolution wheels and
+  touchpads no longer zoom far too fast. **View > Zoom speed**: Slow, Normal, Fast.
+- **View > Mouse style**: Onshape (the default, unchanged), Touchpad (two-finger scroll pans, pinch or
+  Ctrl + scroll zooms, Alt-drag turns), and the FreeCAD-style CAD, Gesture, Blender, SolidWorks, OpenInventor,
+  Revit and OpenSCAD. A click without moving still selects in every style. All bindings are one table in
+  `freeshape/ui/navstyles.py`.
+- **Ctrl+Shift+arrow** pans the view.
+- **N** in the 3D view squares up to the flat face, plane or sketch under the mouse (or else the selected one)
+  from the nearer side, turned so its edges run level and upright on screen; again for the other side. With
+  nothing flat there it looks from the opposite side (Right
+  becomes Left); over a curved face it does nothing. (Issue #13.)
+- **Shift+E / Shift+W while sketching** finish the sketch and open Extrude / Revolve with its areas picked.
+- **Open, Save as, Import and Export** dialogs start in the folder you used last.
+
+### 1.9.1 — stage 2 preview: drawings and cutting
+- **Section views**: click *Section view*, click two points across a view for the cutting line (it snaps level
+  or upright; it can start just outside the view), then click beside it to place the section — you look from the
+  side you place it on. The cut faces are hatched (alternating direction from one part to the next), the parent
+  view gets the chain cutting line with thick ends, arrows and letters, and the view is titled *SECTION A-A*.
+- **Detail views**: click the middle of an area, click again for the circle, then place the enlarged view (2×
+  its parent). It shows everything the parent does inside the circle, hatching included, titled
+  *DETAIL B (4:1)*. Deleting a view takes its sections and details with it.
+- **Nest for cutting** (sheet metal toolbar, Document menu, or a sheet-metal part's right-click menu): set how
+  many of each part, the stock sheet (presets or custom), gap, edge margin and kerf compensation, and see them
+  laid out as you change things. Each part is turned to its tightest box; copies that interlock (triangles,
+  L shapes) are paired 180° apart. Shows sheets, material use, part and sheet weight, optional cost and the
+  offcut left, and exports every sheet in one DXF (layers SHEET, CUT, BEND, NOTES). Parts are filtered by
+  thickness, since a sheet is one thickness.
+- **Parts list and balloons** in drawings of an assembly (or of all the parts in a Part Studio): *Parts list*
+  puts the bill of materials as a table on the title block (ITEM, PART, QTY); *Balloon* — click a part in a view,
+  then where its number goes; *Auto balloon* numbers every part in a view, pointing at a spot you can actually
+  see. Balloons stay attached to their part, and everything exports to DXF and PDF.
+- Fixed: making a vertical sketch line horizontal (or the other way round) squashed it to a dot. The new
+  constraint now replaces the old one and the line turns, keeping its length; H / V work on several lines at once.
+
+### 1.9.0 — stage 1 preview: everyday modelling
+- **Sketch splines**: click the points the curve passes through; double-click or Enter to finish, or click the
+  first point again to close it into a loop. Its points are ordinary sketch points, so they can be dragged,
+  dimensioned and constrained (fix, coincident, horizontal / vertical distance …).
+- **Sketch ellipses**: click the centre, the end of the long axis, then the width. The long axis is a dashed
+  construction line you can dimension or align; the Dimension tool on the ellipse sets half its width. Points can
+  be put on an ellipse.
+- **Sketch text**: click where it starts and type it; choose the font, size (mm), bold, italic and angle.
+  Double-click text to edit it. Letters are real outlines, so they can be extruded, cut or engraved — the holes in
+  letters such as "o" and "A" stay holes. Text can be dimensioned from its start point.
+- **"Up to" end types for Extrude and Revolve**: *Up to next* (the first part in the way), *Up to face* (a face
+  or plane, flat or curved), *Up to part* and *Up to vertex*. Face and vertex take *Stop short by* (negative goes
+  past). Works for adding and cutting.
+- **Feature patterns and mirror**: Linear pattern, Circular pattern and Mirror can now repeat *features* (a hole,
+  a pocket, a boss) instead of whole parts: set *What to pattern* to Features and click them in the feature list.
+  The copies follow when the original feature is edited.
+- Test builds on GitHub now include **FreeShape-portable-<version>.zip** for Windows: unzip it and run
+  FreeShape.exe, nothing to install.
+
+## 1.8.5
+- **Folders in the feature list**, like Onshape. Select a run of features (next to each other in the list) and
+  right-click → *Add to new folder*, or click the new-folder button beside *Features*. A folder row shows its name
+  and how many features it holds; click its arrow (or double-click it) to collapse or expand it. Right-click a
+  folder to rename it, suppress / unsuppress everything in it, ungroup it (the features stay) or delete it with its
+  features. Selecting a folder row selects its features. Drag a feature under a folder row or between two of its
+  features to put it in; drag it elsewhere to take it out (or right-click → *Remove from folder*). The filter box
+  also matches folder names. A folder holding the rollback bar, or the feature being edited, always shows open.
+  Folders are saved in the file and are part of undo; grouping features never rebuilds the model.
+- **Hovered faces are outlined, not filled**: the face (or part) under the mouse gets an orange outline of its
+  edges, while selected faces stay filled, so the two can't be confused. Faces with no edges to outline (a sphere)
+  are still filled.
+- **Selection count beside the pointer**: a small badge next to the mouse shows how many things are selected, so
+  you can check you have all five faces before starting Delete face.
+- **Auto colour**: select several parts, right-click (in the Parts list or the 3D view) → *Auto colour N parts*.
+  Each part gets a different colour; choose it again for a different set, or Undo. Right-click empty space for
+  *Auto colour all parts*. Oranges and yellows are avoided, as those are the selection colours.
+- **BREP export and import** (OpenCascade's native `.brep`): Document → *Export BREP…*, the export dialogs, and
+  the Parts list menu. BREP stores the exact shapes as the kernel holds them, so nothing is translated or healed —
+  the most faithful exchange with FreeCAD and other OpenCascade programs. It has no part names or colours. BREP
+  files open like STEP files (a new tab, or *Import into this tab*), and assemblies can export BREP too.
+- **Right-click acts on the whole selection**: with several parts selected (in the Parts list or the 3D view),
+  right-clicking one of them hides, shows, isolates or exports them all. Several selected sketches / planes hide
+  together too. Right-clicking something that isn't selected still acts on just that one.
+- Fixed: hiding a part while a feature window (Split, Extrude …) was open left it in the view, catching clicks
+  meant for the parts behind it.
+- Fixed: small circles and holes on big parts were drawn as polygons (14 sides on a 5 mm hole in a 44 mm gear).
+  Curved edges now always get at least ~63 segments per full circle.
+- Fixed: the show / hide eyes disappeared off the right of the feature and parts lists when the side panel was
+  narrow or a name was long. Long names are now shortened with "…" (hover for the full name).
+
+### 1.8.4
 - **Space bar** deselects everything, in the 3D view and in the sketcher.
 - **Arrow keys turn the view** 15° per tap (Right, Left, Up, Down), animated. From the Right view, three taps
   give the edge between Right and Front, six taps give Front.

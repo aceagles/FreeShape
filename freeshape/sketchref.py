@@ -75,6 +75,14 @@ def _role_points(sketch, eid, etype, e):
     if etype == "arc":
         return {"centre": _pt(sketch, e["c"], eid), "end1": _pt(sketch, e["p1"], eid),
                 "end2": _pt(sketch, e["p2"], eid)}
+    # the curve types of upstream 2.0: an ellipse offers its centre, a spline the two ends of its point
+    # list (a closed one: its first point twice), a text its anchor point
+    if etype == "ellipse":
+        return {"centre": _pt(sketch, e["c"], eid)}
+    if etype == "spline" and e.get("pts"):
+        return {"end1": _pt(sketch, e["pts"][0], eid), "end2": _pt(sketch, e["pts"][-1], eid)}
+    if etype == "text":
+        return {"point": _pt(sketch, e["p"], eid)}
     raise K.KernelError(f"Sketch entity {eid} has unsupported type {etype}")
 
 
@@ -83,7 +91,8 @@ def roles(sketch, eid):
 
     Inputs: sketch dict (plane-local 2D), eid an entity id or point id.
     Output: point -> ["point"]; line -> ["end1", "end2", "mid"]; circle -> ["centre"];
-    arc -> ["centre", "end1", "end2"]. Raises K.KernelError if eid is not in the sketch.
+    arc -> ["centre", "end1", "end2"]; ellipse -> ["centre"]; spline -> ["end1", "end2"]; text -> ["point"].
+    Raises K.KernelError if eid is not in the sketch.
     """
     etype, e = _resolve(sketch, eid)
     pts = _role_points(sketch, eid, etype, e)

@@ -1,117 +1,118 @@
-"""Mouse styles: which button / modifier chord orbits, pans, zooms or selects in the 3D view.
+"""Mouse styles for the 3D view: which buttons and keys orbit, pan and zoom. Every style is one entry in STYLES.
 
-A style is data. Each binding is (buttons, mods, action[, ctx]):
-  buttons  the mouse buttons held, as letters in "LMR" (left, middle, right); "" means none held (touchpad hover).
-           Matched exactly: "R" does not match left+right held.
-  mods     modifier spec over S (Shift), C (Ctrl), A (Alt): an upper-case letter must be held, a lower-case one must
-           not be; letters left out are ignored. "" accepts any modifiers.
-  action   orbit | pan | zoom | select (select = the button does its normal job: pick, box-select, sketch, drag a part)
-  ctx      "" always; "view" only when no sketch or pick tool is active; "edit" only while one is.
-The first matching binding wins, so list specific chords before general ones. `wheel` is "zoom" (wheel zooms at the
-cursor) or "scroll" (a scroll pans, Ctrl+scroll zooms). `pivot` forces the orbit pivot (cursor | centre | origin);
-None follows the user's Rotate-around setting.
-
-The button / modifier mappings follow the ones documented by FreeCAD's navigation styles (Gui/Navigation).
+A rule is (buttons held, modifier key, action):
+  buttons   "L", "M", "R" or a chord such as "LM" (both held); "" is a move with no button held (touchpads)
+  modifier  "", "ctrl", "shift" or "alt" (the only modifier held), or two joined as "ctrl+shift"
+  action    "orbit", "pan" or "zoom" (drag up / down to zoom)
+The first matching rule wins. A left click that doesn't move still selects in every style; with no rule for a plain
+left drag it draws a selection box. "wheel" is what the wheel (or two-finger scroll) does without Ctrl:
+"zoom", or "pan" for touchpads (then Ctrl + scroll and pinching zoom). Inside a sketch the left button belongs
+to the sketch; a style that orbits with a plain left drag orbits with Alt + left there instead.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from PySide6.QtCore import Qt
 
-NAV_ACTIONS = ("orbit", "pan", "zoom")
-_BUTTON_NAMES = {"L": "Left", "M": "Middle", "R": "Right"}
-_MOD_NAMES = (("C", "Ctrl"), ("S", "Shift"), ("A", "Alt"))
+STYLES = {
+    "onshape": {"label": "Onshape", "wheel": "zoom", "rules": [
+        ("R", "", "orbit"), ("M", "", "pan"), ("R", "ctrl", "pan"), ("M", "ctrl", "pan")]},
+    "touchpad": {"label": "Touchpad", "wheel": "pan", "rules": [
+        ("L", "alt", "orbit"), ("L", "shift", "pan"), ("R", "", "orbit"), ("M", "", "pan"), ("R", "ctrl", "pan"),
+        ("", "alt", "orbit"), ("", "shift", "pan"), ("", "ctrl+shift", "zoom")]},
+    "cad": {"label": "CAD (FreeCAD)", "wheel": "zoom", "rules": [
+        ("LM", "", "orbit"), ("MR", "", "orbit"), ("M", "", "pan"), ("M", "ctrl", "orbit")]},
+    "gesture": {"label": "Gesture (FreeCAD)", "wheel": "zoom", "rules": [
+        ("L", "", "orbit"), ("R", "", "pan"), ("R", "ctrl", "pan"), ("M", "", "pan"), ("LR", "", "zoom")]},
+    "blender": {"label": "Blender", "wheel": "zoom", "rules": [
+        ("M", "", "orbit"), ("M", "shift", "pan"), ("M", "ctrl", "zoom"), ("R", "", "orbit")]},
+    "solidworks": {"label": "SolidWorks", "wheel": "zoom_reverse", "rules": [
+        ("M", "", "orbit"), ("M", "ctrl", "pan"), ("M", "shift", "zoom"), ("R", "", "orbit")]},
+    "openinventor": {"label": "OpenInventor (FreeCAD)", "wheel": "zoom", "rules": [
+        ("L", "", "orbit"), ("M", "", "pan"), ("LM", "", "zoom"), ("R", "", "orbit")]},
+    "revit": {"label": "Revit", "wheel": "zoom", "rules": [
+        ("M", "", "pan"), ("M", "shift", "orbit"), ("R", "", "orbit")]},
+    "openscad": {"label": "OpenSCAD", "wheel": "zoom", "rules": [
+        ("L", "", "orbit"), ("R", "", "pan"), ("M", "", "zoom"), ("R", "shift", "zoom")]},
+}
+DEFAULT = "onshape"
+ZOOM_SPEEDS = [("slow", "Slow", 0.5), ("normal", "Normal", 1.0), ("fast", "Fast", 1.8)]
+
+_BTN = {"L": Qt.LeftButton, "M": Qt.MiddleButton, "R": Qt.RightButton}
 
 
-def _mods_match(spec: str, held: str) -> bool:
-    for ch in spec:
-        if ch.isupper():
-            if ch not in held:
-                return False
-        elif ch.upper() in held:
-            return False
-    return True
+def _held(buttons) -> str:
+    """Qt buttons held -> 'L', 'LM', 'MR' …"""
+    return "".join(k for k in "LMR" if buttons & _BTN[k])
 
 
-@dataclass(frozen=True)
-class NavStyle:
-    key: str
-    label: str
-    bindings: tuple
-    wheel: str = "zoom"
-    pivot: str | None = None
+def _modifier(mods) -> str:
+    """The modifier held ('' for none); two held are joined, as in 'ctrl+shift'."""
+    return "+".join(n for n, flag in (("ctrl", Qt.ControlModifier), ("shift", Qt.ShiftModifier),
+                                      ("alt", Qt.AltModifier)) if mods & flag)
 
-    def resolve(self, buttons: str, mods: str, editing: bool = False):
-        """The action for the buttons ("LMR" letters) and modifiers ("SCA" letters) held, or None."""
-        for b in self.bindings:
-            bb, mm, action = b[0], b[1], b[2]
-            ctx = b[3] if len(b) > 3 else ""
-            if bb != buttons or (ctx == "view" and editing) or (ctx == "edit" and not editing):
-                continue
-            if _mods_match(mm, mods):
-                return action
+
+def style(name):
+    return STYLES.get(name) or STYLES[DEFAULT]
+
+
+def drag_action(name, buttons, mods, editing=False):
+    """What a drag with these buttons and keys does in this style: 'orbit', 'pan', 'zoom', or None.
+    `editing` is True inside a sketch: the left button is the sketch's, so no left-button rule applies, except
+    that Alt + left orbits in a style whose plain left drag orbits."""
+    held, mod = _held(buttons), _modifier(mods)
+    if not held:
         return None
-
-    def describe(self, action: str) -> str:
-        """How to do `action`, from the table (e.g. "Ctrl+Right-drag / Middle-drag")."""
-        out = []
-        for b in self.bindings:
-            if b[2] != action:
-                continue
-            ctx = b[3] if len(b) > 3 else ""
-            held = [n for c, n in _MOD_NAMES if c in b[1]]
-            if b[0]:
-                what = "+".join(_BUTTON_NAMES[c] for c in b[0]) + "-drag"
-            else:
-                what = "move"
-            s = "+".join(held + [what])
-            if ctx == "edit":
-                s += " when editing"
-            if s not in out:
-                out.append(s)
-        if action == "zoom":
-            out.insert(0, "Wheel" if self.wheel == "zoom" else "Ctrl+scroll")
-        elif action == "pan" and self.wheel == "scroll":
-            out.insert(0, "Scroll")
-        return " / ".join(out) or "-"
-
-    def help_line(self) -> str:
-        return "Orbit: %s   Pan: %s   Zoom: %s" % (
-            self.describe("orbit"), self.describe("pan"), self.describe("zoom"))
+    rules = style(name)["rules"]
+    if editing and held == "L":
+        return "orbit" if mod == "alt" and ("L", "", "orbit") in rules else None
+    for b, m, action in rules:
+        if b == held and m == mod:
+            return action
+    return None
 
 
-# left button as navigation: orbit in the plain view; with a sketch / pick tool active left keeps its job and Alt+left
-# orbits (FreeCAD: "in edit modes, hold Alt in addition")
-_LEFT_ORBIT = (("L", "A", "orbit", "edit"), ("L", "", "orbit", "view"), ("L", "", "select", "edit"))
-
-_ONSHAPE = (("R", "C", "pan"), ("R", "c", "orbit"), ("M", "", "pan"), ("L", "", "select"))
-
-STYLES = {s.key: s for s in (
-    NavStyle("onshape", "Onshape", _ONSHAPE),
-    NavStyle("touchpad", "Touchpad",
-             _ONSHAPE + (("", "CSa", "zoom"), ("", "Sca", "pan"), ("", "Acs", "orbit")), wheel="scroll"),
-    NavStyle("cad", "CAD", (
-        ("R", "CS", "zoom"), ("R", "Cs", "pan"), ("R", "Sc", "orbit"),
-        ("M", "cs", "pan"), ("MR", "", "orbit"), ("LM", "", "orbit"),
-        ("L", "", "select"))),
-    NavStyle("gesture", "Gesture", (("R", "", "pan"),) + _LEFT_ORBIT),
-    NavStyle("blender", "Blender", (
-        ("R", "CS", "zoom"), ("M", "Cs", "zoom"), ("M", "Sc", "pan"), ("M", "cs", "orbit"),
-        ("LR", "", "pan"), ("L", "", "select"))),
-    NavStyle("solidworks", "SolidWorks", (
-        ("M", "Cs", "pan"), ("M", "Sc", "zoom"), ("M", "cs", "orbit"), ("L", "", "select"))),
-    NavStyle("openinventor", "OpenInventor", (
-        ("R", "CS", "zoom"), ("M", "Cs", "zoom"), ("M", "cs", "pan"), ("LM", "", "zoom"),
-        ("L", "CS", "pan"), ("L", "C", "select"), ("L", "S", "select"),
-        ("L", "A", "orbit", "edit"), ("L", "", "orbit", "view"), ("L", "", "select", "edit"))),
-    NavStyle("revit", "Revit", (
-        ("R", "CS", "zoom"), ("M", "Cs", "zoom"), ("M", "Sc", "orbit"), ("M", "cs", "pan"),
-        ("LR", "", "pan"), ("L", "", "select"))),
-    NavStyle("openscad", "OpenSCAD", (
-        ("R", "S", "zoom"), ("R", "s", "pan"), ("M", "", "zoom")) + _LEFT_ORBIT),
-)}
-
-DEFAULT_STYLE = "onshape"
+def hover_action(name, mods):
+    """What moving the pointer with no button held does while these keys are down (the Touchpad style: Shift
+    pans, Alt orbits, Ctrl + Shift zooms), or None."""
+    mod = _modifier(mods)
+    if not mod:
+        return None
+    for b, m, action in style(name)["rules"]:
+        if b == "" and m == mod:
+            return action
+    return None
 
 
-def get_style(key) -> NavStyle:
-    return STYLES.get(str(key), STYLES[DEFAULT_STYLE])
+_BUTTON_NAMES = {"L": "Left", "M": "Middle", "R": "Right"}
+
+
+def describe(name, action) -> str:
+    """How to do `action` in this style, read from its rules: "Ctrl+Right-drag / Middle-drag"."""
+    st = style(name)
+    out = []
+    for b, m, a in st["rules"]:
+        if a != action:
+            continue
+        keys = [k.capitalize() for k in m.split("+") if k]
+        what = "+".join(_BUTTON_NAMES[c] for c in b) + "-drag" if b else "move"
+        text = "+".join(keys + [what])
+        if text not in out:
+            out.append(text)
+    if action == "zoom":
+        out.insert(0, "Ctrl+scroll" if st["wheel"] == "pan" else "Wheel")
+    elif action == "pan" and st["wheel"] == "pan":
+        out.insert(0, "Scroll")
+    return " / ".join(out) or "-"
+
+
+def help_line(name) -> str:
+    """One line saying how this style orbits, pans and zooms (the tooltip of its menu entry)."""
+    return "Orbit: %s   Pan: %s   Zoom: %s" % (describe(name, "orbit"), describe(name, "pan"), describe(name, "zoom"))
+
+
+def wheel_action(name, mods):
+    """What the wheel / two-finger scroll does: 'zoom', 'zoom_reverse' or 'pan'. Ctrl always zooms."""
+    w = style(name)["wheel"]
+    if mods & Qt.ControlModifier and w == "pan":
+        return "zoom"
+    return w

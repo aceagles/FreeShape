@@ -10,6 +10,7 @@ from OpenGL import GL
 from PySide6.QtCore import Qt, Signal, QTimer, QPointF, QRectF, QPoint
 from PySide6.QtGui import QPainter, QColor, QFont, QPen, QPolygonF, QSurfaceFormat, QCursor
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtWidgets import QLabel
 
 from .. import kernel as K
 from . import theme
@@ -176,6 +177,14 @@ class Viewport(QOpenGLWidget):
         self._box = None                          # (x0, y0, x1, y1) while the box is being dragged
         self.sketcher = None                        # active sketch controller
         self.pick_handler = None                    # callable(Pick) while a feature dialog is open
+        # how many things are selected, shown beside the mouse pointer like Onshape (a small widget that follows
+        # the pointer, so moving the mouse doesn't redraw the 3D view)
+        self.count_badge = QLabel(self)
+        self.count_badge.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.count_badge.setStyleSheet("background: #e8891c; color: white; font-weight: 700; font-size: 12px; "
+                                       "border-radius: 8px; padding: 1px 6px;")
+        self.count_badge.hide()
+        self.selectionChanged.connect(self._update_count_badge)
         self._mesh_cache = {}
         self._placed_cache = {}
         self.progress_cb = None   # callable(i, n, text) while a long import fills the scene
@@ -194,10 +203,11 @@ class Viewport(QOpenGLWidget):
         self.ghosts = []          # translucent highlight meshes: [(Mesh, (r, g, b, a))]
         self.drag_handler = None  # assemblies: object with press(x, y, e) -> bool, move(x, y, e), release(x, y, e)
         self._part_drag = False
-        self._nav = navstyles.get_style(navstyles.DEFAULT_STYLE)   # mouse style: see navstyles.STYLES
-        self.zoom_speed = 1.0          # multiplier on the zoom per wheel notch
-        self._tp = None
+        self._tp = None                # navigating with no button held (Touchpad style): (action, (x, y), pivot)
         self.orbit_mode = "cursor"     # what right-drag rotates about: cursor | centre | origin
+        self.nav_style = navstyles.DEFAULT   # mouse style (View > Mouse style)
+        self.zoom_speed = 1.0                # View > Zoom speed
+        self._nav = None                     # what the current drag does: orbit / pan / zoom / None
         self._thumb = False            # drawing a clean picture for the home page
         self._orbiting = False
         self.last_click = None
@@ -258,7 +268,7 @@ class Viewport(QOpenGLWidget):
         R, t = M[:3, :3], M[:3, 3]
         out = K.Mesh((m.verts @ R.T + t).astype(np.float32), (m.normals @ R.T).astype(np.float32), m.tris,
                      m.tri_face, m.face_ranges, [(np.asarray(e) @ R.T + t) for e in m.edge_polys],
-                     (np.asarray(m.vertices, float) @ R.T + t).astype(np.float32))
+                     (np.asarray(m.vertices, float) @ R.T + t).astype(np.float32), m.face_edges)
         if len(self._placed_cache) > 400:
             self._placed_cache.clear()
         self._placed_cache[key] = (m, out)
@@ -407,6 +417,52 @@ class Viewport(QOpenGLWidget):
             self.animate_to((target, R, scale))
         else:
             self.cam.set_state((target, R, scale))
+            self.update()
+
+    def look_along(self, normal=None, anchor=None, animate=True, axes=()):
+        """N in the 3D view. With a flat thing's normal: look straight at it from whichever side is nearer, or
+        from the other side if the view already is. With None: look from the opposite side (Right -> Left).
+        Keeps the zoom; the view is turned so it sits square on screen — 'up' snaps to the nearest direction along
+        or across `axes` (the face's longest straight edge, or a plane's X), or the X / Y / Z axes when there are
+        none (a round face, or the flip). Centres on `anchor`."""
+        R = self.cam.R
+        back, up = np.asarray(R[2], float), np.asarray(R[1], float)
+        if normal is None:
+            nb = -back
+        else:
+            n = np.asarray(normal, float) / (np.linalg.norm(normal) + 1e-300)
+            nb = n if float(n @ back) >= 0 else -n
+            if float(nb @ back) > 1 - 1e-6:                  # already square to it: the other side
+                nb = -nb
+        u = up - (up @ nb) * nb
+        if np.linalg.norm(u) < 1e-6:
+            u = np.asarray(R[2], float) - (np.asarray(R[2], float) @ nb) * nb
+        u = u / (np.linalg.norm(u) + 1e-300)
+        best = None
+        world = [np.array([1.0, 0, 0]), np.array([0, 1.0, 0]), np.array([0, 0, 1.0])]
+        for a in (list(axes) or world):                     # the face's own edges first; else X / Y / Z
+            a = np.asarray(a, float)
+            a = a - (a @ nb) * nb                           # the axis as it lies across the screen
+            L = np.linalg.norm(a)
+            if L < 1e-6:
+                continue
+            a = a / L
+            for cand in (a, -a, np.cross(nb, a), -np.cross(nb, a)):   # up, down, and the two square to it
+                score = float(cand @ u)
+                if best is None or score > best[0] + 1e-9:
+                    best = (score, cand)
+        if best is not None:
+            u = best[1]
+        R2 = basis(nb, u)
+        target = self.cam.target.copy()
+        if anchor is not None:
+            a = np.asarray(anchor, float)
+            target = a + ((target - a) @ nb) * nb             # bring the anchor to the middle of the view
+        state = (target, R2, self.cam.scale)
+        if animate:
+            self.animate_to(state)
+        else:
+            self.cam.set_state(state)
             self.update()
 
     def fit(self, animate=True):
@@ -710,6 +766,25 @@ class Viewport(QOpenGLWidget):
             GL.glVertex3f(*map(float, p))
         GL.glEnd()
 
+    def _hover_outline(self):
+        """Polylines outlining the hovered face or part, or None if it has no drawable edges (a sphere, say),
+        in which case it is filled as before."""
+        pk = self.hover
+        if pk is None or pk.kind not in ("face", "part"):
+            return None
+        m = next((m for pid, m, _ in self.parts if pid == pk.key[0]), None)
+        if m is None:
+            return None
+        if pk.kind == "face":
+            fe = getattr(m, "face_edges", None) or []
+            if pk.key[1] >= len(fe):
+                return None
+            idx = fe[pk.key[1]]
+        else:
+            idx = range(len(m.edge_polys))
+        polys = [m.edge_polys[i] for i in idx if i < len(m.edge_polys) and len(m.edge_polys[i]) >= 2]
+        return polys or None
+
     def _sel_color(self, pick):
         if pick in self.selection:
             return theme.SELECT
@@ -791,9 +866,12 @@ class Viewport(QOpenGLWidget):
             # selected / hovered parts and faces drawn again on top in their highlight colour
             GL.glPolygonOffset(0.5, 0.5)
             picks = list(self.selection) + ([self.hover] if self.hover is not None else [])
+            outline = self._hover_outline()
             for pk in picks:
                 if pk.kind not in ("part", "face"):
                     continue
+                if outline is not None and pk == self.hover and pk not in self.selection:
+                    continue            # hovered (not selected): drawn as an outline below, not filled
                 rng = b["ranges"].get(pk.key[0])
                 if rng is None:
                     continue
@@ -842,6 +920,18 @@ class Viewport(QOpenGLWidget):
                 self._depth(None)
                 GL.glDepthRange(0, 1)
         GL.glLineWidth(1.4)
+
+        # ---- the face or part under the mouse: an outline of its edges (Onshape-style), so it can't be mistaken
+        # for a selected face, which is filled
+        outline = self._hover_outline()
+        if outline:
+            GL.glLineWidth(4.0)
+            GL.glColor3f(*theme.HOVER)
+            GL.glDepthRange(0, 0.99998)
+            for poly in outline:
+                self._draw_polyline(poly)
+            GL.glDepthRange(0, 1)
+            GL.glLineWidth(1.4)
 
         # ---- hovered / selected vertices as dots
         hv = [pk for pk in list(self.selection) + ([self.hover] if self.hover is not None else [])
@@ -936,7 +1026,10 @@ class Viewport(QOpenGLWidget):
             if self.sketcher and self.sketcher.fid == fid:
                 continue
             sk = sr.sketch
+            helpers = sk.helper_ids()
             for eid, e in sk.entities.items():
+                if eid in helpers:
+                    continue
                 pk = Pick("sketch_line", (fid, eid))
                 col = self._sel_color(pk) or (theme.SKETCH_CONSTRUCTION if e.get("construction") else theme.SKETCH_REMOTE)
                 if e.get("construction"):
@@ -944,15 +1037,16 @@ class Viewport(QOpenGLWidget):
                     GL.glLineStipple(2, 0x0F0F)
                 GL.glLineWidth(3.5 if col in (theme.SELECT, theme.HOVER) else 1.6)
                 GL.glColor3f(*col)
-                pts = sk.polyline(eid)
                 if e["type"] == "point":
+                    pts = sk.polyline(eid)
                     GL.glPointSize(6)
                     GL.glBegin(GL.GL_POINTS)
                     GL.glVertex3f(*sr.plane.to_world(*pts[0]))
                     GL.glEnd()
                 else:
                     self._depth(pk)
-                    self._draw_polyline([sr.plane.to_world(u, v) for u, v in pts])
+                    for pts in sk.polylines(eid):
+                        self._draw_polyline([sr.plane.to_world(u, v) for u, v in pts])
                     self._depth(None)
                 GL.glDisable(GL.GL_LINE_STIPPLE)
         GL.glDepthRange(0, 1)
@@ -1371,13 +1465,17 @@ class Viewport(QOpenGLWidget):
             for fid, sr, _ in self.sketches:
                 if self.sketcher and self.sketcher.fid == fid:
                     continue
+                helpers = sr.sketch.helper_ids()
                 for eid, e in sr.sketch.entities.items():
-                    if e["type"] == "point":
+                    if e["type"] == "point" or eid in helpers:
                         continue
-                    pts = np.array([sr.plane.to_world(u, v) for u, v in sr.sketch.polyline(eid, 32)], np.float32)
-                    A.append(pts[:-1])
-                    B.append(pts[1:])
-                    owner += [("sketch_line", (fid, eid))] * (len(pts) - 1)
+                    for poly in sr.sketch.polylines(eid, 32):
+                        if len(poly) < 2:
+                            continue
+                        pts = np.array([sr.plane.to_world(u, v) for u, v in poly], np.float32)
+                        A.append(pts[:-1])
+                        B.append(pts[1:])
+                        owner += [("sketch_line", (fid, eid))] * (len(pts) - 1)
             if A:
                 self._segs = (np.vstack(A).astype(np.float64), np.vstack(B).astype(np.float64), owner)
             else:
@@ -1671,8 +1769,9 @@ class Viewport(QOpenGLWidget):
         want_sl, want_reg = want("sketch_line"), want("region") and not self.hidden_sketch_regions
         for fid, sr, meshes in self.sketches:
             if want_sl:
+                helpers = sr.sketch.helper_ids()
                 for eid, e in sr.sketch.entities.items():
-                    if e["type"] == "point":
+                    if e["type"] == "point" or eid in helpers:
                         continue
                     pts = np.array([sr.plane.to_world(u, v) for u, v in sr.sketch.polyline(eid, 32)], float)
                     if len(pts) >= 2 and boxsel.polyline_selected(self.cam.to_screen(pts)[:, :2], rect, crossing):
@@ -1716,13 +1815,47 @@ class Viewport(QOpenGLWidget):
     def mousePressEvent(self, e):
         self._anim = None
         pos = e.position()
+        # in a sketch the left button draws and selects (Alt+left still orbits in a style that orbits with left)
+        action = navstyles.drag_action(self.nav_style, e.buttons(), e.modifiers(), editing=bool(self.sketcher))
+        if self._press is not None and e.buttons() != e.button():
+            # a second button joins a drag (a chord such as left + middle): switch to what the chord does
+            if action is not None:
+                self._nav = action
+                self._box_start, self._box, self._part_drag = None, None, False
+                if action == "orbit" and self._pivot is None:
+                    self._pivot = self.orbit_pivot(pos.x(), pos.y())
+            return
         self._press = (pos.x(), pos.y(), e.button())
         self._last = (pos.x(), pos.y())
         self._moved = False
         self._pivot = None
-        nav = self._nav_action(e.buttons(), e.modifiers())
-        if nav == "orbit":
+        self._nav = action
+        if action == "orbit":
             self._pivot = self.orbit_pivot(pos.x(), pos.y())
+        if e.button() == Qt.LeftButton and action is not None:
+            # this style turns or moves the view with the left button: the cube and drag arrows still work,
+            # a click without moving still selects, but a drag doesn't draw a box
+            cube = self._cube_pick(pos.x(), pos.y())
+            if cube is not None:
+                self._press = None
+                self._nav = None
+                self._cube_click(cube)
+                return
+            mi = self._manip_hit(pos.x(), pos.y()) if self.manipulators else None
+            if mi is not None:
+                m = self.manipulators[mi]
+                t = self._manip_param(m, pos.x(), pos.y())
+                self._manip_drag = {"i": mi, "offset": (t - m["value"]) if t is not None else 0.0}
+                self._nav = None
+                return
+            self._part_drag = False
+            if self.drag_handler is not None and self.pick_handler is None and not self.sketcher and \
+                    not (e.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier)):
+                self._part_drag = bool(self.drag_handler.press(pos.x(), pos.y(), e))   # a part under it wins
+                if self._part_drag:
+                    self._nav = None                     # dragging the part, not turning the view
+            self._box_start, self._box = None, None
+            return
         if e.button() == Qt.LeftButton:
             cube = self._cube_pick(pos.x(), pos.y())
             if cube is not None:
@@ -1735,14 +1868,6 @@ class Viewport(QOpenGLWidget):
                 t = self._manip_param(m, pos.x(), pos.y())
                 self._manip_drag = {"i": mi, "offset": (t - m["value"]) if t is not None else 0.0}
                 return
-            if nav in navstyles.NAV_ACTIONS:      # this style gives the left button a navigation job
-                self._part_drag = False
-                if self.drag_handler is not None and self.pick_handler is None and not self.sketcher and \
-                        not (e.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)):
-                    self._part_drag = bool(self.drag_handler.press(pos.x(), pos.y(), e))   # a part under it wins
-                self._box = None
-                self._box_start = None
-                return
             if self.sketcher and self.sketcher.mouse_press(self, pos.x(), pos.y(), e):
                 self.update()
                 return
@@ -1753,10 +1878,26 @@ class Viewport(QOpenGLWidget):
             self._box = None
             self._box_start = (pos.x(), pos.y()) if (not self._part_drag and self.pick_handler is None) else None
 
+    def _update_count_badge(self):
+        n = len(self.selection)
+        xy = self._cursor_xy
+        if n == 0 or xy is None or self.sketcher is not None:
+            self.count_badge.hide()
+            return
+        self.count_badge.setText(str(n))
+        self.count_badge.setToolTip("")
+        self.count_badge.adjustSize()
+        self.count_badge.setMinimumWidth(self.count_badge.height())
+        self.count_badge.move(int(xy[0]) + 14, int(xy[1]) + 12)
+        self.count_badge.show()
+        self.count_badge.raise_()
+
     def mouseMoveEvent(self, e):
         pos = e.position()
         x, y = pos.x(), pos.y()
         self._cursor_xy = (x, y)
+        if self.selection or self.count_badge.isVisible():
+            self._update_count_badge()
         if self._last is not None and self._press is not None:
             dx, dy = x - self._last[0], y - self._last[1]
             if abs(x - self._press[0]) + abs(y - self._press[1]) > 3:
@@ -1781,24 +1922,18 @@ class Viewport(QOpenGLWidget):
                 self._last = (x, y)
                 self.update()
                 return
-            action = self._nav_action(e.buttons(), e.modifiers())
-            if btn == Qt.LeftButton and self._part_drag:
-                action = "select"                 # dragging a part, not navigating
-            if action == "orbit":
-                if self._moved:
-                    if self._pivot is None:       # the orbit started part-way through the drag (a chord)
-                        self._pivot = self.orbit_pivot(x, y)
-                    self.cam.orbit(dx, dy, self._pivot)
-                    self._orbiting = True
-                    self.update()
-            elif action == "pan":
-                self.cam.pan(dx, dy)
+            if self._nav is not None:
+                if self._nav == "orbit":
+                    if self._moved:
+                        if self._pivot is None:   # the orbit began part-way through the drag (a chord)
+                            self._pivot = self.orbit_pivot(x, y)
+                        self.cam.orbit(dx, dy, self._pivot)
+                        self._orbiting = True
+                elif self._nav == "pan":
+                    self.cam.pan(dx, dy)
+                elif self._nav == "zoom":                    # drag up to zoom in, about where the drag began
+                    self.cam.zoom(math.exp(dy * 0.01), self._press[0], self._press[1])
                 self.update()
-            elif action == "zoom":
-                self.cam.zoom(math.exp(dy * 0.01), self._press[0], self._press[1])
-                self.update()
-            elif btn != Qt.LeftButton:
-                pass
             elif btn == Qt.LeftButton and self.sketcher:
                 self.sketcher.mouse_drag(self, x, y, e)
                 self.update()
@@ -1851,8 +1986,8 @@ class Viewport(QOpenGLWidget):
     def _nav_hover_move(self, e, x, y):
         """Navigation with no button held (the Touchpad style: Shift+move pans, Alt+move orbits,
         Ctrl+Shift+move zooms). True when the move was consumed."""
-        mode = self._nav_action(e.buttons(), e.modifiers())
-        if mode not in navstyles.NAV_ACTIONS:
+        mode = navstyles.hover_action(self.nav_style, e.modifiers()) if e.buttons() == Qt.NoButton else None
+        if mode is None:
             self._tp = None
             return False
         if self._tp is None or self._tp[0] != mode:
@@ -1992,28 +2127,11 @@ class Viewport(QOpenGLWidget):
         img = img.copy((iw - cw_px) // 2, (ih - ch_px) // 2, cw_px, ch_px)
         return img.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
-    @property
-    def nav_style(self):
-        return self._nav.key
-
-    @nav_style.setter
-    def nav_style(self, key):
-        self._nav = navstyles.get_style(key)
-        self._tp = None
-
-    def _nav_action(self, buttons, mods):
-        """What the held buttons + modifiers do in the current mouse style: orbit | pan | zoom | select | None."""
-        b = "".join(c for c, f in (("L", Qt.LeftButton), ("M", Qt.MiddleButton), ("R", Qt.RightButton))
-                    if buttons & f)
-        m = "".join(c for c, f in (("S", Qt.ShiftModifier), ("C", Qt.ControlModifier), ("A", Qt.AltModifier))
-                    if mods & f)
-        return self._nav.resolve(b, m, editing=bool(self.sketcher) or self.pick_handler is not None)
-
     def orbit_pivot(self, x, y):
         """The point the view rotates about, by the 'Rotate around' setting:
         cursor = the model point under the mouse (Onshape-style), or the model's centre over empty space;
         centre = always the centre of the model; origin = always the origin."""
-        mode = self._nav.pivot or self.orbit_mode
+        mode = self.orbit_mode
         if mode == "origin":
             return np.zeros(3)
         if mode == "cursor":
@@ -2044,6 +2162,9 @@ class Viewport(QOpenGLWidget):
                 m["on_done"]()
             self.update()
             return
+        nav, self._nav = self._nav, None
+        if nav is not None and self._moved:
+            return                                       # the drag turned / moved / zoomed the view: not a click
         if press[2] == Qt.RightButton and not self._moved:
             pk = self.pick(pos.x(), pos.y(), kinds={"face", "edge", "region", "plane", "sketch_line"}) \
                 if not self.sketcher else None
@@ -2160,11 +2281,6 @@ class Viewport(QOpenGLWidget):
         pk = self.pick(pos.x(), pos.y())
         self.doubleClicked.emit(pk)
 
-    ZOOM_PER_NOTCH = 0.88          # one 120-unit mouse notch zooms by 12%, like Onshape
-    ZOOM_MAX_NOTCHES = 1.0         # cap on a single wheel event, so a burst of big deltas cannot jump the view
-    ZOOM_SPEEDS = {"slow": 0.5, "normal": 1.0, "fast": 2.0}
-    PAN_PX_PER_NOTCH = 40.0        # touchpad style: pixels panned per 120 wheel units when no pixelDelta is given
-
     @staticmethod
     def wheel_notches(e):
         """Wheel travel in mouse notches (120 angle units = 1). High-resolution devices send many small deltas that
@@ -2178,23 +2294,23 @@ class Viewport(QOpenGLWidget):
         """Zoom at the cursor, gliding over a few frames rather than jumping, like Onshape. In Touchpad style a
         two-finger scroll pans and Ctrl+scroll (pinch) zooms."""
         self._anim = None
-        if self._nav.wheel == "scroll" and not (e.modifiers() & Qt.ControlModifier):
-            pd, ad = e.pixelDelta(), e.angleDelta()
-            if not pd.isNull():
-                dx, dy = pd.x(), pd.y()
-            else:
-                dx, dy = ad.x() / 120.0 * self.PAN_PX_PER_NOTCH, ad.y() / 120.0 * self.PAN_PX_PER_NOTCH
-            if dx or dy:
-                self.cam.pan(dx, dy)
-                self.update()
+        act = navstyles.wheel_action(self.nav_style, e.modifiers())
+        if act == "pan":                                 # touchpad style: two-finger scroll moves the view
+            px = e.pixelDelta()
+            dx, dy = (px.x(), px.y()) if not px.isNull() else (e.angleDelta().x() / 4, e.angleDelta().y() / 4)
+            self.cam.pan(dx, dy)
+            self.update()
             return
-        notches = self.wheel_notches(e)
+        notches = self.wheel_notches(e)                  # a device that only sends pixel deltas still zooms
         if notches == 0:
             return
-        notches = max(-self.ZOOM_MAX_NOTCHES, min(self.ZOOM_MAX_NOTCHES, notches))
         pos = e.position()
-        self._zoom_left += notches * self.zoom_speed * math.log(self.ZOOM_PER_NOTCH)
-        self._zoom_left = max(-1.5, min(1.5, self._zoom_left))
+        # high-resolution wheels and touchpads send many small steps, so the zoom follows the amount scrolled,
+        # never more than one notch per event, times the zoom speed setting
+        steps = max(-1.0, min(1.0, notches)) * self.zoom_speed
+        if act == "zoom_reverse":
+            steps = -steps
+        self._zoom_left += steps * math.log(0.85)
         self._zoom_at = (pos.x(), pos.y())
         if not self._zoom_timer.isActive():
             self._zoom_timer.start(12)
@@ -2228,27 +2344,11 @@ class Viewport(QOpenGLWidget):
         pivot = np.zeros(3) if self.orbit_mode == "origin" else self.orbit_pivot(-1e6, -1e6)
         self.rotate_view_about(M @ Rb, M @ Ru, pivot, duration=0.15)
 
-    PAN_KEY_FRACTION = 0.10
-
-    def pan_step(self, sign_h, sign_v):
-        """Pan the view by 10% of what is visible (Ctrl+Shift+arrow). sign_h/sign_v move the camera; callers pass the opposite of the arrow so the model follows it, as in Onshape."""
-        self._anim = None
-        c = self.cam
-        c.target = c.target + c.R[0] * sign_h * self.PAN_KEY_FRACTION * c.w * c.scale \
-            + c.R[1] * sign_v * self.PAN_KEY_FRACTION * c.h * c.scale
-        self.update()
-
     def keyPressEvent(self, e):
         if self.sketcher and self.sketcher.key_press(self, e):
             self.update()
             return
         k = e.key()
-        mods = e.modifiers()
-        if k in self.ARROW_KEYS and (mods & Qt.ControlModifier) and (mods & Qt.ShiftModifier) \
-                and not (mods & (Qt.AltModifier | Qt.MetaModifier)) and not self.sketcher:
-            h, v = self.ARROW_KEYS[k]
-            self.pan_step(h, -v)       # Onshape: the model moves with the arrow (camera moves the other way)
-            return
         plain = not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
         if k == Qt.Key_QuoteLeft and not self.sketcher and self._cursor_xy:      # Onshape's Select other key
             self.open_select_other(*self._cursor_xy)
@@ -2259,6 +2359,15 @@ class Viewport(QOpenGLWidget):
             return
         if k in self.ARROW_KEYS and plain and not self.sketcher:
             self.rotate_step(*self.ARROW_KEYS[k])
+            return
+        mods = e.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier | Qt.MetaModifier)
+        if k in self.ARROW_KEYS and mods == (Qt.ControlModifier | Qt.ShiftModifier) and not self.sketcher:
+            # Ctrl+Shift+arrow pans, as in Onshape: the model moves the way the arrow points, a tenth of the view
+            # (not inside a sketch, where the arrows belong to the sketch)
+            sx, sy = {Qt.Key_Right: (1, 0), Qt.Key_Left: (-1, 0), Qt.Key_Up: (0, -1), Qt.Key_Down: (0, 1)}[k]
+            step = 0.1 * min(self.width(), self.height())
+            self.cam.pan(sx * step, sy * step)
+            self.update()
             return
         super().keyPressEvent(e)
 
@@ -2274,6 +2383,20 @@ class Viewport(QOpenGLWidget):
                 out.append((pk.key[0], *m.face_ranges[pk.key[1]]))
         return out
 
+    def event(self, e):
+        # touchpad pinch zooms at the fingers
+        from PySide6.QtCore import QEvent
+        if e.type() == QEvent.NativeGesture:
+            try:
+                if e.gestureType() == Qt.ZoomNativeGesture:
+                    p = e.position()
+                    self.cam.zoom(math.exp(-float(e.value())), p.x(), p.y())
+                    self.update()
+                    return True
+            except Exception:
+                pass
+        return super().event(e)
+
     def set_hover_none(self):
         if self.hover is not None:
             self.hover = None
@@ -2282,6 +2405,8 @@ class Viewport(QOpenGLWidget):
 
     def leaveEvent(self, e):
         self.clear_snaps()
+        self._cursor_xy = None
+        self.count_badge.hide()
         if self.hover:
             self.hover = None
             self.hoverChanged.emit(None)

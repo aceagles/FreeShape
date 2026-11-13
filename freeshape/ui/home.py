@@ -18,23 +18,25 @@ from .icons import icon
 CARD_W, THUMB_H = 236, 148
 LEGACY_EXTS = {"studio": (".fcad",)}        # extensions opened as a kind but never written
 STEP_EXTS = (".step", ".stp")
+BREP_EXTS = (".brep", ".brp")
+IMPORT_EXTS = STEP_EXTS + BREP_EXTS         # geometry files opened by importing them into a new Part Studio
 
 
 def kind_label(ext):
-    """"Part Studio" / "Assembly" / ... / "STEP file" for a file extension, or None."""
+    """"Part Studio" / "Assembly" / ... / "STEP file" / "BREP file" for a file extension, or None."""
     ext = ext.lower()
     kind = TK.kind_for_ext(ext) or next((k for k, xs in LEGACY_EXTS.items() if ext in xs), None)
-    return TK.get(kind).label if kind else "STEP file" if ext in STEP_EXTS else None
+    return TK.get(kind).label if kind else "STEP file" if ext in STEP_EXTS else "BREP file" if ext in BREP_EXTS else None
 
 
 def open_dialog_filter():
-    """The filter of the Open dialog: every registered tab kind (plus legacy and STEP files) and one per kind."""
+    """The filter of the Open dialog: every registered tab kind (plus legacy, STEP and BREP files) and one per kind."""
     def globs(exts):
         return " ".join("*" + x for x in exts)
-    every = list(TK.extensions()) + [x for xs in LEGACY_EXTS.values() for x in xs] + list(STEP_EXTS)
+    every = list(TK.extensions()) + [x for xs in LEGACY_EXTS.values() for x in xs] + list(IMPORT_EXTS)
     groups = [f"{r.plural} ({globs((r.ext,) + LEGACY_EXTS.get(r.kind, ()))})" for r in TK.records()]
-    return ";;".join([f"FreeShape documents and STEP files ({globs(every)})"] + groups
-                     + [f"STEP files ({globs(STEP_EXTS)})", "All files (*)"])
+    return ";;".join([f"FreeShape documents, STEP and BREP files ({globs(every)})"] + groups
+                     + [f"STEP files ({globs(STEP_EXTS)})", f"BREP files ({globs(BREP_EXTS)})", "All files (*)"])
 
 
 def thumbs_dir():
@@ -102,7 +104,7 @@ class Card(QFrame):
             self.thumb.setPixmap(pm.copy((pm.width() - (CARD_W - 16)) // 2, (pm.height() - THUMB_H) // 2,
                                          CARD_W - 16, THUMB_H))
         else:
-            name = "import" if ext in STEP_EXTS else {"assembly": "assembly", "drawing": "drawing"}.get(
+            name = "import" if ext in IMPORT_EXTS else {"assembly": "assembly", "drawing": "drawing"}.get(
                 TK.kind_for_ext(ext), "part")
             self.thumb.setPixmap(icon(name, 64).pixmap(64, 64))
         lay.addWidget(self.thumb)

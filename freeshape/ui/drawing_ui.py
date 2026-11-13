@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 from .. import drawing as DW
 from .. import kernel as K
 from ..drawing import DIRECTIONS, LAYER_STYLE, SCALES, SHEETS, TITLE_FIELDS, scale_label
+from . import filedlg
 from .icons import icon
 
 ROLE_ID = Qt.UserRole + 1
@@ -30,7 +31,9 @@ LAYER_COLOR = {
     "TITLE_LABEL": QColor(120, 126, 134), "TITLE_TEXT": QColor(20, 22, 26), "VISIBLE": QColor(14, 16, 20),
     "HIDDEN": QColor(70, 76, 86), "TANGENT": QColor(140, 146, 154), "CENTER": QColor(70, 76, 86),
     "DIM": QColor(14, 16, 20), "DIM_LOST": QColor(217, 48, 37), "NOTE": QColor(14, 16, 20),
-    "BEND": QColor(200, 40, 40),
+    "BEND": QColor(200, 40, 40), "HATCH": QColor(70, 76, 86), "CUT": QColor(14, 16, 20),
+    "CUT_THICK": QColor(14, 16, 20), "DETAIL": QColor(14, 16, 20), "BOM": QColor(14, 16, 20),
+    "BOM_THICK": QColor(14, 16, 20), "BALLOON": QColor(14, 16, 20),
 }
 
 
@@ -561,6 +564,10 @@ class DrawingPanel(QWidget):
             if a["type"] == "note":
                 label = "Note: " + str(a.get("text", "")).split("\n")[0][:30]
                 ic = "note"
+            elif a["type"] == "bom":
+                label, ic = f"Parts list ({len(doc.bom)} rows)", "bom"
+            elif a["type"] == "balloon":
+                label, ic = f"Balloon {a.get('item')}", "balloon"
             else:
                 g = doc.dim_geometry(a)
                 label = doc.dim_text(a, g[2]) if g else "?"
@@ -851,7 +858,7 @@ class DrawingController:
 
     # ------------------------------------------------------------------ exact views in the background
     def request_exact(self, doc, v):
-        shape = doc.shape
+        shape = doc.view_shape(v) if hasattr(doc, "view_shape") else doc.shape
         if shape is None:
             return
         key = K._hlr_key(shape, v["d"], v["up"])
@@ -999,6 +1006,11 @@ class DrawingController:
             "note": "Note: click where the note should go.",
             "projected": "Projected view: click the view to project from.",
             "place": "Click on the sheet to place the view. Esc to cancel.",
+            "section": "Section view: click two points on a view for the cutting line (it snaps level / upright), "
+                       "then click beside it to place the section — you look from that side.",
+            "detail": "Detail view: click the middle of the area to enlarge, click again for the circle's size, "
+                      "then click where the enlarged view goes.",
+            "balloon": "Balloon: click a part in a view, then click where its numbered balloon goes.",
         }.get(tool, "")
         if tool == "projected" and self.selection and self.doc and self.doc.view(self.selection[0]):
             self._place = {"kind": "projected", "parent": self.selection[0]}
@@ -1041,6 +1053,16 @@ class DrawingController:
               lambda: self.set_tool("dim"), "measure smart dimension size"),
             C("note", "Note", "Click where a text note should go (N).", lambda: self.set_tool("note"),
               "text annotation label"),
+            C("section_view", "Section view", "Click two points on a view for the cutting line, then where the "
+              "section goes.", lambda: self.set_tool("section"), "cut cross hatch"),
+            C("detail_view", "Detail view", "Click the middle of an area, its circle's size, then where the enlarged "
+              "view goes.", lambda: self.set_tool("detail"), "enlarge zoom circle"),
+            C("bom", "Parts list", "The bill of materials as a table on the sheet.", self.add_parts_list,
+              "bom bill of materials table"),
+            C("balloon", "Balloon", "Click a part in a view, then where its numbered balloon goes.",
+              lambda: self.set_tool("balloon"), "item number callout"),
+            C("auto_balloon", "Auto balloon", "Number every part in the selected view.",
+              lambda: self.auto_balloon(), "balloons item numbers callout"),
             C("sheet", "Sheet settings", "Sheet size, scale, projection and title block.", self.sheet_setup,
               "sheet size scale title block paper format"),
         ]
@@ -1261,6 +1283,12 @@ class DrawingController:
         if self.hint.startswith("⚠"):
             self.hint = ""
         P = self.canvas.to_paper(x, y)
+        if self.tool in ("section", "detail"):
+            self._cut_tool_click(P)
+            return
+        if self.tool == "balloon":
+            self._balloon_click(P)
+            return
         if self.tool == "place" or (self.tool == "projected" and self._place):
             self._place_view(P)
             return
@@ -1359,7 +1387,7 @@ class DrawingController:
             self._snap = self._find_snap(x, y)
             self.canvas.update()
             return
-        if self.tool in ("place", "projected", "note"):
+        if self.tool in ("place", "projected", "note", "section", "detail", "balloon"):
             self.canvas.update()
             return
         h = self._hit(x, y)
@@ -1420,6 +1448,10 @@ class DrawingController:
             m.addAction("View properties…", lambda: self.edit(oid))
             m.addAction("Projected view from this…", lambda: (setattr(self, "selection", [oid]),
                                                                 self.set_tool("projected")))
+            m.addAction(icon("section_view", 16), "Section view…", lambda: self.set_tool("section"))
+            m.addAction(icon("detail_view", 16), "Detail view…", lambda: self.set_tool("detail"))
+            if doc.bom:
+                m.addAction(icon("balloon", 16), "Auto balloon this view", lambda: self.auto_balloon(oid))
             act = m.addAction("Hidden edges")
             act.setCheckable(True)
             act.setChecked(bool(v.get("hidden")))
@@ -1482,6 +1514,8 @@ class DrawingController:
             doc.changed()
             return
         if a is None:
+            return
+        if a["type"] in ("bom", "balloon"):
             return
         if a["type"] == "note":
             txt, ok = QInputDialog.getMultiLineText(self.w, "Note", "Text:", a.get("text", ""))
@@ -1722,11 +1756,136 @@ class DrawingController:
         self.hint = "Dimension added. Click the next edge or point — Esc to stop."
         self.canvas.update()
 
+    # ------------------------------------------------------------------ parts list and balloons
+    def add_parts_list(self):
+        doc = self.doc
+        if doc is None:
+            return
+        try:
+            doc.add_bom_table()
+        except ValueError as e:
+            self.flash(str(e))
+
+    def auto_balloon(self, vid=None):
+        doc = self.doc
+        if doc is None or not doc.views:
+            return
+        v = doc.view(vid) if vid else None
+        if v is None:
+            sel = [doc.view(i) for i in self.selection if doc.view(i)]
+            v = sel[0] if sel else next((x for x in doc.views if x.get("type") == "iso"), doc.views[0])
+        try:
+            n = doc.auto_balloons(v)
+        except ValueError as e:
+            self.flash(str(e))
+            return
+        if not n:
+            self.flash("Every part seen in that view already has a balloon there.")
+
+    def _balloon_click(self, P):
+        doc = self.doc
+        if not self._picks:
+            v = self._view_at(P, pad=1)
+            hit = doc.part_at(v, P) if v is not None else None
+            if hit is None:
+                self.flash("Click on a part inside a view." if doc.bom else
+                           "This drawing's model has no parts list (draw an assembly or all the parts of a studio).")
+                return
+            ri, q = hit
+            self._picks = [{"view": v["id"], "item": doc.bom[ri]["item"], "anchor": q, "xy": P}]
+            self.hint = f"Item {doc.bom[ri]['item']}: {doc.bom[ri]['name']} — click where the balloon goes."
+            self.canvas.update()
+            return
+        pk = self._picks[0]
+        doc.add_balloon(doc.view(pk["view"]), pk["item"], pk["anchor"], P)
+        self._picks = []
+        self.hint = "Balloon: click another part, or Esc to stop."
+        self.canvas.update()
+
+    # ------------------------------------------------------------------ section / detail tools
+    def _section_end(self, P):
+        """The cutting line's second point: snapped level or upright with the first when it is nearly so."""
+        a = np.asarray(self._picks[0]["xy"], float)
+        d = np.asarray(P, float) - a
+        if abs(d[1]) < abs(d[0]) * 0.09:
+            return np.array([P[0], a[1]])
+        if abs(d[0]) < abs(d[1]) * 0.09:
+            return np.array([a[0], P[1]])
+        return np.asarray(P, float)
+
+    def _cut_tool_click(self, P):
+        doc = self.doc
+        if doc is None or P is None:
+            return
+        P = np.asarray(P, float)
+        if not self._picks:
+            # a cutting line usually starts just outside the part, so a click near a view counts
+            v = self._view_at(P, pad=2) or (self._view_at(P, pad=30) if self.tool == "section" else None)
+            if v is None or v.get("type") == "iso":
+                self.flash("Click in or just beside a view (not an isometric one).")
+                return
+            self._picks = [{"view": v["id"], "xy": P}]
+            self.hint = ("Click the other end of the cutting line." if self.tool == "section"
+                         else "Click to set the size of the circle.")
+        elif len(self._picks) == 1:
+            q = self._section_end(P) if self.tool == "section" else P
+            if np.linalg.norm(q - self._picks[0]["xy"]) < 0.5:
+                return
+            self._picks.append({"xy": q})
+            self.hint = "Click where the view goes."
+        else:
+            parent = doc.view(self._picks[0]["view"])
+            a, b = self._picks[0]["xy"], self._picks[1]["xy"]
+            try:
+                if self.tool == "section":
+                    v = doc.add_section(parent, a, b, P)
+                else:
+                    v = doc.add_detail(parent, a, float(np.linalg.norm(b - a)), P)
+            except ValueError as ex:
+                self.flash(str(ex))
+                self._picks = []
+                return
+            self.selection = [v["id"]]
+            self.set_tool("select")
+            return
+        self.canvas.update()
+
+    def _draw_cut_preview(self, p, z, P):
+        if not self._picks or P is None:
+            return
+        a = np.asarray(self._picks[0]["xy"], float)
+        pen = QPen(ACCENT, 1.6 / z, Qt.DashDotLine)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        if self.tool == "section":
+            b = self._section_end(P) if len(self._picks) == 1 else self._picks[1]["xy"]
+            p.drawLine(QPointF(*a), QPointF(*b))
+            if len(self._picks) == 2:
+                d = b - a
+                n = np.array([-d[1], d[0]]) / max(np.linalg.norm(d), 1e-9)
+                if (np.asarray(P) - (a + b) / 2) @ n < 0:
+                    n = -n
+                for e in (a, b):                      # arrows: you look from the side the view is placed on
+                    p.drawLine(QPointF(*(e + n * 8)), QPointF(*e))
+        else:
+            r = float(np.linalg.norm((P if len(self._picks) == 1 else self._picks[1]["xy"]) - a))
+            p.drawEllipse(QPointF(*a), r, r)
+            if len(self._picks) == 2:
+                p.drawEllipse(QPointF(*P), r * 2, r * 2)          # where the enlarged (2×) view will go
+
     # ------------------------------------------------------------------ overlay (tool feedback)
     def draw_tool_overlay(self, p, canvas):
         doc = self.doc
         z = canvas.z
         P = self._cursor
+        if self.tool in ("section", "detail"):
+            self._draw_cut_preview(p, z, P)
+        if self.tool == "balloon" and self._picks and P is not None:
+            a = np.asarray(self._picks[0]["xy"], float)
+            p.setPen(QPen(ACCENT, 1.4 / z))
+            p.setBrush(Qt.NoBrush)
+            p.drawLine(QPointF(*a), QPointF(*P))
+            p.drawEllipse(QPointF(*P), 4.5, 4.5)
         if self.tool == "dim":
             for pk in self._picks:
                 self._draw_pick(p, pk, z, ACCENT)
@@ -1807,8 +1966,8 @@ class DrawingController:
             return
         if fmt_ in ("pdf", "svg", "png"):
             ext = "." + fmt_
-            path, _ = QFileDialog.getSaveFileName(self.w, f"Export {fmt_.upper()}", base + ext,
-                                                  f"{fmt_.upper()} (*{ext})")
+            path, _ = filedlg.getSaveFileName(self.w, f"Export {fmt_.upper()}", base + ext,
+                                              f"{fmt_.upper()} (*{ext})")
             if not path:
                 return
             if not path.lower().endswith(ext):
@@ -1843,7 +2002,7 @@ class DrawingController:
         lay.addWidget(bb)
         if abs(sc - 1.0) > 1e-12 and dlg.exec() != QDialog.Accepted:
             return
-        path, _ = QFileDialog.getSaveFileName(self.w, "Export DXF", base + ".dxf", "DXF (*.dxf)")
+        path, _ = filedlg.getSaveFileName(self.w, "Export DXF", base + ".dxf", "DXF (*.dxf)")
         if not path:
             return
         if not path.lower().endswith(".dxf"):

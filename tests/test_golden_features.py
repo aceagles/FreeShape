@@ -882,9 +882,13 @@ def test_every_runner_is_characterised():
     # delete_part only removes parts, so it has no result to fingerprint: tests/test_delete_part.py
     # context restores a stored capture, so it is characterised in test_context_feature.py
     # derived reads another tab's package, so it is characterised in test_derived.py
-    # Python features (py:*) are covered by their plugins' own tests, e.g. tests/test_gears_plugin.py
-    left = {t for t in F.RUNNERS if not t.startswith("py:")} - used - {"variable_studio_ref", "delete_part",
-                                                                     "mate_connector", "context", "derived"}
+    # Python features (py:*) are covered by their plugins' own tests, e.g. tests/test_gears_plugin.py;
+    # upstream-style plugin features (plugin:*) by tests/test_plugins.py
+    # sm_hem, sm_jog, sm_tab and sm_convert came in with upstream 2.0 after the goldens were frozen: they are
+    # characterised in tests/test_20_stage4.py
+    left = {t for t in F.RUNNERS if not t.startswith(("py:", "plugin:"))} - used - {
+        "variable_studio_ref", "delete_part", "mate_connector", "context", "derived",
+        "sm_hem", "sm_jog", "sm_tab", "sm_convert"}
     assert left == set(), sorted(left)
 
 

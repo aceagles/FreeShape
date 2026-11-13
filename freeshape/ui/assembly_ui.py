@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from .. import kernel as K
 from .. import assembly as A
+from . import filedlg
 from .icons import icon
 from . import preview_rows as PR
 from .numparse import parse_number, fmt
@@ -590,6 +591,18 @@ class AssemblyPanel(QWidget):
             if r["id"] in sel_r:
                 it.setSelected(True)
         self.relation_header.setText(f"Relations ({len(doc.relations)})")
+        for pt in doc.patterns:                      # instance patterns are listed with the mates
+            n = sum(1 for row in pt["copies"] for c in row if c)
+            it = QListWidgetItem(icon("linear_pattern" if pt["type"] == "linear" else "circular_pattern"),
+                                 f"{pt['name']} (×{pt['count']})")
+            it.setData(ROLE_ID, pt["id"])
+            err = doc.errors.get(pt["id"])
+            it.setToolTip((f"⚠ {err}\n" if err else "") + f"{n} copies of "
+                          + ", ".join((doc.instance(sd) or {}).get("name", "?") for sd in pt["seeds"])
+                          + "\nDouble-click to change the count or spacing")
+            self.mates.addItem(it)
+            if pt["id"] in sel_m:
+                it.setSelected(True)
         self.inst_header.setText(f"Instances ({len(doc.instances)})")
         self.mate_header.setText(f"Mates ({len(doc.mates)})")
         if not doc.instances:
@@ -715,31 +728,35 @@ class InsertPanel(QFrame):
         self.tree.clear()
         self.previews.reset()
         for doc in self.ctl.w.studio_docs():
-            top = QTreeWidgetItem([doc.name])
-            top.setIcon(0, icon("part", 16))
-            top.setData(0, ROLE_KIND, "studio")
-            top.setData(0, ROLE_ID, doc.uid)
-            shown = [p for p in doc.state.parts.values() if not p.reference]    # Context bodies are not insertable
-            for p in shown:
-                it = QTreeWidgetItem([p.name])
-                it.setIcon(0, swatch(p.color))
-                it.setData(0, ROLE_KIND, "part")
-                it.setData(0, ROLE_ID, (doc.uid, p.id))
-                top.addChild(it)
-                key, make = PR.part_job(p, PR.INSERT_SIZE)
-                self.previews.add(lambda ic, it=it: it.setIcon(0, ic), key, make)
-            if not shown:
-                it = QTreeWidgetItem(["(no parts yet)"])
-                it.setDisabled(True)
-                top.addChild(it)
-            for sid in doc.state.sketches:                   # the studio's sketches, under its parts
-                it = QTreeWidgetItem([str((doc.feature(sid) or {}).get("name", sid))])
-                it.setIcon(0, icon("sketch", 16))
-                it.setData(0, ROLE_KIND, "sketch")
-                it.setData(0, ROLE_ID, (doc.uid, sid))
-                top.addChild(it)
-            self.tree.addTopLevelItem(top)
-            top.setExpanded(True)
+            cfgs = doc.config_names() if hasattr(doc, "config_names") else []
+            # one entry per configuration (only the active one opened), or just the studio
+            for cfg in (cfgs or [None]):
+                st = doc.state_for(cfg) if cfg else doc.state
+                top = QTreeWidgetItem([doc.name + (f" · {cfg}" if cfg else "")])
+                top.setIcon(0, icon("configs" if cfg else "part", 16))
+                top.setData(0, ROLE_KIND, "studio")
+                top.setData(0, ROLE_ID, (doc.uid, cfg))
+                shown = [p for p in st.parts.values() if not p.reference]    # Context bodies are not insertable
+                for p in shown:
+                    it = QTreeWidgetItem([p.name])
+                    it.setIcon(0, swatch(p.color))
+                    it.setData(0, ROLE_KIND, "part")
+                    it.setData(0, ROLE_ID, (doc.uid, p.id, cfg))
+                    top.addChild(it)
+                    key, make = PR.part_job(p, PR.INSERT_SIZE)
+                    self.previews.add(lambda ic, it=it: it.setIcon(0, ic), key, make)
+                if not shown:
+                    it = QTreeWidgetItem(["(no parts yet)"])
+                    it.setDisabled(True)
+                    top.addChild(it)
+                for sid in st.sketches:                          # the studio's sketches, under its parts
+                    it = QTreeWidgetItem([str((doc.feature(sid) or {}).get("name", sid))])
+                    it.setIcon(0, icon("sketch", 16))
+                    it.setData(0, ROLE_KIND, "sketch")
+                    it.setData(0, ROLE_ID, (doc.uid, sid))
+                    top.addChild(it)
+                self.tree.addTopLevelItem(top)
+                top.setExpanded(cfg is None or cfg == doc.active_config())
         if self.tree.topLevelItemCount() == 0:
             it = QTreeWidgetItem(["No Part Studios open — use “From file…”"])
             it.setDisabled(True)
@@ -750,17 +767,18 @@ class InsertPanel(QFrame):
             return
         kind = it.data(0, ROLE_KIND)
         if kind == "part":
-            uid, pid = it.data(0, ROLE_ID)
-            self.ctl.insert_studio_parts(uid, [pid])
+            uid, pid, cfg = it.data(0, ROLE_ID)
+            self.ctl.insert_studio_parts(uid, [pid], cfg)
         elif kind == "sketch":
             uid, sid = it.data(0, ROLE_ID)
             self.ctl.insert_studio_sketch(uid, sid)
         elif kind == "studio":
-            self.ctl.insert_studio_parts(it.data(0, ROLE_ID), None)
+            uid, cfg = it.data(0, ROLE_ID)
+            self.ctl.insert_studio_parts(uid, None, cfg)
         self.msg.setText(f"Inserted {it.text(0)}")
 
     def _from_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Insert from file", "",
+        path, _ = filedlg.getOpenFileName(self, "Insert from file", "",
                                               "Parts (*.fshape *.fcad *.step *.stp);;All files (*)")
         if not path:
             return
@@ -784,6 +802,136 @@ class InsertPanel(QFrame):
         if dlg.exec() == QDialog.Accepted:
             n = self.ctl.insert_document_sources(dlg.sources())
             self.msg.setText(f"Inserted {n} part(s) from another Document")
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.close_panel()
+        else:
+            super().keyPressEvent(e)
+
+    def close_panel(self):
+        self.closed.emit()
+
+
+# =========================================================================== exploded view
+
+class ExplodePanel(QFrame):
+    """The exploded view: parts slid apart along directions, step by step (shown only while this is open; the
+    real positions and mates don't change)."""
+    closed = Signal()
+
+    def __init__(self, ctl):
+        super().__init__(ctl.w.viewport)
+        from PySide6.QtWidgets import QSlider, QDoubleSpinBox
+        _floating(self)
+        self.ctl = ctl
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 10)
+        lay.setSpacing(6)
+        head, self.title = _head(self, "Exploded view", "explode", None, self.close_panel, cancel_tip="Close (Esc)")
+        self.title.setReadOnly(True)
+        lay.addLayout(head)
+        lay.addWidget(_hline())
+        hint = QLabel("Parts are only moved apart for showing (and drawings); their real positions and mates "
+                      "don't change.")
+        hint.setWordWrap(True)
+        hint.setObjectName("muted")
+        lay.addWidget(hint)
+        auto = QPushButton("Auto explode")
+        auto.setToolTip("Move every part out from the fixed one along its nearest main axis")
+        auto.clicked.connect(self._auto)
+        lay.addWidget(auto)
+        lay.addWidget(QLabel("<b>Add a step</b> — select parts, then:"))
+        row = QHBoxLayout()
+        self.dir = QComboBox()
+        for lab, v in (("+Z", (0, 0, 1)), ("−Z", (0, 0, -1)), ("+X", (1, 0, 0)), ("−X", (-1, 0, 0)),
+                       ("+Y", (0, 1, 0)), ("−Y", (0, -1, 0))):
+            self.dir.addItem(lab, v)
+        row.addWidget(self.dir)
+        self.dist = QDoubleSpinBox()
+        self.dist.setRange(-100000, 100000)
+        self.dist.setValue(30)
+        self.dist.setSuffix(" mm")
+        row.addWidget(self.dist, 1)
+        add = QPushButton("Add")
+        add.clicked.connect(self._add)
+        row.addWidget(add)
+        lay.addLayout(row)
+        self.steps = QListWidget()
+        self.steps.setMinimumHeight(110)
+        lay.addWidget(self.steps)
+        row = QHBoxLayout()
+        rm = QPushButton("Remove step")
+        rm.clicked.connect(self._remove)
+        row.addWidget(rm)
+        clr = QPushButton("Clear all")
+        clr.clicked.connect(lambda: (self.ctl.doc.clear_explode(), self.fill()))
+        row.addWidget(clr)
+        lay.addLayout(row)
+        lay.addWidget(QLabel("Assembled ↔ exploded"))
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 100)
+        self.slider.setValue(int(round(100 * float(self.ctl.doc.explode.get("amount", 1.0)))))
+        self.slider.valueChanged.connect(self._amount)
+        lay.addWidget(self.slider)
+        dwg = QPushButton("Drawing of this exploded view…")
+        dwg.clicked.connect(lambda: self.ctl.w.new_drawing({"kind": "assembly", "uid": self.ctl.doc.uid,
+                                                            "part": "*", "exploded": True}))
+        lay.addWidget(dwg)
+        self.msg = QLabel("")
+        self.msg.setWordWrap(True)
+        self.msg.setObjectName("muted")
+        lay.addWidget(self.msg)
+        self.fill()
+        self.setFixedWidth(300)
+        self.adjustSize()
+        self.move(12, 12)
+        self.show()
+
+    def fill(self):
+        doc = self.ctl.doc
+        self.steps.clear()
+        for st in doc.explode.get("steps", []):
+            names = ", ".join((doc.instance(i) or {}).get("name", "?") for i in st["ids"])
+            d = st["dir"]
+            ax = next((lab for lab, v in (("+X", (1, 0, 0)), ("−X", (-1, 0, 0)), ("+Y", (0, 1, 0)),
+                                          ("−Y", (0, -1, 0)), ("+Z", (0, 0, 1)), ("−Z", (0, 0, -1)))
+                       if np.allclose(d, v, atol=1e-6)), "along " + ", ".join(f"{x:.2f}" for x in d))
+            self.steps.addItem(f"{names}: {ax} {st['dist']:.1f} mm")
+        self.ctl.show_scene()
+
+    def _auto(self):
+        try:
+            n = self.ctl.doc.auto_explode()
+            self.slider.setValue(100)
+            self.msg.setText(f"{n} part(s) moved apart — adjust or add steps below")
+        except K.KernelError as e:
+            self.msg.setText(str(e))
+        self.fill()
+
+    def _add(self):
+        ids = self.ctl.panel.selected_instances() or list({pk.key[0] for pk in self.ctl.vp.selection
+                                                           if pk.kind in ("face", "edge", "part")})
+        try:
+            self.ctl.doc.add_explode_step(ids, self.dir.currentData(), self.dist.value())
+            self.msg.setText(f"Moved {len(ids)} part(s)")
+        except K.KernelError as e:
+            self.msg.setText(str(e))
+        self.fill()
+
+    def _remove(self):
+        r = self.steps.currentRow()
+        doc = self.ctl.doc
+        if 0 <= r < len(doc.explode.get("steps", [])):
+            doc.checkpoint()
+            doc.explode["steps"].pop(r)
+            doc.notify()
+            self.fill()
+
+    def _amount(self, v):
+        self.ctl.doc.explode["amount"] = v / 100.0
+        self.ctl.doc.dirty = True
+        self.ctl.show_scene()
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
@@ -1875,7 +2023,7 @@ class BomDialog(QDialog):
         return "\n".join(out) + "\n"
 
     def _export(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export bill of materials", "bom.csv", "CSV (*.csv)")
+        path, _ = filedlg.getSaveFileName(self, "Export bill of materials", "bom.csv", "CSV (*.csv)")
         if path:
             if not path.lower().endswith(".csv"):
                 path += ".csv"
@@ -1892,6 +2040,7 @@ class AssemblyController:
         self.w = w
         self.panel = AssemblyPanel()
         self.insert_panel = None
+        self.explode_panel = None
         self.mate_dialog = None
         self.relation_dialog = None
         self.move_dialog = None
@@ -1932,15 +2081,17 @@ class AssemblyController:
         doc = self.doc
         parts = []
         sketches = []
+        exploding = self.explode_panel is not None
         for inst in doc.visible_instances():
-            T = np.array(inst["T"], float)
             if doc.is_sketch_instance(inst["id"]):
                 # edges and points only, no faces: drawn by the viewport's sketch path, not as a part
+                T = np.array(inst["T"], float)
                 sr = self._sketch_instance_result(inst["id"], T) if self.panel.shows("sketches") else None
                 if sr is not None:
                     sketches.append((inst["id"], sr))
                 continue
             p = doc.parts[inst["id"]]
+            T = doc.display_T(inst["id"], exploded=exploding)
             fc = p.face_colors if not inst.get("color") else None
             parts.append((inst["id"], K.located(p.shape, T), doc.instance_color(inst), fc, T, p.shape))
         self.vp.set_scene(parts, [], sketches)
@@ -2044,6 +2195,24 @@ class AssemblyController:
             self.show_scene()
 
     # ------------------------------------------------------------------ inserting
+    def toggle_explode(self):
+        if self.explode_panel is not None:
+            self.close_explode()
+            return
+        if self.w.mode != "idle":
+            return
+        self.close_insert()
+        self.explode_panel = ExplodePanel(self)
+        self.explode_panel.closed.connect(self.close_explode)
+        self.show_scene()
+
+    def close_explode(self):
+        if self.explode_panel is not None:
+            self.explode_panel.hide()
+            self.explode_panel.deleteLater()
+            self.explode_panel = None
+            self.show_scene()
+
     def toggle_insert(self):
         if self.insert_panel is not None:
             self.close_insert()
@@ -2060,12 +2229,13 @@ class AssemblyController:
             self.insert_panel.deleteLater()
             self.insert_panel = None
 
-    def insert_studio_parts(self, uid, part_ids=None):
+    def insert_studio_parts(self, uid, part_ids=None, config=None):
         studio = self.w.studio_by_uid(uid)
         if studio is None:
             return
         doc = self.doc
-        pids = part_ids or [p.id for p in studio.state.parts.values() if not p.reference]
+        st = studio.state_for(config) if config else studio.state
+        pids = part_ids or [p.id for p in st.parts.values() if not p.reference]
         if not pids:
             return
         doc.checkpoint()
@@ -2076,12 +2246,14 @@ class AssemblyController:
             lo, hi = doc.bounds()
             slo, shi = np.full(3, np.inf), np.full(3, -np.inf)
             for pid in pids:
-                a, b = K.bbox(studio.state.parts[pid].shape)
+                a, b = K.bbox(st.parts[pid].shape)
                 slo, shi = np.minimum(slo, a), np.maximum(shi, b)
             gap = max(0.15 * float(np.linalg.norm(shi - slo)), 5.0)
             shift = A.translation([hi[0] + gap - slo[0], 0, lo[2] - slo[2]])
         for pid in pids:
             src = self.w.studio_link(studio, pid)
+            if config:
+                src["config"] = config
             try:
                 T = shift if part_ids is None and doc.instances and shift is not None else None
                 if part_ids is None and not doc.instances:
@@ -2200,9 +2372,78 @@ class AssemblyController:
         self.panel.populate(self.doc, None if is_new else m["id"])
 
     def edit_mate(self, mid):
+        if self.doc.pattern(mid) is not None:        # an instance pattern, listed with the mates
+            self.pattern_dialog(edit=mid)
+            return
         m = self.doc.mate(mid)
         if m is not None and self.w.mode == "idle":
             self.start_mate(m["type"], mid)
+
+    # ------------------------------------------------------------------ instance patterns
+    def pattern_dialog(self, ptype="linear", edit=None):
+        from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox, QSpinBox
+        doc = self.doc
+        pat = doc.pattern(edit) if edit else None
+        seeds = pat["seeds"] if pat else self.selected_instance_ids()
+        seeds = [s_ for s_ in seeds if doc.instance(s_) is not None and not doc.instance(s_).get("pattern")]
+        if not seeds:
+            QMessageBox.information(self.w, "Pattern", "Select the parts to pattern first (in the list or the view).")
+            return
+        ptype = pat["type"] if pat else ptype
+        dlg = QDialog(self.w)
+        dlg.setWindowTitle(("Linear" if ptype == "linear" else "Circular") + " pattern")
+        form = QFormLayout(dlg)
+        form.addRow(QLabel(", ".join(doc.instance(s_)["name"] for s_ in seeds)))
+        axis = QComboBox()
+        for lab, ax in (("X axis", {"kind": "world", "name": "X"}), ("Y axis", {"kind": "world", "name": "Y"}),
+                        ("Z axis", {"kind": "world", "name": "Z"})):
+            axis.addItem(lab, ax)
+        for m in doc.mates:
+            if m["type"] in ("revolute", "cylindrical", "slider"):
+                axis.addItem(f"Axis of {m['name']}", {"kind": "mate", "mate": m["id"]})
+        form.addRow("Direction:" if ptype == "linear" else "Round:", axis)
+        flip = QCheckBox("Opposite direction")
+        form.addRow("", flip)
+        count = QSpinBox()
+        count.setRange(2, 1000)
+        count.setValue(pat["count"] if pat else (3 if ptype == "linear" else 6))
+        form.addRow("Count (with the original):", count)
+        amt = QDoubleSpinBox()
+        amt.setRange(-100000, 100000)
+        amt.setDecimals(3)
+        if ptype == "linear":
+            amt.setSuffix(" mm")
+            amt.setValue(pat["spacing"] if pat else 20.0)
+            form.addRow("Spacing:", amt)
+        else:
+            amt.setSuffix("°")
+            amt.setValue(pat["angle"] if pat else 360.0)
+            form.addRow("Angle (360 = all the way round):", amt)
+        if pat:
+            for i in range(axis.count()):
+                if axis.itemData(i) == {k_: v for k_, v in pat["axis"].items() if k_ != "flip"}:
+                    axis.setCurrentIndex(i)
+            flip.setChecked(bool(pat["axis"].get("flip")))
+        elif ptype == "circular":
+            axis.setCurrentIndex(2)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        ax = dict(axis.currentData())
+        if flip.isChecked():
+            ax["flip"] = True
+        kw = {"count": count.value(), "axis": ax}
+        kw["spacing" if ptype == "linear" else "angle"] = amt.value()
+        try:
+            if pat:
+                doc.edit_pattern(pat["id"], **kw)
+            else:
+                doc.add_pattern(ptype, seeds, **kw)
+        except K.KernelError as e:
+            QMessageBox.warning(self.w, "Pattern", str(e))
 
     def _close_mate(self):
         d = self.mate_dialog
@@ -2395,8 +2636,8 @@ class AssemblyController:
 
     # dragging (the viewport calls these) ---------------------------------
     def press(self, x, y, e):
-        if self.w.mode != "idle":
-            return False
+        if self.w.mode != "idle" or self.explode_panel is not None:
+            return False                      # (parts aren't dragged while the exploded view is shown)
         gz = self.gizmo
         h = gz.hit(x, y)
         if h is not None:
@@ -2691,6 +2932,14 @@ class AssemblyController:
         from PySide6.QtWidgets import QMenu
         doc = self.doc
         mt = doc.mate(mid)
+        if mt is None and self.w.mode == "idle" and doc.pattern(mid) is not None:
+            m = QMenu(self.w)
+            m.addAction("Edit…", lambda: self.edit_mate(mid))
+            m.addAction("Rename…", lambda: self.rename(mid))
+            m.addSeparator()
+            m.addAction("Delete", lambda: doc.delete_mates([mid]))
+            m.exec(gpos)
+            return
         if mt is None or self.w.mode != "idle":
             return
         ids = self.panel.selected_mates()

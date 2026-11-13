@@ -71,6 +71,8 @@ def _text(p, s, c=INK, size=12, bold=True, rect=QRectF(0, 0, 32, 32)):
 
 def draw(name: str, p: QPainter):
     p.setBrush(Qt.NoBrush)
+    if name.startswith("plugin:"):
+        name = "plugin"
     if name == "undo" or name == "redo":
         if name == "redo":
             p.translate(32, 0)
@@ -325,6 +327,71 @@ def draw(name: str, p: QPainter):
             p.setPen(_pen(INK if k == 0 else BLUE, 1.6))
             p.drawEllipse(QPointF(16 + 10 * math.cos(a), 16 + 10 * math.sin(a)), 3, 3)
         _dot(p, 16, 16, ORANGE, 1.8)
+    elif name in ("sm_hem", "sm_jog", "sm_tab", "sm_convert"):
+        p.setPen(_pen(INK, 1.4))
+        p.setBrush(FACE)
+        if name == "sm_hem":
+            p.drawRect(QRectF(3, 20, 24, 4))
+            path = QPainterPath(QPointF(27, 20))
+            path.cubicTo(QPointF(31, 20), QPointF(31, 13), QPointF(27, 13))
+            p.setBrush(Qt.NoBrush)
+            p.setPen(_pen(BLUE, 1.8))
+            p.drawPath(path)
+            p.drawLine(QPointF(27, 13), QPointF(15, 13))
+        elif name == "sm_jog":
+            p.drawPolygon(QPolygonF([QPointF(2, 24), QPointF(12, 24), QPointF(18, 12), QPointF(30, 12),
+                                     QPointF(30, 15), QPointF(20, 15), QPointF(14, 27), QPointF(2, 27)]))
+        elif name == "sm_tab":
+            p.drawRect(QRectF(3, 14, 20, 12))
+            p.setBrush(BLUE_FILL)
+            p.setPen(_pen(BLUE, 1.4))
+            p.drawRect(QRectF(23, 17, 6, 6))
+        else:
+            p.drawRect(QRectF(4, 12, 22, 6))
+            _arrow(p, 15, 26, 15, 21, BLUE, 1.6)
+            p.setPen(_pen(BLUE, 1.6))
+            p.drawLine(QPointF(26, 12), QPointF(30, 5))
+    elif name == "plugin":
+        # a jigsaw piece
+        path = QPainterPath()
+        path.moveTo(6, 10)
+        path.lineTo(12, 10)
+        path.cubicTo(10, 4, 20, 4, 18, 10)
+        path.lineTo(24, 10)
+        path.lineTo(24, 15)
+        path.cubicTo(30, 13, 30, 23, 24, 21)
+        path.lineTo(24, 27)
+        path.lineTo(6, 27)
+        path.closeSubpath()
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(BLUE_FILL)
+        p.drawPath(path)
+    elif name == "history":
+        p.setPen(_pen(INK, 1.5))
+        p.setBrush(QColor("white"))
+        p.drawEllipse(QPointF(17, 17), 11, 11)
+        p.setPen(_pen(BLUE, 1.8))
+        p.drawLine(QPointF(17, 17), QPointF(17, 10))
+        p.drawLine(QPointF(17, 17), QPointF(22, 20))
+        _arrow(p, 9, 9, 5, 5, INK, 1.4)
+    elif name == "derived":
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(FACE)
+        p.drawRect(QRectF(3, 4, 10, 10))
+        p.setBrush(BLUE_FILL)
+        p.drawRect(QRectF(18, 17, 11, 11))
+        _arrow(p, 12, 13, 19, 18, BLUE, 1.6)
+    elif name == "configs":
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(QColor("white"))
+        p.drawRect(QRectF(4, 6, 24, 20))
+        p.setPen(_pen(INK, 1.0))
+        for y in (12, 19):
+            p.drawLine(QPointF(4, y), QPointF(28, y))
+        p.drawLine(QPointF(13, 6), QPointF(13, 26))
+        p.setPen(Qt.NoPen)
+        p.setBrush(BLUE)
+        p.drawRect(QRectF(13.5, 12.5, 14, 6))
     elif name == "variable":
         p.setPen(_pen(INK, 1.8))
         p.drawArc(QRectF(3, 5, 10, 22), 100 * 16, 160 * 16)
@@ -379,6 +446,28 @@ def draw(name: str, p: QPainter):
                        16 - 11 * math.sin(math.pi / 6 + k * math.pi / 3)) for k in range(6)]
         p.drawPolygon(QPolygonF(pts))
         _dot(p, 16, 16)
+    elif name == "spline":
+        p.setPen(_pen(INK, 2))
+        path = QPainterPath(QPointF(4, 24))
+        path.cubicTo(QPointF(10, 2), QPointF(18, 30), QPointF(28, 8))
+        p.drawPath(path)
+        for x, y in ((4, 24), (12, 13), (20, 19), (28, 8)):
+            _dot(p, x, y)
+    elif name == "ellipse":
+        p.setPen(_pen(INK, 2))
+        p.drawEllipse(QPointF(16, 16), 13, 8)
+        p.setPen(_pen(INK, 1, Qt.DashLine))
+        p.drawLine(QPointF(16, 16), QPointF(29, 16))
+        _dot(p, 16, 16)
+    elif name == "sk_text":
+        f = QFont("Times New Roman")
+        f.setPixelSize(24)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(INK)
+        p.drawText(QRectF(0, 0, 32, 30), Qt.AlignCenter, "A")
+        p.setPen(_pen(BLUE, 1.6))
+        p.drawLine(QPointF(5, 28), QPointF(27, 28))
     elif name == "arc3":
         p.setPen(_pen(INK, 2))
         p.drawArc(QRectF(5, 8, 22, 22), 20 * 16, 140 * 16)
@@ -604,6 +693,17 @@ def draw(name: str, p: QPainter):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(217, 48, 37, 200))
         p.drawRect(QRectF(13.7, 10.7, 4.6, 8.6))
+    elif name == "relation":
+        p.setPen(_pen(INK, 1.5))
+        p.setBrush(FACE)
+        for cx, cy, r, n in ((11, 13, 7, 8), (23, 21, 5, 6)):
+            p.drawEllipse(QPointF(cx, cy), r, r)
+            for k in range(n):
+                a = 2 * math.pi * k / n
+                p.drawLine(QPointF(cx + r * math.cos(a), cy + r * math.sin(a)),
+                           QPointF(cx + (r + 2.2) * math.cos(a), cy + (r + 2.2) * math.sin(a)))
+        _dot(p, 11, 13)
+        _dot(p, 23, 21)
     elif name == "bom":
         p.setPen(_pen(INK, 1.4))
         p.setBrush(QColor("white"))
@@ -633,6 +733,38 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(BLUE, 2.0))
         p.setBrush(BLUE_FILL)
         p.drawRect(QRectF(10, 11, 12, 10))
+    elif name in ("balloon", "auto_balloon"):
+        p.setPen(_pen(BLUE, 1.6))
+        p.setBrush(QColor("white"))
+        p.drawEllipse(QPointF(19, 12), 8, 8)
+        p.drawLine(QPointF(13.5, 17.5), QPointF(5, 27))
+        _text(p, "1", BLUE, 10, True, QRectF(11, 4, 16, 16))
+        if name == "auto_balloon":
+            p.setPen(_pen(INK, 1.2))
+            p.drawEllipse(QPointF(7, 7), 4, 4)
+    elif name == "section_view":
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(QColor("white"))
+        p.drawRect(QRectF(5, 9, 22, 14))
+        p.save()
+        p.setClipRect(QRectF(5, 9, 22, 14))
+        p.setPen(_pen(INK, 0.9))
+        for k in range(-16, 30, 4):
+            p.drawLine(QPointF(5 + k, 23), QPointF(19 + k, 9))
+        p.restore()
+        p.setPen(_pen(BLUE, 1.8))
+        p.drawLine(QPointF(3, 4), QPointF(29, 4))
+        _arrow(p, 4, 4, 4, 8, BLUE, 1.4)
+        _arrow(p, 28, 4, 28, 8, BLUE, 1.4)
+    elif name == "detail_view":
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(QColor("white"))
+        p.drawRect(QRectF(3, 12, 14, 14))
+        p.setPen(_pen(BLUE, 1.4))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(11, 19), 3.5, 3.5)
+        p.drawEllipse(QPointF(23, 11), 7.5, 7.5)
+        p.drawLine(QPointF(13.5, 16.5), QPointF(17.5, 14))
     elif name == "proj_view":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(QColor("white"))
@@ -712,6 +844,16 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(RED, 1.4, Qt.DashLine))
         p.drawLine(QPointF(10, 10), QPointF(10, 24))
         p.drawLine(QPointF(22, 10), QPointF(22, 24))
+    elif name == "nest":
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(QColor("white"))
+        p.drawRect(QRectF(3, 5, 26, 22))
+        p.setPen(_pen(BLUE, 1.5))
+        p.setBrush(BLUE_FILL)
+        p.drawRect(QRectF(6, 8, 9, 7))
+        p.drawRect(QRectF(17, 8, 9, 7))
+        p.drawRect(QRectF(6, 17, 13, 7))
+        p.drawPolygon(QPolygonF([QPointF(21, 17), QPointF(26, 17), QPointF(26, 24)]))
     elif name == "flat_dxf":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(QColor("white"))
@@ -722,6 +864,23 @@ def draw(name: str, p: QPainter):
         p.setBrush(BLUE)
         p.drawRoundedRect(QRectF(3, 19, 22, 10), 2, 2)
         _text(p, "DXF", QColor("white"), 8, True, QRectF(3, 19, 22, 10))
+    elif name == "folder":
+        p.setPen(_pen(INK, 1.6))
+        p.setBrush(Qt.NoBrush)
+        path = QPainterPath()
+        path.moveTo(4, 9)
+        path.lineTo(12, 9)
+        path.lineTo(15, 12)
+        path.lineTo(28, 12)
+        path.lineTo(28, 25)
+        path.lineTo(4, 25)
+        path.closeSubpath()
+        p.drawPath(path)
+    elif name == "new_folder":
+        draw("folder", p)
+        p.setPen(_pen(BLUE, 2.2))
+        p.drawLine(QPointF(16, 15), QPointF(16, 23))
+        p.drawLine(QPointF(12, 19), QPointF(20, 19))
     elif name == "error":
         p.setPen(Qt.NoPen)
         p.setBrush(RED)

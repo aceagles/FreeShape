@@ -85,6 +85,25 @@ def _move_import_data_to_blobs(data):
 M.register("document", _move_import_data_to_blobs)
 
 
+def _adopt_upstream_2_0(data):
+    """FILE_VERSION 3 -> 4 (the upstream 2.0 merge). From this version a Part Studio file may hold upstream's
+    feature-list folders ("folders", and "folder" on a feature), configurations ("configs"), saved copies of
+    plugin features ("plugin_copies") and the upstream feature types, which a build before the merge would
+    drop or fail on: the version says so. One conversion: an extrude saved with this fork's up-to end
+    (end "upto", target in "upto") takes upstream's shape (features.legacy_up_to). Upstream's in-file
+    "versions" / "version_blobs" and "derived_copies" are not read: Versions are git tags of the Document
+    (ADR 0001) and a Derived feature reads its source through links.py."""
+    from .features import legacy_up_to
+    for f in data.get("features", []):
+        p = f.get("params") if isinstance(f, dict) and f.get("type") == "extrude" else None
+        if isinstance(p, dict) and p.get("end") == "upto":
+            f["params"] = legacy_up_to(p)
+    return data
+
+
+M.register("document", _adopt_upstream_2_0)
+
+
 CONTEXT_CURRENT, CONTEXT_OUT_OF_DATE, CONTEXT_ASSEMBLY_MISSING = "current", "out of date", "assembly missing"
 
 
@@ -150,6 +169,13 @@ class PartStudioDoc:
         self._import_keys: dict = {}                # id(base64 text) -> (text, key) of an inline import; memory only
         self.hidden_parts: set = set()
         self.hidden_features: set = set()         # sketches / planes hidden in the view
+        # feature-list folders: id -> {"name": str, "open": bool}; a feature in one has f["folder"] = that id.
+        # A folder groups a run of features that sit next to each other in the list (like Onshape).
+        self.folders: dict = {}
+        # configurations: named rows that set variables (by name) and suppress features (by id), like Onshape's
+        # configuration table: {"rows": [{"name", "vars": {name: expr}, "suppress": [fid]}], "active": index}
+        self.configs: dict = {"rows": [], "active": 0}
+        self.plugin_fallback: dict = {}           # plugin feature id -> saved copy of what it made (from the file)
         self.path = None
         self.blob_view = None     # this tab's blobs in a Document store (docstore.DocumentStore.blobs), for no path
         self.dirty = False
@@ -191,7 +217,8 @@ class PartStudioDoc:
     def _snapshot(self) -> str:
         return json.dumps({"features": self.features, "rollback": self.rollback,
                            "overrides": self.part_overrides, "hidden": sorted(self.hidden_parts),
-                           "hidden_features": sorted(self.hidden_features)})
+                           "hidden_features": sorted(self.hidden_features), "folders": self.folders,
+                           "configs": self.configs})
 
     def _restore(self, snap: str):
         d = json.loads(snap)
@@ -200,6 +227,8 @@ class PartStudioDoc:
         self.part_overrides = d["overrides"]
         self.hidden_parts = set(d["hidden"])
         self.hidden_features = set(d.get("hidden_features", []))
+        self.folders = d.get("folders", {})
+        self.configs = d.get("configs", {"rows": [], "active": 0})
 
     def checkpoint(self):
         """Call before any user-visible change."""
@@ -355,12 +384,34 @@ class PartStudioDoc:
         self._apply_overrides(self.state)
         self.notify()
 
+    def set_part_colors(self, colors: dict):
+        """Give several parts new colours in one undo step. colors: part id -> (r, g, b) in 0..1."""
+        if not colors:
+            return
+        self.checkpoint()
+        for pid, c in colors.items():
+            self.part_overrides.setdefault(pid, {})["color"] = [float(x) for x in c]
+        self._apply_overrides(self.state)
+        self.notify()
+
     def toggle_part_hidden(self, pid):
         self.hidden_parts ^= {pid}
         self.notify()
 
     def toggle_feature_hidden(self, fid):
         self.hidden_features ^= {fid}
+        self.notify()
+
+    def set_parts_hidden(self, pids, hidden: bool):
+        """Hide (or show) several parts at once — one redraw for the whole selection."""
+        pids = set(pids)
+        self.hidden_parts = (self.hidden_parts | pids) if hidden else (self.hidden_parts - pids)
+        self.notify()
+
+    def set_features_hidden(self, fids, hidden: bool):
+        """Hide (or show) several sketches / planes at once."""
+        fids = set(fids)
+        self.hidden_features = (self.hidden_features | fids) if hidden else (self.hidden_features - fids)
         self.notify()
 
     # ------------------------------------------------------------------ rebuild
@@ -480,16 +531,87 @@ class PartStudioDoc:
     def _key(prefix_json: str) -> str:
         return hashlib.sha1(prefix_json.encode()).hexdigest()
 
-    def compute(self, features, upto=None, errors=None):
+    # ------------------------------------------------------------------ configurations
+    def config_names(self):
+        return [r["name"] for r in self.configs.get("rows", [])]
+
+    def active_config(self):
+        rows = self.configs.get("rows", [])
+        if not rows:
+            return None
+        return rows[min(max(int(self.configs.get("active", 0)), 0), len(rows) - 1)]["name"]
+
+    def _config_row(self, name=None):
+        rows = self.configs.get("rows", [])
+        if not rows:
+            return None
+        if name is None:
+            return rows[min(max(int(self.configs.get("active", 0)), 0), len(rows) - 1)]
+        return next((r for r in rows if r["name"] == name), None)
+
+    def _configured(self, f, row):
+        """Feature f as the configuration `row` has it: its variable value and whether it's suppressed."""
+        if row is None:
+            return f
+        if f["id"] in row.get("suppress", []) and not f.get("suppressed"):
+            f = dict(f, suppressed=True)
+        if f.get("type") == "variable":
+            name = str(f["params"].get("name", "")).strip().lstrip("#")
+            val = row.get("vars", {}).get(name)
+            if val not in (None, ""):
+                f = dict(f, params=dict(f["params"], expr=str(val)))
+        return f
+
+    def set_configs(self, rows, active=0):
+        """Replace the configuration table (one undo step) and rebuild in the active configuration."""
+        self.checkpoint()
+        self.configs = {"rows": [dict(r) for r in rows], "active": int(active) if rows else 0}
+        self.rebuild()
+
+    def set_active_config(self, name_or_index):
+        rows = self.configs.get("rows", [])
+        i = name_or_index if isinstance(name_or_index, int) else next(
+            (k for k, r in enumerate(rows) if r["name"] == name_or_index), None)
+        if i is None or not (0 <= i < len(rows)) or i == self.configs.get("active", 0):
+            return
+        self.configs["active"] = i
+        self.dirty = True
+        self.rebuild()
+
+    def state_for(self, config=None):
+        """The model in another configuration (for assemblies, drawings and derived parts), without changing
+        this tab. None or unknown: the active one."""
+        if not config or self._config_row(config) is None or config == self.active_config():
+            return self.state
+        st = self.compute(self.features, self.active_count(), None, config=config).copy()
+        self._apply_overrides(st)
+        return st
+
+    def compute(self, features, upto=None, errors=None, config=None):
         """Replay features (with caching). Returns the resulting ModelState."""
         state = ModelState()
+        from . import plugins as _P      # upstream's plugin features ("plugin:<id>"); loads no Qt
+        _P.CURRENT_DOC[0] = self.uid
         h = hashlib.sha1()
         n = len(features) if upto is None else upto
         new_cache = {}
+        row = self._config_row(config)
         for f in features[:n]:
-            h.update(json.dumps(f, sort_keys=True).encode())
+            f = self._configured(f, row)
+            # a feature's folder is where it sits in the list, not what it builds: kept out of the key
+            h.update(json.dumps({k: v for k, v in f.items() if k != "folder"}, sort_keys=True).encode())
             if pyfeature.is_python_type(f.get("type")):
                 h.update(self._python_key(f).encode())
+            elif str(f.get("type", "")).startswith(_P.PREFIX):
+                _P.ensure_loaded()                                      # an engine worker loads the folder here
+                h.update(b"P" if f["type"] in _P.FEATURES else b"-")    # rebuild once the plugin is (un)installed
+                f = dict(f, _raw_stamp=_P.stamp(f))
+                if f["id"] in self.plugin_fallback:
+                    fb = self.plugin_fallback[f["id"]]
+                    f = dict(f, _fallback=fb)
+                    if f["type"] not in _P.FEATURES:      # still work out its expressions without the plugin
+                        from . import features as _F
+                        _F.EXTRA_NUMERIC.setdefault(f["type"], set(fb.get("numeric", [])))
             f = self._with_consumed_inputs(h, f)
             key = h.hexdigest()
             if key in self._cache:
@@ -512,7 +634,12 @@ class PartStudioDoc:
                             else:
                                 pyfeature.host.run(state, f)
                         else:
-                            RUNNERS[f["type"]](state, prepare(f, state))
+                            run = RUNNERS.get(f["type"])
+                            if run is None and str(f["type"]).startswith(_P.PREFIX):
+                                run = _P.run_feature
+                            if run is None:
+                                raise K.KernelError(f"Unknown feature type '{f['type']}' (made by a newer FreeShape?)")
+                            run(state, prepare(f, state))
                         check_reference_parts(before, state)
                         for pid, part in list(state.parts.items()):
                             old = before.get(pid) or before.get(pid.split(".")[0])
@@ -527,6 +654,9 @@ class PartStudioDoc:
                     except Exception as e:  # never let one feature kill the model
                         traceback.print_exc()
                         err = f"{type(e).__name__}: {e}"
+                    if err is None:
+                        # remembered so later features (feature patterns, mirror) can repeat what this one did
+                        state.history[f["id"]] = (prior, state)
             new_cache[key] = (state, err)
             if errors is not None and err:
                 errors[f["id"]] = err
@@ -571,7 +701,119 @@ class PartStudioDoc:
         """{feature id: text}: pyfeature.notices for this Part Studio, locked features included."""
         return pyfeature.notices(self.features, self.locked_builds())
 
+    # ------------------------------------------------------------------ folders
+    def folder_members(self, folder_id):
+        return [f["id"] for f in self.features if f.get("folder") == folder_id]
+
+    def is_run(self, fids):
+        """True if the features sit next to each other in the list (a folder holds one unbroken run)."""
+        idx = sorted(i for i, f in enumerate(self.features) if f["id"] in set(fids))
+        return bool(idx) and idx[-1] - idx[0] + 1 == len(idx)
+
+    def make_folder(self, fids, name=None):
+        """Put a run of features into a new folder (taking them out of any folder they were in).
+        Returns the folder id, or raises ValueError if the features aren't next to each other."""
+        fids = [f["id"] for f in self.features if f["id"] in set(fids)]
+        if not fids:
+            raise ValueError("Select the features to put in the folder")
+        if not self.is_run(fids):
+            raise ValueError("A folder holds features that are next to each other in the list. "
+                             "Drag them together first, or select a run of features.")
+        self.checkpoint()
+        n = 1
+        while f"D{n}" in self.folders:
+            n += 1
+        fo = f"D{n}"
+        names = {v["name"] for v in self.folders.values()}
+        k = 1
+        while name is None or name in names:
+            name, k = f"Folder {k}", k + 1
+        self.folders[fo] = {"name": name, "open": True}
+        for f in self.features:
+            if f["id"] in fids:
+                f["folder"] = fo
+        self._prune_folders()
+        self.notify()
+        return fo
+
+    def rename_folder(self, fo, name):
+        if fo in self.folders and name:
+            self.checkpoint()
+            self.folders[fo]["name"] = name
+            self.notify()
+
+    def set_folder_open(self, fo, open_):
+        """Expand / collapse a folder in the list (a view setting: no undo step)."""
+        if fo in self.folders and self.folders[fo].get("open", True) != open_:
+            self.folders[fo]["open"] = bool(open_)
+            self.dirty = True
+            self.notify()
+
+    def ungroup_folder(self, fo):
+        """Remove a folder, keeping its features where they are."""
+        if fo not in self.folders:
+            return
+        self.checkpoint()
+        for f in self.features:
+            if f.get("folder") == fo:
+                f.pop("folder", None)
+        self.folders.pop(fo, None)
+        self.notify()
+
+    def remove_from_folder(self, fids):
+        """Take features out of their folder. Ones at either end just leave it; ones from the middle move to
+        just after the folder, so it stays one unbroken run. If that move would break the model (a later member
+        uses a moved feature), nothing changes and ValueError is raised."""
+        fids = set(fids)
+        if not any(f["id"] in fids and f.get("folder") for f in self.features):
+            return
+        snap = self._snapshot()
+        errs_before = set(self.errors)
+        self.checkpoint()
+        for fo in {f["folder"] for f in self.features if f["id"] in fids and f.get("folder")}:
+            run = [i for i, f in enumerate(self.features) if f.get("folder") == fo]
+            span = self.features[run[0]:run[-1] + 1]
+            out = [f["id"] in fids for f in span]
+            # leading and trailing features just leave the folder
+            lo, hi = 0, len(span)
+            while lo < hi and out[lo]:
+                lo += 1
+            while hi > lo and out[hi - 1]:
+                hi -= 1
+            for f in span:
+                if f["id"] in fids:
+                    f.pop("folder", None)
+            middle = [f for f in span[lo:hi] if f["id"] in fids]
+            if middle:
+                inner = [f for f in span[lo:hi] if f["id"] not in fids]
+                self.features[run[0]:run[-1] + 1] = span[:lo] + inner + middle + span[hi:]
+        self._prune_folders()
+        self.rebuild()
+        if set(self.errors) - errs_before:
+            self._undo.pop()
+            self._restore(snap)
+            self.rebuild()
+            raise ValueError("Those features are used by later features in the folder, so they can't be moved "
+                             "out of its middle. Take them out from the top or bottom of the folder instead.")
+
+    def set_folder_suppressed(self, fo, value):
+        self.checkpoint()
+        for f in self.features:
+            if f.get("folder") == fo:
+                f["suppressed"] = bool(value)
+        self.rebuild()
+
+    def _prune_folders(self):
+        """Drop empty folders and forget folders features point at that no longer exist."""
+        used = {f.get("folder") for f in self.features}
+        for fo in [k for k in self.folders if k not in used]:
+            del self.folders[fo]
+        for f in self.features:
+            if f.get("folder") and f["folder"] not in self.folders:
+                f.pop("folder", None)
+
     def rebuild(self):
+        self._prune_folders()
         errors = {}
         self.state = self.compute(self.features, self.active_count(), errors).copy()
         self.errors = errors
@@ -682,6 +924,15 @@ class PartStudioDoc:
                     continue
         return out
 
+    def _plugin_copies(self):
+        """A copy of what each plugin feature made, saved in the file so it still opens without the plugin."""
+        from . import plugins
+        out = plugins.saved_copies(self.features, self.uid)
+        for f in self.features:                  # keep copies of features whose plugin isn't here, untouched
+            if f["id"] not in out and f["id"] in self.plugin_fallback:
+                out[f["id"]] = self.plugin_fallback[f["id"]]
+        return out
+
     def to_json(self):
         data = {"format": "freeshape", "version": M.latest_version("document"), "name": self.name,
                 "uid": self.uid, "features": [self._file_feature(f) for f in self.features],
@@ -692,6 +943,15 @@ class PartStudioDoc:
         builds, _ = self._python_builds()
         if builds:
             data["python_builds"] = builds
+        # upstream 2.0 keys, written only when there is something to keep (a file that uses none of them is
+        # byte for byte what it was, apart from the version)
+        if self.folders:
+            data["folders"] = self.folders
+        if self.configs.get("rows"):
+            data["configs"] = self.configs
+        copies = self._plugin_copies()
+        if copies:
+            data["plugin_copies"] = copies
         return json.dumps(data, indent=1)
 
     def to_data(self) -> bytes:
@@ -764,6 +1024,11 @@ class PartStudioDoc:
         doc.hidden_features = set(d.get("hidden_features", []))
         builds = d.get("python_builds")
         doc.python_builds = {k: v for k, v in builds.items() if isinstance(k, str)} if isinstance(builds, dict) else {}
+        folders, configs, copies = d.get("folders"), d.get("configs"), d.get("plugin_copies")
+        doc.folders = folders if isinstance(folders, dict) else {}
+        if isinstance(configs, dict) and isinstance(configs.get("rows"), list):
+            doc.configs = configs
+        doc.plugin_fallback = copies if isinstance(copies, dict) else {}
         doc.path = path
         doc.blob_view = blobs
         nums = [int("".join(c for c in f["id"] if c.isdigit()) or 0) for f in doc.features]
@@ -784,6 +1049,8 @@ class PartStudioDoc:
         elif str(path).lower().endswith((".3mf", ".obj")):
             from . import meshexport as ME
             ME.export_parts([(p.shape, p.name, p.color) for p in parts], path, **(options or {}))
+        elif str(path).lower().endswith((".brep", ".brp")):
+            K.export_brep(shapes, path)
         else:
             return K.export_step_named([(p.shape, np.eye(4), p.name, p.color) for p in parts], path, self.name)
 

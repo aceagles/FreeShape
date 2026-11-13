@@ -17,7 +17,8 @@ from .icons import CONSTRAINT_GLYPHS
 from .numparse import parse_number, fmt, has_vars
 from .. import sketch_ops as OPS
 
-DRAW_TOOLS = {"line", "rect", "center_rect", "circle", "polygon", "arc3", "arc_center", "point"}
+DRAW_TOOLS = {"line", "rect", "center_rect", "circle", "polygon", "arc3", "arc_center", "point", "spline", "ellipse",
+              "text"}
 
 # constraint tool -> (description, list of acceptable selection signatures)
 CONSTRAINT_TOOLS = {
@@ -45,6 +46,10 @@ TOOL_HINTS = {
     "arc3": "Click the start point, the end point, then a point on the arc.",
     "arc_center": "Click the centre, the start point, then sweep to the end point.",
     "point": "Click to place a point (used by Hole).",
+    "spline": "Click points for the curve to pass through. Double-click or press Enter to finish; click the first "
+              "point again to close it into a loop.",
+    "ellipse": "Click the centre, then the end of the long axis, then click to set the width.",
+    "text": "Click where the text should start (its bottom-left), then type the text.",
     "dimension": "Click a line, circle or two items, then click to place the dimension.",
     "use": "Click part edges to project them into the sketch.",
     "trim": "Click a segment of a line to remove it up to the nearest intersections.",
@@ -95,6 +100,7 @@ class Sketcher:
         self._box = None
         self.cursor_uv = None
         self.snap_info = None
+        self.model_hover = None
         self.infer = None
         self.infer_tan = None
         self.sk.solve()
@@ -207,20 +213,28 @@ class Sketcher:
             out += [("point", pid) for _d, pid in sorted(found, key=lambda f: f[0])]
         if "entity" in kinds:
             found = []
-            for eid in self.sk.entities:
+            for eid, ent in self.sk.entities.items():
                 if eid in exclude:
                     continue
-                pts = self.sk.polyline(eid, 64)
-                if len(pts) == 1:
+                if ent["type"] == "text":            # text: anywhere inside its box
+                    box = np.array([self.scr(vp, p) for p in self.sk.text_box(eid)])
+                    if _inside_poly(box[:-1], (x, y)):
+                        found.append((2.0, eid))
                     continue
-                S = np.array([self.scr(vp, p) for p in pts])
-                A, B = S[:-1], S[1:]
-                ab = B - A
-                L2 = np.maximum((ab ** 2).sum(1), 1e-12)
-                t = np.clip(((x - A[:, 0]) * ab[:, 0] + (y - A[:, 1]) * ab[:, 1]) / L2, 0, 1)
-                d = np.hypot(A[:, 0] + t * ab[:, 0] - x, A[:, 1] + t * ab[:, 1] - y).min()
-                if d < 7.0:
-                    found.append((d, eid))
+                best = None
+                for pts in self.sk.polylines(eid, 64):
+                    if len(pts) < 2:
+                        continue
+                    S = np.array([self.scr(vp, p) for p in pts])
+                    A, B = S[:-1], S[1:]
+                    ab = B - A
+                    L2 = np.maximum((ab ** 2).sum(1), 1e-12)
+                    t = np.clip(((x - A[:, 0]) * ab[:, 0] + (y - A[:, 1]) * ab[:, 1]) / L2, 0, 1)
+                    d = np.hypot(A[:, 0] + t * ab[:, 0] - x, A[:, 1] + t * ab[:, 1] - y).min()
+                    if best is None or d < best:
+                        best = d
+                if best is not None and best < 7.0:
+                    found.append((best, eid))
             out += [("entity", eid) for _d, eid in sorted(found, key=lambda f: f[0])]
         return out
 
@@ -235,6 +249,8 @@ class Sketcher:
         self.infer_hits = []        # [(source uv, "H"/"V")] drawn as yellow dotted guides
         self._infer_cons = []       # [("horizontal"/"vertical", source ref)] applied to the new point on click
         self.infer_tan = None       # circle / arc the line being drawn is tangent to
+        self.model_hover = None     # (part id, edge index) of the part edge being snapped to
+        self._snap_vp = vp
         if uv is None:
             return None, None
         h = self.hit(vp, x, y, kinds=("point",), exclude=exclude)
@@ -245,9 +261,11 @@ class Sketcher:
         if mid:
             self._acquire_source(("mid", mid[0]), anchor_uv)
             return mid[1], ("mid", mid[0])
-        edge = self._hit_part_edge(vp, x, y) if self.tool != "dimension" else None
-        if edge:
-            return edge[0], ("edge", edge[1], edge[2])
+        mp = self._model_point_hit(vp, x, y)
+        if mp:
+            m_uv, key = mp
+            self.model_hover = key
+            return m_uv, ("mpt", tuple(m_uv), key)
         if self.tool == "line" and anchor_uv is not None:
             tan = self._tangent_infer(vp, x, y, uv, np.asarray(anchor_uv, float), exclude)
             if tan:
@@ -293,7 +311,151 @@ class Sketcher:
         if h and self.sk.entities[h[1]]["type"] != "point" and not pick:
             uv = self._project_on(h[1], uv)
             return uv, ("on", h[1])
+        me = self._model_edge_hit(vp, x, y) if not pick else (
+            self._model_edge_on_guide(vp, x, y, uv, pick) if len(pick) == 1 else None)
+        if me:
+            m_uv, key = me
+            self.model_hover = key
+            return m_uv, ("medge", key)
         return uv, None
+
+    # ------------------------------------------------------------------ part edges in the sketch plane
+    def _model_geo(self, vp):
+        """Edges of the parts that lie in the sketch plane (the outline of the face being sketched on), as
+        [(part id, edge index, uv polyline, [(uv, "corner"/"mid"/"centre")])]. Cached per part shape."""
+        shapes = getattr(vp, "part_shapes", None) or {}
+        key = tuple((pid, id(sh)) for pid, sh in shapes.items())
+        if getattr(self, "_mgeo_key", None) == key:
+            return self._mgeo
+        out = []
+        pl = self.plane
+        n, o = np.asarray(pl.normal, float), np.asarray(pl.origin, float)
+        for pid, shape in shapes.items():
+            if shape is None:
+                continue
+            try:
+                lo, hi = K.bbox(shape)
+                tol = 1e-6 * max(1.0, float(np.linalg.norm(np.asarray(hi) - np.asarray(lo))))
+                edges = K.edges(shape)
+            except Exception:
+                continue
+            for ei, edge in enumerate(edges):
+                try:
+                    poly = np.asarray(K.discretize_edge(edge), float)
+                except Exception:
+                    continue
+                if len(poly) < 2 or np.abs((poly - o) @ n).max() > tol:
+                    continue
+                uvs = np.array([pl.to_local(q) for q in poly])
+                info = K.edge_info(edge)
+                closed = np.linalg.norm(poly[0] - poly[-1]) < 1e-7
+                pts = [] if closed else [(uvs[0], "corner"), (uvs[-1], "corner")]
+                if "r" in info and "center" in info:
+                    pts.append((np.array(pl.to_local(info["center"])), "centre"))
+                elif not closed and len(uvs) >= 2:
+                    d = uvs[-1] - uvs[0]
+                    off = np.abs((uvs - uvs[0]) @ np.array([-d[1], d[0]])) / (np.linalg.norm(d) + 1e-12)
+                    if off.max() < 1e-6 * max(1.0, float(np.linalg.norm(d))):
+                        pts.append(((uvs[0] + uvs[-1]) / 2, "mid"))
+                out.append((pid, ei, uvs, pts))
+        self._mgeo_key, self._mgeo = key, out
+        return out
+
+    def _scr_many(self, vp, uvs):
+        pl = self.plane
+        W = pl.origin + np.outer(uvs[:, 0], pl.xdir) + np.outer(uvs[:, 1], pl.ydir)
+        return np.asarray(vp.cam.to_screen(W), float)[:, :2]
+
+    def _model_point_hit(self, vp, x, y, tol=10.0):
+        """The corner, edge midpoint or circle centre of the face being sketched on nearest the cursor."""
+        best = (tol, None)
+        for pid, ei, _uvs, pts in self._model_geo(vp):
+            if not pts:
+                continue
+            S = self._scr_many(vp, np.array([q for q, _w in pts]))
+            d = np.hypot(S[:, 0] - x, S[:, 1] - y)
+            i = int(np.argmin(d))
+            # corners win over midpoints and centres at the same spot
+            if d[i] < best[0] - (0.5 if pts[i][1] == "corner" else 0):
+                best = (float(d[i]), (np.array(pts[i][0], float), (pid, ei, pts[i][1])))
+        if best[1] is None and self.tool != "dimension":
+            return self._offplane_point_hit(vp, x, y)   # the dimension tool takes such an edge whole instead
+        return best[1]
+
+    def _offplane_point_hit(self, vp, x, y, tol=8.0):
+        """The same for the part edge under the cursor when it is not in the sketch plane: the midpoint or an end
+        of the straight line it looks like on the plane (an edge that does not look straight gives nothing)."""
+        pick = getattr(vp, "pick", None)
+        pk = pick(x, y, kinds={"edge"}) if pick is not None else None
+        ab = self._edge_line(vp, pk) if pk is not None else None
+        if ab is None:
+            return None
+        a, b = ab
+        for uv, where in (((a + b) / 2, "mid"), (a, "corner"), (b, "corner")):
+            sp = self.scr(vp, uv)
+            if math.hypot(sp[0] - x, sp[1] - y) < tol:
+                return np.array(uv, float), (pk.key[0], pk.key[1], where)
+        return None
+
+    def _model_edge_hit(self, vp, x, y, tol=7.0):
+        """The nearest point on an edge of the face being sketched on, within a few pixels of the cursor."""
+        best = (tol, None)
+        P = np.array([x, y], float)
+        for pid, ei, uvs, _pts in self._model_geo(vp):
+            S = self._scr_many(vp, uvs)
+            A, B = S[:-1], S[1:]
+            AB = B - A
+            t = np.clip(((P - A) * AB).sum(1) / np.maximum((AB * AB).sum(1), 1e-12), 0, 1)
+            Q = A + AB * t[:, None]
+            d = np.hypot(*(Q - P).T)
+            i = int(np.argmin(d))
+            if d[i] < best[0]:
+                m_uv = uvs[i] + (uvs[i + 1] - uvs[i]) * t[i]
+                best = (float(d[i]), (m_uv, (pid, ei, "on")))
+        return best[1]
+
+    def _model_edge_on_guide(self, vp, x, y, uv, pick, tol=12.0):
+        """With a horizontal / vertical guide on, where the guide crosses an edge of the face near the cursor."""
+        axis = next(iter(pick))
+        k = 1 if axis == "H" else 0           # H: v is fixed; V: u is fixed
+        c = float(uv[k])
+        best = (tol, None)
+        for pid, ei, uvs, _pts in self._model_geo(vp):
+            a, b = uvs[:-1], uvs[1:]
+            da, db = a[:, k] - c, b[:, k] - c
+            for i in np.nonzero((da * db <= 0) & (np.abs(db - da) > 1e-12))[0]:
+                q = a[i] + (b[i] - a[i]) * (da[i] / (da[i] - db[i]))
+                q[k] = c
+                sq = self.scr(vp, q)
+                d = float(np.hypot(sq[0] - x, sq[1] - y))
+                if d < best[0]:
+                    best = (d, (q, (pid, ei, "on")))
+        return best[1]
+
+    def _model_point(self, uv, snap):
+        """A sketch point for a click snapped to the face being sketched on: a fixed point on a corner, edge
+        midpoint or centre (so you can dimension from it), or a point held on the projected edge."""
+        sk = self.sk
+        if snap[0] == "mpt":
+            pid = sk.add_point(*uv)
+            sk.add_constraint("fix", pid, value=[float(uv[0]), float(uv[1])])
+            return pid
+        part, ei, _w = snap[1]
+        vp = getattr(self, "_snap_vp", None)
+        eid = None
+        if vp is not None:
+            class _Pk:
+                kind, key = "edge", (part, ei)
+            before = set(sk.entities)
+            eid = self._use_edge(vp, _Pk(), construction=True, undo=False)
+            if eid in sk.entities and eid not in before:   # an edge already in the sketch is reused as it is
+                sk.entities[eid]["helper"] = True
+        pid = sk.add_point(*uv)
+        if eid in sk.entities and sk.entities[eid]["type"] in ("line", "circle", "arc"):
+            sk.add_constraint("point_on", pid, eid)
+        else:
+            sk.add_constraint("fix", pid, value=[float(uv[0]), float(uv[1])])
+        return pid
 
     def _tangent_infer(self, vp, x, y, uv, A, exclude=()):
         """Tangent inference for the line being drawn from A: (uv, circle/arc id, "dir"|"on") or None.
@@ -405,22 +567,6 @@ class Sketcher:
         a, b = ctr + d * t.min(), ctr + d * t.max()
         return None if np.linalg.norm(b - a) < 1e-7 else (a, b)
 
-    def _hit_part_edge(self, vp, x, y):
-        """A part edge's midpoint or end point under the cursor: (uv, (a, b), "mid" | "a" | "b") or None.
-        Like Onshape, a drawing tool snaps to the model as well as to the sketch; the edge is only brought into
-        the sketch when the click lands (`_point_at`)."""
-        pick = getattr(vp, "pick", None)
-        pk = pick(x, y, kinds={"edge"}) if pick is not None else None
-        ab = self._edge_line(vp, pk) if pk is not None else None
-        if ab is None:
-            return None
-        a, b = ab
-        for uv, where in (((a + b) / 2, "mid"), (a, "a"), (b, "b")):
-            sp = self.scr(vp, uv)
-            if math.hypot(sp[0] - x, sp[1] - y) < 8.0:
-                return uv, (tuple(map(float, a)), tuple(map(float, b))), where
-        return None
-
     def _fixed(self, pid):
         return any(c["type"] == "fix" and c["refs"][0] == pid for c in self.sk.constraints)
 
@@ -457,23 +603,6 @@ class Sketcher:
         sk.add_constraint("fix", pa, value=[float(v) for v in a])
         sk.add_constraint("fix", pb, value=[float(v) for v in b])
         return eid
-
-    def _edge_snap_point(self, ab, where):
-        """The sketch point for a click snapped to a part edge: the edge comes in as a fixed construction line
-        (or the one already there is reused) and the point is its end, or a point held at its midpoint."""
-        sk = self.sk
-        a, b = np.asarray(ab[0], float), np.asarray(ab[1], float)
-        eid = self._used_line(a, b) or self._add_used_line(a, b, True)
-        e = sk.entities[eid]
-        if where == "mid":
-            for c in sk.constraints:
-                if c["type"] == "midpoint" and c["refs"][1] == eid:
-                    return c["refs"][0]
-            m = sk.add_point(*((a + b) / 2))
-            sk.add_constraint("midpoint", m, eid)
-            return m
-        want = a if where == "a" else b
-        return min((e["p1"], e["p2"]), key=lambda p: float(np.linalg.norm(sk.P(p) - want)))
 
     def _source_point(self, ref):
         """The sketch point behind an inference source; a line midpoint gets a construction point."""
@@ -512,8 +641,13 @@ class Sketcher:
         inferences (from snap) to apply to a newly created point."""
         if snap and snap[0] == "point":
             return snap[1]
-        if snap and snap[0] == "edge":
-            return self._edge_snap_point(snap[1], snap[2])
+        if snap and snap[0] in ("mpt", "medge"):
+            pid = self._model_point(uv, snap)
+            for ctype, ref in (cons or []):
+                src = self._source_point(ref)
+                if src and src != pid and snap[0] == "medge":
+                    self.sk.add_constraint(ctype, src, pid)
+            return pid
         pid = self.sk.add_point(*uv)
         if snap and snap[0] in ("on", "tan"):
             self.sk.add_constraint("point_on", pid, snap[1])
@@ -726,6 +860,13 @@ class Sketcher:
             self._dim_over_item = sh is not None or pk is not None
 
     def double_click(self, vp, x, y, e):
+        if self.tool == "spline" and self.temp:
+            self._finish_spline(vp)
+            return
+        h = self.hit(vp, x, y, kinds=("entity",)) if self.tool == "select" else None
+        if h and self.sk.entities.get(h[1], {}).get("type") == "text":
+            self.edit_text(vp, h[1])
+            return
         h = self.hit(vp, x, y, kinds=("constraint",))
         if h:
             c = self._constraint(h[1])
@@ -739,6 +880,9 @@ class Sketcher:
     def escape(self):
         had_editor = self._editor is not None
         self._end_editor()
+        if self.tool == "spline" and len(self.temp) >= 2:
+            self._finish_spline()             # Esc keeps the curve drawn so far, like the line chain
+            return
         if self.temp or self.chain_anchor is not None or self.dim_first or self.cons_picks:
             self._reset_tool_state()
             self.selection = []
@@ -758,6 +902,9 @@ class Sketcher:
             if self.tool != "select" or not self._last_xy:
                 return False
             self.open_select_other(vp, *self._last_xy)
+            return True
+        if k in (Qt.Key_Return, Qt.Key_Enter) and self.tool == "spline" and self.temp:
+            self._finish_spline(vp)
             return True
         if k in (Qt.Key_Delete, Qt.Key_Backspace):
             self.delete_selection()
@@ -859,8 +1006,9 @@ class Sketcher:
                         made.append(("fix", [pid], list(sk.points[pid])))
                 if p in sk.entities and sk.entities[p]["type"] == "circle":
                     made.append(("radius", [p], sk.entities[p]["r"]))
-        elif len(picks) == 1 and tool in ("horizontal", "vertical") and types[0] == "line":
-            made.append((tool, [picks[0]], None))
+        elif tool in ("horizontal", "vertical") and picks and all(t == "line" for t in types):
+            for p in picks:                        # one or several lines: each one made horizontal / vertical
+                made.append((tool, [p], None))
         elif len(picks) == 2:
             a, b = picks
             ta, tb = types
@@ -935,6 +1083,16 @@ class Sketcher:
             return False
         self.push_undo()
         for t, refs, val in made:
+            if t in ("horizontal", "vertical"):
+                # a line can't be both: horizontal replaces vertical and the other way round (otherwise the line
+                # shrinks to a dot), and asking again for what it already is changes nothing
+                pair = self._hv_pair(refs)
+                other = "vertical" if t == "horizontal" else "horizontal"
+                if any(c["type"] == t and self._hv_pair(c["refs"]) == pair for c in sk.constraints):
+                    continue
+                sk.constraints = [c for c in sk.constraints
+                                  if not (c["type"] == other and self._hv_pair(c["refs"]) == pair)]
+                self._swing_to(pair, t)
             c = sk.add_constraint(t, *refs, value=val)
             if tool == "normal":
                 c["normal"] = True
@@ -1009,6 +1167,35 @@ class Sketcher:
     def _other_closed(self):
         self.hover = None
         self._popup = None
+
+    def _swing_to(self, pair, t):
+        """Turn two points about their midpoint so they line up horizontally / vertically, keeping their distance.
+        Without this a vertical line made horizontal is squashed to a dot (the smallest move that satisfies the
+        solver), instead of being turned."""
+        sk = self.sk
+        a, b = sorted(pair)
+        if ORIGIN in (a, b) or a not in sk.points or b not in sk.points:
+            return
+        A, B = sk.P(a), sk.P(b)
+        d = B - A
+        L = float(np.linalg.norm(d))
+        along = abs(d[0]) if t == "horizontal" else abs(d[1])
+        across = abs(d[1]) if t == "horizontal" else abs(d[0])
+        if L < 1e-9 or along >= across:
+            return                              # already more that way than the other: the solver just nudges it
+        m = (A + B) / 2
+        sgn = 1.0 if (d[1] if t == "horizontal" else d[0]) >= 0 else -1.0
+        half = np.array([sgn * L / 2, 0.0]) if t == "horizontal" else np.array([0.0, sgn * L / 2])
+        sk.points[a] = (m - half).tolist()
+        sk.points[b] = (m + half).tolist()
+
+    def _hv_pair(self, refs):
+        """The two points a horizontal / vertical constraint lines up (from a line, or two points), unordered."""
+        sk = self.sk
+        if len(refs) == 1 and refs[0] in sk.entities and sk.entities[refs[0]].get("type") == "line":
+            e = sk.entities[refs[0]]
+            return frozenset((e["p1"], e["p2"]))
+        return frozenset(refs[:2])
 
     # ------------------------------------------------------------------ drawing tools
     def _polygon_mode(self):
@@ -1100,6 +1287,7 @@ class Sketcher:
             sk.add_constraint("vertical", l4)
             if t == "center_rect":
                 diag = sk.add_line(a, c, True)
+                sk.entities[diag]["helper"] = True
                 sk.add_constraint("midpoint", ctr, diag)
             self.temp = []
             self.changed(True)
@@ -1173,6 +1361,50 @@ class Sketcher:
                         sk.add_point_entity(m)
             self.changed(True)           # no radius prompt: the arc stays defined by its three points
             return True
+        if t == "spline":
+            if self.temp:
+                first = self.scr(vp, self.temp[0][0])
+                if len(self.temp) >= 3 and math.hypot(first[0] - x, first[1] - y) < 9:
+                    self._finish_spline(vp, closed=True)          # back on the first point: a loop
+                    return True
+                last = self.scr(vp, self.temp[-1][0])
+                if math.hypot(last[0] - x, last[1] - y) < 4:
+                    self._finish_spline(vp)                       # the last point clicked again: done
+                    return True
+            self.temp.append((uv, snap))
+            return True
+        if t == "ellipse":
+            self.temp.append((uv, snap))
+            if len(self.temp) == 1:
+                self._first_cons = icons
+            if len(self.temp) < 3:
+                return True
+            (cu, cs), (au, as_), _ = self.temp
+            self.temp = []
+            ax = au - cu
+            A = float(np.linalg.norm(ax))
+            if A < 1e-9:
+                return True
+            nrm = np.array([-ax[1], ax[0]]) / A
+            r = abs(float((uv - cu) @ nrm))
+            if r < 1e-9:
+                return True
+            self.push_undo()
+            c = self._point_at(cu, cs, self._first_cons)
+            a = self._point_at(au, as_)
+            eid = sk.add_ellipse(c, a, r, cons)
+            sk.add_line(c, a, True)                 # the long axis, as construction: dimension or align it
+            self.changed(True)
+            self._offer_dims(vp, [("radius", [eid], r, sk.P(c) + nrm * r * 1.15)])
+            return True
+        if t == "text":
+            vals = self._text_dialog(vp)
+            if vals:
+                self.push_undo()
+                pid = self._point_at(uv, snap, icons)
+                sk.add_text(pid, **vals)
+                self.changed(True)
+            return True
         if t == "arc_center":
             self.temp.append((uv, snap))
             if len(self.temp) == 2:
@@ -1201,6 +1433,80 @@ class Sketcher:
             return True
         return True
 
+    def _finish_spline(self, vp=None, closed=False):
+        """Make the spline from the points clicked so far (at least two; three for a loop)."""
+        pts = self.temp
+        self.temp = []
+        if len(pts) < (3 if closed else 2):
+            return False
+        self.push_undo()
+        ids = []
+        for uv, snap in pts:
+            pid = self._point_at(uv, snap)
+            if not ids or ids[-1] != pid:
+                ids.append(pid)
+        if len(ids) < (3 if closed else 2):
+            self.undo()
+            return False
+        self.sk.add_spline(ids, closed, self.construction)
+        self.changed(True)
+        return True
+
+    def _text_dialog(self, vp, e=None):
+        """Ask for the text and its look. e: an existing text entity to edit. Returns the values, or None."""
+        from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QFontComboBox, QDoubleSpinBox,
+                                       QCheckBox, QDialogButtonBox, QHBoxLayout)
+        from PySide6.QtGui import QFont as _QF
+        e = e or {}
+        dlg = QDialog(vp.window() if hasattr(vp, "window") else None)
+        dlg.setWindowTitle("Edit text" if e else "Text")
+        form = QFormLayout(dlg)
+        txt = QLineEdit(e.get("text", ""))
+        txt.setPlaceholderText("Type the text")
+        form.addRow("Text:", txt)
+        font = QFontComboBox()
+        font.setCurrentFont(_QF(e.get("font", "Arial")))
+        form.addRow("Font:", font)
+        size = QDoubleSpinBox()
+        size.setRange(0.1, 10000)
+        size.setDecimals(2)
+        size.setSuffix(" mm")
+        size.setValue(float(e.get("size", getattr(self, "_last_text_size", 10.0))))
+        form.addRow("Size:", size)
+        style = QHBoxLayout()
+        bold, italic = QCheckBox("Bold"), QCheckBox("Italic")
+        bold.setChecked(bool(e.get("bold")))
+        italic.setChecked(bool(e.get("italic")))
+        style.addWidget(bold)
+        style.addWidget(italic)
+        style.addStretch(1)
+        form.addRow("Style:", style)
+        ang = QDoubleSpinBox()
+        ang.setRange(-360, 360)
+        ang.setSuffix("°")
+        ang.setValue(float(e.get("angle", 0.0)))
+        form.addRow("Angle:", ang)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        txt.setFocus()
+        if dlg.exec() != QDialog.Accepted or not txt.text().strip():
+            return None
+        self._last_text_size = size.value()
+        return {"text": txt.text(), "font": font.currentFont().family(), "size": size.value(),
+                "bold": bold.isChecked(), "italic": italic.isChecked(), "angle": ang.value()}
+
+    def edit_text(self, vp, eid):
+        e = self.sk.entities.get(eid)
+        if e is None or e["type"] != "text":
+            return
+        vals = self._text_dialog(vp, e)
+        if vals:
+            self.push_undo()
+            e.update(vals)
+            self.changed(True)
+
     # ------------------------------------------------------------------ dimensions
     def _dimension_click(self, vp, x, y):
         h = self.hit(vp, x, y, kinds=("point", "entity"))
@@ -1208,7 +1514,14 @@ class Sketcher:
         if h is None and self.dim_second is None:
             # like Onshape: a part's edge (or corner) can be dimensioned to as well — it is brought into the
             # sketch as fixed construction geometry first
-            pk = vp.pick(x, y, kinds={"edge"})
+            mp = self._model_point_hit(vp, x, y)
+            if mp is not None:
+                # a corner / edge midpoint / centre of the face being sketched on: a fixed point there
+                self.push_undo()
+                pid = self._model_point(mp[0], ("mpt", tuple(mp[0]), mp[1]))
+                self.changed(True)
+                h = ("point", pid)
+            pk = vp.pick(x, y, kinds={"edge"}) if h is None else None
             if pk is not None:
                 eid = self._use_edge(vp, pk, construction=True, click=(x, y))
                 if eid is not None:
@@ -1284,14 +1597,18 @@ class Sketcher:
                 ctype, refs, val = "diameter", [a], 2 * sk.radius(a)
             elif ta == "arc":
                 ctype, refs, val = "radius", [a], sk.radius(a)
+            elif ta == "ellipse":           # half its width; the length is set with its dashed axis line
+                ctype, refs, val = "radius", [a], sk.radius(a)
             else:
                 return None
         else:
             def ptof(i, t):
                 if t == "point":
                     return self._as_point(i)
-                if t in ("circle", "arc"):
+                if t in ("circle", "arc", "ellipse"):
                     return sk.entities[i]["c"]
+                if t == "text":
+                    return sk.entities[i]["p"]          # where the text starts
                 return None
             if ta == "line" and tb == "line":
                 e1, e2 = sk.entities[a], sk.entities[b]
@@ -1667,9 +1984,10 @@ class Sketcher:
             ed.deleteLater()
 
     # ------------------------------------------------------------------ use / trim
-    def _use_edge(self, vp, pk, construction=None, click=None):
+    def _use_edge(self, vp, pk, construction=None, click=None, undo=True):
         """Project a part edge into the sketch as fixed geometry. Returns the entity (or point) id to use, or
-        None. An edge that is already in the sketch is not projected again: its line or circle is returned. Straight edges become lines, circles facing the sketch become circles / arcs, and any edge that is
+        None. An edge that is already in the sketch is not projected again: its line or circle is returned.
+        Straight edges become lines, circles facing the sketch become circles / arcs, and any edge that is
         seen edge-on (like the rim of a cylinder from the side) becomes the straight line it looks like.
         With `click` (screen x, y) a click near either end of the result gives that end point instead."""
         pid, ei = pk.key
@@ -1683,7 +2001,8 @@ class Sketcher:
         n = np.asarray(self.plane.normal, float)
         poly = np.asarray(K.discretize_edge(edge), float)
         uvs = np.array([self.plane.to_local(q) for q in poly]) if len(poly) else np.zeros((0, 2))
-        self.push_undo()
+        if undo:
+            self.push_undo()
         out = None
         reused = None           # the entity already projected from this edge, when there is one
         if "r" in info and abs(abs(np.asarray(info["axis"]) @ n) - 1) < 1e-6:
@@ -1717,7 +2036,8 @@ class Sketcher:
             off = np.abs((uvs - ctr) @ np.array([-d[1], d[0]]))
             size = max(float(np.ptp(uvs, axis=0).max()), 1e-9)
             if float(off.max()) > 1e-4 * max(size, 1.0) + 1e-7:
-                self.undo_stack.pop()
+                if undo:
+                    self.undo_stack.pop()
                 self._flash(vp, "Only straight or circular edges can be used here")
                 return None
             t = (uvs - ctr) @ d
@@ -1735,17 +2055,27 @@ class Sketcher:
                         if np.hypot(sp[0] - click[0], sp[1] - click[1]) < 10:
                             out = pp                       # clicked at the end: dimension to the corner
         else:
-            self.undo_stack.pop()
+            if undo:
+                self.undo_stack.pop()
             return None
         if reused is not None:
             # the edge is in the sketch already: no second copy on top of it. The Use tool gives it the current
-            # solid / construction mode; dimensioning to it leaves it as it is.
-            if construction is None and bool(sk.entities[reused].get("construction")) != bool(cons):
-                sk.entities[reused]["construction"] = bool(cons)
-            else:
-                self.undo_stack.pop()
+            # solid / construction mode and shows it (a snap may have brought it in as a hidden helper);
+            # dimensioning or snapping to it leaves it as it is.
+            ent = sk.entities[reused]
+            touched = False
+            if construction is None:
+                if bool(ent.get("construction")) != bool(cons):
+                    ent["construction"] = bool(cons)
+                    touched = True
+                if ent.pop("helper", None):
+                    touched = True
+            if not touched:
+                if undo:
+                    self.undo_stack.pop()
                 return out
-        self.changed(True)
+        if undo:
+            self.changed(True)
         return out
 
     def _trim(self, eid, uv):
@@ -1864,10 +2194,17 @@ class Sketcher:
                 GL.glLineStipple(3, 0x0F0F)
             GL.glLineWidth(3.0 if col in (theme.SELECT, theme.HOVER) else 2.0)
             GL.glColor3f(*col)
-            GL.glBegin(GL.GL_LINE_STRIP)
-            for u, v in sk.polyline(eid, 96):
-                GL.glVertex3f(*pl.to_world(u, v))
-            GL.glEnd()
+            for poly in sk.polylines(eid, 96):
+                GL.glBegin(GL.GL_LINE_STRIP)
+                for u, v in poly:
+                    GL.glVertex3f(*pl.to_world(u, v))
+                GL.glEnd()
+            if e["type"] == "text" and (eid == self.hover or eid in self.selection):
+                GL.glLineWidth(1.0)            # the text's box, while hovered or selected
+                GL.glBegin(GL.GL_LINE_STRIP)
+                for u, v in sk.text_box(eid):
+                    GL.glVertex3f(*pl.to_world(u, v))
+                GL.glEnd()
             GL.glDisable(GL.GL_LINE_STIPPLE)
         # points (endpoints, centres, sketch points)
         virtual = {e["p"] for e in sk.entities.values() if e["type"] == "point" and e.get("virtual")}
@@ -1939,6 +2276,20 @@ class Sketcher:
         elif t == "slot" and self.temp:
             a = self.temp[0][0]
             strip([a, cur])
+        elif t == "spline" and self.temp:
+            pts = [q for q, _s in self.temp] + [cur]
+            strip(K.spline_sample(pts, False, 48) if len(pts) >= 2 else pts)
+        elif t == "ellipse" and self.temp:
+            c = self.temp[0][0]
+            if len(self.temp) == 1:
+                strip([c, cur])
+            else:
+                ax = self.temp[1][0] - c
+                A = max(np.linalg.norm(ax), 1e-12)
+                nrm = np.array([-ax[1], ax[0]]) / A
+                r = abs(float((cur - c) @ nrm))
+                a = np.linspace(0, 2 * math.pi, 97)
+                strip(c + np.outer(np.cos(a), ax) + np.outer(np.sin(a), nrm * r))
         elif t == "arc3" and self.temp:
             if len(self.temp) == 1:
                 strip([self.temp[0][0], cur])
@@ -1975,6 +2326,18 @@ class Sketcher:
                 GL.glVertex3f(*pl.to_world(float(cur[0]), float(cur[1])))
                 GL.glEnd()
             GL.glDisable(GL.GL_LINE_STIPPLE)
+        # the part edge being snapped to
+        mh = getattr(self, "model_hover", None)
+        if mh and (self.tool in DRAW_TOOLS or self.tool in ("dimension", "slot")):
+            for pid_, ei_, uvs_, _p in getattr(self, "_mgeo", []):
+                if (pid_, ei_) == mh[:2]:
+                    GL.glLineWidth(3)
+                    GL.glColor3f(*theme.HOVER)
+                    GL.glBegin(GL.GL_LINE_STRIP)
+                    for q in uvs_:
+                        GL.glVertex3f(*pl.to_world(float(q[0]), float(q[1])))
+                    GL.glEnd()
+                    GL.glLineWidth(1)
         # snap marker
         if self.tool in DRAW_TOOLS or self.tool in ("dimension", "slot"):
             GL.glPointSize(8)
@@ -2246,6 +2609,19 @@ class Sketcher:
 
 
 # ---------------------------------------------------------------------- geometry helpers
+
+def _inside_poly(poly, pt):
+    """Is the 2D point inside the polygon (screen or sketch coordinates)?"""
+    x, y = pt
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
 
 def _cross2(a, b):
     return float(a[0] * b[1] - a[1] * b[0])

@@ -89,12 +89,23 @@ def fillet_corner(sk: Sketch, pid: str, r: float) -> str:
 
 # --------------------------------------------------------------------------- offset
 
-def _chain(sk: Sketch, eid: str):
-    """Ordered list of (eid, forward) for the chain of connected lines/arcs containing eid."""
-    ents = sk.entities
+def _ends(e, splines=True):
+    """(start, end) point ids of an open curve: a line, arc or open spline; None for anything else."""
+    if e["type"] in ("line", "arc"):
+        return e["p1"], e["p2"]
+    if splines and e["type"] == "spline" and not e.get("closed") and len(e.get("pts", [])) >= 2:
+        return e["pts"][0], e["pts"][-1]
+    return None
+
+
+def _chain(sk: Sketch, eid: str, splines=False):
+    """Ordered list of (eid, forward) for the chain of connected lines/arcs (and open splines, with
+    splines=True) containing eid."""
+    ents = {k: dict(e, p1=_ends(e, splines)[0], p2=_ends(e, splines)[1]) if _ends(e, splines) else e
+            for k, e in sk.entities.items()}
     adj = {}
     for k, e in ents.items():
-        if e["type"] in ("line", "arc"):
+        if _ends(sk.entities[k], splines):
             for p in (e["p1"], e["p2"]):
                 adj.setdefault(p, []).append(k)
     chain = [(eid, True)]
@@ -176,8 +187,8 @@ def offset(sk: Sketch, eid: str, dist: float):
     if abs(dist) < TOL:
         raise ValueError("Offset distance can't be zero")
     e0 = sk.entities.get(eid)
-    if e0 is None or e0["type"] == "point":
-        raise ValueError("Click a line, arc or circle")
+    if e0 is None or e0["type"] in ("point", "spline", "ellipse", "text"):
+        raise ValueError("Offset works on lines, arcs and circles")
     cons = e0.get("construction", False)
     if e0["type"] == "circle":
         r = e0["r"] + dist
@@ -364,12 +375,29 @@ def _crossings_along(sk: Sketch, oid, a, d):
                 if ang > a2 + 1e-9:
                     continue
             out.append(t)
+    elif o["type"] == "ellipse":
+        c, major, r = sk.ellipse_axes(oid)
+        ra = float(np.linalg.norm(major))
+        if ra < 1e-12 or r < 1e-12:
+            return out
+        ex = major / ra
+        ey = np.array([-ex[1], ex[0]])
+        f = a - c
+        # in the ellipse's own axes, scaled so it is the unit circle
+        p0 = np.array([f @ ex / ra, f @ ey / r])
+        dd = np.array([d @ ex / ra, d @ ey / r])
+        A, B, C = dd @ dd, 2 * p0 @ dd, p0 @ p0 - 1.0
+        disc = B * B - 4 * A * C
+        if disc < 0 or A < 1e-12:
+            return out
+        for sgn in (-1, 1):
+            out.append((-B + sgn * math.sqrt(disc)) / (2 * A))
     return out
 
 
 def extend(sk: Sketch, lid: str, end: str):
     """Lengthen one end of line `lid` ("p1" or "p2") along its own direction to the nearest crossing with
-    another line, circle or arc. The end point moves there and gets a point_on constraint to that curve.
+    another line, circle, arc or ellipse. The end point moves there and gets a point_on constraint to that curve.
     Returns {"point", "target", "from", "to"}, or None (sk untouched) when nothing lies beyond the end.
     Raises ValueError (sk untouched) when the end point is shared with other geometry, or when the
     constraints already on the line, such as a length dimension, would not let the end move."""
@@ -447,6 +475,17 @@ def _copy(sk: Sketch, ents, transform, keep=frozenset(), orient_flip=False, copy
             emap[eid] = sk.add_arc(P(e["c"]), p2, p1, c) if orient_flip else sk.add_arc(P(e["c"]), p1, p2, c)
         elif t == "point":
             emap[eid] = sk.add_point_entity(P(e["p"]))
+        elif t == "spline":
+            emap[eid] = sk.add_spline([P(q) for q in e["pts"]], e.get("closed", False), c)
+        elif t == "ellipse":
+            emap[eid] = sk.add_ellipse(P(e["c"]), P(e["a"]), e["r"], c)
+        elif t == "text":
+            # text keeps reading left to right: it moves and turns with the copy but is never mirrored
+            o = np.asarray(sk.P(e["p"]), float)
+            d = np.asarray(transform(o + np.array([1.0, 0.0])), float) - np.asarray(transform(o), float)
+            turn = 0.0 if orient_flip else math.degrees(math.atan2(d[1], d[0]))
+            vals = {k: e[k] for k in ("text", "size", "font", "bold", "italic") if k in e}
+            emap[eid] = sk.add_text(P(e["p"]), angle=e.get("angle", 0.0) + turn, **vals)
     if copy_cons:
         allmap = {**pmap, **emap}
         inside = set(ents) | set(pmap)

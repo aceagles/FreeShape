@@ -362,9 +362,17 @@ def load_user_plugins(root=None) -> list[PluginInfo]:
 
 # --------------------------------------------------------------------------- notices
 
-def notices(features) -> dict:
+def notices(features, locked=None) -> dict:
     """{feature id: text} for each Python feature whose plugin is not installed, or whose installed plugin
-    version differs from the one recorded in the feature. Notices are not errors."""
+    version differs from the one recorded in the feature. Notices are not errors.
+
+    `locked` is {feature id: stored-build entry} of the features shown on their stored last build (I4.7);
+    those read `locked: plugin "gears" 1.0.0 is not installed; showing its last build`. A Part Studio
+    `Document` may be passed as `features`: its features and its `locked_builds()` are then used."""
+    if locked is None and hasattr(features, "locked_builds"):
+        locked = features.locked_builds()
+    features = getattr(features, "features", features)
+    locked = locked or {}
     feats = [f for f in features if isinstance(f, dict) and is_python_type(f.get("type"))]
     if any(get(f["type"]) is None for f in feats):
         load_user_plugins()
@@ -372,7 +380,10 @@ def notices(features) -> dict:
     for f in feats:
         info = plugin_for(f["type"])
         pid, ver = recorded_plugin(f)
-        if info is None:
+        if info is None and f.get("id") in locked:
+            from .host import locked_message
+            out[f.get("id")] = locked_message(locked[f.get("id")], f)
+        elif info is None:
             out[f.get("id")] = f'needs plugin "{pid}" {ver}, which is not installed'.replace("  ", " ")
         elif ver != info.version:
             out[f.get("id")] = f"made with {pid} {ver or '(no version)'}, rebuilt with {info.version}"

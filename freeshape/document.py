@@ -6,6 +6,7 @@ import hashlib
 import json
 import traceback
 
+from . import blobstore
 from . import kernel as K
 from . import migrations as M
 from .features import (RUNNERS, FEATURE_LABELS, ModelState, PartMap, default_params, Part, prepare,
@@ -69,6 +70,11 @@ class Document:
         self.rollback: int | None = None          # number of active features; None = all
         self.part_overrides: dict = {}            # part id -> {"name":..., "color":...}
         self.part_aliases: dict = {}               # old (pre-I1.4) part id -> its new id, from a v1 load
+        # Python feature id -> its stored last build {"plugin", "parts": [{"id", "brep", "names"}]} (from the
+        # file; hostile data, see pyfeature.host.restore). Shown when the feature's plugin is not installed.
+        self.python_builds: dict = {}
+        self._blob_bytes: dict = {}                 # blob key -> bytes read while restoring a stored build
+        self._build_memo: dict = {}                 # feature id -> (state, entry, blobs) of its last record
         self.hidden_parts: set = set()
         self.hidden_features: set = set()         # sketches / planes hidden in the view
         self.path = None
@@ -285,6 +291,8 @@ class Document:
         new_cache = {}
         for f in features[:n]:
             h.update(json.dumps(f, sort_keys=True).encode())
+            if pyfeature.is_python_type(f.get("type")):
+                h.update(self._python_key(f).encode())
             key = h.hexdigest()
             if key in self._cache:
                 state, err = self._cache[key]
@@ -297,8 +305,13 @@ class Document:
                         if pyfeature.is_python_type(f.get("type")):
                             # the type is only a registry key: never imported or evaluated. host.run loads
                             # the user plugins once if it is unregistered, then reports the missing plugin.
-                            # It evaluates its own expressions, so prepare() is skipped.
-                            pyfeature.host.run(state, f)
+                            # It evaluates its own expressions, so prepare() is skipped. Still unregistered
+                            # with a stored build: lock on that build (I4.7).
+                            entry = self._stored_build(f)
+                            if entry is not None:
+                                self._blob_bytes.update(pyfeature.host.restore(state, f, entry, self._blob_store()))
+                            else:
+                                pyfeature.host.run(state, f)
                         else:
                             RUNNERS[f["type"]](state, prepare(f, state))
                         for pid, part in list(state.parts.items()):
@@ -319,6 +332,42 @@ class Document:
         if len(self._cache) > 400:
             self._cache = new_cache
         return state
+
+    def _stored_build(self, f):
+        """The stored build to lock `f` on: only when its plugin is (still) not installed."""
+        if pyfeature.get(f.get("type")) is not None:
+            return None
+        return self.python_builds.get(f.get("id"))
+
+    def _blob_store(self):
+        return blobstore.store_for(self.path) if self.path else None
+
+    def _python_key(self, f):
+        """What a Python feature's result depends on besides its JSON: the plugin that builds it (so
+        registering or removing a plugin rebuilds), or, while it is missing, the stored build it is locked on."""
+        if pyfeature.get(f.get("type")) is None:
+            pyfeature.load_user_plugins()
+        info = pyfeature.plugin_for(f.get("type"))
+        if info is not None:
+            return json.dumps(["plugin", info.id, info.version, info.path])
+        entry = self.python_builds.get(f.get("id"))
+        return json.dumps(["missing", entry, self.path], sort_keys=True, default=str)
+
+    def locked_builds(self) -> dict:
+        """{feature id: stored-build entry} of the Python features shown on their stored last build: the
+        plugin is not installed, there is a stored build, and the last rebuild reported no error for it."""
+        out = {}
+        for f in self.features:
+            if pyfeature.is_python_type(f.get("type")) and not f.get("suppressed") \
+                    and f["id"] not in self.errors:
+                entry = self._stored_build(f)
+                if entry is not None:
+                    out[f["id"]] = entry
+        return out
+
+    def notices(self) -> dict:
+        """{feature id: text}: pyfeature.notices for this Part Studio, locked features included."""
+        return pyfeature.notices(self.features, self.locked_builds())
 
     def rebuild(self):
         errors = {}
@@ -357,15 +406,64 @@ class Document:
             cb()
 
     # ------------------------------------------------------------------ files
+    def _python_builds(self):
+        """({feature id: entry}, {blob key: bytes}) of the stored last build of every Python feature in the
+        full feature list: each one that builds without error now, and each one locked on its stored build
+        (kept as it is). A feature's parts are those with id `<fid>/...` in the (cached) state right after it."""
+        builds, blobs = {}, {}
+        for i, f in enumerate(self.features):
+            if not pyfeature.is_python_type(f.get("type")) or f.get("suppressed"):
+                continue
+            fid = f["id"]
+            errors = {}
+            state = self.compute(self.features, i + 1, errors)
+            if fid in errors:
+                continue
+            entry = self._stored_build(f)
+            if entry is not None:            # locked: keep the entry, and its bytes for a save elsewhere
+                builds[fid] = entry
+                for rec in entry.get("parts", []):
+                    for k in (rec.get("brep"), rec.get("names")):
+                        if k in self._blob_bytes:
+                            blobs[k] = self._blob_bytes[k]
+                continue
+            info = pyfeature.plugin_for(f.get("type"))
+            if info is None:
+                continue
+            memo = self._build_memo.get(fid)
+            if memo is None or memo[0] is not state:
+                rec = pyfeature.host.build_record(state, fid, {"id": info.id, "version": info.version})
+                memo = self._build_memo[fid] = (state, *rec)
+            if memo[1]["parts"]:
+                builds[fid] = memo[1]
+                blobs.update(memo[2])
+        return builds, blobs
+
     def to_json(self):
-        return json.dumps({"format": "freeshape", "version": M.latest_version("document"), "name": self.name,
-                           "uid": self.uid, "features": self.features, "rollback": self.rollback,
-                           "overrides": self.part_overrides, "hidden": sorted(self.hidden_parts),
-                           "hidden_features": sorted(self.hidden_features),
-                           "part_aliases": self.part_aliases}, indent=1)
+        data = {"format": "freeshape", "version": M.latest_version("document"), "name": self.name,
+                "uid": self.uid, "features": self.features, "rollback": self.rollback,
+                "overrides": self.part_overrides, "hidden": sorted(self.hidden_parts),
+                "hidden_features": sorted(self.hidden_features),
+                "part_aliases": self.part_aliases}
+        builds, _ = self._python_builds()
+        if builds:
+            data["python_builds"] = builds
+        return json.dumps(data, indent=1)
+
+    def write_blobs(self, path=None):
+        """Put the stored last build of every Python feature into the blob store beside `path` (the tab
+        file about to be written), before the JSON that names the keys. Returns the builds."""
+        builds, blobs = self._python_builds()
+        if blobs:
+            store = blobstore.store_for(path or self.path)
+            for data in blobs.values():
+                store.put(data)
+        self.python_builds = builds
+        return builds
 
     def save(self, path=None):
         path = path or self.path
+        self.write_blobs(path)
         with open(path, "w") as fh:
             fh.write(self.to_json())
         self.path = path
@@ -385,6 +483,8 @@ class Document:
         doc.part_aliases = d.get("part_aliases", {})
         doc.hidden_parts = set(d.get("hidden", []))
         doc.hidden_features = set(d.get("hidden_features", []))
+        builds = d.get("python_builds")
+        doc.python_builds = {k: v for k, v in builds.items() if isinstance(k, str)} if isinstance(builds, dict) else {}
         doc.path = path
         nums = [int("".join(c for c in f["id"] if c.isdigit()) or 0) for f in doc.features]
         doc._counter = max(nums + [0])

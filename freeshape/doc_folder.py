@@ -397,6 +397,8 @@ class FolderDocument:
             if os.path.exists(full) and not tab.doc.dirty:
                 continue
             tab.doc.path = full
+            if hasattr(tab.doc, "write_blobs"):      # a Part Studio's Python-feature builds (blobs/, I4.7)
+                tab.doc.write_blobs(full)
             data = json.loads(tab.doc.to_json())
             data["_tab_id"] = tab.id
             _atomic_write(full, json.dumps(data, indent=1))

@@ -1,0 +1,2 @@
+{"id": "labelled", "name": "Labelled", "version": "1.0.0", "licence": "GPL-3.0-or-later",
+ "features": ["labelled:LabelledBox", "labelled:PlainBox", "labelled:BoxPair"]}

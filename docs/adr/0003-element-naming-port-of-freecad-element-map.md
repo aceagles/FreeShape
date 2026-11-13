@@ -1,55 +1,34 @@
-# ADR 0003 — Element naming is a port of FreeCAD's element map
+# 3. Element naming is a port of FreeCAD's element map
 
-* **Status:** accepted
-* **Date:** 2026-11-12
+Date: 2026-11-12
+
+## Status
+
+Accepted
 
 ## Context
 
-A downstream feature — a fillet, a pocket, a mate — has to say which face or edge of an upstream
-shape it acts on. Storing the kernel's index (`Face7`) breaks as soon as anything upstream changes,
-because OCCT renumbers freely. Storing a geometric signature and re-finding the face by its shape
-survives renumbering but cannot distinguish faces that look alike, and when it guesses wrong it
-does so silently: the fillet lands on the wrong edge and the model is quietly incorrect.
+FreeShape finds picked faces and edges again after a rebuild by geometric similarity alone. After an upstream change, a reference can silently attach to the wrong face. Part ids come from a replay-wide counter, so inserting an upstream feature renumbers later parts. Top-down design (Derived, mate connectors) is unusable unless references either land on the same element or fail loudly.
 
-FreeCAD 1.0 solved this with its *element map*: a shape carries, alongside its topology, a map from
-each face, edge and vertex to a name built from the history of the operations that produced it. The
-rules are written up in [docs/reference/element-naming.md](../reference/element-naming.md), read
-from the reference source at `/opt/freecad-src` (tag 1.0.2, commit 256fc7ef).
+Alternatives considered:
+
+- **OCCT TNaming / OCAF.** Kernel-native naming, maintained upstream. It needs an OCAF document per studio and a different data model from FreeShape's feature replay. It was rejected without a probe, as an accepted known risk: FreeCAD, the closest comparable project, chose its own element map over TNaming. The adversarial plan review asked for a timeboxed TNaming probe first; the owner declined.
+- **Signatures only, with loud failures.** Keep geometric matching but turn low-confidence matches into errors. This is cheap, but it cannot tell two similar faces apart after a topology change, so it either fails too often or still guesses.
+- **Named miss falls back to the geometric matcher.** Rejected as a policy. If a name misses and the signature matcher takes over, the silent wrong match comes back. So the rule is: a named miss is an error, and the signature matcher is used only for legacy references that carry no name.
 
 ## Decision
 
 Port the approach of FreeCAD 1.0's element map.
 
-* A core naming module holds a shape plus a map from each face, edge and vertex to an element name.
-* Names are built from OCCT operation history — `Generated`, `Modified` and `IsDeleted` — with the
-  feature id as the operation tag.
-* There is **no string hasher**. Names are stored in full, and recomputed on every rebuild.
-* A reference stores `{element name, signature}`:
-  * a name that resolves in the rebuilt map **resolves**, and the signature is ignored;
-  * a name that is present on the reference but **missing** from the rebuilt map is an **error**
-    that names the lost element;
-  * a reference with **no name** — a legacy reference saved before this change — falls back to the
-    signature matcher and the result is flagged as **recovered**.
-* Part ids become `<feature id>/<output index>`, and studios persist an old→new alias table so
-  existing references keep resolving.
+- A core naming module holds a shape plus a map from each face, edge and vertex to an element name. Each runner hands its OCCT maker to a naming step, which builds names from the maker's history (`Generated`, `Modified`, `IsDeleted`) with the feature id as the operation tag.
+- There is no string hasher. Names are recomputed on every rebuild.
+- References store `{element name, signature}`. A name hit resolves. A name that is present but missing is an error: the feature turns red and names the lost element. A reference with no name (legacy) uses the signature matcher and is flagged as recovered.
+- Part ids become `<feature id>/<output index>`, which cannot collide with the old `<fid>:<counter>`. Studios persist an old→new alias table so unopened assemblies and drawings keep resolving.
 
 ## Consequences
 
-Dropping the string hasher means we never persist, reload or garbage-collect a hash table, and a
-saved file never depends on one. The cost is longer stored names and a full renaming pass on every
-rebuild.
-
-Making a named miss an error rather than a fallback means an edit that destroys a referenced face
-stops the rebuild and says which element was lost, instead of producing a plausible-looking wrong
-result. Some edits that FreeCAD completes with a warning will fail for us until the user re-picks.
-
-## Alternatives rejected
-
-* **OCCT `TNaming` / OCAF.** The kernel's own topological naming framework requires an OCAF
-  document per studio, which is a structural change to how a studio is stored. We have not probed
-  it; passing it over without a probe is an accepted risk.
-* **Signatures only, with loud failures.** Keeping the geometric matcher and merely making every
-  ambiguous match an error does not work: a signature cannot tell two similar faces apart after a
-  topology change, so the common case becomes a failure rather than a resolution.
-* **A named miss falling back to the geometric matcher.** This looks like the forgiving option, but
-  it reintroduces exactly the silent wrong match the whole change exists to remove.
+- Upstream edits no longer move references silently. A reference either lands on the element with the same name or the feature goes red.
+- The port is large (FreeCAD's element map is about 10k lines of C++), so it is wired in by feature family, one issue each. Scope should be watched per family, and any family that ships signature-only should be recorded; this is on the pre-launch checklist.
+- Existing files still open: legacy references recover through the signature matcher with a visible marker, and old part ids resolve through the alias table.
+- Assembly connectors and drawing dimensions use the same resolver and policy, which removes the duplicate matcher in the assembly code.
+- If the port proves unworkable for a family, revisiting TNaming means a new ADR that supersedes this one. No probe data exists yet to inform that choice.

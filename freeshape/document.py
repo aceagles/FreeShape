@@ -6,6 +6,8 @@ import hashlib
 import json
 import traceback
 
+import numpy as np
+
 from . import blobstore
 from . import kernel as K
 from . import migrations as M
@@ -521,4 +523,4 @@ class Document:
         if str(path).lower().endswith((".stl",)):
             K.export_stl(shapes, path)
         else:
-            K.export_step(shapes, path)
+            return K.export_step_named([(p.shape, np.eye(4), p.name, p.color) for p in parts], path, self.name)

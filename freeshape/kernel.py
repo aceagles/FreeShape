@@ -1953,7 +1953,8 @@ def shape_from_brep(data: bytes):
 
 def export_step_named(items, path, assembly_name="Assembly"):
     """STEP export as a real assembly: one product per distinct part, placed once per instance, keeping
-    names and colours. items: [(local shape, 4x4 transform, instance name, (r, g, b) or None)]."""
+    names and colours. items: [(local shape, 4x4 transform, instance name, (r, g, b) or None)].
+    Returns "named", or "flat" when the named writer failed and a plain file was written instead."""
     try:
         from OCP.STEPCAFControl import STEPCAFControl_Writer
         from OCP.TDocStd import TDocStd_Document
@@ -1988,8 +1989,12 @@ def export_step_named(items, path, assembly_name="Assembly"):
             raise KernelError("transfer failed")
         if w.Write(str(path)) != IFSelect_RetDone:
             raise KernelError("write failed")
-    except Exception:
+        return "named"
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("named STEP export failed (%s); wrote a flat file", e)
         export_step([located(s, M) for s, M, _n, _c in items], path)
+        return "flat"
 
 
 def save_step_result(result, prefix):

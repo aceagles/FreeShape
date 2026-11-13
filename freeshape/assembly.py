@@ -837,7 +837,7 @@ class AssemblyDoc:
         return None if p is None else K.located(p.shape, self.T(iid))
 
     def visible_instances(self):
-        return [i for i in self.instances if not i.get("hidden") and i["id"] in self.parts]
+        return [i for i in self.instances if not i.get("hidden") and not i.get("suppressed") and i["id"] in self.parts]
 
     def _source_key(self, src):
         if src.get("kind") == "step":
@@ -997,6 +997,38 @@ class AssemblyDoc:
     def set_hidden(self, iid, value):
         self.instance(iid)["hidden"] = bool(value)
         self.notify()
+
+    def set_instance_suppressed(self, iid, flag):
+        """Leave an instance out (or put it back): it drops out of the solve, the visible instances, the bill of
+        materials, interference and export; its mates and relations go inactive. One undo step."""
+        inst = self.instance(iid)
+        if inst is None:
+            raise ValueError(f"No instance {iid!r}")
+        self.checkpoint()
+        inst["suppressed"] = bool(flag)
+        if not flag:
+            # mates that come back take their values from the current pose and their relations recapture the
+            # phase from it (ADR 0005), before the solve, so nothing moves through a relation
+            back = [m for m in self.mates if m.get("a") and m.get("b") and not m.get("suppressed")
+                    and iid in (m["a"]["inst"], m["b"]["inst"]) and not self.mate_inactive(m)]
+            for m in back:
+                m["values"] = {}
+            self._update_mate_values(back, fill_only=True)
+            ids = {m["id"] for m in back}
+            for r in self.relations:
+                if not r.get("suppressed") and ids & {r["a"]["mate"], r["b"]["mate"]}:
+                    self._capture_phase(r)
+        self.solve()
+        self.notify()
+
+    def instance_suppressed(self, iid):
+        return bool((self.instance(iid) or {}).get("suppressed"))
+
+    def mate_inactive(self, m):
+        """True when mate `m` (a dict or an id) is not in use because one of its instances is suppressed."""
+        m = self.mate(m) if isinstance(m, str) else m
+        return bool(m and m.get("a") and m.get("b")
+                    and (self.instance_suppressed(m["a"]["inst"]) or self.instance_suppressed(m["b"]["inst"])))
 
     def rename(self, obj_id, name):
         self.checkpoint()
@@ -1282,6 +1314,8 @@ class AssemblyDoc:
             raise ValueError(f"No mate {mid!r}")
         if dof not in MATE_VALUE_DOFS.get(m["type"], ()):
             raise ValueError(f"Mate {mid!r} ({m['type']}) has no freedom {dof!r}")
+        if self.mate_inactive(m):                       # a mate on a suppressed instance can't be driven
+            return (m.get("values") or {}).get(dof, 0.0), False
         self.checkpoint()
         out = self._drive_steps(m, dof, float(target))
         self.notify()
@@ -1473,6 +1507,8 @@ class AssemblyDoc:
                 return f"Left out: its mate {mid or '?'} no longer exists"
             if m.get("suppressed"):
                 return f"Left out: its mate {m['name']} is suppressed"
+            if self.mate_inactive(m):
+                return f"Left out: its mate {m['name']} is on a suppressed instance"
             if m["id"] in self._conflicts or m["id"] in self.errors or all(x["id"] != m["id"] for x in mates):
                 return f"Left out: its mate {m['name']} can't be solved or is not in use"
         return None
@@ -1488,7 +1524,7 @@ class AssemblyDoc:
                 a = parent[a]
             return a
         for m in self.mates:
-            if m is exclude or m.get("suppressed") or not m.get("a") or not m.get("b"):
+            if m is exclude or m.get("suppressed") or not m.get("a") or not m.get("b") or self.mate_inactive(m):
                 continue
             a, b = m["a"]["inst"], m["b"]["inst"]
             if a in parent and b in parent:
@@ -1505,7 +1541,7 @@ class AssemblyDoc:
     def place_for_mate(self, m):
         """Before solving, move one side's whole group straight into the mated position. Starting from an
         exactly aligned pose avoids the solver getting stuck on a part that needs flipping over."""
-        if not m.get("a") or not m.get("b") or m.get("suppressed"):
+        if not m.get("a") or not m.get("b") or m.get("suppressed") or self.mate_inactive(m):
             return
         a, b = m["a"]["inst"], m["b"]["inst"]
         if a not in self.parts or b not in self.parts or a == b:
@@ -1534,12 +1570,12 @@ class AssemblyDoc:
         for k in [k for k, v in self.errors.items() if v.startswith("Both ends are in ")]:
             self.errors.pop(k)
         for m in self.mates:
-            if m.get("a") and m.get("b"):
+            if m.get("a") and m.get("b") and not self.mate_inactive(m):
                 g = self.group_of(m["a"]["inst"])
                 if g is not None and m["b"]["inst"] in g["instances"]:
                     self.errors[m["id"]] = f"Both ends are in {g['name']}, which moves as one body"
         return [m for m in self.mates if not m.get("suppressed") and m.get("a") and m.get("b")
-                and m["a"]["inst"] in self.parts and m["b"]["inst"] in self.parts
+                and not self.mate_inactive(m) and m["a"]["inst"] in self.parts and m["b"]["inst"] in self.parts
                 and m["id"] not in self.errors]
 
     def _residuals(self, mates, Ts, frames, L):
@@ -1565,6 +1601,8 @@ class AssemblyDoc:
         for k in [k for k, v in self.errors.items() if v.startswith("Limit can't be met")]:
             self.errors.pop(k)
         mates = self._active_mates()
+        if drag is not None and self.instance_suppressed(drag["inst"]):
+            return False                                # a suppressed instance can't be dragged
         if drag is not None:
             live = [m for m in mates if m["id"] not in self._conflicts]
             self._rel_filter = {r["id"] for r in self.relations if r["id"] not in self._conflicts}
@@ -1628,7 +1666,7 @@ class AssemblyDoc:
         # a group is one body: its members share one set of six variables, and one fixed member fixes all
         gkey = {iid: g["id"] for g in self.groups for iid in g["instances"]}
         body = lambda iid: gkey.get(iid, iid)
-        fixed = {body(i["id"]) for i in self.instances if i.get("fixed")}
+        fixed = {body(i["id"]) for i in self.instances if i.get("fixed") and not i.get("suppressed")}
         involved = set()
         for m in mates:
             involved |= {body(m["a"]["inst"]), body(m["b"]["inst"])}
@@ -1636,7 +1674,7 @@ class AssemblyDoc:
             involved.add(body(drag["inst"]))
         members: dict = {}
         for i in self.instances:
-            if i["id"] in self.parts:
+            if i["id"] in self.parts and not i.get("suppressed"):
                 members.setdefault(body(i["id"]), []).append(i["id"])
         free = [k for k in members if k in involved and k not in fixed]
         L = self.length_scale()
@@ -1815,10 +1853,10 @@ class AssemblyDoc:
         # a group is one body: one set of six variables, and one fixed member fixes the whole group
         gkey = {iid: g["id"] for g in self.groups for iid in g["instances"]}
         body = lambda iid: gkey.get(iid, iid)
-        fixed = {body(i["id"]) for i in self.instances if i.get("fixed")}
+        fixed = {body(i["id"]) for i in self.instances if i.get("fixed") and not i.get("suppressed")}
         members: dict = {}
         for i in self.instances:
-            if i["id"] in self.parts and body(i["id"]) not in fixed:
+            if i["id"] in self.parts and not i.get("suppressed") and body(i["id"]) not in fixed:
                 members.setdefault(body(i["id"]), []).append(i["id"])
         free = list(members)
         n = 6 * len(free)
@@ -1862,10 +1900,11 @@ class AssemblyDoc:
     def instance_dof(self, iid):
         """Degrees of freedom left for one instance, holding every other instance still."""
         inst = self.instance(iid)
-        if inst is None or inst.get("fixed"):
+        if inst is None or inst.get("fixed") or inst.get("suppressed"):
             return 0
         g = self.group_of(iid)
         ids = list(g["instances"]) if g is not None else [iid]     # a group moves as one body
+        ids = [i for i in ids if not self.instance_suppressed(i)]  # a suppressed member is not part of the body
         if any((self.instance(i) or {}).get("fixed") for i in ids):
             return 0
         ids = [i for i in ids if i in self.parts] or [iid]
@@ -1934,6 +1973,8 @@ class AssemblyDoc:
         """Bill of materials: one row per distinct part, with how many times it is used."""
         rows = {}
         for inst in self.instances:
+            if inst.get("suppressed"):
+                continue
             src = inst["source"]
             key = self._source_key(src)
             if src.get("kind") == "step":
@@ -1981,7 +2022,7 @@ class AssemblyDoc:
 
     def export(self, path, ids=None, options=None):
         insts = [i for i in self.instances if i["id"] in self.parts and (ids is None or i["id"] in ids)
-                 and not i.get("hidden")]
+                 and not i.get("hidden") and not i.get("suppressed")]
         if not insts:
             raise K.KernelError("Nothing to export")
         if str(path).lower().endswith(".stl"):

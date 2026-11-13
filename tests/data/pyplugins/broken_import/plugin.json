@@ -1,0 +1,2 @@
+{"id": "broken_import", "name": "Broken import", "version": "1.0.0", "licence": "GPL-3.0-or-later",
+ "features": ["broken:Nothing"]}

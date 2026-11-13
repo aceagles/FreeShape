@@ -1,0 +1,2 @@
+{"id": "boxes", "name": "Boxes", "version": "1.0.0", "licence": "GPL-3.0-or-later",
+ "features": ["box:Box", "box:BoxRow"]}

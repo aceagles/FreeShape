@@ -10,6 +10,7 @@ from . import kernel as K
 from . import migrations as M
 from .features import (RUNNERS, FEATURE_LABELS, ModelState, PartMap, default_params, Part, prepare,
                        carry_face_colors)
+from . import pyfeature   # registers the bundled Python-feature plugins in any process that rebuilds
 
 
 def _rewrite_part_ids(x, alias):
@@ -97,6 +98,12 @@ class Document:
         return f"{label} {n}"
 
     def make_feature(self, ftype, state=None):
+        if pyfeature.is_python_type(ftype):
+            info = pyfeature.plugin_for(ftype)
+            if info is None:
+                raise KeyError(ftype)
+            return {"id": self.new_id(), "type": ftype, "name": self.next_name(ftype), "suppressed": False,
+                    "params": pyfeature.default_params(ftype), "plugin": {"id": info.id, "version": info.version}}
         return {"id": self.new_id(), "type": ftype, "name": self.next_name(ftype),
                 "suppressed": False, "params": default_params(ftype, state or self.state)}
 
@@ -213,6 +220,18 @@ class Document:
                 f["suppressed"] = value
         self.rebuild()
 
+    def acknowledge_plugin_version(self, fid):
+        """Record the installed plugin version in a Python feature (clears its version notice). Undoable.
+        Returns False when there is nothing to change."""
+        f = self.feature(fid)
+        info = pyfeature.plugin_for(f.get("type")) if f else None
+        if info is None or f.get("plugin") == {"id": info.id, "version": info.version}:
+            return False
+        new = copy.deepcopy(f)
+        new["plugin"] = {"id": info.id, "version": info.version}
+        self.replace_feature(new)
+        return True
+
     def rename_feature(self, fid, name):
         self.checkpoint()
         for f in self.features:
@@ -275,7 +294,13 @@ class Document:
                 if not f.get("suppressed"):
                     before = dict(state.parts)
                     try:
-                        RUNNERS[f["type"]](state, prepare(f, state))
+                        if pyfeature.is_python_type(f.get("type")):
+                            # the type is only a registry key: never imported or evaluated. host.run loads
+                            # the user plugins once if it is unregistered, then reports the missing plugin.
+                            # It evaluates its own expressions, so prepare() is skipped.
+                            pyfeature.host.run(state, f)
+                        else:
+                            RUNNERS[f["type"]](state, prepare(f, state))
                         for pid, part in list(state.parts.items()):
                             old = before.get(pid) or before.get(pid.split(".")[0])
                             if old is not None and old.face_colors and part.shape is not old.shape \

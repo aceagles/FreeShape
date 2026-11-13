@@ -129,6 +129,10 @@ def _save_all(base):
 # rewrites went up a file version (3), and the part copies and Drawing views now sit in blobs/ as new entries.
 # Unchanged since 0ed1882: document.json, Vars.fvars, the Python-feature blobs, and the example .fshape files
 # under "saved" (add_files copies them without rewriting).
+# Re-recorded for the upstream 2.0 merge, the same on OCP 7.9 and 8.0: every .fasm (file version 8 to 9) and every
+# Part Studio file a save rewrites (3 to 4). Checked when recording: putting the old version number back into
+# each of those files gives the hash recorded before, so nothing but the number changed. Unchanged: every
+# .fdwg, document.json, Vars.fvars, all blobs.
 BEFORE = {
     'bolted_bracket': {
         'saved': {
@@ -137,7 +141,7 @@ BEFORE = {
             'blobs/c4f35fa03799241c9a0db0eee50ec84f364c11cfb429f795733a97225045b678':
                 'c4f35fa03799241c9a0db0eee50ec84f364c11cfb429f795733a97225045b678',
             'bolted_bracket.fasm':
-                'a2829e16a34a009a6656bd0a6d277ad587f8edfd349cc71066b97c3e4401f09c',
+                '5e0e674abc29916787c21ae7871acb87e2168a8f5dc7dcf7026edff78a51dd98',
             'bolted_bracket_parts.fshape':
                 'd78e42b624c96ca05a885eb87282fb4975532a3584d1e1ae22987ad350ee8547',
             'document.json':
@@ -149,9 +153,9 @@ BEFORE = {
             'blobs/c4f35fa03799241c9a0db0eee50ec84f364c11cfb429f795733a97225045b678':
                 'c4f35fa03799241c9a0db0eee50ec84f364c11cfb429f795733a97225045b678',
             'bolted_bracket.fasm':
-                'a2829e16a34a009a6656bd0a6d277ad587f8edfd349cc71066b97c3e4401f09c',
+                '5e0e674abc29916787c21ae7871acb87e2168a8f5dc7dcf7026edff78a51dd98',
             'bolted_bracket_parts.fshape':
-                'b7c05e3ef6e91c61ec8184083c84965616688f98f08d69487524b794b4712361',
+                '58b632f7ababb9ad291383740a7120c90b6aab590613fab7cc98f9419b231f67',
             'document.json':
                 'daf12f6b952cf1df83bb3aacfb077f45e11d03229c71212aee5e4d54bf87d5a9',
         },
@@ -165,7 +169,7 @@ BEFORE = {
         },
         'resaved': {
             'bracket.fshape':
-                'fb255405f215d973c06a30a7c8936e448c2134807b0593ac4214d91bcc4b8a49',
+                'aeda8f8da34122c46d8467c46c730c23f5c1a517f5ba305363aa8e1a4c04016d',
             'document.json':
                 '356cc886bbf61d1f3bf99378ece1590f20698510599f0e70ed869ffa4c4e2827',
         },
@@ -173,11 +177,11 @@ BEFORE = {
     'built': {
         'saved': {
             'Asm.fasm':
-                '38ed103adc2aebe11a60de930b37a415644ac16233fc34b1619b430570b6ba01',
+                '52a9993e978bcfd9a82faae400fd0c4e3c39a74b83106a765d86f61e0c228193',
             'Dwg.fdwg':
                 'e8f24eef5a746e6513250b40f0d17d555aabc09deefb47c4c6cb9ad9e919ce4b',
             'Studio.fshape':
-                '29d22a851f458292e1477c6bdaebcefc375d89db8867bd2fdbe4062613f61ada',
+                '08cf809114b6e4739c6d6bf5dae42174680719208e7912f1ec6429d1e966466b',
             'Vars.fvars':
                 'dbca3925a4c877982c7b7190459ce9cba4779c56d068c9951ee007700de0c86c',
             'blobs/42aa9e4532b97dee001028762b1b07b10cd5822bf660c466b4e766850d31e21d':
@@ -193,11 +197,11 @@ BEFORE = {
         },
         'resaved': {
             'Asm.fasm':
-                '38ed103adc2aebe11a60de930b37a415644ac16233fc34b1619b430570b6ba01',
+                '52a9993e978bcfd9a82faae400fd0c4e3c39a74b83106a765d86f61e0c228193',
             'Dwg.fdwg':
                 '782e1f583bc09d593958149eb159d3f4ed0666284efb9b7d786e5754e15a3dff',
             'Studio.fshape':
-                '29d22a851f458292e1477c6bdaebcefc375d89db8867bd2fdbe4062613f61ada',
+                '08cf809114b6e4739c6d6bf5dae42174680719208e7912f1ec6429d1e966466b',
             'Vars.fvars':
                 'dbca3925a4c877982c7b7190459ce9cba4779c56d068c9951ee007700de0c86c',
             'blobs/42aa9e4532b97dee001028762b1b07b10cd5822bf660c466b4e766850d31e21d':
@@ -223,7 +227,7 @@ BEFORE = {
             'document.json':
                 '593e8418f86ab9035bdea279960a3bd39f8e47c7b858a29c8525b3b4b777db6a',
             'hinge.fasm':
-                'ca84326830ae93bc25de728a57db3827e890b1f462a701be54c551368bdccec6',
+                '92d09c65948f6dc17401fab78b3938bf99fad28bb4e44c83fd63cb57cb088c3d',
             'hinge_parts.fshape':
                 'd7f5336ecbbcc841d7c8cc39039840d237c4e266ef6023d52222a4659503ea2b',
         },
@@ -237,9 +241,9 @@ BEFORE = {
             'document.json':
                 '593e8418f86ab9035bdea279960a3bd39f8e47c7b858a29c8525b3b4b777db6a',
             'hinge.fasm':
-                'ca84326830ae93bc25de728a57db3827e890b1f462a701be54c551368bdccec6',
+                '92d09c65948f6dc17401fab78b3938bf99fad28bb4e44c83fd63cb57cb088c3d',
             'hinge_parts.fshape':
-                '99bc19e716ff13a7e96ffb8b9d9635f5d89d7f463e2ee46a1da058b165319c56',
+                '26fcc8240fde06b26370573e6f2f6e4681440e28ada1c0e196ed4ab1639402f4',
         },
     },
 }

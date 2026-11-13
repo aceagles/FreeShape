@@ -49,12 +49,12 @@ On save, `FolderDocument.save` adds `_tab_id` to each Tab file. It repeats the m
 
 ## Part Studio file
 
-Written by `Document.to_json` (`freeshape/document.py`). Format tag `freeshape`. Current version: 3. Extension `.fshape`.
+Written by `Document.to_json` (`freeshape/document.py`). Format tag `freeshape`. Current version: 4. Extension `.fshape`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `format` | string | Always `freeshape`. |
-| `version` | integer | File version. Current is 3. |
+| `version` | integer | File version. Current is 4. |
 | `name` | string | Display name. |
 | `uid` | string | Id of the studio, used by loose-file Links. |
 | `features` | list | The feature list, in order. See Feature. |
@@ -64,8 +64,11 @@ Written by `Document.to_json` (`freeshape/document.py`). Format tag `freeshape`.
 | `hidden_features` | list of string | Ids of hidden features, sorted. |
 | `part_aliases` | object | Old part id (`<fid>:<counter>`) to new part id (`<fid>/<n>`). Written by the version 1 to 2 step; kept so older Assemblies and Drawings still resolve. |
 | `python_builds` | object | Only written when a Python feature has a stored build. Feature id to Python build entry. |
+| `folders` | object | Feature-list folders: folder id to `{name, open}`. A feature in a folder carries the folder id in its `folder` key. Written only when there is a folder. Since version 4. |
+| `configs` | object | Configurations: `{rows: [{name, vars, suppress}], active}`. `vars` maps a variable name to an expression, `suppress` lists feature ids, `active` is the index of the row in use. Written only when there is a row. Since version 4. |
+| `plugin_copies` | object | Saved results of plugin features (type `plugin:<id>`), so the file opens without the plugin: feature id to `{stamp, plugin, numeric, breps}`, with `breps` a list of base64 BREP texts. Written only when there is one. Since version 4. |
 
-`part_aliases` is since version 2. The other keys exist in version 1. On load, a missing `overrides`, `hidden`, `hidden_features` or `part_aliases` reads as empty, and a missing `rollback` as null.
+`part_aliases` is since version 2, and `folders`, `configs` and `plugin_copies` since version 4. The other keys exist in version 1. On load, a missing `overrides`, `hidden`, `hidden_features` or `part_aliases` reads as empty, and a missing `rollback` as null.
 
 ### Feature
 
@@ -79,10 +82,11 @@ Each entry of `features` is an object.
 | `suppressed` | boolean | A suppressed feature is skipped. |
 | `params` | object | The type's parameters. Their keys are set per type in `default_params` (`freeshape/features.py`). |
 | `plugin` | object | Python features only: `{"id": <plugin id>, "version": <plugin version>}` recorded when the feature was made or last acknowledged. |
+| `folder` | string | Optional. Id of the feature-list folder the feature is in. See `folders`. Since version 4. |
 
 #### Feature types
 
-Built-in types: `sketch`, `extrude`, `revolve`, `fillet`, `chamfer`, `shell`, `plane`, `mirror`, `linear_pattern`, `circular_pattern`, `boolean`, `import`, `hole`, `variable`, `sweep`, `loft`, `draft`, `split`, `move`, `thread`, `sm_base`, `sm_flange`, `delete_face`, `move_face`, `offset_surface`, `delete_part`, `variable_studio_ref`, `derived`, `mate_connector`, `context`. A Python feature has a type owned by a Plugin (`py:<plugin>/<name>`).
+Built-in types: `sketch`, `extrude`, `revolve`, `fillet`, `chamfer`, `shell`, `plane`, `mirror`, `linear_pattern`, `circular_pattern`, `boolean`, `import`, `hole`, `variable`, `sweep`, `loft`, `draft`, `split`, `move`, `thread`, `sm_base`, `sm_flange`, `sm_hem`, `sm_jog`, `sm_tab`, `sm_convert`, `delete_face`, `move_face`, `offset_surface`, `delete_part`, `variable_studio_ref`, `derived`, `mate_connector`, `context`. A Python feature has a type owned by a Plugin (`py:<plugin>/<name>`). A feature added by an upstream-style plugin file has type `plugin:<id>`.
 
 Types whose `params` name something outside the feature:
 
@@ -103,6 +107,9 @@ Types whose `params` name something outside the feature:
 | `context` | `instance` | string | The instance id the capture was taken for. |
 | `context` | `capture` | string | Blob key of the capture listing. See Where binary data lives. |
 | `delete_part` | `parts` | list of string | Parts removed from the result. |
+| `extrude`, `revolve` | `end`, `up_to`, `offset` | mixed | Since version 4 an up-to end is `end` `up_to_face`, `up_to_vertex`, `up_to_part` or `up_to_next`, with its target in `up_to` (`{kind: face, plane or vertex, ref}` or `{kind: part, id}`) and an optional `offset` in mm. Before version 4 this fork wrote `end` `upto` with a reference in `upto`; the 3 to 4 step converts it. `end` `to_face` with its target in `to` is unchanged. |
+| `split` | `tools` | list | Since version 4: `{kind: plane, face or path, ref, both, flip}` per cutting tool. A file with the older `plane` and `keep` keys still reads. |
+| `mirror`, `linear_pattern`, `circular_pattern` | `type`, `features` | mixed | `type` `features` repeats the listed feature ids instead of whole parts. |
 
 The engine adds a `resolved` entry to `params` while it rebuilds. It is not part of the stored format.
 
@@ -135,12 +142,12 @@ Each entry of `parts`:
 
 ## Assembly file
 
-Written by `AssemblyDoc.to_json` (`freeshape/assembly.py`). Format tag `freeshape-assembly`. Current version: 8. Extension `.fasm`.
+Written by `AssemblyDoc.to_json` (`freeshape/assembly.py`). Format tag `freeshape-assembly`. Current version: 9. Extension `.fasm`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `format` | string | Always `freeshape-assembly`. |
-| `version` | integer | File version. Current is 8. |
+| `version` | integer | File version. Current is 9. |
 | `name` | string | Display name. |
 | `uid` | string | Id of the Assembly, used by loose-file Links. |
 | `instances` | list | The placed parts. See Instance. |
@@ -148,6 +155,8 @@ Written by `AssemblyDoc.to_json` (`freeshape/assembly.py`). Format tag `freeshap
 | `groups` | list | Rigid sets of instances. See Group. Since version 3. |
 | `relations` | list | Relations between Mate values. See Relation. Since version 6. |
 | `connectors` | list | Explicit mate connectors owned by the Assembly. See Assembly connector. Written only when the list is not empty. No migration step: a file without it reads as empty. |
+| `explode` | object | The exploded view: `{steps: [{ids, dir, dist}], amount}`. A step moves the instances in `ids` by `dist` mm along `dir`; `amount` is how far the view is opened, 0 to 1. Written only when there is a step. Since version 9. |
+| `patterns` | list | Instance patterns: `{id, type, name, seeds, count, spacing, angle, axis, copies}`. `type` is `linear` or `circular`, `seeds` the patterned instance ids, `axis` `{kind: world, name, flip}` or `{kind: mate, mate}`, and `copies` one list of instance ids per seed. Written only when there is a pattern. Since version 9. |
 
 ### Instance
 
@@ -163,6 +172,7 @@ Written by `AssemblyDoc.to_json` (`freeshape/assembly.py`). Format tag `freeshap
 | `material` | string or null | Material name taken from the part's override when inserted. |
 | `color` | list of number | Optional. Instance colour overriding the part's. |
 | `suppressed` | boolean | Optional. A suppressed instance is left out of the solve, bill of materials and export. |
+| `pattern` | string | Optional. Id of the instance pattern this instance is a copy of. A copy is fixed and follows its seed. Since version 9. |
 | `_brep_blob` | string | Blob key of the part's BREP (zlib-compressed `K.shape_to_brep` bytes), written so the file opens when its Part Studio is missing. Not written for `step` or `standard` sources. Used when the source cannot be resolved. Since version 8; before it, `_brep` held the same bytes in base64. |
 
 `material` is not gated by a migration step. A file without it reads as no material.
@@ -182,6 +192,7 @@ The `kind` key picks the form.
 | `studio` | `uid` | string | Loose-file Link: uid of the studio. Removed when the Link becomes a tab id. |
 | `studio` | `path` | string | Loose-file Link: path of the studio file. |
 | `studio` | `relpath` | string | Path relative to the Assembly file, written on save. |
+| `studio` | `config` | string | Optional. Name of the configuration of the Part Studio this instance shows. Absent means the active one. |
 | `step` | `blob` | string | Blob key of the imported STEP file. Before version 8, a key into the file's own `blobs` object (the first 16 hex characters of the sha1 of the base64 text). |
 | `step` | `index` | integer | Which solid of the STEP file. |
 | `step` | `filename` | string | Name of the imported file. |
@@ -277,7 +288,8 @@ Written by `DrawingDoc.to_json` (`freeshape/drawing.py`). Format tag `freeshape-
 | `sheet` | object | Sheet settings. See Sheet. |
 | `title` | object | Title block fields. See Title block. |
 | `views` | list | The views. See View. |
-| `annots` | list | Dimensions and notes. See Annotation. |
+| `annots` | list | Dimensions, notes, balloons and the parts list. See Annotation. |
+| `bom` | list | Parts list rows, `{item, name, qty, mass}`, filled from the source Assembly's bill of materials when the table is placed or refreshed. Written only when the list is not empty. No migration step: a file without it reads as empty. |
 | `_brep_blob` | string | Blob key of the shown shape's BREP (zlib-compressed `K.shape_to_brep` bytes), a fallback when the source is missing. Since version 3; before it, `_brep` held the same bytes in base64. |
 | `_views_blob` | string | Blob key of the exact hidden-line results, so a reopen does not recompute them: JSON `{"model": <sha1 of the BREP bytes>, "views": [{"d", "up", "curves"}]}`. Used only when the model hash still matches. Since version 3; before it, `_views` held the same object inline. |
 
@@ -298,6 +310,7 @@ Built by the new-Drawing dialog and the link helpers.
 | `flat` | boolean | Show the flat pattern of a sheet-metal part. |
 | `bends` | list | Bend lines of a flat pattern, re-read from the source on every refresh. |
 | `document`, `version` | string | Cross-Document or pinned Link. See Link sources. |
+| `exploded` | boolean | Optional, for an Assembly source: show the Assembly's exploded view. |
 | `uid`, `path`, `relpath` | string | Loose-file Link. See Link sources. |
 
 ### Sheet
@@ -328,7 +341,7 @@ Built by the new-Drawing dialog and the link helpers.
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `id` | string | View id, `V<n>`. |
-| `type` | string | `base`, `projected` or `iso`. |
+| `type` | string | `base`, `projected`, `iso`, `section` or `detail`. |
 | `d` | list of number | Direction from the part towards the viewer. |
 | `up` | list of number | Up vector. |
 | `o` | list of number | Paper position of the model origin, in mm. |
@@ -339,6 +352,9 @@ Built by the new-Drawing dialog and the link helpers.
 | `parent` | string or null | Id of the view this one was projected from. |
 | `align` | string or null | Alignment to the parent view. |
 | `label` | string | View label. |
+| `letter` | string | Letter of a section or detail view, as in A-A or Detail B. |
+| `cut` | object | Section view only: `{p0}`, a model point on the cutting plane. The plane's normal is the view direction `d`. |
+| `detail` | object | Detail view only: `{c, r}`, the centre (in the parent view's plane) and radius of the circle it shows. |
 
 ### Annotation
 
@@ -346,8 +362,8 @@ Each entry of `annots` is a dimension or a note.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `id` | string | `D<n>` for a dimension, `N<n>` for a note. |
-| `type` | string | `lin`, `pl`, `dia`, `rad`, `ang` or `note`. |
+| `id` | string | `D<n>` for a dimension, `N<n>` for a note, `A<n>` for a balloon or the parts list. |
+| `type` | string | `lin`, `pl`, `dia`, `rad`, `ang`, `note`, `balloon` or `bom` (the parts list table). |
 | `view` | string | View id the dimension belongs to. |
 | `a`, `b`, `b2`, `c`, `d` | object | Dimension ends. A point end holds `kind` (`vertex`, `centre` or `uv`), `p` (3D model point) or `uv`, and for a model end `i`, `n`, `r`, `name`, `nkind` and `lost`. `name` is the Element name of the vertex, edge or face the end sits on. |
 | `orient` | string | `h`, `v` or `a` for a linear dimension. |
@@ -357,6 +373,8 @@ Each entry of `annots` is a dimension or a note.
 | `prefix`, `suffix` | string | Text before and after the value. |
 | `tol` | object | `{type: none, sym, dev or lim, up, lo, dp}`. |
 | `height` | number | Text height of a note. |
+| `item` | integer | Balloon only: the parts list item number it shows. |
+| `anchor` | list of number | Balloon only: the model point its leader points at. |
 
 ## Variable Studio file
 
@@ -382,16 +400,17 @@ Written by `VariableStudioDoc.to_json` (`freeshape/variable_studio.py`). Format 
 
 ### Chain document
 
-Part Studio. Registered in `freeshape/document.py`. Latest version 3. 2 steps.
+Part Studio. Registered in `freeshape/document.py`. Latest version 4. 3 steps.
 
 | Step | Function | Change |
 | --- | --- | --- |
 | 1 to 2 | `_migrate_part_ids` | Part ids change from `<fid>:<counter>` to `<fid>/<n>`. The step replays the features, rewrites the ids that `params`, `overrides` and `hidden` name, and records `part_aliases`. |
 | 2 to 3 | `_move_import_data_to_blobs` | An `import` feature's base64 `params.data` becomes `params.blob`, the key of the decoded bytes. The bytes are held in memory by the loaded studio and written to the blobs by its next save. |
+| 3 to 4 | `_adopt_upstream_2_0` | The upstream 2.0 merge. A file may now hold `folders`, `configs`, `plugin_copies` and upstream's feature types, which an earlier build would drop or fail on. One conversion: an extrude saved with end `upto` takes upstream's shape, an `up_to_*` end with its target in `up_to`. |
 
 ### Chain assembly
 
-Assembly. Registered in `freeshape/assembly.py`. Latest version 8. 7 steps.
+Assembly. Registered in `freeshape/assembly.py`. Latest version 9. 8 steps.
 
 | Step | Function | Change |
 | --- | --- | --- |
@@ -402,6 +421,7 @@ Assembly. Registered in `freeshape/assembly.py`. Latest version 8. 7 steps.
 | 5 to 6 | `_add_relations` | Adds an empty `relations` list. |
 | 6 to 7 | `_upgrade_standard_part_source` | No data change. An instance source may have `kind` `standard`. |
 | 7 to 8 | `_move_geometry_to_blobs` | An instance's base64 `_brep` becomes `_brep_blob`. The `blobs` object leaves the file and a `step` source's `blob` becomes the key of the decoded STEP bytes. The bytes are held in memory by the loaded Assembly and written to the blobs by its next save. |
+| 8 to 9 | `_add_explode_and_patterns` | No data change. An Assembly may carry `explode` and `patterns`, and an instance `pattern`. Both top-level keys are written only when used and read with defaults. |
 
 ### Chain drawing
 

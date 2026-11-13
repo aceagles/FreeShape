@@ -1,4 +1,10 @@
-"""Extrude up to a vertex, a plane or a parallel face (I3.5)."""
+"""Extrude up to a vertex, a plane or a parallel face (I3.5).
+
+Since the upstream 2.0 merge the up-to end is upstream's (end "up_to_*", target in "up_to"). These cases still
+build their features in this fork's old shape (end "upto"), which run_extrude and the document migration map
+through features.legacy_up_to, so they also prove an old file builds as before. Three things changed with
+upstream's end: a target the sweep cannot reach reports that, in place of "not parallel"; a missing target has
+upstream's message; and the dialog's fields are upstream's."""
 import copy
 import os
 import sys
@@ -12,7 +18,7 @@ from freeshape import features as F  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
 from conftest import add, rect_lines, region_refs, sketch_feature, try_add  # noqa: E402
 
-NOT_PARALLEL = "Up to needs a vertex, or a face or plane parallel to the sketch"
+NEVER_REACHES = "It never reaches that"
 
 
 def _other(doc):
@@ -111,22 +117,22 @@ def test_std_plane_works_and_zero_is_refused():
     assert err and "zero" in err
 
 
-def test_non_parallel_face_is_refused():
+def test_face_the_extrude_never_reaches_is_refused():
     def side(doc, a):
         f = next(x for x in K.faces(a.shape) if abs(K.face_info(x)["n"][0]) > 0.99)
         return {"kind": "face", "face": F.make_ref(a.id, f, "face", a.shape, doc.state.named(a.id))}
     doc, _, f, err = _build("upto", side)
-    assert err and NOT_PARALLEL in err
+    assert err and NEVER_REACHES in err
 
 
-def test_non_parallel_std_plane_is_refused():
+def test_plane_the_extrude_never_reaches_is_refused():
     doc, _, f, err = _build("upto", lambda d, a: {"kind": "std", "name": "Right"})
-    assert err and NOT_PARALLEL in err
+    assert err and NEVER_REACHES in err
 
 
 def test_missing_target_is_refused():
     doc, _, f, err = _build("upto", None)
-    assert err and "Select a vertex" in err
+    assert err and "Pick the face or plane to go up to" in err
 
 
 def test_second_depth_does_not_combine():
@@ -159,15 +165,27 @@ def test_cut_up_to_a_vertex():
     assert K.volume(cut.shape) == pytest.approx(v0 - 5 * 5 * 12, rel=1e-6)
 
 
-def test_upto_fields_round_trip():
+def test_up_to_fields_round_trip():
     from freeshape.ui import dialogs as D
     ref = {"kind": "vertex", "part": "P", "c": [0, 0, 1], "name": "n"}
-    p = {"end": "upto", "upto": ref, "regions": [], "faces": []}
+    p = {"end": "up_to_vertex", "up_to": {"kind": "vertex", "ref": ref}, "regions": [], "faces": []}
     f = D.params_to_fields("extrude", p)
-    assert f["upto_sel"] == [("vertex", ref)]
-    q = {"end": "upto"}
+    assert f["upto_vertex"] == [("vertex", ref)] and f["upto_face"] == [] and f["upto_part"] == []
+    q = {"end": "up_to_vertex"}
     D.fields_to_params("extrude", f, q)
-    assert q["upto"] == ref
-    q2 = {"end": "blind", "upto": ref}
+    assert q["up_to"] == {"kind": "vertex", "ref": ref}
+    q2 = {"end": "blind", "up_to": {"kind": "vertex", "ref": ref}}
     D.fields_to_params("extrude", f, q2)
-    assert "upto" not in q2
+    assert "up_to" not in q2
+
+
+def test_an_old_up_to_end_takes_upstreams_shape():
+    """The saved shape before the merge (end "upto") maps to upstream's, for a vertex and for a plane."""
+    ref = {"kind": "vertex", "part": "P", "c": [0, 0, 1], "name": "n"}
+    q = F.legacy_up_to({"end": "upto", "upto": ref, "depth": 3})
+    assert q == {"end": "up_to_vertex", "up_to": {"kind": "vertex", "ref": ref}, "depth": 3}
+    plane = {"kind": "std", "name": "Top"}
+    q = F.legacy_up_to({"end": "upto", "upto": plane})
+    assert q == {"end": "up_to_face", "up_to": {"kind": "plane", "ref": plane}}
+    same = {"end": "blind", "depth": 3}
+    assert F.legacy_up_to(same) is same

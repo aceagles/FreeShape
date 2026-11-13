@@ -45,10 +45,18 @@ from freeshape.ui import mainwindow as MW  # noqa: E402
 # Studio format (version 2 -> 3), so the same tab writes other bytes; the tests still check those bytes against
 # the old writer's shape (`_legacy_autosave_bytes`) applied to the tab's own `to_json`. Before I4.9 they were
 # 74f2ef37...b475b73 (Document tab) and 078cba49...b238e0 (loose file).
+# The upstream 2.0 merge took the Part Studio format to version 4 and changed nothing else in these bytes: the
+# tests put the 3 back (`_as_version_3`) and compare with the sha256 recorded after I4.9.
 BEFORE_DOCUMENT_TAB = {"name": "<ID>.T1.fshape", "sha": "03356164071d5d8a4ef023a1b5bd6db5a648e14dd44d9c0ac2aecf39edf1a628"}
 BEFORE_LOOSE = {"name": "loose-fixed.fshape",
                 "sha": "a5627f800d3a521caa8812bcd2e3c343e4585c62b74381c3a8125707254a44e3"}
 FIXED_TIME = 1234.5
+
+
+def _as_version_3(data: bytes) -> bytes:
+    """`data` (a Part Studio autosave) with its file version 4 written as 3, the number it had when recorded."""
+    assert data.count(b'"version": 4,') == 1
+    return data.replace(b'"version": 4,', b'"version": 3,')
 
 
 @pytest.fixture
@@ -197,7 +205,7 @@ def test_folder_document_autosaves_the_same_file_with_the_same_bytes(make_window
     got = (tmp_path / "autosave" / "pid" / files[0]).read_bytes()
     assert got == _legacy_autosave_bytes(w, tab.doc, tab)                     # what the old code wrote
     recorded = {"name": files[0].replace(fd.id, "<ID>"),
-                "sha": hashlib.sha256(_normal(got, fd.path, fd.id)).hexdigest()}
+                "sha": hashlib.sha256(_normal(_as_version_3(got), fd.path, fd.id)).hexdigest()}
     assert recorded == BEFORE_DOCUMENT_TAB, recorded
 
 
@@ -218,7 +226,7 @@ def test_loose_file_autosaves_the_same_file_with_the_same_bytes(make_window, tmp
     out = io.StringIO()
     json.dump(d, out)
     assert got == out.getvalue().encode()
-    recorded = {"name": files[0], "sha": hashlib.sha256(got).hexdigest()}
+    recorded = {"name": files[0], "sha": hashlib.sha256(_as_version_3(got)).hexdigest()}
     assert recorded == BEFORE_LOOSE, recorded
 
 
@@ -251,7 +259,7 @@ def test_an_autosave_left_by_the_previous_version_is_recovered(make_window, tmp_
     assert not (dead / f"{fd.id}.T1.fshape").exists()
     assert _studio_hashes(got.doc) == want and not got.doc.errors
     key = blobstore.key_of(raw)
-    assert json.loads(got.doc.to_json())["version"] == 3
+    assert json.loads(got.doc.to_json())["version"] == 4
     assert next(f for f in json.loads(got.doc.to_json())["features"] if f["id"] == fid)["params"]["blob"] == key
     w2.folder.save()
     assert w2.folder.store.has_blob(key, "T1")

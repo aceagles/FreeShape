@@ -280,7 +280,10 @@ _M = {"S": Qt.ShiftModifier, "C": Qt.ControlModifier, "A": Qt.AltModifier}
 
 
 def _drag(vp, buttons, mods, x0=300, y0=300, x1=340, y1=320):
-    """Press `buttons` (in order) with `mods`, move, release. Returns (orbited, panned, zoomed)."""
+    """Press `buttons` (in order) with `mods`, move, release. Returns (orbited, panned, zoomed).
+    Each drag starts with the camera aimed at the orbit pivot (the origin of this empty scene): an orbit about
+    a pivot the camera is not aimed at also moves the target, which would read as a pan after an earlier pan."""
+    vp.cam.target = np.zeros(3)
     t0, R0, s0 = vp.cam.target.copy(), vp.cam.R.copy(), vp.cam.scale
     m = Qt.NoModifier
     for c in mods:

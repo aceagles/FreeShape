@@ -45,7 +45,7 @@ def win(tmp_path, monkeypatch):
 def rows(panel, kind):
     out = []
     top = next(panel.tree.topLevelItem(i) for i in range(panel.tree.topLevelItemCount())
-               if panel.tree.topLevelItem(i).data(0, ROLE_ID) == STUDIO_UID[0])
+               if panel.tree.topLevelItem(i).data(0, ROLE_ID) == (STUDIO_UID[0], None))
     for i in range(top.childCount()):
         it = top.child(i)
         if it.data(0, ROLE_KIND) == kind:

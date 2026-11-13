@@ -809,7 +809,7 @@ def test_unopened_dependents_bind_after_the_studio_alone_is_resaved(tmp_path):
     assert doc.part_aliases == {"F2:1": "F2/1", "F4:2": "F4/1", "F6:3": "F6/1"}
     doc.save()
     with open(studio) as fh:
-        assert json.load(fh)["version"] == 3                                # only the studio was rewritten
+        assert json.load(fh)["version"] == 4                                # only the studio was rewritten
     for p in (fasm, fdwg):
         assert p.read_bytes() == on_disk[p.name]                            # the dependents are byte for byte as before
 

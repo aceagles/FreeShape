@@ -216,7 +216,7 @@ def test_version_3_standard_part_file_loads_through_the_merged_chain(tmp_path):
                         "fixed": False, "hidden": False}], "mates": [], "blobs": {}}
     path = str(tmp_path / "v3.fasm")
     json.dump(d, open(path, "w"))
-    assert Mig.latest_version("assembly") == 8
+    assert Mig.latest_version("assembly") == 9
     asm = A.AssemblyDoc.load(path)
     assert "I1" in asm.parts and not asm.errors
     assert asm.instance("I1")["source"] == src
@@ -224,4 +224,4 @@ def test_version_3_standard_part_file_loads_through_the_merged_chain(tmp_path):
     out = str(tmp_path / "v8.fasm")
     asm.save(out)
     saved = json.load(open(out))
-    assert saved["version"] == 8 and saved["groups"] == [] and saved["relations"] == []
+    assert saved["version"] == 9 and saved["groups"] == [] and saved["relations"] == []

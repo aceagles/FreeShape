@@ -62,6 +62,16 @@ def _add_groups(data):
 
 
 M.register("assembly", _add_groups)
+
+
+def _upgrade_mate_values(data):
+    """Assembly file version 3 -> 4 (I1.2): each mate stores its Mate values ("values"). Measuring them needs the
+    resolved parts, so this step only marks the version; AssemblyDoc.load fills any mate that has no
+    values from the saved pose once the instances are resolved."""
+    return data
+
+
+M.register("assembly", _upgrade_mate_values)
 INSTANCE_COLORS = [(0.60, 0.74, 0.85), (0.72, 0.74, 0.78), (0.86, 0.66, 0.40), (0.56, 0.78, 0.56),
                    (0.85, 0.55, 0.55), (0.70, 0.60, 0.85), (0.50, 0.78, 0.78), (0.85, 0.78, 0.45)]
 
@@ -947,11 +957,29 @@ class AssemblyDoc:
         while f"{label} {n}" in names:
             n += 1
         return {"id": self.new_id("M"), "type": mtype, "name": f"{label} {n}", "a": None, "b": None,
-                "flip": False, "offset": 0.0, "angle": 0.0, "suppressed": False}
+                "flip": False, "offset": 0.0, "angle": 0.0, "suppressed": False, "values": {}}
+
+    def _update_mate_values(self, mates, fill_only=False):
+        """Measure each mate's Mate values from the current pose and store them. A rotation is unwrapped to
+        the turn nearest its stored value, so turns past 180 degrees are counted; a missing value (or one
+        being filled for the first time) is the wrapped measure. fill_only keeps mates that already have values."""
+        for m in mates:
+            if not m.get("a") or not m.get("b") or (fill_only and m.get("values")):
+                continue
+            if m["type"] not in MATE_VALUE_DOFS:
+                continue
+            try:
+                new = mate_values(m, self.world_frame(m["a"]), self.world_frame(m["b"]))
+            except Exception:
+                continue
+            old = m.get("values") or {}
+            m["values"] = {n: (float(old[n]) + _wrap_deg(v - float(old[n])) if n.startswith("r") and n in old else v)
+                           for n, v in new.items()}
 
     def add_mate(self, m, checkpoint=True):
         if checkpoint:
             self.checkpoint()
+        m["values"] = {}
         self.mates.append(m)
         self.place_for_mate(m)
         self.solve()
@@ -959,6 +987,7 @@ class AssemblyDoc:
 
     def replace_mate(self, m):
         self.checkpoint()
+        m["values"] = {}          # editing a mate resets its values to the measured pose (ADR 0005)
         for i, old in enumerate(self.mates):
             if old["id"] == m["id"]:
                 self.mates[i] = m
@@ -1048,7 +1077,9 @@ class AssemblyDoc:
             self.errors.pop(k)
         mates = self._active_mates()
         if drag is not None:
-            self._solve_core([m for m in mates if m["id"] not in self._conflicts], drag, iters, keep)
+            live = [m for m in mates if m["id"] not in self._conflicts]
+            self._solve_core(live, drag, iters, keep)
+            self._update_mate_values(live)
             self._update_status()
             return True
         before = {i["id"]: list(i["T"]) for i in self.instances}
@@ -1067,6 +1098,7 @@ class AssemblyDoc:
                     self._conflicts.add(m["id"])
                 else:
                     good.append(m)
+        self._update_mate_values([m for m in mates if m["id"] not in self._conflicts])
         self._update_status()
         return not self._conflicts and not bad
 
@@ -1456,4 +1488,5 @@ class AssemblyDoc:
         a._counter = max(nums + [0])
         a.resolver = resolver
         a.refresh(solve=False, notify=False)
+        a._update_mate_values(a.mates, fill_only=True)   # files from before Mate values were stored
         return a

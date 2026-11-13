@@ -276,14 +276,32 @@ class FolderDocument:
             target = real
         else:
             target = cls._import(real, registry, managed_root or R.managed_root())
-        doc = cls.open(target)
+        doc = cls.open(target, registry=registry)
         doc.trusted = True
-        doc.registry = registry
         return doc
 
     @classmethod
-    def _import(cls, source, registry, root):
-        existing = registry.import_for_source(source)
+    def reimport_document(cls, source, registry=None, managed_root=None):
+        """Import a received Document again to pick up what the sender has added since: a fresh `git clone --no-local`
+        of `source` into the managed folder replaces the earlier clone in the registry (and on disk). This is the only
+        time the app reads the sender's folder again; cross-Document pins see new Versions only through it."""
+        registry = registry or R.default_registry()
+        root = managed_root or R.managed_root()
+        real = os.path.realpath(source)
+        old = registry.import_for_source(real)
+        old_id = _peek_id(old) if old else None
+        target = cls._import(real, registry, root, fresh=True)
+        if old and os.path.realpath(old) != os.path.realpath(target):
+            registry.forget(old_id, old)
+            if os.path.realpath(os.path.dirname(old)) == os.path.realpath(root):
+                _rmtree(old)
+        doc = cls.open(target, registry=registry)
+        doc.trusted = True
+        return doc
+
+    @classmethod
+    def _import(cls, source, registry, root, fresh=False):
+        existing = None if fresh else registry.import_for_source(source)
         if existing:
             return existing
         os.makedirs(root, exist_ok=True)
@@ -311,7 +329,8 @@ class FolderDocument:
         return dest
 
     @classmethod
-    def open(cls, path):
+    def open(cls, path, registry=None):
+        """Load the folder at `path` as it stands. `registry` lets cross-Document links resolve while it loads."""
         manifest_path = os.path.join(path, MANIFEST_NAME)
         if os.path.islink(manifest_path):
             raise K.KernelError(f"{MANIFEST_NAME}: refusing to open a symlink")
@@ -326,6 +345,7 @@ class FolderDocument:
                                 f"FreeShape to open it.")
         doc = cls()
         doc.path = path
+        doc.registry = registry
         doc.id = data.get("id") or doc.id
         doc.name = data.get("name", doc.name)
         doc.tabs = []

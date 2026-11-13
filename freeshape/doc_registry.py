@@ -97,6 +97,14 @@ class DocRegistry:
         pick = (created or rows or [None])[-1]
         return pick["path"] if pick else None
 
+    def trusted_path(self, doc_id):
+        """The folder a cross-Document link may open for `doc_id`: the app-created one, else the latest import, and
+        only a record the app made trusted (created, or its own clone) whose folder still exists. None otherwise."""
+        rows = [r for r in self.records(doc_id)
+                if (r.get("created") or r.get("clone") == r["path"]) and os.path.isdir(r["path"])]
+        pick = ([r for r in rows if r.get("created")] or rows or [None])[-1]
+        return pick["path"] if pick else None
+
     def is_trusted(self, doc_id, path):
         """Whether the app made the folder at `path` (created it, or cloned it in an import) for this id."""
         p = _norm(path)

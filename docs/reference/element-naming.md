@@ -610,8 +610,29 @@ Split and merge are the same mechanism read in two directions, so they are descr
   such a result as one shape with one map, so a name is found wherever it is. `_named_lookup` does
   the same: after the reference's own part it searches the other pieces of the same solid (the id
   without its `.<i>` suffixes, and every id that extends it). Parts that were never one solid are
-  not searched. Not covered: a later feature stamps only the piece it runs on, so names stored
-  after such a feature can differ per piece (tests/test_severed_solid_refs.py, the xfail case).
+  not searched.
+
+### I1.14 The pieces of a severed solid share pass-through stamps (ADR 0008)
+
+A feature that names with `stamp=True` (fillet, chamfer, shell and the others) appends its op code and tag to
+every element of the part it runs on, touched or not (section 2). After a cut severs a part, the feature runs
+on one piece only, so without a rule the other pieces would lack its stamp and every reference stored after
+the feature would be "gone" on a rebuild with the cut in place.
+
+* **The rule.** `name_feature` gives each sibling of an input part (the id without its `.<i>` suffixes and
+  every id that extends it; `_stamp_severed_siblings`) the same pass-through stamp, through
+  `naming.stamp_all`, which reuses `_encode`. The pieces then name as the one shape and one element map they
+  are in a FreeCAD PartDesign body, where every feature stamps every element.
+* **Once only.** A piece the feature also runs on is named by the operation from its unstamped map
+  (`NamedShape.stamped_from`), and a piece already named by this feature is not stamped again, so the
+  section 2 collapse rule holds: one stamp per tag.
+* **Not stamped.** `stamp=False` operations (`apply_body`, booleans) add no stamp to untouched elements, so
+  they need nothing.
+* **Consequence.** A name on a piece can mention a feature that never touched it. Deleting that feature
+  changes names on its siblings, as it changes names across a whole body in FreeCAD. A model that is never
+  severed names exactly as before.
+* **Not covered.** Nameless (legacy) references on a severed solid, an Assembly connector or Drawing
+  dimension whose element lands on the other piece, and which piece keeps the bare id when the cut moves.
 
 ### I1.13 Connectors and dimension ends
 

@@ -742,6 +742,25 @@ def set_part_shape(state: ModelState, part: Part, shape, named=None):
         state.set_named(pid, named.restrict(extra) if named is not None else None)
 
 
+def _stamp_severed_siblings(state: ModelState, inputs, fid, op):
+    """ADR 0008: the other pieces of a severed solid that a stamping feature ran on one piece of get the same
+    pass-through stamp (the id without its `.<i>` suffixes and every id that extends it), so the pieces name
+    as the one shape they are in FreeCAD. A piece that is itself an input is named by the operation."""
+    given = {i for i in inputs or () if isinstance(i, str)}
+    for pid in list(given):
+        head, slash, tail = pid.rpartition("/")
+        if not slash:
+            continue
+        root = head + slash + tail.split(".")[0]
+        for sib in list(state.parts):
+            if sib in given or not (sib == root or sib.startswith(root + ".")):
+                continue
+            nm = state.named(sib)
+            if nm is not None and not (nm.stamped_from is not None and nm.stamped_from[0] == fid):
+                given.add(sib)      # a family is stamped once, whichever of its pieces were the inputs
+                state.set_named(sib, N.stamp_all(nm, fid, op))
+
+
 def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, stamp=True):
     """The naming step of a feature runner: the NamedShape of `shape`, a kernel helper's result.
 
@@ -768,12 +787,18 @@ def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, 
     sources = []
     for i in inputs or ():
         n = state.named(i) if isinstance(i, str) else i
+        if n is not None and n.stamped_from is not None and n.stamped_from[0] == fid \
+                and n.stamped_from[1] is not None:
+            n = n.stamped_from[1]        # stamped as a sibling by this feature; it runs on this piece too
         if n is not None:
             sources.append(n)
     try:
         named = N.name_result(shape, history, sources, fid, N.OP_FOR.get(op, op), stamp)
     except N.NamingError:
         named = N.NamedShape(shape, {})
+    if stamp:
+        named.stamped_from = (fid, None)        # this map carries the feature's stamp; its siblings are stamped too
+        _stamp_severed_siblings(state, inputs, fid, op)
     if part is not None:
         state.set_named(part, named)
     return named

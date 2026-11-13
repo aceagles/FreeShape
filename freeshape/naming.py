@@ -240,6 +240,8 @@ class NamedShape:
 
     shape: object
     names: dict = field(default_factory=dict)
+    # (tag, the map before `stamp_all` stamped it with that tag, or None): this map is already stamped with `tag`
+    stamped_from: object = None
 
     def __post_init__(self):
         self.el = _Elements(self.shape)
@@ -277,6 +279,8 @@ class NamedShape:
                 key = out.el.key(s)
                 if key is not None:
                     out.names[key] = name
+        if self.stamped_from is not None:
+            out.stamped_from = (self.stamped_from[0], None)
         return out
 
     def unnamed(self):
@@ -509,6 +513,16 @@ class _Naming:
             if not unnamed or delayed or not any(claims.values()):
                 return self.out
             delayed = True
+
+
+def stamp_all(named: NamedShape, tag, op) -> NamedShape:
+    """`named` with the pass-through stamp of operation `op` and feature `tag` on every name, as `name_result`
+    gives an element the operation left alone (§ 2). A name that already ends in this tag stays as it is.
+    The result remembers the unstamped map in `stamped_from`: if the same feature then runs on this piece too,
+    `features.name_feature` names from that map, so the piece is stamped once, as a part the feature ran on."""
+    op = OP_FOR.get(op, op)
+    return NamedShape(named.shape, {k: _encode(v, "", op, tag, k[0]) for k, v in named.names.items()},
+                      (tag, named))
 
 
 def name_result(shape, history, sources, tag, op=OP_MAKER, stamp=True) -> NamedShape:

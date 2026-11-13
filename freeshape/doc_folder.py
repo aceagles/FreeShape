@@ -44,6 +44,9 @@ MANIFEST_NAME = "document.json"
 FORMAT = "freeshape-document"
 FORMAT_VERSION = 1
 
+_MANIFEST_KEYS = {"format", "version", "id", "name", "tabs"}
+_TAB_KEYS = {"id", "kind", "file", "name"}
+
 EXTENSIONS = {"studio": ".fshape", "assembly": ".fasm", "drawing": ".fdwg", "variables": ".fvars"}
 FACTORIES = {"studio": Document, "assembly": AssemblyDoc, "drawing": DrawingDoc, "variables": VariableStudioDoc}
 LOADERS = {"studio": Document.load, "assembly": AssemblyDoc.load, "drawing": DrawingDoc.load,
@@ -97,6 +100,7 @@ class Tab:
         self.file = file
         self.name = name
         self.doc = None
+        self.extra = {}      # unknown keys on this tab's manifest entry, written back unchanged
 
 
 class FolderDocument:
@@ -106,6 +110,7 @@ class FolderDocument:
         self.path = None
         self.tabs: list[Tab] = []
         self.errors: dict[str, str] = {}
+        self.extra = {}      # unknown top-level manifest keys, written back unchanged
         self.warnings: list[dict] = []   # problems found on open: see document_warnings
         self._counter = 0
         self.resolver = LinkResolver(folder=self)    # resolves tab-id links through this manifest
@@ -395,10 +400,7 @@ class FolderDocument:
         manifest_path = os.path.join(path, MANIFEST_NAME)
         if os.path.islink(manifest_path):
             raise K.KernelError(f"{MANIFEST_NAME}: refusing to open a symlink")
-        with open(manifest_path) as fh:
-            data = json.load(fh)
-        if data.get("format") != FORMAT:
-            raise K.KernelError("Not a FreeShape Document")
+        data = cls._read_manifest(manifest_path)
         version = data.get("version", 1)
         if version > FORMAT_VERSION:
             raise K.KernelError(f"{MANIFEST_NAME} was saved with file version {version}, but this build "
@@ -409,12 +411,14 @@ class FolderDocument:
         doc.registry = registry
         doc.id = data.get("id") or doc.id
         doc.name = data.get("name", doc.name)
+        doc.extra = {k: v for k, v in data.items() if k not in _MANIFEST_KEYS}
         doc.tabs = []
         doc.errors = {}
         for entry in data.get("tabs", []):
             tab_id, kind, file = entry.get("id"), entry.get("kind"), entry.get("file")
             label = f"tab {tab_id!r}"
             tab = Tab(tab_id, kind, file, entry.get("name") or kind or "")
+            tab.extra = {k: v for k, v in entry.items() if k not in _TAB_KEYS}
             doc.tabs.append(tab)
             try:
                 if kind not in LOADERS:
@@ -427,6 +431,8 @@ class FolderDocument:
                 tab.doc = LOADERS[kind](full)
             except K.KernelError as e:
                 doc.errors[tab_id] = str(e)
+            except Exception as e:      # a damaged tab file (bad JSON, a missing key...) must not stop the rest
+                doc.errors[tab_id] = f"{label}: could not be read ({type(e).__name__}: {e})"
         nums = [int("".join(c for c in (t.id or "") if c.isdigit()) or 0) for t in doc.tabs]
         doc._counter = max(nums + [0])
         for tab in doc.tabs:
@@ -436,6 +442,37 @@ class FolderDocument:
         doc.refresh_links()
         doc.warnings = doc.document_warnings()
         return doc
+
+    @staticmethod
+    def _read_manifest(manifest_path):
+        """Parse document.json and check its shape; raise K.KernelError naming the first fault."""
+        try:
+            with open(manifest_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except ValueError as e:
+            raise K.KernelError(f"{MANIFEST_NAME} is not valid JSON ({e})") from e
+        if not isinstance(data, dict):
+            raise K.KernelError(f"{MANIFEST_NAME}: the top level must be an object, not {type(data).__name__}")
+        if data.get("format") != FORMAT:
+            raise K.KernelError("Not a FreeShape Document")
+        version = data.get("version", 1)
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise K.KernelError(f"{MANIFEST_NAME}: version must be an integer, not {version!r}")
+        tabs = data.get("tabs", [])
+        if not isinstance(tabs, list):
+            raise K.KernelError(f"{MANIFEST_NAME}: tabs must be a list, not {type(tabs).__name__}")
+        seen = set()
+        for i, entry in enumerate(tabs):
+            if not isinstance(entry, dict):
+                raise K.KernelError(f"{MANIFEST_NAME}: tab entry {i} must be an object, "
+                                    f"not {type(entry).__name__}")
+            tab_id = entry.get("id")
+            if not isinstance(tab_id, str) or not tab_id:
+                raise K.KernelError(f"{MANIFEST_NAME}: tab entry {i} has an empty or non-string id ({tab_id!r})")
+            if tab_id in seen:
+                raise K.KernelError(f"{MANIFEST_NAME}: duplicate tab id {tab_id!r}")
+            seen.add(tab_id)
+        return data
 
     def _check_writable(self):
         if self.read_only:
@@ -462,8 +499,9 @@ class FolderDocument:
         self._write_manifest()
 
     def _write_manifest(self):
-        data = {"format": FORMAT, "version": FORMAT_VERSION, "id": self.id, "name": self.name,
-                "tabs": [{"id": t.id, "kind": t.kind, "file": t.file, "name": t.name} for t in self.tabs]}
+        data = {**self.extra, "format": FORMAT, "version": FORMAT_VERSION, "id": self.id, "name": self.name,
+                "tabs": [{**t.extra, "id": t.id, "kind": t.kind, "file": t.file, "name": t.name}
+                         for t in self.tabs]}
         _atomic_write(os.path.join(self.path, MANIFEST_NAME), json.dumps(data, indent=1))
 
     # ------------------------------------------------------------------ versions (git; see gitstore.py)

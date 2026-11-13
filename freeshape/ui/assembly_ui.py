@@ -25,6 +25,8 @@ from .viewport import Pick
 
 ROLE_ID = Qt.UserRole + 1
 ROLE_KIND = Qt.UserRole
+SKETCH_ROLE_WORD = {"point": "point", "centre": "centre", "end1": "end 1", "end2": "end 2", "mid": "middle"}
+SKETCH_SNAP_KIND = {"end1": "vertex", "end2": "vertex", "point": "vertex", "mid": "mid", "centre": "center"}
 
 
 def _floating(frame: QFrame):
@@ -158,7 +160,10 @@ class AssemblyPanel(QWidget):
             for side in ("a", "b"):
                 c = m.get(side)
                 inst = doc.instance(c["inst"]) if c else None
-                names.append(inst["name"] if inst else "?")
+                nm = inst["name"] if inst else "?"
+                if c and c.get("kind") == "sketch":      # sketch geometry: "<sketch name> <role word>"
+                    nm += " " + SKETCH_ROLE_WORD.get(c.get("role"), str(c.get("role")))
+                names.append(nm)
             tip = f"{A.MATE_TYPES[m['type']][0]}: {names[0]}  ↔  {names[1]}"
             err = doc.errors.get(m["id"])
             if m.get("suppressed"):
@@ -426,7 +431,9 @@ class MateDialog(QFrame):
             f.clear_btn.clicked.connect(lambda _=False, s=side: self._clear(s))
             lay.addWidget(f)
         hint = QLabel("Click a flat face, a round face (picks the end nearest the click), a circular edge "
-                      "or a straight edge on each part.")
+                      "or a straight edge on each part."
+                      + (" On a sketch, click a point, a line end or middle, a circle centre, or a teal connector."
+                         if any(self.doc.is_sketch_instance(i["id"]) for i in self.doc.instances) else ""))
         hint.setWordWrap(True)
         hint.setObjectName("muted")
         lay.addWidget(hint)
@@ -536,7 +543,7 @@ class MateDialog(QFrame):
             self.active.set_active(False)
         self.active = field
         field.set_active(True)
-        self.ctl.w.viewport.select_filter = {"face", "edge"}
+        self.ctl.w.viewport.select_filter = {"face", "edge", "sketch_point", "sketch_line"}
         self._refresh_fields()
 
     def _refresh_fields(self):
@@ -547,12 +554,18 @@ class MateDialog(QFrame):
                 f.text.setStyleSheet("color:#8a94a3;")
             else:
                 inst = self.doc.instance(c["inst"])
-                f.text.setText(f"{inst['name'] if inst else '?'} — {c['frame'].get('what', c['kind'])}")
+                if c.get("kind") == "sketch":
+                    f.text.setText(f"{inst['name'] if inst else '?'} {SKETCH_ROLE_WORD.get(c.get('role'), c.get('role'))}")
+                else:
+                    f.text.setText(f"{inst['name'] if inst else '?'} — {c['frame'].get('what', c['kind'])}")
                 f.text.setStyleSheet("")
         self.ctl.update_triads()
 
     def snap_candidates(self, pick: Pick):
-        """Snap points for the viewport to draw while hovering a face or edge."""
+        """Snap points for the viewport to draw while hovering a face or edge, or a Sketch instance's geometry
+        (one dot per role of the entity: end 1, middle, end 2, centre, the point)."""
+        if pick.kind in ("sketch_line", "sketch_point"):
+            return self._sketch_snaps(*pick.key)
         if pick.kind not in ("face", "edge"):
             return []
         iid, idx = pick.key
@@ -596,19 +609,102 @@ class MateDialog(QFrame):
                 best = (d, iid, pc["id"])
         return None if best is None else best[1:]
 
+    def _sketch_roles(self):
+        """[(instance id, entity id, role, world point)] for every role of every entity of every shown Sketch
+        instance. vp.sketches already carries each plane moved by its instance transform, so these are world points."""
+        from .. import sketchref
+        out = []
+        for iid, sr, _m in self.ctl.w.viewport.sketches:
+            if not self.doc.is_sketch_instance(iid):
+                continue
+            plane = {"origin": sr.plane.origin, "xdir": sr.plane.xdir, "normal": sr.plane.normal}
+            sk = sr.sketch.to_dict()
+            for eid in sk["entities"]:
+                try:
+                    for role in sketchref.roles(sk, eid):
+                        out.append((iid, eid, role, np.asarray(sketchref.frame(plane, sk, eid, role)["o"], float)))
+                except K.KernelError:
+                    continue
+        return out
+
+    def _sketch_snaps(self, iid, eid):
+        """Snap dots for the hovered sketch entity `eid` of Sketch instance `iid`: one per role. "type" picks the
+        label the viewport draws; "role" is what a click on the dot stores."""
+        return [{"type": SKETCH_SNAP_KIND[r], "p": pw, "pw": pw, "role": r, "inst": i, "entity": e}
+                for i, e, r, pw in self._sketch_roles() if i == iid and e == eid]
+
+    def _screen_hit(self, xy, tol=12.0):
+        """What is under screen point `xy` among the things that must win over the face and edge pick: a triad of an
+        instance's own connector ("named", iid, cid) or a sketch role dot ("sketch", iid, eid, role). The nearest in
+        screen space wins; a triad wins a tie. None when neither is within `tol` px."""
+        cam = self.ctl.w.viewport.cam
+        best = None
+        for iid, pc, fr in self.own_connectors():
+            sp = cam.to_screen(np.asarray(fr["o"], float))
+            d = math.hypot(sp[0] - xy[0], sp[1] - xy[1])
+            if d <= tol and (best is None or d < best[0]):
+                best = (d, ("named", iid, pc["id"]))
+        for iid, eid, role, pw in self._sketch_roles():
+            sp = cam.to_screen(pw)
+            d = math.hypot(sp[0] - xy[0], sp[1] - xy[1])
+            if d <= tol and (best is None or d < best[0]):
+                best = (d, ("sketch", iid, eid, role))
+        return None if best is None else best[1]
+
+    def _nearest_role(self, iid, eid, xy):
+        """The role of sketch entity `eid` whose dot is nearest screen point `xy` (a click on the line, off every dot)."""
+        cam = self.ctl.w.viewport.cam
+        cand = [(math.hypot(cam.to_screen(pw)[0] - xy[0], cam.to_screen(pw)[1] - xy[1]), r)
+                for i, e, r, pw in self._sketch_roles() if i == iid and e == eid]
+        return min(cand)[1] if cand else None
+
+    def _use_hit(self, hit):
+        if hit[0] == "named":
+            self.pick_named(hit[1], hit[2])
+        else:
+            self.pick_sketch(*hit[1:])
+
+    def pick_sketch(self, iid, eid, role):
+        """Use `role` of sketch entity `eid` on Sketch instance `iid` for the active field."""
+        try:
+            c = self.doc.sketch_end(iid, eid, role)
+        except Exception as e:
+            self._error(f"Can't use that: {e}")
+            return
+        side = "a" if self.active is self.fa else "b"
+        other = self.mate.get("b" if side == "a" else "a")
+        if other and other["inst"] == iid:
+            self._error("Pick the second connector on a different part.")
+            return
+        self.mate[side] = c
+        if side == "a" and not self.mate.get("b"):
+            self.activate(self.fb)
+        elif side == "b" and not self.mate.get("a"):
+            self.activate(self.fa)
+        self._refresh_fields()
+        self.schedule()
+
     def handle_miss(self):
-        """A click that hit no face or edge: it may still be on a connector triad floating off the part."""
+        """A click that hit no face or edge: it may still be on a connector triad or a sketch point floating off the part."""
         vp = self.ctl.w.viewport
-        hit = self._own_connector_at(vp.last_click) if vp.last_click else None
+        hit = self._screen_hit(vp.last_click) if vp.last_click else None
         if hit is not None:
-            self.pick_named(*hit)
+            vp.clear_snaps()
+            self._use_hit(hit)
 
     def handle_pick(self, pick: Pick):
         vp = self.ctl.w.viewport
-        hit = self._own_connector_at(vp.last_click) if vp.last_click else None
-        if hit is not None:                  # a click on an own-connector triad beats the face under it
+        hit = self._screen_hit(vp.last_click) if vp.last_click else None
+        if hit is not None:                  # a triad or a sketch dot under the pointer beats the face under it
             vp.clear_snaps()
-            self.pick_named(*hit)
+            self._use_hit(hit)
+            return
+        if pick.kind in ("sketch_line", "sketch_point"):     # on a sketch line but off every dot: the nearest role
+            vp.clear_snaps()
+            iid, eid = pick.key
+            role = self._nearest_role(iid, eid, vp.last_click) if vp.last_click else None
+            if role is not None:
+                self.pick_sketch(iid, eid, role)
             return
         snap, base = vp.snap_hi, vp.snap_base
         if snap is not None and base is not None and base.kind in ("face", "edge"):
@@ -950,6 +1046,8 @@ class AssemblyController:
         if doc.studio_resolver is None and not hasattr(getattr(doc.resolver, "__self__", None), "resolve_studio"):
             # a loose Assembly resolves through the window, which can't publish a studio: give it the LinkResolver
             doc.studio_resolver = self.w._resolver_for(doc).resolve_studio
+        if doc.connector_resolver is None and not hasattr(getattr(doc.resolver, "__self__", None), "resolve_connectors"):
+            doc.connector_resolver = self.w._resolver_for(doc).resolve_connectors     # a sketch's own connectors
         out = doc.sketch_out(iid)
         if out is None:
             return None

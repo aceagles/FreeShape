@@ -31,6 +31,15 @@ MATE_TYPES = {
     "ball": ("Ball", "Rotates in every direction about a point"),
 }
 MATE_DOF = {"fastened": 0, "revolute": 1, "slider": 1, "cylindrical": 2, "planar": 3, "ball": 3}
+# The named free degrees of freedom of each mate type: its Mate values (translations in mm, rotations in degrees).
+MATE_VALUE_DOFS = {
+    "fastened": (),
+    "revolute": ("rz",),
+    "slider": ("tz",),
+    "cylindrical": ("tz", "rz"),
+    "planar": ("tx", "ty", "rz"),
+    "ball": (),
+}
 FILE_FORMAT = "freeshape-assembly"
 
 
@@ -430,6 +439,41 @@ def snap_transform(m, FA, FB):
             # the frame's own z can't change sign by projecting, so this is a valid target
             target = M
     return target @ np.linalg.inv(frame_matrix(FB))
+
+
+def _wrap_deg(a):
+    """Wrap an angle in degrees to (-180, 180]."""
+    a = (a + 180.0) % 360.0 - 180.0
+    return 180.0 if a <= -180.0 + 1e-9 else a
+
+
+def mate_values(m, FA, FB):
+    """The Mate values of one mate, measured from the world connector frames A and B.
+    Returns {name: value} for the names in MATE_VALUE_DOFS[type]; empty for fastened and ball.
+    Zero is the aligned pose snap_transform gives (flip, offset and angle already applied, B's
+    X on the target X). Translations are in mm along A's axes: tz along A's Z, tx and ty along the
+    target X and its Y (A's Z crossed with it). rz is the turn of B's X about A's Z, in degrees."""
+    names = MATE_VALUE_DOFS[m["type"]]
+    if not names:
+        return {}
+    ang = np.radians(float(m.get("angle", 0.0) or 0.0))
+    zA, xA = unit(FA["z"]), unit(FA["x"])
+    yA = np.cross(zA, xA)
+    xt = np.cos(ang) * xA + np.sin(ang) * yA
+    yt = np.cross(zA, xt)
+    dv = np.asarray(FB["o"], float) - np.asarray(FA["o"], float)
+    xB = np.asarray(FB["x"], float)
+    out = {}
+    for n in names:
+        if n == "tz":
+            out[n] = float(dv @ zA)
+        elif n == "tx":
+            out[n] = float(dv @ xt)
+        elif n == "ty":
+            out[n] = float(dv @ yt)
+        else:
+            out[n] = _wrap_deg(float(np.degrees(np.arctan2(xB @ yt, xB @ xt))))
+    return out
 
 
 # =========================================================================== the document

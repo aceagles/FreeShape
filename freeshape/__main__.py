@@ -153,7 +153,7 @@ def main():
     if path is None and opener.pending:
         path = opener.pending.pop(0)
     step(f"Opening {os.path.basename(path)}…" if path else "Getting the workspace ready…", 0.8)
-    w = MainWindow(path)
+    w = MainWindow(path, engine=os.environ.get("FREESHAPE_ENGINE") != "0")     # "0": rebuild in the window
     w.show()
     opener.attach(w)
     snap = os.environ.get("FREESHAPE_SNAPSHOT")

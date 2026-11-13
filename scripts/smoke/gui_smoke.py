@@ -32,15 +32,21 @@ def main():
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
     from freeshape.ui.mainwindow import MainWindow
-    w = MainWindow()
+    w = MainWindow(engine=True)
     w.settings = _Settings()
     app.processEvents()
     w.open_any(path)
     app.processEvents()
 
     assert w.doc is not None, f"{path} did not open"
-    unresolved = len(getattr(w.doc, "errors", {}))
-    print(f"GUI OK unresolved={unresolved}")
+    try:
+        if w.doc.kind == "studio":
+            assert w.studio_engine.settle(180), "the engine did not answer"
+            assert w.studio_engine.displayed(w.doc), "the engine returned no mesh"
+        unresolved = len(getattr(w.doc, "errors", {}))
+        print(f"GUI OK unresolved={unresolved}")
+    finally:
+        w.studio_engine.shutdown()
     return 0
 
 

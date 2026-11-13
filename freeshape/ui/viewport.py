@@ -196,6 +196,13 @@ class Viewport(QOpenGLWidget):
         self._mesh_cache[key] = (shape, m)
         return m
 
+    def seed_mesh(self, shape, mesh, kind="part"):
+        """Show `mesh` (made elsewhere: the engine's worker) for `shape` instead of meshing it here: the next
+        set_scene finds it in the cache."""
+        if len(self._mesh_cache) > 600:
+            self._mesh_cache.clear()
+        self._mesh_cache[(kind, hash(shape))] = (shape, mesh)
+
     def placed_mesh(self, local_shape, M):
         """Mesh of a part placed by a 4x4 transform (assemblies): the part is tessellated once in its own
         coordinates and only the vertices move, so dragging stays fast."""

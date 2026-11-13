@@ -33,6 +33,7 @@ from .sketcher import Sketcher, CONSTRAINT_TOOLS
 from .numparse import fmt
 from .filedirs import start_dir, remember_dir
 from .assembly_ui import AssemblyController
+from .partstudio_engine import StudioEngine
 
 APP_NAME = "FreeShape"
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
@@ -63,7 +64,7 @@ def _sep():
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, path=None):
+    def __init__(self, path=None, engine=False):
         super().__init__()
         self.setStyleSheet(theme.STYLESHEET)
         self.setWindowIcon(app_icon())
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         self.resolver = links.LinkResolver(find_open_studio=self._find_open_studio,
                                            find_open_assembly=self._find_open_assembly,
                                            flat_pattern_of=self.flat_pattern_of)
+        self.studio_engine = StudioEngine(self) if engine else None    # Part Studio tabs rebuild in the engine
         self._build_ui()
         self._bind_shortcuts()
         self.set_theme(str(self.settings.value("theme", "light")), save=False)
@@ -2722,6 +2724,8 @@ class MainWindow(QMainWindow):
             self.show_workspace()
         key = id(doc)
         self.docs[key] = doc
+        if self.studio_engine is not None and doc.kind == "studio":
+            self.studio_engine.attach(doc)
         doc.listeners.append(lambda d=doc: self._doc_changed_from(d))
         if doc.kind == "assembly" and self._folder_tab(doc) is None:
             doc.resolver = self._resolve_source
@@ -2814,6 +2818,8 @@ class MainWindow(QMainWindow):
         self._drop_autosave(self.docs.get(key))
         self.docs.pop(key, None)
         self._views.pop(key, None)
+        if self.studio_engine is not None:
+            self.studio_engine.prune()
 
     def _rename_tab(self, i):
         if i < 0:
@@ -3302,6 +3308,8 @@ class MainWindow(QMainWindow):
             os.rmdir(self.autosave_dir())        # only succeeds if it's empty
         except OSError:
             pass
+        if self.studio_engine is not None:
+            self.studio_engine.shutdown()
         e.accept()
 
     def keyPressEvent(self, e):

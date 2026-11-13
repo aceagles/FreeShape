@@ -318,8 +318,16 @@ def _mark_recovered(state, fid=None):
 
 def _named_lookup(state, ref, letter):
     """(part id, sub-shape or vertex) of the element a name refers to, or None when no part's element
-    map has that name. A reference's own part is searched when it still exists, else every part."""
-    pids = [ref["part"]] if ref.get("part") in state.parts else list(state.parts)
+    map has that name. A reference's own part is searched first when it still exists, then the other
+    pieces a cut severed from the same solid (`set_part_shape` ids `<pid>.<i>`): the element may now
+    be on any of them. Every part is searched when the reference's own part is gone."""
+    own = ref.get("part")
+    if own in state.parts:
+        head, slash, tail = own.rpartition("/")
+        root = head + slash + tail.split(".")[0]          # "<fid>/<n>.<i>.<j>" -> "<fid>/<n>"
+        pids = [own] + [p for p in state.parts if slash and p != own and (p == root or p.startswith(root + "."))]
+    else:
+        pids = list(state.parts)
     for pid in pids:
         nm = state.named(pid)
         if nm is None:

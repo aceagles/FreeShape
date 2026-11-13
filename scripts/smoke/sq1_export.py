@@ -54,7 +54,7 @@ import test_drawing_angular_dim as ANG  # noqa: E402
 from freeshape import features as F  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
 from freeshape import meshexport as ME  # noqa: E402
-from freeshape.document import Document  # noqa: E402
+from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.drawing import DIRECTIONS, DrawingDoc, export_dxf  # noqa: E402
 from freeshape.expr import parse_number  # noqa: E402
 from freeshape.sketch import Sketch  # noqa: E402
@@ -145,7 +145,7 @@ def true_size(d):
 
 def two_part_studio():
     """Part Studio of a 10 x 10 x 10 box 'Base' (red) and a diameter 20 x 20 cylinder 'Lid' (blue)."""
-    doc = Document()
+    doc = PartStudioDoc()
     for i in range(2):
         s = Sketch()
         if i == 0:
@@ -371,7 +371,7 @@ def _():
 
 @step("hole: M16 normal clearance hole builds at the table diameter")
 def _():
-    doc = Document()
+    doc = PartStudioDoc()
     s = Sketch()
     pts = [s.add_point(0, 0), s.add_point(60, 0), s.add_point(60, 40), s.add_point(0, 40)]
     for a, b in zip(pts, pts[1:] + pts[:1]):

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 from .. import kernel as K
 from .. import measure as M
 from .. import features as F
-from ..document import Document
+from ..document import PartStudioDoc
 from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
 from .. import doc_folder
@@ -3015,7 +3015,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ tabs
     def _new_document(self, name=None):
         self._studio_counter += 1
-        doc = Document()
+        doc = PartStudioDoc()
         doc.name = name or f"Part Studio {self._studio_counter}"
         doc.rebuild()
         return doc
@@ -3183,7 +3183,7 @@ class MainWindow(QMainWindow):
             self._register_in_document(a, like=src)
             self._add_tab(a)
             return
-        doc = Document()
+        doc = PartStudioDoc()
         d = json.loads(src.to_json())
         doc.features, doc.rollback = d["features"], d["rollback"]
         doc.part_overrides, doc.hidden_parts = d["overrides"], set(d["hidden"])
@@ -3343,7 +3343,7 @@ class MainWindow(QMainWindow):
             if d.path and os.path.abspath(d.path) == os.path.abspath(path):
                 return d
         try:
-            doc = Document.load(path)
+            doc = PartStudioDoc.load(path)
         except Exception as e:
             QMessageBox.critical(self, APP_NAME, f"Could not open {path}:\n{e}")
             return None
@@ -3488,7 +3488,7 @@ class MainWindow(QMainWindow):
             if into_current:
                 doc = self.doc
             else:
-                doc = Document()
+                doc = PartStudioDoc()
                 doc.name = os.path.splitext(fname)[0]
             f = doc.make_feature("import")
             f["name"] = "Import " + fname

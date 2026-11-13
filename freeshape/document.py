@@ -1,4 +1,4 @@
-"""Document: the ordered feature list, rollback bar, undo/redo, save/load, and a cached rebuild."""
+"""PartStudioDoc: the ordered feature list, rollback bar, undo/redo, save/load, and a cached rebuild."""
 from __future__ import annotations
 
 import copy
@@ -34,7 +34,7 @@ def _rewrite_part_ids(x, alias):
 def _migrate_part_ids(data):
     """FILE_VERSION 1 -> 2 (I1.4): part ids become <feature id>/<output index> instead of a replay-wide
     <feature id>:<counter>, so inserting an upstream feature no longer renumbers later parts that come
-    after it. Replays the feature list once (the same way Document.compute does), rewriting every
+    after it. Replays the feature list once (the same way PartStudioDoc.compute does), rewriting every
     old-style id a feature's own params name as soon as its new id is known -- so later features still
     find their inputs -- and records the whole old -> new table as "part_aliases", so a .fasm/.fdwg that
     still names an old id can be translated by LinkResolver (see links.py) until it's next saved."""
@@ -109,7 +109,7 @@ def update_context(doc, fid, asm):
     doc.replace_feature(new)
 
 
-class Document:
+class PartStudioDoc:
     kind = "studio"
 
     def __init__(self):
@@ -647,7 +647,7 @@ class Document:
         self.dirty = False
 
     @staticmethod
-    def load(path) -> "Document":
+    def load(path) -> "PartStudioDoc":
         with open(path) as fh:
             d = json.load(fh)
         fmt = d.get("format") if isinstance(d, dict) else None
@@ -660,7 +660,7 @@ class Document:
         if not isinstance(d, dict) or not isinstance(d.get("features"), list):
             raise K.KernelError("Not a FreeShape Part Studio (no features list)")
         d = M.migrate("document", d, path)
-        doc = Document()
+        doc = PartStudioDoc()
         doc.name = d.get("name", "Part Studio 1")
         doc.uid = d.get("uid") or doc.uid
         doc.features = d["features"]
@@ -692,3 +692,6 @@ class Document:
             ME.export_parts([(p.shape, p.name, p.color) for p in parts], path, **(options or {}))
         else:
             return K.export_step_named([(p.shape, np.eye(4), p.name, p.color) for p in parts], path, self.name)
+
+
+Document = PartStudioDoc   # the old name of this class, kept so existing imports and tests still work

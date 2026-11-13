@@ -105,14 +105,14 @@ def run_file_versions():
     """Just the studio (document) round trip -- the only file_versions.json entries with part-id keys
     (hinge_fasm / v1_fdwg are keyed by instance id / plain fingerprint fields, not part ids). This golden
     file is newer than the base commit, so it is not frozen; it is rekeyed the same way."""
-    from freeshape.document import Document
+    from freeshape.document import PartStudioDoc
     for name in ("hinge_parts", "bracket"):
-        doc = Document.load(os.path.join(ROOT, "examples", f"{name}.fshape"))
+        doc = PartStudioDoc.load(os.path.join(ROOT, "examples", f"{name}.fshape"))
         _record(doc.state.old_ids)
         _finish_entry(f"file_versions/{name}")
         path = os.path.join(tempfile.mkdtemp(), f"{name}.fshape")
         doc.save(path)
-        back = Document.load(path)
+        back = PartStudioDoc.load(path)
         _record(back.state.old_ids)
         _finish_entry(f"file_versions/{name}_reloaded")
 

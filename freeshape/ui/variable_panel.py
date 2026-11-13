@@ -98,7 +98,7 @@ OVERRIDDEN = Qt.UserRole + 1        # on a name item: True when a later definiti
 
 
 class DefinedVariables(QTableWidget):
-    """The variables a Part Studio defines, from Document.variable_table(): name, value and where it is defined. A
+    """The variables a Part Studio defines, from PartStudioDoc.variable_table(): name, value and where it is defined. A
     name a later Variable or Variable Studio reference defines again is marked overridden (struck through, with
     "overridden" in the last column); the definition in force carries no mark."""
 

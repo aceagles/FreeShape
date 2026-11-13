@@ -106,7 +106,7 @@ _Avoid_: gear mate, coupling, gear joint
 
 ## Flagged ambiguities
 
-- "document" in today's code (`document.py`, class `Document`) means a single Part Studio tab, not the folder-level Document defined here. Rename the class when the Document lands.
+- "document" in the code (`freeshape/document.py`) means a single Part Studio tab, not the folder-level Document defined here. The class there is `PartStudioDoc`; `Document` stays as an alias for the old name, and the `document` file format and migration chain keep their name. The folder-level Document is `FolderDocument`.
 
 ## Decisions
 

@@ -1,6 +1,6 @@
 """Headless Python-feature smoke (S4): gears as Python features, end to end, no Qt.
 
-Builds a Part Studio with a spur gear, a helical spur gear and a bevel gear through Document.make_feature,
+Builds a Part Studio with a spur gear, a helical spur gear and a bevel gear through PartStudioDoc.make_feature,
 checks element names survive a tooth-count change, round-trips save/load, reopens with the gears plugin
 unregistered (locked on the stored build), and checks a studio naming `py:os/system` is refused without
 importing anything it names. Volumes use OCC's plain integrator: K.volume is far too slow on gear solids.
@@ -31,7 +31,7 @@ from OCP.GProp import GProp_GProps  # noqa: E402
 
 import freeshape.document  # noqa: E402,F401  (registers the bundled plugins)
 from freeshape import pyfeature  # noqa: E402
-from freeshape.document import Document  # noqa: E402
+from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.pyfeature import host  # noqa: E402
 
 GEARS = os.path.join(ROOT, "freeshape", "plugins", "gears")
@@ -95,7 +95,7 @@ def main():
           f"gears plugin problems: {pyfeature.problems()}")
 
     # 1. build the studio
-    doc = Document()
+    doc = PartStudioDoc()
     spur = add(doc, "py:gears/spur", num_teeth=15, bore=5)
     helical = add(doc, "py:gears/spur", num_teeth=15, bore=5, helix_angle=20)
     bevel = add(doc, "py:gears/bevel")
@@ -126,7 +126,7 @@ def main():
     path = os.path.join(_TMP, "studio", "gears.fshape")
     os.makedirs(os.path.dirname(path))
     doc.save(path)
-    loaded = Document.load(path)
+    loaded = PartStudioDoc.load(path)
     check(loaded.errors == {}, f"load errors: {loaded.errors}")
     check(loaded.notices() == {}, f"unexpected notices on plain load: {loaded.notices()}")
     same_volumes(volumes(loaded), vols, "save/load")
@@ -137,7 +137,7 @@ def main():
           "could not unregister gears")
     try:
         check("gears" not in {p.id for p in pyfeature.plugins()}, "gears still registered")
-        locked = Document.load(path)
+        locked = PartStudioDoc.load(path)
         check(locked.errors == {}, f"locked load errors: {locked.errors}")
         check(list(locked.state.parts) == pids, f"locked part ids {list(locked.state.parts)}")
         same_volumes(volumes(locked), vols, "locked reload")
@@ -153,7 +153,7 @@ def main():
     step("4 plugin unregistered: 3 locked parts, same ids/volumes/names, no errors, 3 locked notices")
 
     # 5. hostile type
-    hostile = Document()
+    hostile = PartStudioDoc()
     hostile.features = [{"id": "F90", "type": "py:os/system", "name": "System 1", "suppressed": False,
                          "params": {"cmd": "echo hi"}, "plugin": {"id": "os", "version": "1"}}]
     hpath = os.path.join(_TMP, "hostile.fshape")
@@ -172,7 +172,7 @@ def main():
 
     importlib.import_module, importlib.util.spec_from_file_location = rec_import, rec_spec
     try:
-        got = Document.load(hpath)
+        got = PartStudioDoc.load(hpath)
     finally:
         importlib.import_module, importlib.util.spec_from_file_location = real_import, real_spec
     err = got.errors.get("F90", "")

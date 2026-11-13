@@ -73,7 +73,7 @@ class _StudioView:
         self.hidden_parts = {p["id"] for p in pkg["parts"] if p["hidden"]}
         self.state = SimpleNamespace(parts=PartMap(parts, aliases=self.part_aliases),
                                      vars=dict(pkg.get("vars") or {}), sheet={})
-        self.package = None      # the links.StudioPackage a Document.link_inputs hands out (set by install)
+        self.package = None      # the links.StudioPackage a PartStudioDoc.link_inputs hands out (set by install)
 
 
 class _VariablesView:

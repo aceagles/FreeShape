@@ -20,7 +20,7 @@ from conftest import EXAMPLES_DIR, assert_golden, shape_fingerprint, state_finge
 from freeshape import links as L  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
 from freeshape.assembly import AssemblyDoc  # noqa: E402
-from freeshape.document import Document  # noqa: E402
+from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.drawing import DrawingDoc  # noqa: E402
 
 HINGE_ASM = os.path.join(EXAMPLES_DIR, "hinge.fasm")
@@ -47,11 +47,11 @@ def load_hinge_via_link_resolver():
 
 
 def round_trip_document():
-    doc = Document.load(HINGE_STUDIO)
+    doc = PartStudioDoc.load(HINGE_STUDIO)
     assert not doc.errors, doc.errors
     before = state_fingerprint(doc)
     doc.save(_tmp_path("hinge_parts.fshape"))
-    back = Document.load(doc.path)
+    back = PartStudioDoc.load(doc.path)
     assert not back.errors, back.errors
     after = state_fingerprint(back)
     assert_golden("file_versions/hinge_parts", before)

@@ -1,9 +1,9 @@
 """FolderDocument: the folder-level Document -- a folder on disk holding `document.json` plus one file per
 tab (a Part Studio, an Assembly, a Drawing or a Variable Studio). Headless -- no Qt.
 
-Note the name clash this module works around: `freeshape.document.Document` is a *Part Studio*, not this
-folder-level Document. That class keeps its name (and its own `document` file format / migration chain --
-see freeshape/migrations.py); this module's class is called `FolderDocument` to stay unambiguous, and
+Note the name clash this module works around: `freeshape.document.PartStudioDoc` is a *Part Studio*, not this
+folder-level Document. That class was once called `Document` (still an alias) and keeps its `document` file
+format / migration chain -- see freeshape/migrations.py; this module's class is called `FolderDocument` to stay unambiguous, and
 "document.json" below always means the folder manifest, never a Part Studio file.
 
 document.json is `{format, version, id, name, tabs: [{id, kind, file, name}, ...]}`. A tab's `id` is

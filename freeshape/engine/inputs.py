@@ -116,7 +116,7 @@ class CrossTabInputs:
 
     def variables(self, src):
         """{name: value} of the Variable Studio tab a "variable_studio_ref" source names (by tab id, uid, then
-        file path), live and unsaved; None if no tab matches. A Document.var_inputs callable. A pinned Version of
+        file path), live and unsaved; None if no tab matches. A PartStudioDoc.var_inputs callable. A pinned Version of
         another Document is the package the parent sent (None if it was not sent)."""
         with self._resolving(src):
             if links.is_cross_link(src):
@@ -129,7 +129,7 @@ class CrossTabInputs:
 
     def studio(self, src):
         """The StudioPackage of the Part Studio tab `src` names (by tab id, uid, then file path), live and
-        unsaved: its parts and sketches as the parent publishes them. A Document.link_inputs callable. A worker
+        unsaved: its parts and sketches as the parent publishes them. A PartStudioDoc.link_inputs callable. A worker
         view carries the package the parent sent (`package`); otherwise it is read from the open tab. Raises
         KernelError when no tab matches."""
         with self._resolving(src):

@@ -37,7 +37,7 @@ from . import kernel as K
 from .assembly import AssemblyDoc
 from .document import Document
 from .drawing import DrawingDoc
-from .links import LinkResolver, migrate_links_to_tab_ids
+from .links import LinkResolver, migrate_links_to_tab_ids, tab_sources
 from .variable_studio import VariableStudioDoc
 
 MANIFEST_NAME = "document.json"
@@ -117,8 +117,11 @@ class FolderDocument:
         self._scratch = None
 
     def _attach(self, tab):
-        """Point a tab's document at this Document's resolver (assemblies and drawings hold links)."""
-        if tab.kind == "assembly" and tab.doc is not None:
+        """Point a tab's document at this Document's resolver (studios, assemblies and drawings hold links)."""
+        if tab.kind == "studio" and tab.doc is not None:
+            tab.doc.link_inputs = self.resolver.resolve_studio
+            tab.doc.var_inputs = self.resolver.resolve_variables
+        elif tab.kind == "assembly" and tab.doc is not None:
             tab.doc.resolver = self.resolver.resolve_source
         elif tab.kind == "drawing" and tab.doc is not None:
             tab.doc.resolver = self.resolver.resolve_drawing_source
@@ -132,8 +135,50 @@ class FolderDocument:
         self.tabs.remove(tab)
         self.errors.pop(tab_id, None)
 
+    def _context_assembly(self, tab_id, fid):
+        """(studio, the live AssemblyDoc or None) for a Context feature: the open Assembly tab named by the
+        feature's assembly id (a tab id, or the uid the capture stored), so unsaved Assembly edits count."""
+        tab = self.tab(tab_id)
+        if tab is None or tab.kind != "studio" or tab.doc is None:
+            raise K.KernelError(f"No Part Studio tab {tab_id!r}")
+        f = tab.doc.feature(fid)
+        want = ((f or {}).get("params") or {}).get("assembly")
+        asm = next((t.doc for t in self.tabs if t.kind == "assembly" and t.doc is not None
+                    and want and want in (t.id, getattr(t.doc, "uid", None))), None)
+        return tab.doc, asm
+
+    def context_status(self, tab_id, fid):
+        """"current", "out of date" or "assembly missing" for Context feature `fid` of studio tab `tab_id`.
+        A query: no Link edge, nothing rebuilt."""
+        from .document import context_status
+        doc, asm = self._context_assembly(tab_id, fid)
+        return context_status(doc, fid, asm)
+
+    def update_context(self, tab_id, fid):
+        """Recapture Context feature `fid` of studio tab `tab_id` from its Assembly tab (see
+        document.update_context). Raises KernelError when the Assembly tab or instance is missing."""
+        from .document import update_context
+        self._check_writable()
+        doc, asm = self._context_assembly(tab_id, fid)
+        update_context(doc, fid, asm)
+
     def refresh_links(self):
-        """Re-read every assembly's and drawing's links against the current tabs."""
+        """Re-read every studio's, assembly's and drawing's links against the current tabs."""
+        done = set()
+
+        def rebuild_studio(tab):      # a source studio first, so it is read as it now stands
+            if tab.id in done:
+                return
+            done.add(tab.id)
+            for src in tab_sources("studio", tab.doc):
+                up = self.tab(src.get("tab"))
+                if up is not None and up.kind == "studio" and up.doc is not None:
+                    rebuild_studio(up)
+            tab.doc.rebuild()
+
+        for tab in self.tabs:
+            if tab.kind == "studio" and tab.doc is not None and tab_sources("studio", tab.doc):
+                rebuild_studio(tab)
         for tab in self.tabs:
             if tab.kind == "assembly" and tab.doc is not None:
                 tab.doc.refresh(solve=False, notify=False)
@@ -177,13 +222,7 @@ class FolderDocument:
         for tab in self.tabs:
             if tab.doc is None:
                 continue
-            if tab.kind == "assembly":
-                sources = [i["source"] for i in tab.doc.instances]
-            elif tab.kind == "drawing" and tab.doc.source is not None:
-                sources = [tab.doc.source]
-            else:
-                continue
-            for src in sources:
+            for src in tab_sources(tab.kind, tab.doc):
                 if src.get("kind") not in ("studio", "assembly"):
                     continue
                 try:
@@ -501,7 +540,7 @@ class FolderDocument:
             folder = os.path.join(scratch, "Document")
             os.makedirs(folder)
             G.read_tree(self.path, commit, folder)
-            view = FolderDocument.open(folder)
+            view = FolderDocument.open(folder, registry=self.registry)     # its links resolve against the view's own tabs
         except (OSError, ValueError) as e:
             _rmtree(scratch)
             raise K.KernelError(f"Version {name!r} is not a readable Document: {e}") from e

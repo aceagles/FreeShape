@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal, QSize
-from PySide6.QtGui import QColor, QFont, QGuiApplication
+from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QListWidget, QListWidgetItem, QWidget,
     QGraphicsDropShadowEffect, QTreeWidget, QTreeWidgetItem, QPushButton, QDialog, QTableWidget,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 from .. import kernel as K
 from .. import assembly as A
 from .icons import icon
+from . import preview_rows as PR
 from .numparse import parse_number, fmt
 from .panels import swatch
 from .viewport import Pick
@@ -590,7 +592,8 @@ class InsertPanel(QFrame):
         lay.addWidget(hint)
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
-        self.tree.setIconSize(QSize(16, 16))
+        self.tree.setIconSize(QSize(PR.INSERT_SIZE, PR.INSERT_SIZE))
+        self.previews = PR.PreviewFiller(self.tree, PR.INSERT_SIZE)
         self.tree.setMinimumHeight(220)
         self.tree.itemDoubleClicked.connect(lambda it, _c: self._insert_item(it))
         lay.addWidget(self.tree)
@@ -603,6 +606,14 @@ class InsertPanel(QFrame):
         f.setToolTip("A FreeShape document (.fshape) or a STEP file")
         f.clicked.connect(self._from_file)
         row.addWidget(f)
+        self.other_doc_action = QAction("Other Document…", self)
+        self.other_doc_action.setObjectName("insert_other_document")
+        self.other_doc_action.setToolTip("A part of a Version of another Document on this machine")
+        self.other_doc_action.triggered.connect(self._from_other_document)
+        od = QPushButton("Other Document…")
+        od.setToolTip(self.other_doc_action.toolTip())
+        od.clicked.connect(self.other_doc_action.trigger)
+        row.addWidget(od)
         lay.addLayout(row)
         self.msg = QLabel("")
         self.msg.setWordWrap(True)
@@ -614,20 +625,27 @@ class InsertPanel(QFrame):
         self.move(12, 12)
         self.show()
 
+    def drain_previews(self):
+        self.previews.drain()
+
     def fill(self):
         self.tree.clear()
+        self.previews.reset()
         for doc in self.ctl.w.studio_docs():
             top = QTreeWidgetItem([doc.name])
             top.setIcon(0, icon("part", 16))
             top.setData(0, ROLE_KIND, "studio")
             top.setData(0, ROLE_ID, doc.uid)
-            for p in doc.state.parts.values():
+            shown = [p for p in doc.state.parts.values() if not p.reference]    # Context bodies are not insertable
+            for p in shown:
                 it = QTreeWidgetItem([p.name])
                 it.setIcon(0, swatch(p.color))
                 it.setData(0, ROLE_KIND, "part")
                 it.setData(0, ROLE_ID, (doc.uid, p.id))
                 top.addChild(it)
-            if not doc.state.parts:
+                key, make = PR.part_job(p, PR.INSERT_SIZE)
+                self.previews.add(lambda ic, it=it: it.setIcon(0, ic), key, make)
+            if not shown:
                 it = QTreeWidgetItem(["(no parts yet)"])
                 it.setDisabled(True)
                 top.addChild(it)
@@ -663,6 +681,17 @@ class InsertPanel(QFrame):
                 self.fill()
                 self.ctl.insert_studio_parts(doc.uid, None)
                 self.msg.setText(f"Inserted the parts of {doc.name}")
+
+    def _from_other_document(self):
+        from .document_picker import OtherDocumentDialog
+        folder = self.ctl.w.folder
+        if folder is None:
+            self.msg.setText("Save this as a Document to insert from another one.")
+            return
+        dlg = OtherDocumentDialog(folder, self)
+        if dlg.exec() == QDialog.Accepted:
+            n = self.ctl.insert_document_sources(dlg.sources())
+            self.msg.setText(f"Inserted {n} part(s) from another Document")
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
@@ -1004,8 +1033,58 @@ class MateDialog(QFrame):
         iid, idx = pick.key
         return self.doc.snap_points(iid, pick.kind, idx)
 
+    def own_connectors(self):
+        """[(instance id, published connector dict, world frame)] for every instance's own mate connectors."""
+        out = []
+        for inst in self.doc.visible_instances():
+            for pc in self.doc.published_connectors(inst["id"]) or []:
+                out.append((inst["id"], pc, self.doc.world_frame(self.doc.named_connector(inst["id"], pc["id"]))))
+        return out
+
+    def pick_named(self, iid, cid):
+        """Use instance `iid`'s own published connector `cid` for the active field."""
+        try:
+            c = self.doc.named_connector(iid, cid)
+        except Exception as e:
+            self._error(f"Can't use that: {e}")
+            return
+        side = "a" if self.active is self.fa else "b"
+        other = self.mate.get("b" if side == "a" else "a")
+        if other and other["inst"] == iid:
+            self._error("Pick the second connector on a different part.")
+            return
+        self.mate[side] = c
+        if side == "a" and not self.mate.get("b"):
+            self.activate(self.fb)
+        elif side == "b" and not self.mate.get("a"):
+            self.activate(self.fa)
+        self._refresh_fields()
+        self.schedule()
+
+    def _own_connector_at(self, xy, tol=12.0):
+        """The (instance id, connector id) whose triad origin is within `tol` px of screen point `xy`, or None."""
+        best = None
+        for iid, pc, fr in self.own_connectors():
+            sp = self.ctl.w.viewport.cam.to_screen(np.asarray(fr["o"], float))
+            d = math.hypot(sp[0] - xy[0], sp[1] - xy[1])
+            if d <= tol and (best is None or d < best[0]):
+                best = (d, iid, pc["id"])
+        return None if best is None else best[1:]
+
+    def handle_miss(self):
+        """A click that hit no face or edge: it may still be on a connector triad floating off the part."""
+        vp = self.ctl.w.viewport
+        hit = self._own_connector_at(vp.last_click) if vp.last_click else None
+        if hit is not None:
+            self.pick_named(*hit)
+
     def handle_pick(self, pick: Pick):
         vp = self.ctl.w.viewport
+        hit = self._own_connector_at(vp.last_click) if vp.last_click else None
+        if hit is not None:                  # a click on an own-connector triad beats the face under it
+            vp.clear_snaps()
+            self.pick_named(*hit)
+            return
         snap, base = vp.snap_hi, vp.snap_base
         if snap is not None and base is not None and base.kind in ("face", "edge"):
             pick = base                      # a highlighted snap point wins over whatever is under the cursor
@@ -1632,6 +1711,10 @@ class AssemblyController:
         p.relationClicked.connect(self.select_relation)
         p.relationDouble.connect(self.edit_relation)
         p.relationContext.connect(self.relation_menu)
+        from PySide6.QtGui import QAction
+        self.act_edit_in_context = QAction("Edit in context", w)
+        self.act_edit_in_context.setObjectName("edit_in_context")
+        self.act_edit_in_context.triggered.connect(lambda _=False: self.edit_in_context())
 
     @property
     def doc(self):
@@ -1678,6 +1761,18 @@ class AssemblyController:
             z = A.unit(fr["z"])
             x = A.unit(fr["x"])
             tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z})
+        if self.mate_dialog is not None:     # each part's own published connectors, to pick
+            for _iid, _pc, fr in self.mate_dialog.own_connectors():
+                z = A.unit(fr["z"])
+                x = A.unit(fr["x"])
+                tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75),
+                            "size_px": 26, "width": 1.8})
+        for c in doc.connectors:             # explicit origin connectors, wherever their instance is
+            if doc.instance(c["inst"]) is not None and not doc.instance(c["inst"]).get("hidden"):
+                fr = doc.world_frame(doc.named_connector(c["inst"], c["id"]))
+                z = A.unit(fr["z"])
+                x = A.unit(fr["x"])
+                tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75)})
         self.vp.triads = tri
         self.vp.update()
 
@@ -1716,7 +1811,7 @@ class AssemblyController:
         if studio is None:
             return
         doc = self.doc
-        pids = part_ids or list(studio.state.parts)
+        pids = part_ids or [p.id for p in studio.state.parts.values() if not p.reference]
         if not pids:
             return
         doc.checkpoint()
@@ -1746,6 +1841,21 @@ class AssemblyController:
             pass
         self.w.status.showMessage(f"Inserted {len(first_new)} instance(s)", 4000)
         QTimer.singleShot(0, lambda: self.vp.fit())
+
+    def insert_document_sources(self, sources):
+        """Insert one instance per cross-Document source (a part pinned to a Version of another Document)."""
+        n = 0
+        self.doc.checkpoint()
+        for src in sources:
+            try:
+                self.doc.insert(src, checkpoint=False)
+                n += 1
+            except K.KernelError as e:
+                QMessageBox.warning(self.w, "Insert", str(e))
+        if n:
+            self.w.status.showMessage(f"Inserted {n} instance(s)", 4000)
+            QTimer.singleShot(0, lambda: self.vp.fit())
+        return n
 
     def insert_step(self, path):
         import base64
@@ -1812,6 +1922,7 @@ class AssemblyController:
         self.mate_dialog.rejected.connect(self._mate_rejected)
         self.vp.pick_handler = self.mate_dialog.handle_pick
         self.vp.snap_provider = self.mate_dialog.snap_candidates
+        self.vp.miss_handler = self.mate_dialog.handle_miss
         self.panel.populate(self.doc, None if is_new else m["id"])
 
     def edit_mate(self, mid):
@@ -1828,6 +1939,7 @@ class AssemblyController:
         self.w.mode = "idle"
         vp = self.vp
         vp.pick_handler = None
+        vp.miss_handler = None
         vp.snap_provider = None
         vp.clear_snaps()
         vp.select_filter = None
@@ -2194,12 +2306,17 @@ class AssemblyController:
         if inst.get("color"):
             m.addAction("Use the part's colour", lambda: doc.set_color(iid, None))
         m.addSeparator()
+        a = m.addAction("Add mate connector to instance origin", lambda: doc.add_instance_origin_connector(iid))
+        a.setObjectName("add_connector_instance_origin")
         m.addAction("Move / rotate…", lambda: self.start_move(ids))
         ga = m.addAction("Group", lambda: self.group_selected(ids))
         ga.setEnabled(self.can_group(ids))
         m.addAction("Duplicate", lambda: self.duplicate(ids))
         if inst["source"].get("kind") == "studio":
             m.addAction("Open Part Studio", lambda: self.open_source(iid))
+            if ids != [iid]:
+                self.vp.set_selection([Pick("part", (iid,))])    # Edit in context acts on the selection
+            m.addAction(self.act_edit_in_context)
         m.addAction("Mass properties", lambda: self.w._mass_props_shape(inst["name"], doc.world_shape(iid)))
         dof = doc.instance_dof(iid)
         a = m.addAction(f"Degrees of freedom: {dof}" + (" (fixed)" if inst.get("fixed") else ""))
@@ -2425,6 +2542,47 @@ class AssemblyController:
         if studio is None:
             QMessageBox.information(self.w, "Open Part Studio", "The Part Studio for this part isn't open and its "
                                     "file can't be found.")
+
+    def edit_in_context(self):
+        """Edit the selected instance's Part Studio in the context of this Assembly (ADR 0004): switch to the
+        studio and add a Context feature, or update the one that already names this Assembly and instance.
+        Returns the refusal message, or None."""
+        from .. import links
+        folder, asm = self.w.folder, self.doc
+        ids = self.selected_instance_ids()
+        inst = asm.instance(ids[0]) if len(ids) == 1 else None
+        src = inst["source"] if inst is not None else {}
+        tab = folder.tab(src.get("tab")) if folder is not None and src.get("kind") == "studio" else None
+        if inst is None:
+            msg = "Select one instance to edit in context"
+        elif folder is None or src.get("kind") != "studio":
+            msg = "Edit in context needs a Part Studio in this Document"
+        elif links.is_cross_link(src, folder.id):
+            msg = "Can't edit in context: this part's Part Studio is in another Document"
+        elif folder.read_only:
+            msg = "Can't edit in context: this Document is a read-only Version"
+        elif tab is None or tab.kind != "studio" or tab.doc is None:
+            msg = "Can't edit in context: this part's Part Studio isn't in this Document"
+        else:
+            msg = None
+        if msg:
+            self.w.status.showMessage(msg, 6000)
+            return msg
+        iid, studio = inst["id"], tab.doc
+        have = next((f for f in studio.features if f["type"] == "context"
+                     and f["params"].get("assembly") == asm.uid and f["params"].get("instance") == iid), None)
+        try:
+            if have is not None:
+                folder.update_context(tab.id, have["id"])
+            else:
+                feat = studio.make_feature("context")
+                feat["params"].update(assembly=asm.uid, instance=iid, capture=studio.store_context(A.capture_context(asm, iid)))
+                studio.add_feature(feat)
+        except K.KernelError as e:
+            self.w.status.showMessage(str(e), 6000)
+            return str(e)
+        self.w.show_linked_studio(src)
+        return None
 
     # ------------------------------------------------------------------ analysis
     def toggle_interference(self, on=None):

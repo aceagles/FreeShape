@@ -22,7 +22,7 @@ from ..variable_studio import VariableStudioDoc
 from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
                        DrawingOutputs, Engine, EngineError, InstanceOut, MateOut, StudioOutputs, VariablesOutputs,
                        plain)
-from .encode import Encoder, sketch_out
+from .encode import Encoder, connector_out, sketch_out
 from .inputs import CrossTabInputs
 from .linkgraph import live_package, package_digest, propagate
 from .. import links
@@ -30,7 +30,6 @@ from .. import links
 KINDS = ("studio", "assembly", "drawing", "variables")
 _FORMAT_KIND = {"freeshape": "studio", A.FILE_FORMAT: "assembly", D.FILE_FORMAT: "drawing",
                 VARIABLES_FORMAT: "variables"}
-REF_TYPE = "variable_studio_ref"
 
 
 def file_kind(path):
@@ -107,7 +106,7 @@ class StudioTab(_Tab):
     OPS = STUDIO_OPS
 
     def _refs(self):
-        return [f for f in self.doc.features if f.get("type") == REF_TYPE and not f.get("suppressed")]
+        return [f for f in self.doc.features if links.feature_source(f) is not None and not f.get("suppressed")]
 
     def _track(self):
         """Rebuild (cheap: cached) while recording which Variable Studio tabs the references read."""
@@ -189,14 +188,16 @@ class StudioTab(_Tab):
         for p in st.parts.values():     # I3.7: hand each part its element-name map (encode.element_names reads it)
             if getattr(p, "named", None) is None:
                 p.named = st.named(p.id)
-        parts = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()]
+        parts = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
+                 if not p.reference]     # I5.3: a Context body never leaves the studio
         sketches = []
         for fid, res in st.sketches.items():
             f = doc.feature(fid)
             sketches.append(sketch_out(fid, f["name"] if f else fid, res))
+        connectors = [connector_out(fid, c) for fid, c in st.connectors.items()]
         return StudioOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
                              errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts,
-                             sketches=sketches, variables=plain(dict(st.vars)))
+                             sketches=sketches, connectors=connectors, variables=plain(dict(st.vars)))
 
 
 class VariablesTab(_Tab):
@@ -421,7 +422,8 @@ class InProcessEngine(Engine):
             if kind == "studio":
                 doc = Document.load(path)
                 doc.var_inputs = self.inputs.variables
-                if any(f.get("type") == REF_TYPE for f in doc.features):
+                doc.link_inputs = self.inputs.studio
+                if any(links.feature_source(f) is not None for f in doc.features):
                     doc.rebuild()            # the load ran without the resolver
             elif kind == "variables":
                 doc = VariableStudioDoc.load(path)
@@ -433,12 +435,13 @@ class InProcessEngine(Engine):
         self.inputs.commit(tab, used)
         return tab
 
-    def new_tab(self, kind, name=None, tab=None):
+    def new_tab(self, kind, name=None, tab=None, sources=()):
         if kind not in KINDS:
             raise EngineError(f"unknown tab kind {kind!r}")
         if kind == "studio":
             doc = Document()
             doc.var_inputs = self.inputs.variables
+            doc.link_inputs = self.inputs.studio
         elif kind == "variables":
             doc = VariableStudioDoc()
         elif kind == "assembly":

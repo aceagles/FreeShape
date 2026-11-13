@@ -328,6 +328,19 @@ def tree_entries(path, treeish):
     return out
 
 
+def read_file_at(path, commit, rel):
+    """The bytes of one regular file of a commit, read from the object store without a checkout. Raises GitError if
+    the commit has no such file or it is not a regular file (a symlink is refused)."""
+    listing = run(["ls-tree", "-z", "--full-tree", _commit_id(commit), "--", rel], path, text=False).stdout
+    meta, _, name = listing.rstrip(b"\0").partition(b"\t")
+    if not meta or name.decode("utf-8", "surrogateescape") != rel:
+        raise GitError(f"{rel!r} is not in commit {commit[:10]}")
+    mode, otype, sha = meta.decode().split()
+    if otype != "blob" or mode not in ("100644", "100755"):
+        raise GitError(f"{rel!r} in commit {commit[:10]} is not a regular file")
+    return read_blob(path, sha)
+
+
 def read_blob(path, sha):
     """A blob's raw bytes (no filter runs)."""
     return run(["cat-file", "blob", _commit_id(sha)], path, text=False).stdout

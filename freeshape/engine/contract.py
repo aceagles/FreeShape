@@ -137,6 +137,20 @@ class SketchOut:
     plane: dict              # {"origin", "xdir", "normal"}: 3-lists
     sketch: dict             # the solved sketch (Sketch.to_dict)
     regions: list            # per closed region: {"c", "area", "loops", "edges"}
+    names: dict = field(default_factory=dict)         # {"face": {i: name}, "edge": {...}, "vertex": {...}}, 1-based
+    #                                                   i into the sketch's region compound (SketchResult.named)
+    region_names: list = field(default_factory=list)  # regions[i]'s element name, None if it has none
+    hash: str = ""           # sha256 hex over plane, sketch, regions and names: changes when any of them does
+
+
+@dataclass
+class MateConnectorOut:
+    """A Mate connector a Part Studio publishes (a mate_connector feature, I3.2)."""
+    id: str                  # the mate_connector feature's id
+    name: str
+    part: str                # id of the part that owns it
+    frame: dict              # {"o", "z", "x"}: 3-lists, in the studio's coordinates
+    hash: str = ""           # sha256 hex over name, part and frame: changes when the connector moves
 
 
 @dataclass
@@ -186,6 +200,7 @@ class TabOutputs:
 class StudioOutputs(TabOutputs):
     parts: list = field(default_factory=list)          # [PartOut], in the studio's part order
     sketches: list = field(default_factory=list)       # [SketchOut]
+    connectors: list = field(default_factory=list)     # [MateConnectorOut], in feature order
     variables: dict = field(default_factory=dict)      # name -> number
 
 
@@ -254,8 +269,9 @@ class Engine(abc.ABC):
         """Open the Part Studio / Assembly / Drawing at `path`; returns its tab id (`tab` if given)."""
 
     @abc.abstractmethod
-    def new_tab(self, kind, name=None, tab=None) -> str:
-        """A new empty tab of `kind` ("studio" | "assembly" | "drawing")."""
+    def new_tab(self, kind, name=None, tab=None, sources=()) -> str:
+        """A new empty tab of `kind` ("studio" | "assembly" | "drawing"). `sources` are the link sources it
+        already consumes (a reopened tab): the process executor records their edges at once, before any edit."""
 
     @abc.abstractmethod
     def close_tab(self, tab) -> None:

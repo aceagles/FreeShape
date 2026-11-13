@@ -12,6 +12,7 @@ import base64
 import math
 import os
 import tempfile
+import types
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -48,6 +49,9 @@ FEATURE_LABELS = {
     "linear_pattern": "Linear pattern", "circular_pattern": "Circular pattern",
     "boolean": "Boolean", "import": "Import", "hole": "Hole", "variable": "Variable",
     "variable_studio_ref": "Variable Studio reference",
+    "derived": "Derived",
+    "mate_connector": "Mate connector",
+    "context": "Context",
     "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
 }
@@ -111,6 +115,7 @@ class Part:
     shape: object
     color: tuple = DEFAULT_COLOR
     face_colors: dict = None      # face index -> (r, g, b), e.g. from a coloured STEP file
+    reference: bool = False       # a stored neighbour restored by a Context feature: shown, never edited
 
 
 class PartMap(dict):
@@ -233,11 +238,15 @@ class ModelState:
     # The one place a part's names live; Part itself carries none, so a Part rebuilt with a new name or
     # colour keeps its map. Read it through `named()`, write it through `set_named()`.
     names: dict = field(default_factory=dict)
+    # mate_connector feature id -> {name, part, frame {o, z, x}}: the connectors a Part Studio publishes,
+    # in the coordinates of the studio (the frames are plain lists, so the mapping is JSON-ready).
+    connectors: dict = field(default_factory=dict)
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
-                          set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts})
+                          set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts},
+                          dict(self.connectors))
 
     def named(self, pid):
         """The element map of part `pid`, or None when it has none or the part's shape has since been
@@ -742,6 +751,25 @@ def set_part_shape(state: ModelState, part: Part, shape, named=None):
         state.set_named(pid, named.restrict(extra) if named is not None else None)
 
 
+def _stamp_severed_siblings(state: ModelState, inputs, fid, op):
+    """ADR 0008: the other pieces of a severed solid that a stamping feature ran on one piece of get the same
+    pass-through stamp (the id without its `.<i>` suffixes and every id that extends it), so the pieces name
+    as the one shape they are in FreeCAD. A piece that is itself an input is named by the operation."""
+    given = {i for i in inputs or () if isinstance(i, str)}
+    for pid in list(given):
+        head, slash, tail = pid.rpartition("/")
+        if not slash:
+            continue
+        root = head + slash + tail.split(".")[0]
+        for sib in list(state.parts):
+            if sib in given or not (sib == root or sib.startswith(root + ".")):
+                continue
+            nm = state.named(sib)
+            if nm is not None and not (nm.stamped_from is not None and nm.stamped_from[0] == fid):
+                given.add(sib)      # a family is stamped once, whichever of its pieces were the inputs
+                state.set_named(sib, N.stamp_all(nm, fid, op))
+
+
 def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, stamp=True):
     """The naming step of a feature runner: the NamedShape of `shape`, a kernel helper's result.
 
@@ -768,15 +796,35 @@ def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, 
     sources = []
     for i in inputs or ():
         n = state.named(i) if isinstance(i, str) else i
+        if n is not None and n.stamped_from is not None and n.stamped_from[0] == fid \
+                and n.stamped_from[1] is not None:
+            n = n.stamped_from[1]        # stamped as a sibling by this feature; it runs on this piece too
         if n is not None:
             sources.append(n)
     try:
         named = N.name_result(shape, history, sources, fid, N.OP_FOR.get(op, op), stamp)
     except N.NamingError:
         named = N.NamedShape(shape, {})
+    if stamp:
+        named.stamped_from = (fid, None)        # this map carries the feature's stamp; its siblings are stamped too
+        _stamp_severed_siblings(state, inputs, fid, op)
     if part is not None:
         state.set_named(part, named)
     return named
+
+
+REFERENCE_ONLY = "Context bodies are reference only"
+
+
+def check_reference_parts(before, state):
+    """I5.3: a feature may read a Context body but not change it. Raises when a reference part of `before`
+    is gone from `state`, has another shape, or lost its flag."""
+    for pid, old in before.items():
+        if not old.reference:
+            continue
+        new = state.parts.get(pid)
+        if new is None or not new.reference or new.shape is not old.shape:
+            raise K.KernelError(REFERENCE_ONLY)
 
 
 def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=None):
@@ -792,7 +840,8 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=Non
     if not sols:
         raise K.KernelError("Feature produced no solid")
     tool = [] if named is None else list(named) if isinstance(named, (list, tuple)) else [named]
-    targets = [state.parts[p] for p in (scope or state.parts) if p in state.parts]
+    targets = [state.parts[p] for p in (scope or [i for i, q in state.parts.items() if not q.reference])
+               if p in state.parts]      # an unscoped feature leaves Context bodies alone (I5.3)
     if op == "new" or (op == "add" and not targets):
         for s in sols:
             state.set_named(state.new_part(s, fid).id, _piece(tool, s))
@@ -892,8 +941,260 @@ def run_variable_studio_ref(state, f):
     values = f["params"].get("resolved")
     if values is None:
         src = f["params"].get("source") or {}
+        if src.get("document") and not src.get("version"):     # another Document is only ever linked at a Version
+            raise K.KernelError(f"Variable Studio reference “{src.get('name') or src.get('tab')}”: the link to "
+                                f"Document “{src['document']}” has no Version pinned")
+        if src.get("document"):
+            raise K.KernelError(f"Variable Studio reference “{src.get('name') or src.get('tab')}”: Document not found: "
+                                f"“{src['document']}” (or its Version “{src.get('version')}” or the Variable Studio in it "
+                                f"is not there)")
         raise K.KernelError(f"Variable Studio not found: {src.get('name') or src.get('path') or src.get('tab') or '(none linked)'}")
+    names = f["params"].get("names")
+    if names is not None:       # a subset: only the ticked names; one the Studio no longer has is an error
+        missing = [n for n in names if n not in values]
+        if missing:
+            raise K.KernelError(f"Variable Studio has no variable #{missing[0]}")
+        values = {n: values[n] for n in names}
     state.vars.update(values)
+
+
+def run_derived(state, f):
+    """Bring parts and sketches of another Part Studio into this one, with their element names (ADR 0003).
+    Document.compute hands in the source's links.StudioPackage as params["resolved"] (None: the link found
+    nothing) and keys the rebuild on its digest. Nothing else crosses (ADR 0007: no variables).
+
+    Part k (1-based) of params["parts"] becomes part `<fid>/<k>`, so a source that gains parts leaves the ids
+    alone. Its names are the source's, each with a DRV fragment under this feature's id (naming.name_derived).
+    A ticked sketch becomes sketch `<fid>:<sid>`: its regions are rebuilt from the published plane and solved
+    sketch, and must carry the published region names, so extrude takes it like a local sketch."""
+    p, fid = f["params"], f["id"]
+    pkg = p.get("resolved")
+    src = p.get("source") or {}
+    label = src.get("studio_name") or src.get("tab") or "(none linked)"
+    if src.get("document") and not src.get("version"):         # another Document is only ever linked at a Version
+        raise K.KernelError(f"Derived source “{label}”: the link to Document “{src['document']}” has no Version pinned")
+    if pkg is None and src.get("document"):
+        raise K.KernelError(f"Derived source “{label}”: Document not found: “{src['document']}” (or its Version "
+                            f"“{src.get('version')}” or the Part Studio in it is not there)")
+    if pkg is None and src.get("version"):                      # pinned to a Version of this Document (I1.11)
+        raise K.KernelError(f"Derived source “{label}”: Version “{src['version']}” of this Document is not there "
+                            f"(or the Part Studio is not in it)")
+    if pkg is None:
+        raise K.KernelError(f"Derived source “{label}” not found. Derived needs the Part Studio to be in a "
+                            f"Document with its source: add this Part Studio to a Document to use Derived")
+    if pkg.error:
+        raise K.KernelError(f"Derived source “{label}” is in error: {pkg.error}")
+    for k, pid in enumerate(p.get("parts") or [], 1):
+        pub = pkg.parts.get(pkg.aliases.get(pid, pid))
+        if pub is None:
+            raise K.KernelError(f"Part {pid} is no longer published by “{label}”")
+        new = f"{fid}/{k}"
+        state.part_counter += 1
+        state.parts[new] = Part(new, pub.name, pub.shape, pub.color)
+        state.set_named(new, N.name_derived(pub.shape, pub.names, fid))
+    for sid in p.get("sketches") or []:
+        out = pkg.sketches.get(sid)
+        if out is None:
+            raise K.KernelError(f"Sketch {sid} is no longer published by “{label}”")
+        state.sketches[f"{fid}:{sid}"] = _derived_sketch(out, fid, label)
+    # ---- mate connectors (I3.6): a ticked source connector arrives as state.connectors["<fid>:<cid>"], on the
+    # derived part, at its published frame. Placement below moves it with the part.
+    for cid in p.get("connectors") or []:
+        c = (getattr(pkg, "connectors", None) or {}).get(cid)
+        if c is None:
+            raise K.KernelError(f"Mate connector {cid} is no longer published by “{label}”")
+        ticked = [pkg.aliases.get(pid, pid) for pid in p.get("parts") or []]
+        if c["part"] not in ticked:
+            raise K.KernelError(f"Mate connector {cid} “{c['name']}” is on part {c['part']}, which this Derived "
+                                f"does not bring in: tick that part too")
+        state.connectors[f"{fid}:{cid}"] = {"name": str(c["name"]), "part": f"{fid}/{ticked.index(c['part']) + 1}",
+                                            "frame": {k: [float(v) for v in c["frame"][k]] for k in ("o", "z", "x")}}
+    # ---- placement (I4.1): one rigid move of everything this Derived owns, worked out once, applied last
+    trsf = _derived_placement(state, p, pkg, label)
+    if trsf is not None:
+        _place_derived(state, fid, trsf)
+
+
+def _derived_placement(state, p, pkg, label):
+    """The rigid move (a gp_Trsf) that takes the base frame onto the location frame of params["placement"]
+    ({"location": connector id, "base": "origin" | a connector id of the source}), or None when the Derived has no
+    placement. The location is looked up in state.connectors, which holds only what is built above this feature:
+    a mate_connector of this studio, or a derived connector. One defined below, or missing, is an error."""
+    from OCP.gp import gp_Trsf
+    from . import assembly as AS
+    place = p.get("placement")
+    if not place:
+        return None
+    loc_id, base_id = place.get("location"), place.get("base") or "origin"
+    loc = state.connectors.get(loc_id)
+    if loc is None:
+        raise K.KernelError(f"Placement connector {loc_id} is not defined above this Derived: it is missing, or "
+                            f"below the Derived in the feature list. Move it above the Derived or pick another")
+    if base_id == "origin":
+        base = {"o": np.zeros(3), "z": np.array([0.0, 0.0, 1.0]), "x": np.array([1.0, 0.0, 0.0])}
+    else:
+        c = pkg.connectors.get(base_id)
+        if c is None:
+            raise K.KernelError(f"Placement base connector {base_id} is no longer published by “{label}”")
+        base = c["frame"]
+    M = AS.frame_matrix(loc["frame"]) @ np.linalg.inv(AS.frame_matrix(base))
+    t = gp_Trsf()
+    t.SetValues(*[float(v) for v in M[:3, :4].reshape(-1)])
+    return t
+
+
+def _place_derived(state, fid, trsf):
+    """Move every part, sketch and connector this Derived (`fid`) owns by `trsf`, keeping their names
+    (namedbuild.Builder.transformed). A connector counts as owned when its part id starts `<fid>/`, so connectors
+    that arrive with a part (I3.6) move with it."""
+    from OCP.TopLoc import TopLoc_Location
+    from . import assembly as AS
+    from .namedbuild import Builder
+    b, loc = Builder(fid), TopLoc_Location(trsf)
+    M = np.eye(4)
+    M[:3, :4] = [[trsf.Value(r, c) for c in range(1, 5)] for r in range(1, 4)]
+    for pid in [k for k in state.parts if k.startswith(f"{fid}/")]:
+        part, named = state.parts[pid], state.named(pid)
+        moved = b.transformed(named, trsf) if named is not None else None
+        shape = moved.shape if moved is not None else part.shape.Moved(loc)
+        state.parts[pid] = Part(pid, part.name, shape, part.color, part.face_colors)
+        state.set_named(pid, moved)
+    for key in [k for k in state.sketches if k.startswith(f"{fid}:")]:
+        res = state.sketches[key]
+        pl = res.plane
+        plane = K.Plane(M[:3, :3] @ pl.origin + M[:3, 3], M[:3, :3] @ pl.xdir, M[:3, :3] @ pl.normal)
+        if not res.regions:
+            state.sketches[key] = SketchResult(plane, res.sketch, [], [], None, None, [])
+            continue
+        named = b.transformed(res.named, trsf)
+        old_faces, new_faces = K.faces(res.named.shape), K.faces(named.shape)      # same order: a rigid move
+        regions = [new_faces[next(i for i, g in enumerate(old_faces) if g.IsSame(r))] for r in res.regions]
+        state.sketches[key] = SketchResult(plane, res.sketch, regions, [region_signature(r) for r in regions],
+                                           K.bbox(named.shape), named, [named.name_of(r) for r in regions])
+    for cid, c in list(state.connectors.items()):
+        if str(c["part"]).startswith(f"{fid}/"):
+            fr = AS.transform_frame(M, {k: np.asarray(c["frame"][k], float) for k in ("o", "z", "x")})
+            state.connectors[cid] = dict(c, frame={k: [float(v) for v in fr[k]] for k in ("o", "z", "x")})
+
+
+def _derived_sketch(out, fid, label):
+    """The SketchResult of a published sketch `out` (engine.contract.SketchOut) as run_derived brings it in."""
+    pl = out.plane
+    plane = K.Plane(np.array(pl["origin"], float), np.array(pl["xdir"], float), np.array(pl["normal"], float))
+    sk = Sketch.from_dict(out.sketch)
+    regions = K.sketch_regions(plane, sk.curves())
+    if not regions:
+        return SketchResult(plane, sk, [], [], None, None, [])
+    named = N.name_derived(K.compound(regions), out.names, fid)
+    names = [named.name_of(r) for r in regions]
+    carried = len(regions) == len(out.region_names) and all(
+        n is not None and (want is None or n.startswith(f"{want};{N.OP_DERIVED};")) for n, want in
+        zip(names, out.region_names))
+    if out.names.get("face") and not carried:      # the rebuilt regions are not the published ones, in order
+        raise K.KernelError(f"Sketch {out.id} of “{label}” could not be rebuilt as published")
+    return SketchResult(plane, sk, regions, [region_signature(r) for r in regions], K.bbox(K.compound(regions)),
+                        named, names)
+
+
+def run_mate_connector(state, f):
+    """A Mate connector on a face or edge of a part (or on the studio origin, owned by a part).
+    The element is found by name (`resolve`); the frame comes from assembly.connector_frame (or snap_frame for a
+    snap point) and X is rebuilt from the stored `x_ref` (I1.14), so an edit that changes which face edge is
+    longest does not turn X round. `flip` reverses Z and keeps X. A missing element or owner part is an error."""
+    from . import assembly as AS
+    p = f["params"]
+    ref = p.get("ref")
+    if not ref:
+        raise K.KernelError("Pick a face or edge, or the origin, for the mate connector")
+    if ref.get("origin"):
+        owner = p.get("owner")
+        if owner not in state.parts:
+            raise K.KernelError(f"Part {owner} is gone: the origin connector has no owner" if owner
+                                else "Pick the part that owns the origin connector")
+        pid, fr = owner, {"o": np.zeros(3), "z": np.array([0.0, 0.0, 1.0]), "x": np.array([1.0, 0.0, 0.0])}
+    else:
+        kind = p.get("kind", "face")
+        pid, sub = resolve(state, ref, kind, f["id"])
+        shape = state.parts[pid].shape
+        subs = K.faces(shape) if kind == "face" else K.edges(shape)
+        index = next(i for i, s in enumerate(subs) if s.IsSame(sub))
+        if p.get("snap"):
+            fr = AS.snap_frame(shape, kind, index, p["snap"], state.named(pid))
+        else:
+            fr = AS.connector_frame(shape, kind, index, p.get("click"))
+        if p.get("x_ref") is not None:
+            fr = AS.apply_x_ref(fr, p["x_ref"])
+    z = AS.unit(fr["z"])
+    x = AS.unit(np.asarray(fr["x"], float) - (np.asarray(fr["x"], float) @ z) * z)
+    if p.get("flip"):
+        z = -z
+    state.connectors[f["id"]] = {"name": str(p.get("name") or f.get("name") or ""), "part": pid,
+                                 "frame": {"o": [float(a) for a in fr["o"]], "z": [float(a) for a in z],
+                                           "x": [float(a) for a in x]}}
+
+
+def context_blobs(capture):
+    """(key, {blob key: bytes}) for a capture from assembly.capture_context: one BREP blob and one names
+    blob per neighbour, and the JSON blob `key` that lists them. The feature stores only `key`."""
+    import hashlib
+    from . import blobstore as B
+    from .pyfeature import host
+    blobs, listed = {}, []
+    for n in capture["neighbours"]:
+        rec = {"id": n["id"], "name": n["name"], "hash": n["hash"], "T": n["T"]}
+        for field, data in (("brep", n["brep"]),
+                            ("names", B.dump_json(host.names_json(types.SimpleNamespace(names=n["names"]))))):
+            blobs[hashlib.sha256(data).hexdigest()] = data
+            rec[field] = hashlib.sha256(data).hexdigest()
+        listed.append(rec)
+    top = B.dump_json({"assembly": capture["assembly"], "instance": capture["instance"],
+                       "solved": capture["solved"], "neighbours": listed})
+    key = hashlib.sha256(top).hexdigest()
+    blobs[key] = top
+    return key, blobs
+
+
+def context_listing(get, key):
+    """The parsed capture listing behind blob `key`; `get(key)` returns a blob's bytes or raises
+    blobstore.BlobError. Raises ValueError when the listing is not the format `context_blobs` writes."""
+    from . import blobstore as B
+    top = B.load_json(get(key))
+    if not isinstance(top, dict) or not isinstance(top.get("neighbours"), list):
+        raise ValueError("capture listing has no neighbours")
+    for n in top["neighbours"]:
+        if not isinstance(n, dict) or not all(isinstance(n.get(k), str) for k in ("id", "name", "brep", "names")):
+            raise ValueError("bad neighbour entry")
+        T = np.asarray(n.get("T"), float)
+        if T.shape != (4, 4) or not np.isfinite(T).all():
+            raise ValueError("bad neighbour position")
+    return top
+
+
+def run_context(state, f):
+    """Restore the neighbours of a stored capture (ADR 0004) as reference parts `<fid>/<k>`, each placed as
+    captured relative to the edited instance, its element names carried with a CTX fragment. Reads only blobs
+    (Document.compute hands in `get` as params["resolved"]) and never the Assembly or its source studios."""
+    from . import blobstore as B
+    from .pyfeature import host
+    p, fid = f["params"], f["id"]
+    get = p.get("resolved")
+    if not p.get("capture") or get is None:
+        raise K.KernelError("Context has no stored capture")
+    try:
+        top = context_listing(get, p["capture"])
+        loaded = []
+        for n in top["neighbours"]:
+            shape = K.located(B.shape_from_brep(get(n["brep"])), np.asarray(n["T"], float))
+            named = N.NamedShape(shape, {})
+            host._load_names(get(n["names"]), named)
+            loaded.append((n, shape, named))
+    except Exception as e:      # BlobError, a malformed listing or names blob, or a parser failure
+        raise K.KernelError(f"Context capture is missing or damaged ({e})") from e
+    for n, shape, named in loaded:
+        part = state.new_part(shape, fid)
+        state.parts[part.id] = Part(part.id, n["name"], shape, part.color, None, True)
+        label = "".join(c for c in n["id"] if c.isalnum() or c == "_") + "_"
+        state.set_named(part.id, N.name_context(shape, named.names, fid, label))
 
 
 def run_sketch(state, f):
@@ -975,6 +1276,16 @@ def run_extrude(state, f):
         flip = not flip
 
     def make(direction):
+        if end == "to_face":     # up to a planar face (any part, a Context body included), measured along `direction`
+            _, tf = resolve(state, p["to"], "face")
+            pl, fp = K.planar_face_plane(profs[0]), K.planar_face_plane(tf)
+            if pl is None or fp is None:
+                raise K.KernelError("Up to face needs a planar face")
+            cos = float(np.dot(direction, fp.normal))
+            dist = float(np.dot(fp.origin - pl.origin, fp.normal)) / cos if abs(cos) > 1e-9 else -1.0
+            if dist <= 1e-9:
+                raise K.KernelError("The face is not ahead of the profile")
+            return K.extrude(profs, direction, dist, with_history=True)
         if end == "through":
             lo, hi = np.full(3, 1e18), np.full(3, -1e18)
             for part in state.parts.values():
@@ -1350,7 +1661,7 @@ def _model_hole_threads(state, f, p, sk, centres, d, through, depth, back, big):
         z0, z1 = (rng[0], rng[1]) if through else (max(rng[0], -back), min(rng[1], depth))
         if z1 - z0 < 1e-6:
             continue
-        for part in list(state.parts.values()):
+        for part in [q for q in state.parts.values() if not q.reference]:
             probe = K.cylinder(c + d * z0, d, major / 2 + pitch, z1 - z0)
             if not K.intersects(part.shape, probe):
                 continue
@@ -1615,6 +1926,9 @@ RUNNERS = {
     "linear_pattern": run_linear_pattern, "circular_pattern": run_circular_pattern,
     "boolean": run_boolean, "import": run_import, "hole": run_hole, "variable": run_variable,
     "variable_studio_ref": run_variable_studio_ref,
+    "derived": run_derived,
+    "mate_connector": run_mate_connector,
+    "context": run_context,
     "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
@@ -1646,6 +1960,10 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "import": {"data": "", "filename": ""},
         "variable": {"name": "", "expr": "10"},
         "variable_studio_ref": {"source": {}},
+        "derived": {"source": {}, "parts": [], "sketches": [], "connectors": []},
+        "mate_connector": {"name": "", "ref": None, "kind": "face", "click": None, "snap": None,
+                           "x_ref": None, "flip": False, "owner": None},
+        "context": {"assembly": "", "instance": "", "capture": ""},
         "thread": {"faces": [], "size": "auto", "major": 6.0, "pitch": 1.0, "length_mode": "full", "length": 10.0,
                    "left_hand": False, "clearance": 0.0},
         "hole": {"sketch": None, "standard": "clearance", "size": "M4", "fit": "normal", "diameter": 5.0,

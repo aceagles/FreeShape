@@ -21,6 +21,7 @@ class Command:
     action: Callable[[], None]
     keywords: str = ""               # extra words that should find it ("round" finds Fillet)
     group: str = ""
+    disabled: str = ""               # why the command cannot run now ("" when it can); shown instead of running it
 
 
 def search_commands(commands, text):
@@ -122,6 +123,9 @@ class CommandPalette(QFrame):
         self.list.clear()
         for c in self._shown:
             it = QListWidgetItem(icon(c.key), c.name)
+            if c.disabled:
+                it.setFlags(it.flags() & ~Qt.ItemIsEnabled)
+                it.setToolTip(c.disabled)
             self.list.addItem(it)
         if self._shown:
             self.list.setCurrentRow(0)
@@ -133,13 +137,15 @@ class CommandPalette(QFrame):
         if 0 <= row < len(self._shown):
             c = self._shown[row]
             self.title.setText(c.name)
-            self.desc.setText(c.description)
+            self.desc.setText(c.description + (f"\n\n{c.disabled}" if c.disabled else ""))
 
     def run_current(self):
         row = self.list.currentRow()
         if not (0 <= row < len(self._shown)):
             return
         cmd = self._shown[row]
+        if cmd.disabled:
+            return
         self.close_palette()
         QTimer.singleShot(0, cmd.action)         # after the palette has gone and focus is back on the view
 

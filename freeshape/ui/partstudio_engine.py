@@ -33,6 +33,7 @@ from PySide6.QtCore import QCoreApplication, QObject, Signal
 
 from .. import features as F
 from .. import kernel as K
+from .. import links
 from .. import naming as N
 from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
@@ -138,6 +139,7 @@ class _Result:
     def __init__(self, snap, out, parts):
         self.snap, self.errors, self.variables, self.revision = snap, dict(out.errors), dict(out.variables), out.revision
         self.parts = parts           # [(PartOut, shape, K.Mesh)]
+        self.connectors = list(getattr(out, "connectors", []))     # [MateConnectorOut]
         self.rebuilt = []            # tab ids the engine rebuilt because this tab's output changed (Link graph)
         self.extra = []              # [(rec, _Result)] for the Part Studios among them
 
@@ -243,7 +245,8 @@ class StudioEngine(QObject):
         for attempt in (0, 1):
             try:
                 if rec.tab is None:
-                    rec.tab, rec.have = self.live.open_new(eng, "studio", rec, str(snap["name"])), _EMPTY
+                    refs = links.tab_sources("studio", snap)
+                    rec.tab, rec.have = self.live.open_new(eng, "studio", rec, str(snap["name"]), refs), _EMPTY
                 for edit in plan_edits(rec.have, snap):
                     self.live.submit(eng, rec.tab, edit, rebuilt)
                 rec.have = snap
@@ -319,6 +322,7 @@ class StudioEngine(QObject):
             if names:
                 st.set_named(p.id, N.NamedShape(shape, names))
         st.engine_names = {p.id: p.names for p, *_ in res.parts}      # the engine's name maps, for picking
+        st.connectors = {c.id: {"name": c.name, "part": c.part, "frame": c.frame} for c in res.connectors}
         st.vars = dict(res.variables)
         n = len(res.snap["features"]) if res.snap["rollback"] is None else min(res.snap["rollback"],
                                                                                  len(res.snap["features"]))
@@ -439,20 +443,13 @@ class LiveTabs:
     @staticmethod
     def sources(doc):
         """The link sources a tab consumes."""
-        kind = getattr(doc, "kind", None)
-        if kind == "studio":
-            return [f.get("params", {}).get("source") for f in doc.features
-                    if f.get("type") == "variable_studio_ref" and not f.get("suppressed")]
-        if kind == "assembly":
-            return [i.get("source") for i in doc.instances]
-        if kind == "drawing":
-            return [doc.source]
-        return []
+        return links.tab_sources(getattr(doc, "kind", None), doc)
 
     def source_tabs(self, doc):
         out = []
         for s in self.sources(doc):
-            if isinstance(s, dict) and s.get("tab") and not s.get("document") and s["tab"] not in out:
+            if isinstance(s, dict) and s.get("tab") and not s.get("document") and not s.get("version") \
+                    and s["tab"] not in out:
                 out.append(s["tab"])
         return out
 
@@ -519,7 +516,13 @@ class LiveTabs:
                 eng._drop(rec)
 
     # ------------------------------------------------------------------ the engine thread
-    def open_new(self, eng, kind, rec, name):
+    def bind_document(self, eng):
+        """Tell the engine which Document its tabs belong to, so a source naming another one is a pinned input."""
+        folder = self.engine.window.folder
+        eng.use_document(getattr(folder, "id", None), getattr(folder, "registry", None))
+
+    def open_new(self, eng, kind, rec, name, sources=()):
+        self.bind_document(eng)
         tid = rec.want_tab or f"L{next(self._ids)}"
         if any(t[0] == tid for t in eng.tabs()):          # a tab of a document that was dropped meanwhile
             for other in list(self.engine._recs.values()):
@@ -529,7 +532,7 @@ class LiveTabs:
                 eng.close_tab(tid)
             except Exception:                              # noqa: BLE001
                 pass
-        return eng.new_tab(kind, name=name, tab=tid)
+        return eng.new_tab(kind, name=name, tab=tid, sources=sources)
 
     def submit(self, eng, tab, edit, rebuilt):
         """eng.submit_edit, noting the tabs it rebuilt in `rebuilt`. A circular link is not fatal: the edit is
@@ -583,6 +586,7 @@ class LiveTabs:
             fh.write(snap["json"])
         if any(t[0] == rec.want_tab for t in eng.tabs()):
             eng.close_tab(rec.want_tab)
+        self.bind_document(eng)
         rec.tab = eng.open_tab(path, tab=rec.want_tab)
         rec.sig = snap["sig"]
 
@@ -672,7 +676,7 @@ class LiveTabs:
             return None if doc.shape is None else geometry_hash(doc.shape)
         if kind == "variables":
             return dict(doc.values()[0])
-        return {p.id: hash_of(p.shape) for p in doc.state.parts.values()}
+        return {p.id: hash_of(p.shape) for p in doc.state.parts.values() if not getattr(p, "reference", False)}
 
     def link_edges(self, doc):
         """[(consumer tab id, upstream tab id)] of the engine's Link graph, read on the engine thread."""

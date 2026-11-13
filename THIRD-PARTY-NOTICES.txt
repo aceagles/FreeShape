@@ -46,6 +46,13 @@ Test data (not shipped): tests/data/freecad/
   FreeCAD kernel-stress shapes under LGPL-2.1+, CC-BY-SA-4.0, CC-BY-4.0, CC-BY-3.0 and Public Domain.
   Sources, attribution and licence texts: tests/data/freecad/NOTICE.md and tests/data/freecad/LICENSES/
 
+FreeCAD_FastenersWB — fastener generators and dimension tables (the Fasteners plugin, freeshape/plugins/fasteners/)
+  Licence: GNU Lesser General Public License v2.1 or (at your option) any later version (LGPL-2.1-or-later)
+  https://github.com/shaise/FreeCAD_FastenersWB  ·  commit 375a73d9706a30072c132fb061e7636e8ed99f82
+  Copyright: the workbench authors (among them Ulrich Brammer, Shai Seger and Andrey Bekhterev).
+  Verbatim copies: the CSV tables in data/. Adapted to OCP: geom.py (from screw_maker.py), the CSV reader in
+  tables.py (from FSutils.py). Details: freeshape/plugins/fasteners/NOTICE.md.
+
 freecad.gears / pygears — involute gear geometry (the Gears plugin, freeshape/plugins/gears/)
   Licence: GNU General Public License v3 or (at your option) any later version
   https://github.com/looooo/freecad.gears  ·  commit 4164073946282ee6e88594b0f7d1774a60b04f76

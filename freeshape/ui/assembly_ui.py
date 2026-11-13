@@ -1256,6 +1256,10 @@ class MateDialog(QFrame):
 
     def handle_pick(self, pick: Pick):
         vp = self.ctl.w.viewport
+        if pick.kind == "connector":         # chosen from Select other: the triad itself, whatever is under the pointer
+            vp.clear_snaps()
+            self.pick_named(*pick.key)
+            return
         hit = self._screen_hit(vp.last_click) if vp.last_click else None
         if hit is not None:                  # a triad or a sketch dot under the pointer beats the face under it
             vp.clear_snaps()
@@ -1970,8 +1974,9 @@ class AssemblyController:
                 and not hasattr(getattr(doc.resolver, "__self__", None), "resolve_connectors"):
             doc.connector_resolver = make(doc).resolve_connectors
 
-    def _own_connector_triads(self):
-        """A triad for every mate connector a visible instance offers (its Part Studio's and its origin one)."""
+    def _own_connector_triads(self, points=None):
+        """A triad for every mate connector a visible instance offers (its Part Studio's and its origin one). With a
+        list in `points`, each triad's Pick and position are added to it for Select other."""
         doc, out = self.doc, []
         self._wire_connector_resolver()
         for inst in doc.visible_instances():
@@ -1982,12 +1987,15 @@ class AssemblyController:
                     continue
                 z, x = A.unit(fr["z"]), A.unit(fr["x"])
                 out.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75)})
+                if points is not None:
+                    points.append((Pick("connector", (inst["id"], pc["id"])), fr["o"]))
         return out
 
     def update_triads(self):
         doc = self.doc
         tri = []
         conns = []
+        points = []                          # what Select other may list: only triads that are drawn
         if self.mate_dialog is not None:
             m = self.mate_dialog.mate
             conns = [m.get("a"), m.get("b")]
@@ -2015,9 +2023,11 @@ class AssemblyController:
                 x = A.unit(fr["x"])
                 tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75),
                             "size_px": 26, "width": 1.8})
+                points.append((Pick("connector", (_iid, _pc["id"])), fr["o"]))
         elif self.panel.shows("connectors"):  # ...and, with no dialog open, each part's connectors, to see
-            tri += self._own_connector_triads()
+            tri += self._own_connector_triads(points)
         self.vp.triads = tri
+        self.vp.pick_points = points
         self.vp.update()
 
     def on_changed(self):
@@ -2552,7 +2562,7 @@ class AssemblyController:
                 lo, hi = K.bbox(self.doc.world_shape(iid))
                 self.gizmo.place(iid, (lo + hi) / 2)
 
-    def instance_menu(self, iid, gpos):
+    def instance_menu(self, iid, gpos, other=False):
         from PySide6.QtWidgets import QMenu
         doc = self.doc
         inst = doc.instance(iid)
@@ -2562,6 +2572,8 @@ class AssemblyController:
         if iid not in ids:
             ids = [iid]
         m = QMenu(self.w)
+        if other:                            # a right-click in the viewport (the Instances list passes no point there)
+            self._add_select_other(m, gpos)
         m.addAction("Rename…", lambda: self.rename(iid))
         m.addAction("Unfix" if inst.get("fixed") else "Fix", lambda: doc.set_fixed(iid, not inst.get("fixed")))
         m.addAction("Show" if inst.get("hidden") else "Hide",
@@ -2764,13 +2776,35 @@ class AssemblyController:
                 f"{name}: stopped at {fmt(reached)} {value_unit(dof)}, it can't reach {fmt(float(value))}", 8000)
         return reached, ok
 
+    def row_label(self, pk):
+        """Select other's row text for what only the Assembly names: an instance as the Instances list shows it,
+        or 'Mate connector <name> of <instance>'. None leaves the generic 'Face of <instance>'."""
+        if pk.kind not in ("part", "connector"):
+            return None
+        inst = self.doc.instance(pk.key[0])
+        if inst is None:
+            return None
+        if pk.kind == "part":
+            return inst["name"]
+        cname = next((c["name"] for c in self.doc.published_connectors(pk.key[0]) or []
+                      if str(c["id"]) == str(pk.key[1])), "")
+        return f"Mate connector {cname} of {inst['name']}" if cname else f"Mate connector of {inst['name']}"
+
+    def _add_select_other(self, m, gpos):
+        """'Select other…' on menu `m` when two or more things are under the right-click."""
+        lp = self.vp.mapFromGlobal(gpos)
+        if len(self.vp.pick_all(lp.x(), lp.y())) >= 2:
+            m.addAction("Select other\u2026", lambda: self.vp.open_select_other(lp.x(), lp.y()))
+            m.addSeparator()
+
     def viewport_menu(self, pk, gpos):
         from PySide6.QtWidgets import QMenu
         if pk is not None and pk.kind in ("face", "edge") and self.doc.instance(pk.key[0]) is not None:
             self.panel.select_instances({pk.key[0]})
-            self.instance_menu(pk.key[0], gpos)
+            self.instance_menu(pk.key[0], gpos, other=True)
             return
         m = QMenu(self.w)
+        self._add_select_other(m, gpos)
         m.addAction("Insert parts…", self.toggle_insert)
         m.addAction("Mass properties", lambda: self.w._mass_props_assembly(self.doc))
         m.addAction("Zoom to fit", lambda: self.vp.fit())

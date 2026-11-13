@@ -250,6 +250,7 @@ class MainWindow(QMainWindow):
         self.viewport.selectionChanged.connect(self._selection_changed)
         self.viewport.contextRequested.connect(self._viewport_context)
         self.viewport.owner_name = self._pick_owner_name
+        self.viewport.label_override = lambda pk: self.asm.row_label(pk) if self.is_asm else None
         self.viewport.doubleClicked.connect(self._viewport_double)
         self.viewport.hoverChanged.connect(self._hover_changed)
 
@@ -2869,6 +2870,9 @@ class MainWindow(QMainWindow):
 
     def _pick_owner_name(self, pk):
         """The name the left panel shows for what a pick belongs to: its part, its sketch, or the plane itself."""
+        if self.is_asm and self.doc is not None and pk.kind in ("face", "edge", "vertex", "part"):
+            inst = self.doc.instance(pk.key[0])         # the name the Instances list shows
+            return inst["name"] if inst else None
         if self.doc is None or not hasattr(self.doc, "state"):
             return None
         if pk.kind in ("face", "edge", "vertex", "part"):

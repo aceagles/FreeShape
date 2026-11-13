@@ -34,7 +34,8 @@ class Pick:
 
     def label(self):
         names = {"face": "Face", "edge": "Edge", "vertex": "Vertex", "region": "Sketch region", "plane": "Plane",
-                 "sketch_line": "Sketch line", "part": "Part", "sketch_point": "Sketch point"}
+                 "sketch_line": "Sketch line", "part": "Part", "sketch_point": "Sketch point",
+                 "connector": "Mate connector"}
         return names.get(self.kind, self.kind)
 
 
@@ -166,6 +167,7 @@ class Viewport(QOpenGLWidget):
         self.hover_through = False                  # True only while the Select other list is open: hover ignores depth
         self._other_popup = None
         self.owner_name = None                      # Pick -> name of the part / sketch / plane it belongs to
+        self.label_override = None                  # Pick -> the whole Select other row label, or None for the default
         self.popup_factory = None                   # (vp, x, y, rows, on_hover, on_choose, on_close); None = real popup
         self._cursor_xy = None                      # last mouse position, for the backtick key
         self.select_filter: set | None = None     # None = default selectable kinds
@@ -188,6 +190,7 @@ class Viewport(QOpenGLWidget):
         self._part_boxes = {}     # pid -> (lo, hi) of its mesh, to skip far-away parts when picking
         self._part_segs = {}      # pid -> (A, B, edge index) segment arrays for edge picking
         self.triads = []          # mate connectors: dicts {o, x, y, z, color, size_px}
+        self.pick_points = []     # [(Pick, world point)]: drawn, pickable, not a mesh (connector triads)
         self.ghosts = []          # translucent highlight meshes: [(Mesh, (r, g, b, a))]
         self.drag_handler = None  # assemblies: object with press(x, y, e) -> bool, move(x, y, e), release(x, y, e)
         self._part_drag = False
@@ -1494,7 +1497,8 @@ class Viewport(QOpenGLWidget):
 
     def pick_all(self, x, y, kinds=None) -> list[Pick]:
         """Everything under the cursor, front to back, including what other geometry hides. Same kinds, filter,
-        section and tolerances as pick(); overlays are not included. Each element appears once. Ordered by
+        section and tolerances as pick(); the pick_points (mate connector triads) join them, at their depth, as overlays
+        do for pick(). Each element appears once. Ordered by
         depth; pick()'s own result comes first when it is level with the front-most element (it ignores depth for
         edges when faces are not asked for, so a hidden edge it happens to choose must not lead)."""
         allowed = (lambda k: k in kinds) if kinds is not None else self._allowed
@@ -1578,6 +1582,12 @@ class Viewport(QOpenGLWidget):
                 u, v = pl.to_local(o + tt * d)
                 if abs(u) <= half and abs(v) <= half:
                     add(Pick("plane", key), self.cam.view_z_of_t(tt))
+
+        if kinds is None:
+            for pk, pw in self.pick_points:
+                s = self.cam.to_screen(np.asarray(pw, float))
+                if np.hypot(s[0] - x, s[1] - y) <= 12.0:        # the tolerance the mate dialog's own triad pick uses
+                    add(pk, float(s[2]))
 
         out = sorted(found, key=lambda pk: -found[pk])       # stable: equal depths keep discovery order
         head = self.pick(x, y, kinds)
@@ -2066,6 +2076,8 @@ class Viewport(QOpenGLWidget):
     def click_pick(self, pk, mods=Qt.NoModifier):
         """What a left click on `pk` (None = empty space) does: an open feature dialog takes it, else it toggles in
         the selection. Select other calls this too, so a chosen row can't behave differently from a click."""
+        if pk is not None and pk.kind == "connector" and self.pick_handler is None:
+            return                                  # a connector is only ever picked as a mate end, never selected
         if self.pick_handler is not None:
             if pk is not None:
                 self.pick_handler(pk)
@@ -2083,6 +2095,9 @@ class Viewport(QOpenGLWidget):
     def other_label(self, pk):
         """'Face of Part 1', 'Sketch region of Sketch 2', 'Plane Top': kind, then the owner as the left panel names
         it (owner_name is set by the main window)."""
+        text = self.label_override(pk) if self.label_override else None
+        if text:
+            return text
         owner = self.owner_name(pk) if self.owner_name else None
         if pk.kind == "plane":
             return f"Plane {owner}" if owner else "Plane"
@@ -2126,6 +2141,7 @@ class Viewport(QOpenGLWidget):
         self.update()
 
     def _other_choose(self, pk, mods=Qt.NoModifier):
+        self.last_click = None              # no pointer belongs to this pick: a triad under the cursor must not win
         self.click_pick(pk, mods)
 
     def _other_closed(self):

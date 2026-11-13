@@ -1,0 +1,2 @@
+{"id": "pegs", "name": "Pegs", "version": "1.0.0", "licence": "GPL-3.0-or-later",
+ "standard_parts": ["peg:Peg"]}

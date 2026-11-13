@@ -13,7 +13,7 @@ from PySide6.QtGui import QAction, QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QListWidget, QListWidgetItem, QWidget,
     QGraphicsDropShadowEffect, QTreeWidget, QTreeWidgetItem, QPushButton, QDialog, QTableWidget,
-    QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QFileDialog, QMessageBox, QCheckBox,
+    QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QFileDialog, QMessageBox, QCheckBox, QTabWidget,
 )
 
 from .. import kernel as K
@@ -22,10 +22,13 @@ from .icons import icon
 from . import preview_rows as PR
 from .numparse import parse_number, fmt
 from .panels import swatch
+from .pyfeature_ui import NOTICE_COLOR
 from .viewport import Pick
 
 ROLE_ID = Qt.UserRole + 1
 ROLE_KIND = Qt.UserRole
+ROLE_NOTICE = Qt.UserRole + 2        # a Standard part instance's version notice text (marker in the list)
+NOTICE_MARK = "   ↻"
 
 
 def _floating(frame: QFrame):
@@ -431,8 +434,9 @@ class AssemblyPanel(QWidget):
         sel_i = set(self.selected_instances())
         sel_m = set(self.selected_mates())
         self.instances.clear()
+        notices = doc.standard_notices()
         for inst in doc.instances:
-            label = inst["name"] + ("   ⚓" if inst.get("fixed") else "")
+            label = inst["name"] + ("   ⚓" if inst.get("fixed") else "") + (NOTICE_MARK if inst["id"] in notices else "")
             it = QListWidgetItem(swatch(doc.instance_color(inst)), label)
             it.setData(ROLE_ID, inst["id"])
             tips = []
@@ -452,8 +456,17 @@ class AssemblyPanel(QWidget):
                 it.setForeground(QColor("#9aa3ae"))
                 tips.append("Hidden")
             src = inst["source"]
-            tips.append("From " + (src.get("filename") or "STEP") if src.get("kind") == "step" else
-                        "From Part Studio “%s”" % (src.get("studio_name") or "?"))
+            if src.get("kind") == "standard":
+                tips.append("Standard part " + str(src.get("type")))
+            else:
+                tips.append("From " + (src.get("filename") or "STEP") if src.get("kind") == "step" else
+                            "From Part Studio “%s”" % (src.get("studio_name") or "?"))
+            note = notices.get(inst["id"])
+            if note:
+                it.setData(ROLE_NOTICE, note["text"])
+                if not err:
+                    it.setForeground(QColor(NOTICE_COLOR))
+                tips.insert(0, note["text"] + " (right-click → Accept plugin update)")
             it.setToolTip("\n".join(tips))
             g = doc.group_of(inst["id"])
             if g is not None:
@@ -597,18 +610,22 @@ class InsertPanel(QFrame):
         self.title.setReadOnly(True)
         lay.addLayout(head)
         lay.addWidget(_hline())
+        parts_page = QWidget()
+        pl = QVBoxLayout(parts_page)
+        pl.setContentsMargins(0, 6, 0, 0)
+        pl.setSpacing(6)
         hint = QLabel("Double-click a part to insert it. Pick a Part Studio to insert all its parts as they "
                       "sit there. Inserted parts stay linked: edit them in their tab and the assembly updates.")
         hint.setWordWrap(True)
         hint.setObjectName("muted")
-        lay.addWidget(hint)
+        pl.addWidget(hint)
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setIconSize(QSize(PR.INSERT_SIZE, PR.INSERT_SIZE))
         self.previews = PR.PreviewFiller(self.tree, PR.INSERT_SIZE)
         self.tree.setMinimumHeight(220)
         self.tree.itemDoubleClicked.connect(lambda it, _c: self._insert_item(it))
-        lay.addWidget(self.tree)
+        pl.addWidget(self.tree)
         row = QHBoxLayout()
         b = QPushButton("Insert")
         b.setDefault(True)
@@ -626,11 +643,22 @@ class InsertPanel(QFrame):
         od.setToolTip(self.other_doc_action.toolTip())
         od.clicked.connect(self.other_doc_action.trigger)
         row.addWidget(od)
-        lay.addLayout(row)
+        pl.addLayout(row)
         self.msg = QLabel("")
         self.msg.setWordWrap(True)
         self.msg.setObjectName("muted")
-        lay.addWidget(self.msg)
+        pl.addWidget(self.msg)
+        from .standard_parts_ui import StandardPartsPane
+        self.standard = StandardPartsPane(lambda: ctl.doc, ctl.w.viewport)
+        std_page = QWidget()
+        sl = QVBoxLayout(std_page)
+        sl.setContentsMargins(0, 6, 0, 0)
+        sl.addWidget(self.standard)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("insert_tabs")
+        self.tabs.addTab(parts_page, "Parts")
+        self.tabs.addTab(std_page, "Standard parts")
+        lay.addWidget(self.tabs)
         self.fill()
         self.setFixedWidth(300)
         self.adjustSize()
@@ -2345,6 +2373,7 @@ class AssemblyController:
             if ids != [iid]:
                 self.vp.set_selection([Pick("part", (iid,))])    # Edit in context acts on the selection
             m.addAction(self.act_edit_in_context)
+        self.add_standard_actions(m, ids)
         m.addAction("Mass properties", lambda: self.w._mass_props_shape(
             inst["name"], doc.world_shape(iid), inst.get("material")))
         dof = doc.instance_dof(iid)
@@ -2402,6 +2431,34 @@ class AssemblyController:
         m.addAction("Rename…", lambda: self.rename_group(gid))
         m.addAction("Delete (ungroup)", lambda: self.ungroup(gid))
         m.exec(gpos)
+
+    def add_standard_actions(self, menu, ids):
+        """`Edit standard part…` and `Accept plugin update` for the Standard parts among `ids`. Returns the actions."""
+        doc = self.doc
+        std = [i for i in ids if (doc.instance(i) or {}).get("source", {}).get("kind") == "standard"]
+        out = []
+        if not std:
+            return out
+        out.append(menu.addAction("Edit standard part…", lambda: self.edit_standard_parts(std)))
+        marked = [i for i in std if i in doc.standard_notices()]
+        if marked:
+            out.append(menu.addAction("Accept plugin update", lambda: self.accept_plugin_update(marked)))
+        return out
+
+    def standard_dialog(self, ids):
+        """A StandardPartEditDialog for `ids` whose result is reported in the status bar (not shown or run)."""
+        from .standard_parts_ui import StandardPartEditDialog
+        dlg = StandardPartEditDialog(self.doc, ids, parent=self.w)
+        dlg.applied.connect(lambda res, d=dlg: self.w.status.showMessage(d.message, 8000))
+        return dlg
+
+    def edit_standard_parts(self, ids):
+        dlg = self.standard_dialog(ids)
+        dlg.exec()
+
+    def accept_plugin_update(self, ids):
+        done = self.doc.acknowledge_standard_versions(ids)
+        self.w.status.showMessage(f"Accepted the plugin update on {len(done)} standard part(s)", 5000)
 
     def mate_menu(self, mid, gpos):
         from PySide6.QtWidgets import QMenu

@@ -1850,7 +1850,7 @@ class Viewport(QOpenGLWidget):
 
     def _nav_hover_move(self, e, x, y):
         """Navigation with no button held (the Touchpad style: Shift+move pans, Alt+move orbits,
-        Ctrl+Shift+move zooms). True when the move was consumed."""
+        Ctrl+move zooms). True when the move was consumed."""
         mode = self._nav_action(e.buttons(), e.modifiers())
         if mode not in navstyles.NAV_ACTIONS:
             self._tp = None
@@ -2163,7 +2163,7 @@ class Viewport(QOpenGLWidget):
     ZOOM_PER_NOTCH = 0.88          # one 120-unit mouse notch zooms by 12%, like Onshape
     ZOOM_MAX_NOTCHES = 1.0         # cap on a single wheel event, so a burst of big deltas cannot jump the view
     ZOOM_SPEEDS = {"slow": 0.5, "normal": 1.0, "fast": 2.0}
-    PAN_PX_PER_NOTCH = 40.0        # touchpad style: pixels panned per 120 wheel units when no pixelDelta is given
+    PAN_PX_PER_NOTCH = 40.0        # wheel="scroll" styles: pixels panned per 120 wheel units when no pixelDelta is given
 
     @staticmethod
     def wheel_notches(e):
@@ -2175,8 +2175,8 @@ class Viewport(QOpenGLWidget):
         return e.pixelDelta().y() / 60.0
 
     def wheelEvent(self, e):
-        """Zoom at the cursor, gliding over a few frames rather than jumping, like Onshape. In Touchpad style a
-        two-finger scroll pans and Ctrl+scroll (pinch) zooms."""
+        """Zoom at the cursor, gliding over a few frames rather than jumping, like Onshape. A style whose `wheel`
+        is "scroll" pans on a scroll and zooms on Ctrl+scroll (pinch) instead; no built-in style uses it now."""
         self._anim = None
         if self._nav.wheel == "scroll" and not (e.modifiers() & Qt.ControlModifier):
             pd, ad = e.pixelDelta(), e.angleDelta()

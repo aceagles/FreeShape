@@ -87,8 +87,9 @@ _ONSHAPE = (("R", "C", "pan"), ("R", "c", "orbit"), ("M", "", "pan"), ("L", "", 
 
 STYLES = {s.key: s for s in (
     NavStyle("onshape", "Onshape", _ONSHAPE),
+    # two-finger scroll and pinch both zoom (wheel="zoom"); pan is Shift+move
     NavStyle("touchpad", "Touchpad",
-             _ONSHAPE + (("", "CSa", "zoom"), ("", "Sca", "pan"), ("", "Acs", "orbit")), wheel="scroll"),
+             _ONSHAPE + (("", "Csa", "zoom"), ("", "Sca", "pan"), ("", "Acs", "orbit"))),
     NavStyle("cad", "CAD", (
         ("R", "CS", "zoom"), ("R", "Cs", "pan"), ("R", "Sc", "orbit"),
         ("M", "cs", "pan"), ("MR", "", "orbit"), ("LM", "", "orbit"),

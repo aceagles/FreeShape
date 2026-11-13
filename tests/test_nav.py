@@ -108,12 +108,16 @@ def test_touchpad_alt_orbits(vp):
     assert not np.allclose(vp.cam.R, R0)
 
 
-def test_touchpad_ctrl_shift_zooms(vp):
+def test_touchpad_ctrl_zooms_and_ctrl_shift_does_nothing(vp):
     vp.nav_style = "touchpad"
+    _move(vp, 400, 300, Qt.ControlModifier)
+    _move(vp, 400, 320, Qt.ControlModifier)
+    assert vp.cam.scale != 0.1
+    s0, t0 = vp.cam.scale, vp.cam.target.copy()
     mods = Qt.ControlModifier | Qt.ShiftModifier
     _move(vp, 400, 300, mods)
-    _move(vp, 400, 320, mods)
-    assert vp.cam.scale != 0.1
+    _move(vp, 400, 340, mods)
+    assert vp.cam.scale == s0 and np.allclose(vp.cam.target, t0)
 
 
 def test_onshape_style_ignores_modifier_moves(vp):
@@ -124,15 +128,16 @@ def test_onshape_style_ignores_modifier_moves(vp):
     assert np.allclose(vp.cam.target, t0) and np.allclose(vp.cam.R, R0) and vp.cam.scale == s0
 
 
-def test_touchpad_scroll_pans_and_ctrl_scroll_zooms(vp):
+def test_touchpad_scroll_zooms_and_so_does_ctrl_scroll(vp):
     vp.nav_style = "touchpad"
-    t0 = vp.cam.target.copy()
-    _wheel(vp, angle=120, pixel=20)
-    assert not np.allclose(vp.cam.target, t0)
-    assert np.allclose(vp.cam.target - t0, vp.cam.R[1] * 20 * 0.1)
-    _wheel(vp, angle=120, mods=Qt.ControlModifier)
+    R0 = vp.cam.R.copy()
+    _wheel(vp, angle=120, pixel=20)                 # two-finger scroll
     _settle(vp)
-    assert vp.cam.scale < 0.1
+    s1 = vp.cam.scale
+    assert s1 < 0.1 and np.allclose(vp.cam.R, R0)
+    _wheel(vp, angle=120, mods=Qt.ControlModifier)  # pinch
+    _settle(vp)
+    assert vp.cam.scale < s1
 
 
 # ---------------------------------------------------------------- mouse styles (table driven)

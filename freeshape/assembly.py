@@ -620,7 +620,8 @@ class AssemblyDoc:
         self._fallback: dict[str, object] = {}   # instance id -> shape stored in the file
         self._step_cache: dict[str, list] = {}
         self.errors: dict[str, str] = {}         # instance / mate id -> message
-        self._conflicts: set = set()             # mates left out because they can't hold with the others
+        self._conflicts: set = set()             # mates and relations left out because they can't hold with the others
+        self._rel_filter = None                  # relation ids allowed a residual inside a solve; None = all
         self._limit_holds: dict = {}             # mate id -> {dof: bound}; active limits, set only inside a solve
         self.dof = 0
         self._undo: list[str] = []
@@ -1237,7 +1238,9 @@ class AssemblyDoc:
                 self._drive = (m["id"], dof, want)
                 solved = self.solve()
                 got = float(m["values"].get(dof, want))
-                if solved and m["id"] not in self._conflicts and abs(got - want) < 1e-5:
+                # a relation left out of the solve doesn't stop the drive: the others still hold
+                rel_only = bool(self._conflicts) and all(self.relation(c) is not None for c in self._conflicts)
+                if (solved or rel_only) and m["id"] not in self._conflicts and abs(got - want) < 1e-5:
                     continue
                 for i in self.instances:
                     i["T"] = poses[i["id"]]
@@ -1418,6 +1421,8 @@ class AssemblyDoc:
         for r in self.relations:
             if r.get("suppressed") or r.get("phase") is None or not r.get("a") or not r.get("b"):
                 continue
+            if self._rel_filter is not None and r["id"] not in self._rel_filter:
+                continue
             ma, mb = by_id.get(r["a"]["mate"]), by_id.get(r["b"]["mate"])
             if ma is None or mb is None:
                 continue
@@ -1429,6 +1434,28 @@ class AssemblyDoc:
             vb = self._relation_value(mb, db, Ts, frames)
             out.append((vb - (sign * relation_ratio(r) * va + float(r["phase"]))) * DOF_KINDS[dof_kind(db)]["scale"](L))
         return np.array(out, float)
+
+    def _relations_in(self, ids, fn):
+        """Run fn() with only the relations in `ids` given a residual."""
+        old, self._rel_filter = self._rel_filter, set(ids)
+        try:
+            return fn()
+        finally:
+            self._rel_filter = old
+
+    def _relation_left_out(self, r, mates):
+        """Error text when relation r can't be used because a mate of it is missing, suppressed or itself in
+        conflict (the relation is then inert and the text names that mate); else None."""
+        for end in ("a", "b"):
+            mid = (r.get(end) or {}).get("mate")
+            m = self.mate(mid) if mid else None
+            if m is None:
+                return f"Left out: its mate {mid or '?'} no longer exists"
+            if m.get("suppressed"):
+                return f"Left out: its mate {m['name']} is suppressed"
+            if m["id"] in self._conflicts or m["id"] in self.errors or all(x["id"] != m["id"] for x in mates):
+                return f"Left out: its mate {m['name']} can't be solved or is not in use"
+        return None
 
     # ------------------------------------------------------------------ solving
     def _groups(self, exclude=None):
@@ -1512,18 +1539,25 @@ class AssemblyDoc:
         drag: {"inst", "local" point, "target" world point, "P" 2x3 screen-plane projector} — the dragged part
         follows the target as far as the mates allow. keep: an instance that should not move if avoidable.
         Mates that can't hold together with the earlier ones are left out (and shown red), like Onshape."""
+        self._rel_filter = None
         for k in [k for k, v in self.errors.items() if v.startswith("Can't be solved")]:
             self.errors.pop(k)
         mates = self._active_mates()
         if drag is not None:
             live = [m for m in mates if m["id"] not in self._conflicts]
-            self._solve_core(live, drag, iters, keep)
+            self._rel_filter = {r["id"] for r in self.relations if r["id"] not in self._conflicts}
+            try:
+                self._solve_core(live, drag, iters, keep)
+            finally:
+                self._rel_filter = None
             self._update_mate_values(live)
             self._update_status()
             return True
         before = {i["id"]: list(i["T"]) for i in self.instances}
         bad = self._solve_core(mates, None, iters, keep)
         self._conflicts = set()
+        if bad:
+            self._rel_filter = set()        # the mates are re-added without relations; relations follow below
         if bad and len(mates) > 1:
             # find the culprits: add the mates one at a time, keeping each one that still solves
             for i in self.instances:
@@ -1537,9 +1571,30 @@ class AssemblyDoc:
                     self._conflicts.add(m["id"])
                 else:
                     good.append(m)
+        if bad and self.relations:
+            # relations: re-add them one at a time on top of the mates that held, keeping each that still solves
+            for i in self.instances:
+                i["T"] = before[i["id"]]
+            held = [m for m in mates if m["id"] not in self._conflicts]
+            self._solve_core(held, None, iters, keep)
+            rels = [r for r in self.relations if not r.get("suppressed") and r.get("phase") is not None
+                    and self._relation_left_out(r, held) is None]
+            kept = set()
+            for r in rels:
+                snap = {i["id"]: list(i["T"]) for i in self.instances}
+                self._rel_filter = kept | {r["id"]}
+                if self._solve_core(held, None, iters, keep):
+                    for i in self.instances:
+                        i["T"] = snap[i["id"]]
+                    self._conflicts.add(r["id"])
+                else:
+                    kept.add(r["id"])
+            self._rel_filter = kept
+            self._solve_core(held, None, iters, keep)
         self._update_mate_values([m for m in mates if m["id"] not in self._conflicts])
         self._enforce_limits([m for m in mates if m["id"] not in self._conflicts], iters, keep)
         self._update_status()
+        self._rel_filter = None
         return not self._conflicts and not bad
 
     def _solve_core(self, mates, drag, iters, keep):
@@ -1705,7 +1760,7 @@ class AssemblyDoc:
 
     def _update_status(self, Ts=None, mates=None, frames=None, L=None):
         """Per-mate 'holds or not' and the remaining degrees of freedom."""
-        for k in [k for k, v in self.errors.items() if v.startswith("Can't be solved")]:
+        for k in [k for k, v in self.errors.items() if v.startswith(("Can't be solved", "Left out:"))]:
             self.errors.pop(k)
         mates = self._active_mates() if mates is None else mates
         L = self.length_scale() if L is None else L
@@ -1713,9 +1768,23 @@ class AssemblyDoc:
                             for m in mates}
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
         for m in mates:
-            r = self._residuals([m], Ts, frames, L)
+            r = self._relations_in((), lambda: self._residuals([m], Ts, frames, L))
             if len(r) and float(np.linalg.norm(r)) > 1e-4 * max(L, 1):
                 self.errors[m["id"]] = "Can't be solved together with the other mates (shown red)"
+        # relations: one that can't be used names its mate; one that is used must hold
+        live_rels = []
+        for rel in self.relations:
+            if rel.get("suppressed"):
+                continue
+            why = self._relation_left_out(rel, mates)
+            if why is not None:
+                self.errors[rel["id"]] = why
+            elif rel.get("phase") is not None:
+                r = self._relations_in({rel["id"]}, lambda: self._relation_residuals(mates, Ts, frames, L))
+                if rel["id"] in self._conflicts or (len(r) and float(np.linalg.norm(r)) > 1e-4 * max(L, 1)):
+                    self.errors[rel["id"]] = "Can't be solved together with the mates and relations (shown red)"
+                else:
+                    live_rels.append(rel["id"])
         # degrees of freedom of the free instances
         # a group is one body: one set of six variables, and one fixed member fixes the whole group
         gkey = {iid: g["id"] for g in self.groups for iid in g["instances"]}
@@ -1740,7 +1809,8 @@ class AssemblyDoc:
             boxes = [K.bbox(s) if s is not None else (np.zeros(3), np.zeros(3))
                      for s in (self.world_shape(iid) for iid in members[key])]
             pivots[key] = (np.min([b[0] for b in boxes], axis=0) + np.max([b[1] for b in boxes], axis=0)) / 2
-        r0 = self._residuals(ok, Ts, frames, L)
+        resid = lambda T: self._relations_in(live_rels, lambda: self._residuals(ok, T, frames, L))
+        r0 = resid(Ts)
         J = np.zeros((len(r0), n))
         h = 1e-6 * L
         for key, k in idx.items():
@@ -1758,7 +1828,7 @@ class AssemblyDoc:
                     D[j - 3, 3] = h
                 for iid in members[key]:
                     T2[iid] = D @ Ts[iid]
-                J[:, 6 * k + j] = (self._residuals(ok, T2, frames, L) - r0) / h
+                J[:, 6 * k + j] = (resid(T2) - r0) / h
         sv = np.linalg.svd(J, compute_uv=False) if J.size else np.zeros(0)
         rank = int(np.sum(sv > 1e-6 * (sv[0] if len(sv) else 1)))
         self.dof = n - rank
@@ -1773,16 +1843,23 @@ class AssemblyDoc:
         if any((self.instance(i) or {}).get("fixed") for i in ids):
             return 0
         ids = [i for i in ids if i in self.parts] or [iid]
-        mates = [m for m in self._active_mates() if (m["a"]["inst"] in ids or m["b"]["inst"] in ids)
-                 and m["id"] not in self.errors]
+        allok = [m for m in self._active_mates() if m["id"] not in self.errors]
+        mates = [m for m in allok if (m["a"]["inst"] in ids or m["b"]["inst"] in ids)]
         if not mates:
             return 6
         L = self.length_scale()
-        frames = {m["id"]: (frame_from_json(m["a"]["frame"]), frame_from_json(m["b"]["frame"])) for m in mates}
+        frames = {m["id"]: (frame_from_json(m["a"]["frame"]), frame_from_json(m["b"]["frame"])) for m in allok}
+        # active relations on this instance's mates; the other end's mate is measured with its part held still
+        rels = [r["id"] for r in self.relations
+                if r["id"] not in self.errors and r["id"] not in self._conflicts
+                and {r["a"]["mate"], r["b"]["mate"]} & {m["id"] for m in mates}]
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
         boxes = [K.bbox(self.world_shape(i)) for i in ids]
         c = (np.min([b[0] for b in boxes], axis=0) + np.max([b[1] for b in boxes], axis=0)) / 2
-        r0 = self._residuals(mates, Ts, frames, L)
+        resid = lambda T: np.concatenate([
+            self._relations_in((), lambda: self._residuals(mates, T, frames, L)),
+            self._relations_in(rels, lambda: self._relation_residuals(allok, T, frames, L))])
+        r0 = resid(Ts)
         J = np.zeros((len(r0), 6))
         h = 1e-6 * L
         for j in range(6):
@@ -1799,7 +1876,7 @@ class AssemblyDoc:
                 D[j - 3, 3] = h
             for i in ids:
                 T2[i] = D @ Ts[i]
-            J[:, j] = (self._residuals(mates, T2, frames, L) - r0) / h
+            J[:, j] = (resid(T2) - r0) / h
         sv = np.linalg.svd(J, compute_uv=False)
         return 6 - int(np.sum(sv > 1e-6 * (sv[0] if len(sv) else 1)))
 

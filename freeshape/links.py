@@ -475,13 +475,49 @@ class LinkResolver:
         asm = self._assembly_for(src)
         if asm is None:
             raise K.KernelError(f"Assembly “{src.get('name', '?')}” isn't open")
-        items = [(id(asm.parts[i["id"]].shape), tuple(np.round(np.array(i["T"], float).ravel(), 9)))
-                 for i in asm.visible_instances() if i["id"] in asm.parts]
+        placed = [(i, self._drawn_T(asm, i, src)) for i in asm.visible_instances()]
+        items = [(id(asm.parts[i["id"]].shape), tuple(np.round(T.ravel(), 9))) for i, T in placed]
         key = ("asm", asm.uid, tuple(items))
         if key not in self._shape_cache:
-            self._shape_cache[key] = K.compound([K.located(asm.parts[i["id"]].shape, np.array(i["T"], float))
-                                                 for i in asm.visible_instances() if i["id"] in asm.parts])
+            self._shape_cache[key] = K.compound([K.located(asm.parts[i["id"]].shape, T) for i, T in placed])
         return self._shape_cache[key]
+
+    @staticmethod
+    def _drawn_T(asm, inst, src):
+        """Where a drawing of `src` shows an Assembly instance: exploded when the source asks for it."""
+        if src.get("exploded"):
+            return np.array(asm.display_T(inst["id"], exploded=True), float)
+        return np.array(inst["T"], float)
+
+    def resolve_drawing_bom(self, src):
+        """A drawing's parts list: [{"name", "qty", "mass", "material", "shapes"}], one row per different part.
+        An Assembly's rows are its own bill of materials (AssemblyDoc.bom: suppressed and sketch instances left
+        out, standard parts merged, mass from the material); a Part Studio's are its parts, in the source's
+        configuration. `shapes` are the row's parts placed as the drawing shows them (exploded when the source
+        asks), which is how a balloon finds the part under a click."""
+        if src.get("kind") == "assembly":
+            asm = self._assembly_for(src)
+            if asm is None:
+                raise K.KernelError(f"Assembly “{src.get('name', '?')}” isn't open")
+            shown = {i["name"]: i for i in asm.visible_instances()}
+            rows = []
+            for r in asm.bom():
+                insts = [shown[n] for n in r["instances"] if n in shown]
+                rows.append({"name": r["name"], "qty": r["qty"], "mass": r["mass"], "material": r["material"],
+                             "shapes": [K.located(asm.parts[i["id"]].shape, self._drawn_T(asm, i, src))
+                                        for i in insts]})
+            return rows
+        studio = self._studio_for(src)
+        if studio is None or src.get("flat"):
+            return []
+        st = _studio_state(studio, src)
+        if src.get("part") in (None, "*"):
+            parts = [p for p in st.parts.values() if p.id not in studio.hidden_parts
+                     and not getattr(p, "reference", False)]
+        else:
+            p = st.parts.get(_translate_part(studio, src["part"]))
+            parts = [] if p is None or getattr(p, "reference", False) else [p]
+        return [{"name": p.name, "qty": 1, "mass": None, "shapes": [p.shape]} for p in parts]
 
     def _resolve_studio_shape(self, src):
         studio = self._studio_for(src)

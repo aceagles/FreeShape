@@ -255,8 +255,8 @@ class DrawingDoc:
         self.dirty = False
         self.listeners = []
         self.resolver = None                 # callable(source) -> TopoDS shape (set by the main window)
-        self.bom_resolver = None             # callable(source) -> [{"name", "qty", "mass", "shapes"}] (parts list)
-        self.bom: list[dict] = []            # parts list rows: {"item", "name", "qty", "mass"} (saved in the file)
+        self.bom_resolver = None             # callable(source) -> [{"name", "qty", "mass", "material", "shapes"}] (parts list)
+        self.bom: list[dict] = []            # parts list rows: {"item", "name", "qty", "mass", "material"} (saved in the file)
         self._bom_shapes: list = []          # each row's shapes, placed as in the model
         self.source = None                   # what the drawing shows (see the main window's resolver)
         # callable(source) -> naming.NamedShape or None: the element map of the shape the resolver returns.
@@ -400,7 +400,8 @@ class DrawingDoc:
         except Exception:
             return
         self.bom = [{"item": i + 1, "name": r.get("name", "?"), "qty": int(r.get("qty", 1)),
-                     "mass": r.get("mass")} for i, r in enumerate(rows)]
+                     "mass": r.get("mass"), **({"material": r["material"]} if r.get("material") else {})}
+                    for i, r in enumerate(rows)]
         self._bom_shapes = [list(r.get("shapes", [])) for r in rows]
 
     def add_bom_table(self, pos=None, checkpoint=True):
@@ -538,12 +539,16 @@ class DrawingDoc:
         return len(todo)
 
     def _bom_items(self, out, a):
-        """The parts list: a table with ITEM / PART / QTY (and MASS when known), its bottom-right corner at pos."""
+        """The parts list: a table with ITEM / PART / QTY (and MATERIAL, MASS when known), its bottom-right corner at pos."""
         rows = self.bom
         show_mass = any(r.get("mass") for r in rows)
+        show_mat = any(r.get("material") for r in rows)
         h = 7.0
         name_w = max([len(str(r["name"])) for r in rows] + [10]) * TEXT_H * 0.62 + 6
         cols = [("ITEM", 14.0, "center"), ("PART", min(max(name_w, 50.0), 140.0), "left"), ("QTY", 14.0, "center")]
+        if show_mat:
+            mat_w = max(len(str(r.get("material") or "")) for r in rows) * TEXT_H * 0.62 + 6
+            cols.append(("MATERIAL", min(max(mat_w, 24.0), 50.0), "left"))
         if show_mass:
             cols.append(("MASS (g)", 24.0, "right"))
         W = sum(c[1] for c in cols)
@@ -577,8 +582,10 @@ class DrawingDoc:
             cell(0, k + 1, r["item"])
             cell(1, k + 1, r["name"])
             cell(2, k + 1, r["qty"])
+            if show_mat:
+                cell(3, k + 1, r.get("material") or "")
             if show_mass:
-                cell(3, k + 1, fmt_value(r["mass"], 1) if r.get("mass") else "")
+                cell(len(cols) - 1, k + 1, fmt_value(r["mass"], 1) if r.get("mass") else "")
 
     def _balloon_items(self, out, a):
         v = self.view(a.get("view"))

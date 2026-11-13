@@ -300,7 +300,7 @@ Written by `DrawingDoc.to_json` (`freeshape/drawing.py`). Format tag `freeshape-
 | `title` | object | Title block fields. See Title block. |
 | `views` | list | The views. See View. |
 | `annots` | list | Dimensions, notes, balloons and the parts list. See Annotation. |
-| `bom` | list | Parts list rows, `{item, name, qty, mass}`, filled from the source Assembly's bill of materials when the table is placed or refreshed. Written only when the list is not empty. No migration step: a file without it reads as empty. |
+| `bom` | list | Parts list rows, `{item, name, qty, mass, material}` (`material` only when the row has one), filled from the source Assembly's bill of materials when the table is placed or refreshed. Written only when the list is not empty. No migration step: a file without it reads as empty. |
 | `_brep_blob` | string | Blob key of the shown shape's BREP (zlib-compressed `K.shape_to_brep` bytes), a fallback when the source is missing. Since version 3; before it, `_brep` held the same bytes in base64. |
 | `_views_blob` | string | Blob key of the exact hidden-line results, so a reopen does not recompute them: JSON `{"model": <sha1 of the BREP bytes>, "views": [{"d", "up", "curves"}]}`. Used only when the model hash still matches. Since version 3; before it, `_views` held the same object inline. |
 

@@ -3448,7 +3448,7 @@ class MainWindow(QMainWindow):
             if self._folder_tab(doc) is None:
                 doc.resolver = self._resolve_drawing_source
             doc.hlr_async = self.dwg.request_exact
-            doc.bom_resolver = self._drawing_bom
+            doc.bom_resolver = self.resolver.resolve_drawing_bom
             doc._update_bom()
             doc.changed(notify=False)
         i = self.tabs.addTab(icon({"assembly": "assembly", "drawing": "drawing"}.get(doc.kind, "part"), 16), doc.name)
@@ -3708,34 +3708,6 @@ class MainWindow(QMainWindow):
 
     def _resolve_drawing_source(self, src):
         return self.resolver.resolve_drawing_source(src)
-
-    def _drawing_bom(self, src):
-        """A drawing's parts list: [{"name", "qty", "mass", "material", "shapes"}], one row per different part.
-        An Assembly's rows are its own bill of materials (AssemblyDoc.bom: suppressed and sketch instances left
-        out, standard parts merged, mass from the material); a Part Studio's are its parts. `shapes` are the row's
-        parts placed as in the model, which is how a balloon finds the part under a click."""
-        if src.get("kind") == "assembly":
-            asm = self.resolver._assembly_for(src)
-            if asm is None:
-                raise K.KernelError(f"Assembly “{src.get('name', '?')}” isn't open")
-            shown = {i["name"]: i for i in asm.visible_instances() if i["id"] in asm.parts}
-            rows = []
-            for r in asm.bom():
-                insts = [shown[n] for n in r["instances"] if n in shown]
-                rows.append({"name": r["name"], "qty": r["qty"], "mass": r["mass"], "material": r["material"],
-                             "shapes": [K.located(asm.parts[i["id"]].shape, np.array(i["T"], float))
-                                        for i in insts]})
-            return rows
-        studio = self.resolver._studio_for(src)
-        if studio is None or src.get("flat"):
-            return []
-        if src.get("part") in (None, "*"):
-            parts = [p for p in studio.state.parts.values() if p.id not in studio.hidden_parts
-                     and not getattr(p, "reference", False)]
-        else:
-            p = studio.state.parts.get(links._translate_part(studio, src["part"]))
-            parts = [] if p is None or getattr(p, "reference", False) else [p]
-        return [{"name": p.name, "qty": 1, "mass": None, "shapes": [p.shape]} for p in parts]
 
     # ------------------------------------------------------------------ links between tabs
     def studio_docs(self):

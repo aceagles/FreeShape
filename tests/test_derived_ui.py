@@ -184,6 +184,28 @@ def test_the_three_tick_lists_are_tabs_whose_titles_count_the_ticks(win):
     w.cancel_dialog()
 
 
+def test_previews_on_the_hidden_tabs_fill_without_opening_them(win):
+    from PySide6.QtWidgets import QApplication
+    from freeshape.ui import preview_rows as PR
+    w = win
+    cid = _source_connector(w)
+    w.show()                                        # previews are only drawn in a window that is shown
+    try:
+        d = _open_derived_on_src(w)
+        assert d.widgets["derived_tabs"].currentIndex() == 0 and not d.widgets["sketches"].isVisible()
+        for _ in range(200):                        # previews are drawn one row per event-loop turn
+            QApplication.processEvents()
+            if not any(pf.pending for pf in d._derived_fillers):
+                break
+        for key in ("parts", "sketches", "connectors"):
+            assert _icon_rows(d.widgets[key]) == [(False, PR.DERIVED_SIZE, False)], key
+        w.cancel_dialog()
+    finally:
+        w.hide()
+        _drop_source_connector(w, cid)
+        w.studio_engine.settle(120)
+
+
 def test_editing_opens_on_the_first_tab_with_a_tick(win):
     w = win
     w.start_feature("derived")

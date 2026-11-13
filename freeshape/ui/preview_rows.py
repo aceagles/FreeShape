@@ -92,7 +92,18 @@ class PreviewFiller(QObject):
         self.widget, self.size = widget, size
         self.pending = []
         self._queued = False
+        self.host = None
         widget.installEventFilter(self)
+
+    def watch(self, host):
+        """Fill while `host` is shown, not only while the list itself is: a list on a tab that is not the current
+        one is hidden, and its previews should be ready when the tab is opened."""
+        self.host = host
+        host.installEventFilter(self)
+        self._schedule()
+
+    def _shown(self):
+        return (self.host or self.widget).isVisible()
 
     def reset(self):
         """The rows were rebuilt: forget the pending ones."""
@@ -104,12 +115,12 @@ class PreviewFiller(QObject):
         self._schedule()
 
     def eventFilter(self, obj, ev):
-        if obj is self.widget and ev.type() == QEvent.Show:
+        if (obj is self.widget or obj is self.host) and ev.type() == QEvent.Show:
             self._schedule()
         return False
 
     def _schedule(self):
-        if self.pending and not self._queued and self.widget.isVisible():
+        if self.pending and not self._queued and self._shown():
             self._queued = True
             QTimer.singleShot(0, self._tick)
 

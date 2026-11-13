@@ -1417,6 +1417,8 @@ class FeatureDialog(_ResizableFrame):
             lst.itemChanged.connect(titles)
         self._derived_fills.append(titles)
         titles()
+        for pf in getattr(self, "_derived_fillers", []):    # a list on a hidden tab still gets its previews
+            pf.watch(tabs)
         tabs.setCurrentIndex(next((i for i, (_l, lst) in enumerate(lists) if ticked(lst)), 0))
         self.widgets["derived_tabs"] = tabs
         return tabs

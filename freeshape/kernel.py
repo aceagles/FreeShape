@@ -586,6 +586,23 @@ def make_sketch_edges(plane: Plane, curves, with_ids=False) -> list:
     return out
 
 
+def sketch_geometry(plane: Plane, sketch):
+    """A compound of the edges and vertices of every entity of `sketch` (a sketch.Sketch) on `plane`:
+    lines, circles and arcs as edges, point entities as free vertices. Construction geometry is included.
+    sketch_regions is the other reader: closed, non-construction curves only, made into faces. This is what
+    a Sketch instance in an Assembly shows and mates to (ADR 0011). Entities with no extent (a zero-length
+    line, a zero-radius circle) are skipped. The shape is in the plane's own (world) coordinates."""
+    import copy
+    flat = copy.copy(sketch)                    # Sketch.curves() skips construction entities: read a copy without that flag
+    flat.entities = {eid: dict(e, construction=False) for eid, e in sketch.entities.items()}
+    shapes = list(make_sketch_edges(plane, flat.curves()))
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    for e in sketch.entities.values():
+        if e["type"] == "point" and e["p"] in sketch.points:
+            shapes.append(BRepBuilderAPI_MakeVertex(_pnt(plane.to_world(*sketch.points[e["p"]]))).Vertex())
+    return compound(shapes)
+
+
 def sketch_regions(plane: Plane, curves, with_history=False) -> list:
     """Split the sketch plane by all sketch curves and return every bounded region as a face.
 

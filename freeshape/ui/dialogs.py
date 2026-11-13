@@ -167,6 +167,10 @@ def item_label(doc, item):
         return "Edge"
     if kind == "vertex":
         return "Vertex"
+    if kind == "sketch":                 # a Mate connector on sketch geometry (ADR 0011)
+        f = doc.feature(ref.get("sketch"))
+        what = {"point": "point", "centre": "centre", "end1": "end 1", "end2": "end 2", "mid": "middle"}
+        return f"{f['name'] if f else 'Sketch'} {ref.get('entity')} ({what.get(ref.get('role'), ref.get('role'))})"
     if kind == "part":
         p = doc.state.parts.get(ref)
         return p.name if p else ref
@@ -565,7 +569,7 @@ SCHEMAS = {
     ],
     "mate_connector": [
         {"t": "text", "key": "name", "label": "Name", "placeholder": "e.g. Hinge pin"},
-        _sel("element", "Face or edge (hover for snap points)", {"element"}, multi=False),
+        _sel("element", "Face, edge or sketch geometry (hover for snap points)", {"element"}, multi=False),
         {"t": "owner_part", "key": "owner", "label": "Owner part", "visible": lambda p: (p.get("ref") or {}).get("origin")},
         _check("flip", "Flip (reverse the Z axis)"),
     ],
@@ -1052,9 +1056,13 @@ class FeatureDialog(_ResizableFrame):
             cb.addItem("— select —", None)
             for pid, part in self.base_state.parts.items():
                 cb.addItem(getattr(part, "name", pid), pid)
+            for sid in self.base_state.sketches:          # a sketch can own the origin connector too (I1.6)
+                sf = self.doc.feature(sid)
+                cb.addItem(f"{sf['name'] if sf else sid} (sketch)", sid)
             cb.setCurrentIndex(max(0, cb.findData(p.get(spec["key"]))))
             cb.currentIndexChanged.connect(lambda i, cb=cb, k=spec["key"]: self._set(k, cb.itemData(i)))
-            cb.setToolTip("The part the origin connector belongs to. Assemblies mate it as that part's own connector.")
+            cb.setToolTip("The part or sketch the origin connector belongs to. Assemblies mate it as that part's "
+                          "or sketch's own connector.")
             self.widgets[spec["key"]] = cb
             h.addWidget(cb)
             return row
@@ -1705,7 +1713,7 @@ class FeatureDialog(_ResizableFrame):
         if "face" in want or "plane" in want:
             kinds.add("face")
         if "element" in want:
-            kinds |= {"face", "edge"}
+            kinds |= {"face", "edge", "sketch_line", "sketch_point"}
         if "edge" in want:
             kinds |= {"edge", "face"}
         if "axis" in want or "path" in want:
@@ -1759,6 +1767,9 @@ class FeatureDialog(_ResizableFrame):
         """Called by the main window when the user clicks in the viewport."""
         if self._pick_sketch(pick) or self._pick_location(pick):
             return
+        if self.ftype == "mate_connector" and pick.kind in ("sketch_line", "sketch_point"):
+            self._pick_sketch_connector(pick)
+            return
         if self.ftype == "mate_connector" and pick.kind != "overlay":
             self._pick_connector(pick)
             return
@@ -1788,10 +1799,76 @@ class FeatureDialog(_ResizableFrame):
     def snap_candidates(self, pick: Pick):
         """Snap points the viewport draws while hovering a face or edge (assembly.snap_candidates, as in the
         Assembly); the studio's coordinates are the world's, so "pw" is the point itself."""
+        if pick.kind in ("sketch_line", "sketch_point"):
+            return self._sketch_snaps(pick)
         shape = self.main.viewport.part_shapes.get(pick.key[0]) if pick.kind in ("face", "edge") else None
         if shape is None:
             return []
         return [dict(c, pw=np.asarray(c["p"], float)) for c in AS.snap_candidates(shape, pick.kind, pick.key[1])]
+
+    def _sketch_of(self, pick):
+        """(plane dict, sketch dict, SketchResult) of the shown sketch a sketch pick is on, or None."""
+        for sfid, sr, _ in self.main.viewport.sketches:
+            if sfid == pick.key[0]:
+                plane = {"origin": sr.plane.origin, "xdir": sr.plane.xdir, "normal": sr.plane.normal}
+                return plane, sr.sketch.to_dict(), sr
+        return None
+
+    def _sketch_snaps(self, pick: Pick):
+        """Snap points of a hovered sketch line, circle, arc or point: one per role (end 1, middle, end 2, centre,
+        the point). "type" picks the label the viewport draws; "role" is what a click on the dot stores."""
+        from .. import sketchref
+        found = self._sketch_of(pick)
+        if found is None:
+            return []
+        plane, sk, _sr = found
+        eid = pick.key[1]
+        kind = {"end1": "vertex", "end2": "vertex", "point": "vertex", "mid": "mid", "centre": "center"}
+        out = []
+        for role in sketchref.roles(sk, eid):
+            o = np.asarray(sketchref.frame(plane, sk, eid, role)["o"], float)
+            out.append({"type": kind[role], "p": o, "pw": o, "role": role, "sketch": pick.key[0], "entity": eid})
+        return out
+
+    def _pick_sketch_connector(self, pick: Pick):
+        """A click on a sketch point, line, circle or arc: the ref I1.3 accepts. A highlighted snap dot gives its role;
+        otherwise the role is the one nearest the click on screen (a line: end 1, middle or end 2)."""
+        from .. import sketchref
+        vp = self.main.viewport
+        snap, base = vp.snap_hi, vp.snap_base
+        if snap is not None and snap.get("role") and base is not None and base.kind in ("sketch_line", "sketch_point"):
+            pick, role = base, snap["role"]
+        else:
+            role = None
+        vp.clear_snaps()
+        found = self._sketch_of(pick)
+        if found is None:
+            return
+        plane, sk, _sr = found
+        fid, eid = pick.key
+        try:
+            roles = sketchref.roles(sk, eid)
+            if role not in roles:
+                role = None
+            if role is None:
+                if vp.last_click and len(roles) > 1:
+                    cx, cy = vp.last_click
+
+                    def gap(r):
+                        s = vp.cam.to_screen(np.asarray(sketchref.frame(plane, sk, eid, r)["o"], float))
+                        return (s[0] - cx) ** 2 + (s[1] - cy) ** 2
+                    role = min(roles, key=gap)
+                else:
+                    role = "mid" if "mid" in roles else roles[0]
+            d = sketchref.describe(sk, eid, role)
+        except K.KernelError:
+            return
+        ref = {"sketch": fid, "entity": eid, "role": role, "etype": d["etype"], "sig": d["sig"]}
+        self.fields["element"].items = [("sketch", ref)]
+        self._fields_changed()
+        p = self.feature["params"]
+        p["click"], p["snap"], p["x_ref"] = None, None, None
+        self.schedule_preview()
 
     def _pick_connector(self, pick: Pick):
         """A click on a face or edge: a highlighted snap point wins over whatever is under the cursor (the
@@ -2017,8 +2094,9 @@ class FeatureDialog(_ResizableFrame):
             return                              # likewise a Variable Studio reference
         self._timer.stop()
         if self.ftype == "mate_connector" and (self.feature["params"].get("ref") or {}).get("origin") \
-                and self.feature["params"].get("owner") not in self.base_state.parts:
-            self.err.setText("⚠ Pick the part that owns the origin connector")
+                and self.feature["params"].get("owner") not in self.base_state.parts \
+                and self.feature["params"].get("owner") not in self.base_state.sketches:
+            self.err.setText("⚠ Pick the part or sketch that owns the origin connector")
             self.err.show()
             return
         self.feature["name"] = self.title.text().strip() or self.feature["name"]

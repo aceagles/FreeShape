@@ -349,10 +349,25 @@ class LinkResolver:
         studio = self._studio_for(src)
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
+        if src.get("kind") == "sketch":
+            return self._resolve_sketch(studio, src)
         p = studio.state.parts.get(_translate_part(studio, src.get("part")))
         if p is None or getattr(p, "reference", False):
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         return p
+
+    def _resolve_sketch(self, studio, src):
+        """The Sketch instance source {"kind": "sketch", "uid", "sketch"} as a features.Part-like object whose
+        shape is kernel.sketch_geometry of that sketch: every entity, construction and free points included,
+        in the studio's coordinates (the sketch plane's own position). A sketch the studio no longer has, or
+        one that failed to build, is a KernelError."""
+        from .features import Part
+        fid = src.get("sketch")
+        res = studio.state.sketches.get(fid)
+        if res is None:
+            raise K.KernelError(f"The sketch no longer exists in “{studio.name}”")
+        name = (studio.feature(fid) or {}).get("name", fid)
+        return Part(str(fid), str(name), K.sketch_geometry(res.plane, res.sketch))
 
     def resolve_named(self, src):
         """The element map (naming.NamedShape) of the part `resolve_source` returns for `src`, or None when
@@ -411,9 +426,14 @@ class LinkResolver:
             return None
         if studio is None:
             return None
-        pid = _translate_part(studio, src.get("part"))
+        from .assembly import is_sketch_source
+        if is_sketch_source(src):
+            own = lambda c: c.get("sketch") == src.get("sketch")      # noqa: E731
+        else:
+            pid = _translate_part(studio, src.get("part"))
+            own = lambda c: c["part"] == pid and not c.get("sketch")  # noqa: E731
         return [{"id": str(fid), "name": c["name"], "frame": {k: [float(v) for v in c["frame"][k]] for k in ("o", "z", "x")}}
-                for fid, c in studio.state.connectors.items() if c["part"] == pid]
+                for fid, c in studio.state.connectors.items() if own(c)]
 
     # ------------------------------------------------------------------ drawing sources
     def resolve_drawing_source(self, src):

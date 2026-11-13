@@ -73,7 +73,7 @@ class _StudioView:
         self.hidden_parts = {p["id"] for p in pkg["parts"] if p["hidden"]}
         self.state = SimpleNamespace(parts=PartMap(parts, aliases=self.part_aliases),
                                      vars=dict(pkg.get("vars") or {}), sheet={})
-        self.package = None      # the links.StudioPackage a Document.link_inputs hands out (set by install)
+        self.package = None      # the links.StudioPackage a PartStudioDoc.link_inputs hands out (set by install)
 
 
 class _VariablesView:
@@ -187,6 +187,7 @@ class _Worker:
     def __init__(self, spec):
         self.tab = spec["tab"]
         self.engine = _WorkerEngine(meshes=spec["meshes"])
+        self.engine.use_document(spec.get("document_id"))     # whose tab ids the sources name: see CrossTabInputs
         self.engine.install(spec.get("upstream"), spec.get("upstream_key"))
         if spec.get("data") is None:
             self.engine.new_tab(spec["kind"], spec.get("name"), tab=self.tab)

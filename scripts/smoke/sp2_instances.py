@@ -31,7 +31,7 @@ from conftest import add, rect_lines, region_refs, sketch_feature  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
 from freeshape import links as L  # noqa: E402
 from freeshape.assembly import AssemblyDoc  # noqa: E402
-from freeshape.document import Document  # noqa: E402
+from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.pyfeature import registry  # noqa: E402,F401  (loads the bundled plugins)
 
 SCREW = "sp:fasteners/iso4762"
@@ -52,7 +52,7 @@ def check(cond, msg):
 
 
 def plate_document():
-    doc = Document()
+    doc = PartStudioDoc()
     sid = sketch_feature(doc, lambda s: rect_lines(s, 0, 0, W, D))
     add(doc, "extrude", regions=region_refs(doc, sid), depth=T, op="new")
     for pts, dia in ((THROUGH, 2 * R_THROUGH), ([TAP], 2 * R_TAP)):

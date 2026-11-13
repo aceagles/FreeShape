@@ -89,6 +89,9 @@ class CrossTabInputs:
 
     def _external_doc(self, src, kind):
         """The view of the package the parent sent for a cross-Document source (see `external_id`)."""
+        cross = getattr(self._tabs, "cross", None)
+        if cross is not None:                  # in this process: read the pinned Version through the registry
+            return cross._cross_doc(src, kind)
         hit = self._tabs.provide(kind, tab=external_id(src))
         if hit is None:
             raise K.KernelError(f"Document “{src.get('document')}” at Version “{src.get('version')}” "
@@ -116,10 +119,10 @@ class CrossTabInputs:
 
     def variables(self, src):
         """{name: value} of the Variable Studio tab a "variable_studio_ref" source names (by tab id, uid, then
-        file path), live and unsaved; None if no tab matches. A Document.var_inputs callable. A pinned Version of
+        file path), live and unsaved; None if no tab matches. A PartStudioDoc.var_inputs callable. A pinned Version of
         another Document is the package the parent sent (None if it was not sent)."""
         with self._resolving(src):
-            if links.is_cross_link(src):
+            if links.is_cross_link(src, self.resolver.own_id):
                 try:
                     return dict(self._external_doc(src, "variables").values()[0])
                 except K.KernelError:
@@ -129,12 +132,14 @@ class CrossTabInputs:
 
     def studio(self, src):
         """The StudioPackage of the Part Studio tab `src` names (by tab id, uid, then file path), live and
-        unsaved: its parts and sketches as the parent publishes them. A Document.link_inputs callable. A worker
+        unsaved: its parts and sketches as the parent publishes them. A PartStudioDoc.link_inputs callable. A worker
         view carries the package the parent sent (`package`); otherwise it is read from the open tab. Raises
         KernelError when no tab matches."""
         with self._resolving(src):
-            if links.is_pinned(src):         # a pinned Version of another Document: the package the parent sent
-                return self._external_doc(src, "studio").package
+            if links.is_pinned(src, self.resolver.own_id):   # a pinned Version of another Document: the package the parent sent
+                doc = self._external_doc(src, "studio")
+                pkg = getattr(doc, "package", None)
+                return pkg if pkg is not None else self.resolver.resolve_studio(src)
             doc = self._provide("studio", src.get("uid"), src.get("path"), src.get("tab"))
             if doc is None:
                 raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")

@@ -36,7 +36,7 @@ from freeshape import doc_folder as DF  # noqa: E402
 from freeshape import features as F  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
 from freeshape import links as L  # noqa: E402
-from freeshape.document import Document  # noqa: E402
+from freeshape.document import PartStudioDoc  # noqa: E402
 from tests.test_assembly import face, mate  # noqa: E402
 
 GAP = 5.0
@@ -179,12 +179,12 @@ def run():
     for tid in (asm_id, base.id):
         os.remove(os.path.join(copy, fd.tab(tid).file))
     builds = []
-    orig = Document.compute
-    Document.compute = lambda self, *a, **k: (builds.append(self.name), orig(self, *a, **k))[1]
+    orig = PartStudioDoc.compute
+    PartStudioDoc.compute = lambda self, *a, **k: (builds.append(self.name), orig(self, *a, **k))[1]
     try:
-        again = Document.load(os.path.join(copy, lid_file))
+        again = PartStudioDoc.load(os.path.join(copy, lid_file))
     finally:
-        Document.compute = orig
+        PartStudioDoc.compute = orig
     T.check(not again.errors, again.errors)
     got = {k: shape_fingerprint(p.shape) for k, p in again.state.parts.items()}
     T.check(got == lid_fp and again.state.parts[f"{cfid}/1"].reference, "reopened Lid differs from the saved one")

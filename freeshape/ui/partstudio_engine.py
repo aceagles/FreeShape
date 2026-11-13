@@ -14,7 +14,7 @@ tab content is sent next, and a result that is already out of date is not drawn.
 What still runs on the GUI thread, because the engine contract has no output for it yet (I3.7): the cheap
 non-solid features (sketch, plane, variable -- the 2D solver and region faces) are re-run against the parts
 the engine returned, so the sketcher and the plane list keep working; and feature dialogs still build their
-previews with `Document.compute`. Opening a file also builds it once in `Document.load`.
+previews with `PartStudioDoc.compute`. Opening a file also builds it once in `PartStudioDoc.load`.
 """
 from __future__ import annotations
 
@@ -203,7 +203,7 @@ class StudioEngine(QObject):
 
     # ------------------------------------------------------------------ requests
     def _rebuild(self, rec):
-        """Replaces Document.rebuild: ask the engine; the Document's lists redraw now, its parts when they arrive."""
+        """Replaces PartStudioDoc.rebuild: ask the engine; the Document's lists redraw now, its parts when they arrive."""
         self._request(rec)
         rec.doc.notify()
 

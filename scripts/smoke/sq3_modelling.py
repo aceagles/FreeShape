@@ -41,7 +41,7 @@ from freeshape import features as F  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
 from freeshape import measure as M  # noqa: E402
 from freeshape import sketch_ops as OPS  # noqa: E402
-from freeshape.document import Document  # noqa: E402
+from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.sketch import Sketch  # noqa: E402
 from freeshape.ui import assembly_ui, dialogs  # noqa: E402
 from freeshape.ui.palette import search_commands  # noqa: E402
@@ -234,7 +234,7 @@ def vertex_at_top(doc, a):
 
 @step("extrude up to a vertex ends exactly at it and follows it when the upstream part changes")
 def _():
-    doc = Document()
+    doc = PartStudioDoc()
     sa = sketch_feature(doc, lambda s: rect_lines(s, 0, 0, 10, 10))
     fa = add(doc, "extrude", regions=region_refs(doc, sa), depth=17.0, op="new")
     a = next(iter(doc.state.parts.values()))

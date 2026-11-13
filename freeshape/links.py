@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 
 from . import kernel as K
-from .document import Document
+from .document import PartStudioDoc
 
 
 def _no_open_doc(uid, path):
@@ -139,7 +139,7 @@ class LinkResolver:
         self.find_open_studio = find_open_studio or _no_open_doc
         self.find_open_assembly = find_open_assembly or _no_open_doc
         self.flat_pattern_of = flat_pattern_of or _default_flat_pattern_of
-        self._load_document = load_document or Document.load
+        self._load_document = load_document or PartStudioDoc.load
         self._load_assembly = load_assembly or self._default_load_assembly
         self._loaded = {}          # abs path -> (mtime, doc), for studios/assemblies loaded from disk
         self._shape_cache = {}     # compound cache for drawing sources, keyed by (kind, uid/id, ...)
@@ -283,7 +283,7 @@ class LinkResolver:
         lies inside its folder -- the old uid/path flow then applies). Raises KernelError for a tab id the
         manifest doesn't have, a tab that failed to open, and a legacy path outside the Document folder,
         which is refused before any file is touched."""
-        if is_pinned(src, getattr(self.folder, "id", None)):
+        if is_pinned(src, getattr(self.folder, "id", None) or self.own_id):
             return self._cross_doc(src, kind)
         folder = self.folder
         if folder is None:
@@ -379,7 +379,7 @@ class LinkResolver:
         return None if studio is None else studio.state.named(_translate_part(studio, src.get("part")))
 
     def resolve_studio(self, src):
-        """The published output of the Part Studio `src` names (a Document.link_inputs callable): a
+        """The published output of the Part Studio `src` names (a PartStudioDoc.link_inputs callable): a
         StudioPackage of its parts and sketches, read from the studio's current state. Raises KernelError
         when the studio is not found."""
         from .engine.contract import plain
@@ -406,7 +406,7 @@ class LinkResolver:
         return pkg
 
     def resolve_variables(self, src):
-        """{name: value} of the Variable Studio tab `src` names inside the open Document (a Document.var_inputs
+        """{name: value} of the Variable Studio tab `src` names inside the open Document (a PartStudioDoc.var_inputs
         callable), or None when it names no tab of the Document. A source of another Document that cannot be read
         (no Version pinned, Document, Version or tab not found) is None too: the feature then says which."""
         try:

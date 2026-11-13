@@ -36,7 +36,7 @@ from freeshape import doc_folder as DF  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
 from freeshape import migrations as M  # noqa: E402
 from freeshape.assembly import AssemblyDoc  # noqa: E402
-from freeshape.document import Document  # noqa: E402
+from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.variable_studio import VariableStudioDoc  # noqa: E402
 
 
@@ -220,7 +220,7 @@ def _():
 def _():
     doc = build_document("AsPS")
     asm_file = os.path.join(doc.path, doc.tab("T2").file)
-    msg = raises(K.KernelError, lambda: Document.load(asm_file), "Assembly")
+    msg = raises(K.KernelError, lambda: PartStudioDoc.load(asm_file), "Assembly")
     check(msg.strip(), "empty message")
 
 

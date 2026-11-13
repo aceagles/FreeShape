@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from freeshape import features as F, kernel as K  # noqa: E402
-from freeshape.document import Document  # noqa: E402
+from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.sketch import Sketch  # noqa: E402
 
 TOP = {"kind": "std", "name": "Top"}
@@ -60,7 +60,7 @@ def check(doc, when):
 
 
 def main():
-    doc = Document()
+    doc = PartStudioDoc()
     extrude(doc, rectangle(doc, 0.0, 0.0, 40.0, 20.0), depth=10.0, op="new")
     extrude(doc, rectangle(doc, 15.0, 5.0, 10.0, 10.0), end="through", op="remove")
     assert len(doc.features) == 4, f"expected 4 features, found {len(doc.features)}"

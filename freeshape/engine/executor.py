@@ -1,5 +1,5 @@
 """The in-process executor: every tab runs in this process, wrapping the existing Part Studio
-(document.Document), AssemblyDoc and DrawingDoc. I3.2 runs the same contract with one worker process per
+(document.PartStudioDoc), AssemblyDoc and DrawingDoc. I3.2 runs the same contract with one worker process per
 tab (ADR 0002); everything `outputs` returns is plain data for that reason.
 
 Staleness follows FreeCAD's touched-then-recompute idea at tab granularity: every applied edit bumps the
@@ -16,7 +16,7 @@ import numpy as np
 
 from .. import assembly as A
 from .. import drawing as D
-from ..document import Document
+from ..document import PartStudioDoc
 from ..variable_studio import VariableStudioDoc
 from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
                        DrawingOutputs, Engine, EngineError, InstanceOut, MateOut, StudioOutputs, VariablesOutputs,
@@ -383,8 +383,19 @@ class InProcessEngine(Engine):
         self.encoder = Encoder(meshes=meshes)
         self.inputs = CrossTabInputs(self)
         self.links = self.inputs.resolver
+        self.document_id = None        # the Document these tabs belong to (`use_document`)
+        self.cross = None              # resolves a source naming another Document, pinned to a Version
         self._tabs: dict[str, _Tab] = {}
         self._counter = 0
+
+    def use_document(self, document_id, registry=None):
+        """Say which Document the tabs belong to: a source naming another Document is then never matched to a
+        tab, and is read at its pinned Version through `registry` (the rule of ProcessEngine.use_document)."""
+        self.document_id = document_id
+        self.links.own_id = document_id
+        self.cross = links.LinkResolver(registry=registry) if registry is not None else None
+        if self.cross is not None:
+            self.cross.own_id = document_id
 
     # ------------------------------------------------------------------ tab registry
     def _new_id(self):
@@ -418,7 +429,7 @@ class InProcessEngine(Engine):
         path = os.path.abspath(path)
         with self.inputs.recording() as used:
             if kind == "studio":
-                doc = Document.load(path)
+                doc = PartStudioDoc.load(path)
                 doc.var_inputs = self.inputs.variables
                 doc.link_inputs = self.inputs.studio
                 if any(links.feature_source(f) is not None for f in doc.features):
@@ -437,7 +448,7 @@ class InProcessEngine(Engine):
         if kind not in KINDS:
             raise EngineError(f"unknown tab kind {kind!r}")
         if kind == "studio":
-            doc = Document()
+            doc = PartStudioDoc()
             doc.var_inputs = self.inputs.variables
             doc.link_inputs = self.inputs.studio
         elif kind == "variables":

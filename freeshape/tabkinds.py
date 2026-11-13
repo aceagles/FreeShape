@@ -161,7 +161,7 @@ def _lazy(module, name, attr=None):
 
 
 for _kind, _ext, _tag, _chain, _mod, _cls, _label, _plural in (
-        ("studio", ".fshape", "freeshape", "document", ".document", "Document", "Part Studio", "Part Studios"),
+        ("studio", ".fshape", "freeshape", "document", ".document", "PartStudioDoc", "Part Studio", "Part Studios"),
         ("assembly", ".fasm", "freeshape-assembly", "assembly", ".assembly", "AssemblyDoc", "Assembly",
          "Assemblies"),
         ("drawing", ".fdwg", "freeshape-drawing", "drawing", ".drawing", "DrawingDoc", "Drawing", "Drawings"),

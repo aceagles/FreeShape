@@ -947,7 +947,7 @@ def run_variable(state, f):
 
 def run_variable_studio_ref(state, f):
     """Put a Variable Studio's evaluated variables into state.vars at this point in the history. A later
-    "variable" feature of the same name overrides it. Document.compute hands the Studio's values in as
+    "variable" feature of the same name overrides it. PartStudioDoc.compute hands the Studio's values in as
     params["resolved"] (it also hashes them into the rebuild cache key); None means the link found nothing."""
     values = f["params"].get("resolved")
     if values is None:
@@ -971,7 +971,7 @@ def run_variable_studio_ref(state, f):
 
 def run_derived(state, f):
     """Bring parts and sketches of another Part Studio into this one, with their element names (ADR 0003).
-    Document.compute hands in the source's links.StudioPackage as params["resolved"] (None: the link found
+    PartStudioDoc.compute hands in the source's links.StudioPackage as params["resolved"] (None: the link found
     nothing) and keys the rebuild on its digest. Nothing else crosses (ADR 0007: no variables).
 
     Part k (1-based) of params["parts"] becomes part `<fid>/<k>`, so a source that gains parts leaves the ids
@@ -1207,7 +1207,7 @@ def context_listing(get, key):
 def run_context(state, f):
     """Restore the neighbours of a stored capture (ADR 0004) as reference parts `<fid>/<k>`, each placed as
     captured relative to the edited instance, its element names carried with a CTX fragment. Reads only blobs
-    (Document.compute hands in `get` as params["resolved"]) and never the Assembly or its source studios."""
+    (PartStudioDoc.compute hands in `get` as params["resolved"]) and never the Assembly or its source studios."""
     from . import blobstore as B
     from .pyfeature import host
     p, fid = f["params"], f["id"]

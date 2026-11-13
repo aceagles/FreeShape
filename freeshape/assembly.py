@@ -982,6 +982,10 @@ class AssemblyDoc:
             a, b = m["a"]["inst"], m["b"]["inst"]
             if a in parent and b in parent:
                 parent[find(a)] = find(b)
+        for g in self.groups:                       # a group is one body, whatever mates it has
+            ids = [i for i in g["instances"] if i in parent]
+            for i in ids[1:]:
+                parent[find(i)] = find(ids[0])
         groups = {}
         for iid in parent:
             groups.setdefault(find(iid), set()).add(iid)
@@ -1241,8 +1245,15 @@ class AssemblyDoc:
             if len(r) and float(np.linalg.norm(r)) > 1e-4 * max(L, 1):
                 self.errors[m["id"]] = "Can't be solved together with the other mates (shown red)"
         # degrees of freedom of the free instances
-        fixed = {i["id"] for i in self.instances if i.get("fixed")}
-        free = [i["id"] for i in self.instances if i["id"] not in fixed and i["id"] in self.parts]
+        # a group is one body: one set of six variables, and one fixed member fixes the whole group
+        gkey = {iid: g["id"] for g in self.groups for iid in g["instances"]}
+        body = lambda iid: gkey.get(iid, iid)
+        fixed = {body(i["id"]) for i in self.instances if i.get("fixed")}
+        members: dict = {}
+        for i in self.instances:
+            if i["id"] in self.parts and body(i["id"]) not in fixed:
+                members.setdefault(body(i["id"]), []).append(i["id"])
+        free = list(members)
         n = 6 * len(free)
         if n == 0:
             self.dof = 0
@@ -1253,14 +1264,14 @@ class AssemblyDoc:
             return
         idx = {iid: k for k, iid in enumerate(free)}
         pivots = {}
-        for iid in free:
-            s = self.world_shape(iid)
-            a, b = K.bbox(s) if s is not None else (np.zeros(3), np.zeros(3))
-            pivots[iid] = (a + b) / 2
+        for key in free:
+            boxes = [K.bbox(s) if s is not None else (np.zeros(3), np.zeros(3))
+                     for s in (self.world_shape(iid) for iid in members[key])]
+            pivots[key] = (np.min([b[0] for b in boxes], axis=0) + np.max([b[1] for b in boxes], axis=0)) / 2
         r0 = self._residuals(ok, Ts, frames, L)
         J = np.zeros((len(r0), n))
         h = 1e-6 * L
-        for iid, k in idx.items():
+        for key, k in idx.items():
             for j in range(6):
                 T2 = dict(Ts)
                 if j < 3:
@@ -1269,11 +1280,12 @@ class AssemblyDoc:
                     R = rodrigues(w)
                     D = np.eye(4)
                     D[:3, :3] = R
-                    D[:3, 3] = pivots[iid] - R @ pivots[iid]
+                    D[:3, 3] = pivots[key] - R @ pivots[key]
                 else:
                     D = np.eye(4)
                     D[j - 3, 3] = h
-                T2[iid] = D @ Ts[iid]
+                for iid in members[key]:
+                    T2[iid] = D @ Ts[iid]
                 J[:, 6 * k + j] = (self._residuals(ok, T2, frames, L) - r0) / h
         sv = np.linalg.svd(J, compute_uv=False) if J.size else np.zeros(0)
         rank = int(np.sum(sv > 1e-6 * (sv[0] if len(sv) else 1)))
@@ -1284,15 +1296,20 @@ class AssemblyDoc:
         inst = self.instance(iid)
         if inst is None or inst.get("fixed"):
             return 0
-        mates = [m for m in self._active_mates() if iid in (m["a"]["inst"], m["b"]["inst"])
+        g = self.group_of(iid)
+        ids = list(g["instances"]) if g is not None else [iid]     # a group moves as one body
+        if any((self.instance(i) or {}).get("fixed") for i in ids):
+            return 0
+        ids = [i for i in ids if i in self.parts] or [iid]
+        mates = [m for m in self._active_mates() if (m["a"]["inst"] in ids or m["b"]["inst"] in ids)
                  and m["id"] not in self.errors]
         if not mates:
             return 6
         L = self.length_scale()
         frames = {m["id"]: (frame_from_json(m["a"]["frame"]), frame_from_json(m["b"]["frame"])) for m in mates}
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
-        a, b = K.bbox(self.world_shape(iid))
-        c = (a + b) / 2
+        boxes = [K.bbox(self.world_shape(i)) for i in ids]
+        c = (np.min([b[0] for b in boxes], axis=0) + np.max([b[1] for b in boxes], axis=0)) / 2
         r0 = self._residuals(mates, Ts, frames, L)
         J = np.zeros((len(r0), 6))
         h = 1e-6 * L
@@ -1308,7 +1325,8 @@ class AssemblyDoc:
             else:
                 D = np.eye(4)
                 D[j - 3, 3] = h
-            T2[iid] = D @ Ts[iid]
+            for i in ids:
+                T2[i] = D @ Ts[i]
             J[:, j] = (self._residuals(mates, T2, frames, L) - r0) / h
         sv = np.linalg.svd(J, compute_uv=False)
         return 6 - int(np.sum(sv > 1e-6 * (sv[0] if len(sv) else 1)))

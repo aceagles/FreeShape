@@ -435,6 +435,21 @@ def face_info(face) -> dict:
     return info
 
 
+def face_outward_normal(face):
+    """The unit normal of a face at its middle, pointing out of the material.
+
+    `face_info(face)["n"]` is the plane axis flipped for a reversed face. That is the outward normal only when
+    the plane's coordinate system is right-handed; on a left-handed plane (some STEP-imported and revolved
+    faces) it points into the part. This takes the surface's own normal and flips it for a reversed face."""
+    from OCP.BRepLProp import BRepLProp_SLProps
+    ad = BRepAdaptor_Surface(face)
+    u = (ad.FirstUParameter() + ad.LastUParameter()) / 2
+    v = (ad.FirstVParameter() + ad.LastVParameter()) / 2
+    n = _np(BRepLProp_SLProps(ad, u, v, 1, 1e-7).Normal())
+    n = n / np.linalg.norm(n)
+    return -n if face.Orientation() == TopAbs_REVERSED else n
+
+
 def face_loops(face) -> int:
     from OCP.TopAbs import TopAbs_WIRE
     n = 0

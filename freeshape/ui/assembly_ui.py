@@ -1711,8 +1711,10 @@ class AssemblyController:
         p.relationClicked.connect(self.select_relation)
         p.relationDouble.connect(self.edit_relation)
         p.relationContext.connect(self.relation_menu)
+        from PySide6.QtCore import QObject
         from PySide6.QtGui import QAction
-        self.act_edit_in_context = QAction("Edit in context", w)
+        # parented on the window so it is found by name; tests build this controller on a plain stand-in window
+        self.act_edit_in_context = QAction("Edit in context", w if isinstance(w, QObject) else None)
         self.act_edit_in_context.setObjectName("edit_in_context")
         self.act_edit_in_context.triggered.connect(lambda _=False: self.edit_in_context())
 

@@ -788,11 +788,9 @@ class Sketcher:
             if ent["type"] == "point":
                 continue
             used.update(sk.entity_points(eid))
-            pts = sk.polyline(eid, 64)
-            if len(pts) < 2:
-                continue
-            S = np.array([self.scr(vp, q) for q in pts])
-            if boxsel.polyline_selected(S, rect, crossing):
+            hits = [boxsel.polyline_selected(np.array([self.scr(vp, q) for q in pts]), rect, crossing)
+                    for pts in sk.polylines(eid, 64) if len(pts) >= 2]
+            if hits and (any(hits) if crossing else all(hits)):
                 ids.append(eid)
         for pid, q in sk.points.items():
             if pid in used:
@@ -1725,7 +1723,7 @@ class Sketcher:
                 d = sk.P(e_["p2"]) - sk.P(e_["p1"])
                 # copies go towards the side you clicked on (away from the selection), not the
                 # way the line happened to be drawn
-                pts = np.vstack([sk.polyline(i, 16) for i in sel])
+                pts = np.vstack([o for i in sel for o in sk.polylines(i, 16)])
                 if d @ (uv - pts.mean(axis=0)) < 0:
                     d = -d
                 vals = {"count": 3, "spacing": round(max(OPS.extent_along(sk, sel, d) * 1.25, self._nice(vp, 40)), 3)}

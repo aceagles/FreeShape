@@ -392,12 +392,23 @@ def _crossings_along(sk: Sketch, oid, a, d):
             return out
         for sgn in (-1, 1):
             out.append((-B + sgn * math.sqrt(disc)) / (2 * A))
+    elif o["type"] == "spline":
+        S = sk.polyline(oid)                          # the sampled curve the solver holds points to
+        for c, e in zip(S[:-1], S[1:]):
+            f = e - c
+            den = d[0] * f[1] - d[1] * f[0]
+            if abs(den) < 1e-12:
+                continue
+            w = c - a
+            s = (w[0] * d[1] - w[1] * d[0]) / den
+            if -1e-9 <= s <= 1 + 1e-9:
+                out.append((w[0] * f[1] - w[1] * f[0]) / den)
     return out
 
 
 def extend(sk: Sketch, lid: str, end: str):
     """Lengthen one end of line `lid` ("p1" or "p2") along its own direction to the nearest crossing with
-    another line, circle, arc or ellipse. The end point moves there and gets a point_on constraint to that curve.
+    another line, circle, arc, ellipse or spline. The end point moves there and gets a point_on constraint to that curve.
     Returns {"point", "target", "from", "to"}, or None (sk untouched) when nothing lies beyond the end.
     Raises ValueError (sk untouched) when the end point is shared with other geometry, or when the
     constraints already on the line, such as a length dimension, would not let the end move."""

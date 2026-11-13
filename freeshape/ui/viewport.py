@@ -330,16 +330,16 @@ class Viewport(QOpenGLWidget):
                     lo = np.minimum(lo, m.verts.min(0))
                     hi = np.maximum(hi, m.verts.max(0))
             for eid in sr.sketch.entities:
-                pts = sr.sketch.polyline(eid)
-                for u, v in pts:
-                    w = sr.plane.to_world(u, v)
-                    lo, hi = np.minimum(lo, w), np.maximum(hi, w)
+                for pts in sr.sketch.polylines(eid):
+                    for u, v in pts:
+                        w = sr.plane.to_world(u, v)
+                        lo, hi = np.minimum(lo, w), np.maximum(hi, w)
         if self.sketcher is not None:
             sk = self.sketcher
             # only real geometry counts (the lone origin point has no size)
             pts = [sk.plane.to_world(*c["pos"]) for c in sk.sk.constraints if c.get("pos")]
             for eid in sk.sk.entities:
-                pts += [sk.plane.to_world(u, v) for u, v in sk.sk.polyline(eid, 16)]
+                pts += [sk.plane.to_world(u, v) for o in sk.sk.polylines(eid, 16) for u, v in o]
             for w in pts:
                 lo, hi = np.minimum(lo, w), np.maximum(hi, w)
         if not np.all(np.isfinite(lo)):
@@ -1773,8 +1773,10 @@ class Viewport(QOpenGLWidget):
                 for eid, e in sr.sketch.entities.items():
                     if e["type"] == "point" or eid in helpers:
                         continue
-                    pts = np.array([sr.plane.to_world(u, v) for u, v in sr.sketch.polyline(eid, 32)], float)
-                    if len(pts) >= 2 and boxsel.polyline_selected(self.cam.to_screen(pts)[:, :2], rect, crossing):
+                    hits = [boxsel.polyline_selected(self.cam.to_screen(np.array(
+                        [sr.plane.to_world(u, v) for u, v in o], float))[:, :2], rect, crossing)
+                        for o in sr.sketch.polylines(eid, 32) if len(o) >= 2]
+                    if hits and (any(hits) if crossing else all(hits)):
                         out.append(Pick("sketch_line", (fid, eid)))
             if want_reg:
                 for ri, m in enumerate(meshes):

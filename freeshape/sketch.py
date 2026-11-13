@@ -416,6 +416,22 @@ class Sketch:
                     B = abs(rad(g, e)) + 1e-12
                     return [(math.sqrt((x / A) ** 2 + (y / B) ** 2) - 1.0) * min(A, B)]
                 return f, pkeys(p) + ekeys(e)
+            if typ(1) == "spline":
+                pids, closed = list(ents[e]["pts"]), ents[e].get("closed", False)
+
+                def f(g):                   # signed distance to the nearest piece of the sampled spline
+                    from . import kernel as K
+                    q = pt(g, p)
+                    S = K.spline_sample([pt(g, i) for i in pids], closed, 64)
+                    if len(S) < 2:
+                        return [float(np.linalg.norm(q - S[0])) if len(S) else 0.0]
+                    A, D = S[:-1], S[1:] - S[:-1]
+                    L2 = np.maximum((D * D).sum(1), 1e-18)
+                    s_ = np.clip(((q - A) * D).sum(1) / L2, 0.0, 1.0)
+                    W = q - (A + s_[:, None] * D)
+                    k = int(np.argmin((W * W).sum(1)))
+                    return [float((D[k, 0] * (q - A[k])[1] - D[k, 1] * (q - A[k])[0]) / math.sqrt(L2[k]))]
+                return f, pkeys(p) + ekeys(e)
             return None, []
         if t in ("horizontal", "vertical"):
             j = 1 if t == "horizontal" else 0

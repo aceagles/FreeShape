@@ -507,7 +507,7 @@ class DrawingPanel(QWidget):
             else:
                 g = doc.dim_geometry(a)
                 label = doc.dim_text(a, g[2]) if g else "?"
-                if any(isinstance(a.get(k), dict) and a[k].get("lost") for k in ("a", "b", "b2")):
+                if any(isinstance(a.get(k), dict) and a[k].get("lost") for k in DW.DIM_END_KEYS):
                     label += "  (lost its edge)"
                 ic = "dim"
             it = QTreeWidgetItem([label])
@@ -700,7 +700,7 @@ class DimDialog(QDialog):
         self.setWindowTitle("Dimension")
         g = doc.dim_geometry(a)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel(f"Measured: <b>{DW.fmt_value(g[2], 4) if g else '?'}</b> mm"))
+        lay.addWidget(QLabel(f"Measured: <b>{DW.fmt_value(g[2], 4) if g else '?'}</b> {'°' if a['type'] == 'ang' else 'mm'}"))
         f = QFormLayout()
         self.dp = _combo([("Automatic", None)] + [(str(i), i) for i in range(0, 5)], a.get("dp"))
         self.prefix = QLineEdit(a.get("prefix", ""))
@@ -1490,14 +1490,8 @@ class DrawingController:
                 self.hint = "Click where the length should go — or click another edge (distance between them) " \
                             "or a point."
             else:
-                if picks[0]["type"] == "line":
-                    d1 = DW._unit(np.asarray(picks[0]["b"]) - picks[0]["a"])
-                    d2 = DW._unit(np.asarray(s["b"]) - s["a"])
-                    if abs(d1[0] * d2[1] - d1[1] * d2[0]) > 1e-3:
-                        self.flash("Those edges aren't parallel — pick parallel edges (angles aren't supported yet)")
-                        return
                 picks.append({**s, "ready": True})
-                self.hint = place
+                self.hint = "Click where the angle should go." if self._is_angle(picks[0], s) else place
         else:   # a point
             if not picks:
                 picks.append(s)
@@ -1532,6 +1526,11 @@ class DrawingController:
             a.update(type="lin", a=A, b=B, orient=self._orient(xa, xb, P))
             return a
         second = picks[1]
+        if self._is_angle(first, second):
+            # two edges that cross: the angle between them, in the quadrant the position lies in
+            a.update(type="ang", a=dict(first["p3"][0]), b=dict(first["p3"][1]),
+                     c=dict(second["p3"][0]), d=dict(second["p3"][1]))
+            return a
         if "line" in (first["type"], second["type"]):
             # a point (or the end of the other edge) and an edge: the square distance to that edge
             line, other = (second, first) if second["type"] == "line" else (first, second)
@@ -1543,6 +1542,15 @@ class DrawingController:
         a.update(type="lin", a=end(first), b=end(second),
                  orient=self._orient(np.asarray(first["xy"]), np.asarray(second["xy"]), P))
         return a
+
+    @staticmethod
+    def _is_angle(p, q):
+        """Are two picks edges that are not parallel (so they get an angular dimension)?"""
+        if p["type"] != "line" or q["type"] != "line":
+            return False
+        d1 = DW._unit(np.asarray(p["b"]) - p["a"])
+        d2 = DW._unit(np.asarray(q["b"]) - q["a"])
+        return abs(d1[0] * d2[1] - d1[1] * d2[0]) > 1e-3
 
     def _is_cylinder_width(self, v, l1, l2):
         """Are two parallel edges in a view the two sides of the same cylinder (seen from the side)?"""

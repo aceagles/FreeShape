@@ -65,6 +65,7 @@ TB_W, TB_H = 180.0, 36.0   # title block
 TEXT_H = 3.5               # dimension / note text height (mm on paper), ISO 129
 ARROW_L, ARROW_W = 3.0, 0.9
 GAP = 1.0                  # gap between a part and its extension line
+DIM_END_KEYS = ("a", "b", "b2", "c", "d")   # annotation keys that hold a reference to a model point
 OVERSHOOT = 2.0            # extension lines run past the dimension line by this much
 
 TITLE_FIELDS = [("title", "Title"), ("number", "Drawing number"), ("rev", "Revision"), ("drawn", "Drawn by"),
@@ -792,7 +793,7 @@ class DrawingDoc:
         """After the model changed: move each dimension end onto its feature in the new model."""
         self._recovered, self._end_errors = set(), {}
         for a in self.annots:
-            for k in ("a", "b", "b2"):
+            for k in DIM_END_KEYS:
                 end = a.get(k)
                 if not isinstance(end, dict):
                     continue
@@ -828,7 +829,7 @@ class DrawingDoc:
         a["id"] = self.new_id("D" if a["type"] != "note" else "N")
         named = self._named()
         if named is not None:
-            for k in ("a", "b", "b2"):
+            for k in DIM_END_KEYS:
                 if isinstance(a.get(k), dict) and a[k].get("kind") != "uv" and a[k].get("p") is not None:
                     self._name_end(a[k], named)
         self.annots.append(a)
@@ -867,17 +868,41 @@ class DrawingDoc:
             pd = _unit(L2 - L1)
             F = L1 + pd * float((A - L1) @ pd)
             return ("lin", (A, F, "perp"), val)
+        if t == "ang":
+            return self._ang_geometry(a, P, v)
         if t in ("dia", "rad"):
             C = P(a["a"])
             r = float(a["a"].get("r", 1.0))
             return (t, (C, r * self.view_scale(v)), (2 * r if t == "dia" else r))
         return None
 
+    def _ang_geometry(self, a, P, v):
+        """An angular dimension between two straight edges (a-b and c-d): ("ang", (V, r1, r2, R, ends1, ends2), degrees).
+        V is where the two lines cross, r1 and r2 the unit directions of the two rays that bound the chosen
+        quadrant (the one the placement position lies in), R the arc radius (distance from V to the position)."""
+        p1, p2, p3, p4 = (np.asarray(P(a[k]), float) for k in ("a", "b", "c", "d"))
+        u1, u2 = _unit(p2 - p1), _unit(p4 - p3)
+        det = u1[0] * u2[1] - u1[1] * u2[0]
+        if abs(det) < 1e-9:
+            return None
+        w = p3 - p1
+        V = p1 + u1 * float((w[0] * u2[1] - w[1] * u2[0]) / det)
+        pos = np.asarray(a.get("pos", [0, 0]), float)
+        q = pos - V
+        s = (q[0] * u2[1] - q[1] * u2[0]) / det          # q = s*u1 + t*u2
+        t = (u1[0] * q[1] - u1[1] * q[0]) / det
+        r1 = u1 if s >= 0 else -u1
+        r2 = u2 if t >= 0 else -u2
+        val = math.degrees(math.acos(max(-1.0, min(1.0, float(r1 @ r2)))))
+        R = float(np.linalg.norm(q))
+        return ("ang", (V, r1, r2, R, (p1, p2), (p3, p4)), val)
+
     def dim_text(self, a, value):
         if a.get("text"):
             return a["text"]
         pre = {"dia": "Ø", "rad": "R"}.get(a["type"], "")
-        return f"{a.get('prefix', '')}{pre}{fmt_value(value, a.get('dp'))}{a.get('suffix', '')}"
+        post = "°" if a["type"] == "ang" else ""
+        return f"{a.get('prefix', '')}{pre}{fmt_value(value, a.get('dp'))}{post}{a.get('suffix', '')}"
 
     # ------------------------------------------------------------------ building the picture
     def items(self):
@@ -1109,7 +1134,7 @@ class DrawingDoc:
         if g is None:
             return
         kind, data, value = g
-        lost = any(isinstance(a.get(k), dict) and a[k].get("lost") for k in ("a", "b", "b2"))
+        lost = any(isinstance(a.get(k), dict) and a[k].get("lost") for k in DIM_END_KEYS)
         layer = "DIM_LOST" if lost else "DIM"
         own = a["id"]
         text = self.dim_text(a, value)
@@ -1158,6 +1183,9 @@ class DrawingDoc:
             at = at + up * 0.8
             out.append(("text", layer, own, tuple(at), text, TEXT_H, ang, "center", "bottom"))
             return
+        if kind == "ang":
+            self._ang_items(out, layer, own, data, text, a)
+            return
         C, R = data
         C = np.asarray(C, float)
         dv = pos - C
@@ -1193,6 +1221,37 @@ class DrawingDoc:
             rd = np.array([math.cos(math.radians(ang)), math.sin(math.radians(ang))])
             up = np.array([-rd[1], rd[0]])
             out.append(("text", layer, own, tuple(pos + up * 0.8), text, TEXT_H, ang, "center", "bottom"))
+
+    def _ang_items(self, out, layer, own, data, text, a):
+        """Angular dimension: an arc about the vertex with an arrowhead at each end, extension lines where the
+        arc runs past an edge, and the text just outside the arc on the bisector."""
+        V, r1, r2, R, ends1, ends2 = data
+        V, r1, r2 = np.asarray(V, float), np.asarray(r1, float), np.asarray(r2, float)
+        ends1, ends2 = [np.asarray(q, float) for q in ends1], [np.asarray(q, float) for q in ends2]
+        R = max(R, 2 * ARROW_L + 1.0)
+        a1 = math.degrees(math.atan2(r1[1], r1[0]))
+        a2 = math.degrees(math.atan2(r2[1], r2[0]))
+        if (a2 - a1) % 360.0 > 180.0:                      # run counter-clockwise from the first ray to the second
+            a1, a2 = a2, a1
+            r1, r2 = r2, r1
+        while a2 < a1:
+            a2 += 360.0
+        out.append(("arc", layer, own, tuple(V), R, a1, a2))
+        ccw = lambda r: np.array([-r[1], r[0]])
+        self._arrow(out, own, V + r1 * R, -ccw(r1))
+        self._arrow(out, own, V + r2 * R, ccw(r2))
+        # extension lines: from the far end of each edge (if the arc lies beyond it) out past the arc
+        for r in (r1, r2):
+            ends = ends1 if abs(float(r @ _unit(ends1[1] - ends1[0]))) >= abs(float(r @ _unit(ends2[1] - ends2[0]))) \
+                else ends2
+            reach = max(float((q - V) @ r) for q in ends)
+            if reach < R:
+                s0 = reach + GAP if reach > 0 else 0.0
+                out.append(("line", layer, own, tuple(V + r * s0), tuple(V + r * (R + OVERSHOOT))))
+        bis = r1 + r2
+        bis = _unit(bis) if np.linalg.norm(bis) > 1e-9 else ccw(r1)
+        at = V + bis * (R + 0.8 + TEXT_H / 2)
+        out.append(("text", layer, own, tuple(at), text, TEXT_H, 0.0, "center", "center"))
 
     # ------------------------------------------------------------------ files
     def to_json(self, embed=True):
@@ -1395,7 +1454,7 @@ def _ezdxf_dim(doc, msp, a, k, sc):
     if g is None:
         return
     kind, data, value = g
-    lost = any(isinstance(a.get(x), dict) and a[x].get("lost") for x in ("a", "b", "b2"))
+    lost = any(isinstance(a.get(x), dict) and a[x].get("lost") for x in DIM_END_KEYS)
     S = lambda p: (float(p[0]) * k, float(p[1]) * k)
     v = doc.view(a.get("view"))
     sv = doc.view_scale(v) if v is not None else sc      # the view's own scale, else the sheet's
@@ -1413,7 +1472,19 @@ def _ezdxf_dim(doc, msp, a, k, sc):
         text = f"{a.get('prefix', '')}<>{a.get('suffix', '')}"
     at = {"layer": "DIM_LOST" if lost else "DIM"}
     pos = np.asarray(a.get("pos", [0, 0]), float)
-    if kind == "lin":
+    if kind == "ang":
+        V, r1, r2, R = (np.asarray(x, float) for x in data[:4])
+        a1 = math.atan2(r1[1], r1[0])
+        if (math.atan2(r2[1], r2[0]) - a1) % (2 * math.pi) > math.pi:
+            r1, r2 = r2, r1                  # counter-clockwise from the first line to the second
+        ov.pop("dimlfac")                    # an angle is not scaled
+        ov["dimadec"] = ov["dimdec"]
+        if not a.get("text"):
+            text = f"{a.get('prefix', '')}<>{a.get('suffix', '')}"
+        mid = _unit(r1 + r2)
+        d = msp.add_angular_dim_2l(base=S(V + mid * R), line1=(S(V), S(V + r1 * R)), line2=(S(V), S(V + r2 * R)),
+                                   text=text, dimstyle="Standard", override=ov, dxfattribs=at)
+    elif kind == "lin":
         A, B, o = (np.asarray(x, float) if not isinstance(x, str) else x for x in data)
         if o in ("h", "v"):
             d = msp.add_linear_dim(base=S(pos), p1=S(A), p2=S(B), angle=0 if o == "h" else 90, text=text,

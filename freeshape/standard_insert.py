@@ -287,3 +287,35 @@ def apply_insert(doc, plan, lengths_by_size=None, base_params=None):
         doc.undo()
         raise
     return {"instances": iids, "mates": mids}
+
+
+def insert_free(doc, type_id, params, quantity=1):
+    """Insert `quantity` free (unmated) instances of Standard part `type_id`, all with `params`, in ONE undo step.
+
+    Each instance is placed by AssemblyDoc.insert beside what is already there, so the copies sit side by
+    side and clear of each other. Returns ``{"instances": [iid, ...], "mates": []}``. A bad type, params or
+    quantity raises KernelError before anything changes; a failure part way undoes the step."""
+    import copy
+    from .pyfeature import registry
+    if not isinstance(quantity, int) or quantity < 1:
+        raise K.KernelError(f"Quantity must be a whole number of at least 1, not {quantity!r}")
+    cls = registry.standard_part(type_id)
+    if cls is None:
+        raise K.KernelError(f"Standard part {type_id} is not installed")
+    pid = type_id.split("/")[0][len(registry.STANDARD_PREFIX):]
+    try:
+        clean = cls().validate(dict(params or {}))
+    except Exception as e:
+        raise K.KernelError(f'Standard part {type_id} (plugin "{pid}"): {e}')
+    info = registry.plugin(pid)
+    src = {"kind": "standard", "type": type_id, "plugin": pid,
+           "plugin_version": info.version if info else "", "params": copy.deepcopy(clean)}
+    doc.checkpoint()
+    iids = []
+    try:
+        for _ in range(quantity):
+            iids.append(doc.insert(src, checkpoint=False))
+    except Exception:
+        doc.undo()
+        raise
+    return {"instances": iids, "mates": []}

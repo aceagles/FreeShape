@@ -294,6 +294,16 @@ class ProcessEngine(Engine):
                         key.append((ext[0], ext[2]))
                 continue
             u = self._match(src)
+            if u is not None and u in seen and u.kind == "studio" and u.tab not in pkgs:
+                # I1.8: a source that leads back to `t`. Its consumer gets an empty studio that is in error, so the
+                # Derived that closes the loop turns red naming it; the edge keeps the cycle in the Link graph.
+                loop = " -> ".join(self._label(x.tab) for x in (seen[seen.index(u):] + (u,)))
+                msg = "Circular link: " + loop
+                wants.setdefault(u.tab, set()).add(norm_key(src.get("part")))
+                pkgs[u.tab] = {"kind": "studio", "uid": u.uid, "name": str(u.name), "path": u.path, "parts": [],
+                               "error": msg}
+                key.append((u.tab, ("cycle", msg)))
+                continue
             if u is None or u in seen:
                 continue
             wants.setdefault(u.tab, set()).add(norm_key(src.get("part")))

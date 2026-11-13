@@ -157,7 +157,8 @@ class _WorkerEngine(InProcessEngine):
                                      shape=parts[lp["id"]].shape, names=lp["names"], hash=lp["hash"])
              for lp in pkg["parts"]},
             {sk["id"]: SketchOut(**sk) for sk in pkg.get("sketches") or ()}, dict(pkg.get("aliases") or {}),
-            connectors={c["id"]: dict(c) for c in pkg.get("connectors") or ()})
+            connectors={c["id"]: dict(c) for c in pkg.get("connectors") or ()},
+            error=pkg.get("error") or "")
         out.digest = out.digest_for(None)
         return out
 
@@ -242,7 +243,7 @@ class _Worker:
         pkg = {"kind": t.kind, "uid": getattr(doc, "uid", None), "name": str(doc.name), "path": doc.path}
         if t.kind == "studio":
             st = doc.state
-            pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(st.vars)),
+            pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(st.vars)), error=links._studio_error(doc),
                        parts=[lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
                               if not p.reference],      # I5.3: Context bodies are reference only
                        sketches=[plain(asdict(sketch_out(fid, (doc.feature(fid) or {}).get("name", fid), res)))

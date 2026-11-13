@@ -33,11 +33,15 @@ def _round_T(T):
 def live_package(kind, doc, enc):
     """What a consumer can read of a live tab document (in this process)."""
     if kind == "studio":
-        return {"parts": {str(p.id): enc.brep(p.shape)[1] for p in doc.state.parts.values()
+        view = {"parts": {str(p.id): enc.brep(p.shape)[1] for p in doc.state.parts.values()
                           if not p.reference},      # I5.3: Context bodies are reference only
                 "hidden": sorted(map(str, doc.hidden_parts)), "aliases": dict(getattr(doc, "part_aliases", {})),
                 "sketches": {str(fid): sketch_out(fid, "", res).hash for fid, res in doc.state.sketches.items()},
                 "connectors": {str(fid): connector_out(fid, c).hash for fid, c in doc.state.connectors.items()}}
+        error = links._studio_error(doc)
+        if error:                    # I1.8: a source that turns red rekeys its consumers (clean: digest unchanged)
+            view["error"] = error
+        return view
     if kind == "variables":
         return {"vars": dict(doc.values()[0])}
     if kind == "assembly":
@@ -54,11 +58,14 @@ def lean_package(pkg):
     """The same package from a worker's `upstream` output (worker._Worker.upstream)."""
     kind = pkg["kind"]
     if kind == "studio":
-        return {"parts": {str(p["id"]): p["hash"] for p in pkg["parts"]},
+        view = {"parts": {str(p["id"]): p["hash"] for p in pkg["parts"]},
                 "hidden": sorted(str(p["id"]) for p in pkg["parts"] if p["hidden"]),
                 "aliases": dict(pkg.get("aliases") or {}),
                 "sketches": {str(s["id"]): s["hash"] for s in pkg.get("sketches") or []},
                 "connectors": {str(c["id"]): c["hash"] for c in pkg.get("connectors") or []}}
+        if pkg.get("error"):
+            view["error"] = pkg["error"]
+        return view
     if kind == "variables":
         return {"vars": dict(pkg["vars"])}
     if kind == "assembly":
@@ -82,7 +89,10 @@ def package_digest(kind, view, keys=()):
             body = [[k, parts.get(aliases.get(k, k))] for k in sorted(keys)]
     else:
         body = view
-    return hashlib.sha1(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+    digest = hashlib.sha1(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+    if kind == "studio" and view.get("error"):      # the fold StudioPackage.digest_for applies
+        digest = hashlib.sha1(f"{digest}|{view['error']}".encode()).hexdigest()
+    return digest
 
 
 def propagate(graph, origin, digest_now, rebuild, label=str):

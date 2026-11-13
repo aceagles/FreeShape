@@ -440,7 +440,12 @@ SCHEMAS = {
     ],
     "chamfer": [
         _sel("edges", "Edges or faces to chamfer", {"edge"}),
+        _choice("chamfer_type", "Type", [("equal", "Equal distance"), ("two", "Two distances"),
+                                         ("angle", "Distance and angle")]),
         _num("distance", "Distance", minimum=1e-6),
+        _num("distance2", "Distance 2", minimum=1e-6, visible=lambda p: p.get("chamfer_type") == "two"),
+        _num("angle", "Angle", unit="deg", visible=lambda p: p.get("chamfer_type") == "angle"),
+        _check("flip", "Flip (swap the faces)", visible=lambda p: p.get("chamfer_type") in ("two", "angle")),
     ],
     "shell": [
         _sel("faces", "Faces to remove", {"face"}),

@@ -861,7 +861,8 @@ NUMERIC_KEYS = {"depth", "depth2", "angle", "radius", "distance", "thickness", "
                 "draft", "pitch", "twist", "scale_end", "major", "length", "clearance", "thread_clearance",
                 "countersink_dia", "k", "relief_scale",
                 "scale",
-                "count2", "spacing2"}
+                "count2", "spacing2",
+                "distance2"}
 
 
 def prepare(f, state):
@@ -1045,14 +1046,40 @@ def run_fillet(state, f):
         state.set_named(pid, named)
 
 
+def _chamfer_faces(state, pid, edges, flip):
+    """For each edge, the adjacent face the first chamfer distance is measured on: the face whose element
+    name sorts first (second when `flip`), so a rebuild keeps the same side. Without a name map the
+    face centres decide."""
+    part = state.parts[pid]
+    nm = state.named(pid)
+    out = []
+    for e in edges:
+        fs = K.edge_faces(part.shape, e)
+        if len(fs) < 2:
+            raise K.KernelError("A chamfer with two distances or an angle needs an edge between two faces; "
+                                "this edge has only one (a seam or an open edge)")
+        def key(fc):
+            name = nm.name_of(fc) if nm is not None else None
+            return (0, name, ()) if name else (1, "", tuple(round(float(x), 6) for x in K.face_info(fc)["c"]))
+        fs = sorted(fs, key=key)[:2]
+        out.append(fs[1] if flip else fs[0])
+    return out
+
+
 def run_chamfer(state, f):
     p = f["params"]
     groups = _group_by_part(state, p.get("edges", []), "edge")
     if not groups:
         raise K.KernelError("Select edges to chamfer")
+    kind = p.get("chamfer_type") or "equal"
     for pid, es in groups.items():
         part = state.parts[pid]
-        res, hist = K.chamfer(part.shape, es, float(p.get("distance", 1)), with_history=True)
+        if kind == "equal":
+            res, hist = K.chamfer(part.shape, es, float(p.get("distance", 1)), with_history=True)
+        else:
+            second = float(p.get("distance2", 1)) if kind == "two" else float(p.get("angle", 45))
+            res, hist = K.chamfer(part.shape, es, float(p.get("distance", 1)), with_history=True, kind=kind,
+                                  second=second, faces=_chamfer_faces(state, pid, es, bool(p.get("flip"))))
         named = name_feature(state, f["id"], [pid], res, hist, "chamfer")
         state.parts[pid] = Part(pid, part.name, res, part.color)
         state.set_named(pid, named)

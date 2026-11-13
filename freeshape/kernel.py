@@ -920,11 +920,39 @@ def _blend_ok(before, after):
         return False
 
 
-def _try_blend(make, shape, edge_list, size, with_history=False):
-    """The blended shape, or None. with_history=True returns (shape, history of this maker) or None."""
+try:
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+except ImportError:  # OCP >= 8
+    from OCP.OCP.collections import (IndexedDataMap_TopoDS_Shape_List_TopoDS_Shape_TopTools_ShapeMapHasher
+                                     as TopTools_IndexedDataMapOfShapeListOfShape)
+
+
+def edge_faces(shape, edge):
+    """The distinct faces of `shape` that share `edge` (a seam shows one face twice and counts once)."""
+    m = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, m)
+    if not m.Contains(edge):
+        return []
+    out = []
+    for f in m.FindFromKey(edge):
+        if not any(f.IsSame(o) for o in out):
+            out.append(f)
+    return out
+
+
+def _try_blend(make, shape, edge_list, size, with_history=False, two=None):
+    """The blended shape, or None. with_history=True returns (shape, history of this maker) or None.
+    `two` is (kind, second, faces) for a chamfer with two distances ("two": second is the other
+    distance) or a distance and an angle ("angle": second is the angle in radians); faces[i] is the
+    face of edge_list[i] on which `size` is measured."""
     mk = make(shape)
-    for e in edge_list:
-        mk.Add(float(size), e)
+    for i, e in enumerate(edge_list):
+        if two is None:
+            mk.Add(float(size), e)
+        elif two[0] == "two":
+            mk.Add(float(size), float(two[1]), e, _as_face(two[2][i]))
+        else:
+            mk.AddDA(float(size), float(two[1]), e, _as_face(two[2][i]))
     try:
         mk.Build()
     except Exception:
@@ -937,14 +965,17 @@ def _try_blend(make, shape, edge_list, size, with_history=False):
     return (out, _maker_history(mk, [shape])) if with_history else out
 
 
-def _largest_blend(make, shape, edge_list, size):
+def _largest_blend(make, shape, edge_list, size, two=None):
     """The largest size below `size` that works (binary search), or None — for a helpful error message."""
     if len(edge_list) > 24:
         return None
     lo, hi = 0.0, float(size)
     for _ in range(9):
         mid = (lo + hi) / 2
-        if _try_blend(make, shape, edge_list, mid) is not None:
+        t = two
+        if two is not None and two[0] == "two":     # keep the ratio of the two distances while searching
+            t = ("two", two[1] * mid / float(size), two[2])
+        if _try_blend(make, shape, edge_list, mid, two=t) is not None:
             lo = mid
         else:
             hi = mid
@@ -971,15 +1002,28 @@ def fillet(shape, edge_list, radius: float, with_history=False):
     return out
 
 
-def chamfer(shape, edge_list, dist: float, with_history=False):
-    """with_history=True returns (shape, history of the maker whose result is used)."""
+def chamfer(shape, edge_list, dist: float, with_history=False, kind="equal", second=None, faces=None):
+    """with_history=True returns (shape, history of the maker whose result is used).
+    kind "two": `second` is the other distance; "angle": `second` is the angle in degrees. Both measure
+    `dist` on faces[i], the face chosen for edge_list[i]. "equal" is the plain one-distance chamfer."""
     if not edge_list:
         raise KernelError("Select edges to chamfer")
     if dist <= 0:
         raise KernelError("Distance must be positive")
-    out = _try_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist, with_history)
+    two = None
+    if kind == "two":
+        if second is None or second <= 0:
+            raise KernelError("Distance 2 must be positive")
+        two = ("two", float(second), faces)
+    elif kind == "angle":
+        if second is None or not 0 < second < 90:
+            raise KernelError("Angle must be between 0 and 90 degrees")
+        two = ("angle", math.radians(second), faces)
+    elif kind != "equal":
+        raise KernelError(f"Unknown chamfer type '{kind}'")
+    out = _try_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist, with_history, two)
     if out is None:
-        best = _largest_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist)
+        best = _largest_blend(BRepFilletAPI_MakeChamfer, shape, edge_list, dist, two)
         hint = f" — the largest that works here is about {_nice_down(best):g} mm" if best else ""
         raise KernelError(f"Chamfer too large for these edges (the cuts would overlap or not fit){hint}")
     return out

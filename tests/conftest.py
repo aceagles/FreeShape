@@ -388,9 +388,7 @@ def approx_rel(got, exp, rel=1e-6, abs_=1e-9):
 # redirects every live window, so a leaked dirty window can fire mid-test and drop a stray file into that
 # test's folder (seen on CI as an extra "<uuid>.fshape"). Stop the timer of every window still alive after
 # each test. No test relies on the timer firing: they call `autosave()` directly.
-@pytest.fixture(autouse=True)
-def _stop_leaked_autosave_timers():
-    yield
+def stop_leaked_autosave_timers():
     mw = sys.modules.get("freeshape.ui.mainwindow")     # not imported: no window can exist, and don't pull in Qt
     qw = sys.modules.get("PySide6.QtWidgets")
     if mw is None or qw is None or qw.QApplication.instance() is None:
@@ -398,6 +396,12 @@ def _stop_leaked_autosave_timers():
     for w in qw.QApplication.topLevelWidgets():
         if isinstance(w, mw.MainWindow):
             w._autosave_timer.stop()
+
+
+@pytest.fixture(autouse=True)
+def _stop_leaked_autosave_timers():
+    yield
+    stop_leaked_autosave_timers()
 
 
 __all__ = [n for n in dir() if not n.startswith("_")]

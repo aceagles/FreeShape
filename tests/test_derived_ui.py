@@ -426,3 +426,92 @@ def test_unticking_the_base_connector_drops_the_base(win):
         _cleanup_local(w, loc, box)
         _drop_source_connector(w, cid)
         w.studio_engine.settle(120)
+
+
+# --------------------------------------------------------------------------- previews (I6.2)
+def _icon_rows(lst):
+    from freeshape.ui import preview_rows as PR
+    ph = PR.placeholder_icon(PR.DERIVED_SIZE).cacheKey()
+    return [(lst.item(i).icon().isNull(), lst.item(i).icon().pixmap(PR.DERIVED_SIZE, PR.DERIVED_SIZE).size().width(),
+             lst.item(i).icon().cacheKey() == ph) for i in range(lst.count())]
+
+
+def _open_derived_on_src(w):
+    w.start_feature("derived")
+    d = w.dialog
+    _choose(w, w.src_tab)
+    return d
+
+
+def test_previews_every_row_of_the_three_lists_has_an_icon_of_the_preview_size(win):
+    from freeshape.ui import preview_rows as PR
+    w = win
+    cid = _source_connector(w)
+    try:
+        d = _open_derived_on_src(w)
+        for key in ("parts", "sketches", "connectors"):
+            assert d.widgets[key].count() == 1
+            assert d.widgets[key].iconSize().width() == PR.DERIVED_SIZE
+            assert _icon_rows(d.widgets[key]) == [(False, PR.DERIVED_SIZE, True)]      # placeholder until drawn
+        d.drain_previews()
+        for key in ("parts", "sketches", "connectors"):
+            assert _icon_rows(d.widgets[key]) == [(False, PR.DERIVED_SIZE, False)], key
+        w.cancel_dialog()
+    finally:
+        _drop_source_connector(w, cid)
+        w.studio_engine.settle(120)
+
+
+def test_previews_are_drawn_when_the_list_is_shown_without_blocking(win):
+    from freeshape.ui import preview_rows as PR
+    w = win
+    d = _open_derived_on_src(w)
+    lst = d.widgets["parts"]
+    w.show()                    # the dialog is a child of the window: its lists are visible only with it
+    try:
+        assert lst.isVisible()
+        for _ in range(50):
+            QApplication.processEvents()
+            if not _icon_rows(lst)[0][2]:
+                break
+        assert _icon_rows(lst) == [(False, PR.DERIVED_SIZE, False)]
+    finally:
+        w.cancel_dialog()
+        w.hide()
+
+
+def test_previews_second_open_draws_nothing_new(win):
+    from freeshape.ui import preview_rows as PR
+    w = win
+    d = _open_derived_on_src(w)
+    d.drain_previews()
+    w.cancel_dialog()
+    drawn = PR.stats["drawn"]
+    d = _open_derived_on_src(w)
+    d.drain_previews()
+    assert PR.stats["drawn"] == drawn
+    for key in ("parts", "sketches"):
+        assert _icon_rows(d.widgets[key]) == [(False, PR.DERIVED_SIZE, False)]
+    w.cancel_dialog()
+
+
+def test_previews_a_source_in_error_shows_placeholders_and_the_error_and_the_dialog_opens(win, monkeypatch):
+    import dataclasses
+    from freeshape.ui import preview_rows as PR
+    w = win
+    d = _open_derived_on_src(w)
+    pkg, _ = d._derived_package()
+    bad = dataclasses.replace(pkg, error="Fillet: no edges")
+    monkeypatch.setattr(d, "_derived_package", lambda: (bad, ""))
+    before = PR.stats["drawn"]
+    for fill in d._derived_fills:
+        fill()
+    d.drain_previews()
+    assert PR.stats["drawn"] == before
+    for key in ("parts", "sketches"):
+        lst = d.widgets[key]
+        assert lst.count() == 1 and _icon_rows(lst) == [(False, PR.DERIVED_SIZE, True)]
+        assert "Fillet: no edges" in lst.item(0).toolTip()
+    assert "Fillet: no edges" in d._derived_note.text()
+    assert d.isEnabled()
+    w.cancel_dialog()

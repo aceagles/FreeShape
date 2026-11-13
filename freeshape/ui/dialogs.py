@@ -5,7 +5,7 @@ import copy
 from types import SimpleNamespace
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QBoxLayout, QLabel, QToolButton, QLineEdit, QComboBox, QCheckBox,
@@ -16,6 +16,7 @@ from .. import kernel as K
 from .. import features as F
 from .. import assembly as AS
 from .icons import icon
+from . import preview_rows as PR
 from . import theme
 from .numparse import parse_number, fmt, has_vars
 from .viewport import Pick
@@ -1245,9 +1246,10 @@ class FeatureDialog(_ResizableFrame):
         h.setDirection(QBoxLayout.TopToBottom)
         key = spec["key"]
         lst = QListWidget()
-        lst.setMaximumHeight(120)
+        lst.setMaximumHeight(240)
         h.addWidget(lst)
         self.widgets[key] = lst
+        previews = self._derived_previews(lst)
 
         def read():
             self.feature["params"][key] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
@@ -1256,19 +1258,27 @@ class FeatureDialog(_ResizableFrame):
 
         def fill():
             pkg, why = self._derived_package()
-            self._derived_note.setText("⚠ " + why if why else "" if self._derived_tabs()
+            err = why or (pkg.error if pkg is not None else "")
+            self._derived_note.setText("⚠ " + err if err else "" if self._derived_tabs()
                                        else "This Document has no other Part Studio to derive from.")
             published = ({} if pkg is None else
-                         {i: v.name for i, v in (pkg.parts if key == "parts" else pkg.sketches).items()})
+                         {i: v for i, v in (pkg.parts if key == "parts" else pkg.sketches).items()})
             ticked = list(self.feature["params"].get(key) or [])
             lst.blockSignals(True)
             lst.clear()
-            for i, name in list(published.items()) + [(i, None) for i in ticked if i not in published]:
-                it = QListWidgetItem(name if name is not None else f"{i}  (no longer published)")
+            previews.reset()
+            for i, v in list(published.items()) + [(i, None) for i in ticked if i not in published]:
+                it = QListWidgetItem(v.name if v is not None else f"{i}  (no longer published)")
                 it.setData(Qt.UserRole, i)
                 it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
                 it.setCheckState(Qt.Checked if i in ticked else Qt.Unchecked)
                 lst.addItem(it)
+                if v is None or err:                  # nothing published to draw, or the source is in error
+                    it.setIcon(PR.placeholder_icon(PR.DERIVED_SIZE))
+                    it.setToolTip(err or "no longer published")
+                else:
+                    jk, jm = (PR.part_job if key == "parts" else PR.sketch_job)(v, PR.DERIVED_SIZE)
+                    previews.add(it.setIcon, jk, jm)
             lst.blockSignals(False)
         lst.itemChanged.connect(lambda _it: read())
         self._derived_fills.append(fill)
@@ -1282,9 +1292,10 @@ class FeatureDialog(_ResizableFrame):
         h.setDirection(QBoxLayout.TopToBottom)
         key = spec["key"]
         lst = QListWidget()
-        lst.setMaximumHeight(120)
+        lst.setMaximumHeight(240)
         h.addWidget(lst)
         self.widgets[key] = lst
+        previews = self._derived_previews(lst)
         owner = {}                      # connector id -> its source part id (resolved through aliases)
 
         def part_ticked(cid):
@@ -1321,6 +1332,7 @@ class FeatureDialog(_ResizableFrame):
 
         def fill():
             pkg, _why = self._derived_package()
+            err = _why or (pkg.error if pkg is not None else "")
             self._derived_aliases = dict(pkg.aliases) if pkg is not None else {}
             published = {} if pkg is None else dict(pkg.connectors)
             owner.clear()
@@ -1328,6 +1340,7 @@ class FeatureDialog(_ResizableFrame):
             ticked = list(self.feature["params"].get(key) or [])
             lst.blockSignals(True)
             lst.clear()
+            previews.reset()
             parts = {} if pkg is None else {i: v.name for i, v in pkg.parts.items()}
             for i, c in list(published.items()) + [(i, None) for i in ticked if i not in published]:
                 it = QListWidgetItem(f"{c['name']}  ({parts.get(c['part'], c['part'])})" if c is not None
@@ -1336,6 +1349,12 @@ class FeatureDialog(_ResizableFrame):
                 it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
                 it.setCheckState(Qt.Checked if i in ticked else Qt.Unchecked)
                 lst.addItem(it)
+                if c is None or err:
+                    it.setIcon(PR.placeholder_icon(PR.DERIVED_SIZE))
+                    it.setToolTip(err or "no longer published")
+                else:
+                    jk, jm = PR.connector_job(pkg, c, PR.DERIVED_SIZE)
+                    previews.add(it.setIcon, jk, jm)
             lst.blockSignals(False)
         lst.itemChanged.connect(changed)
         if "parts" in self.widgets:
@@ -1343,6 +1362,18 @@ class FeatureDialog(_ResizableFrame):
         self._derived_fills.append(fill)
         fill()
         return row
+
+    def _derived_previews(self, lst):
+        """A PreviewFiller for one Derived tick list (previews drawn once the list is shown; see ui.preview_rows)."""
+        lst.setIconSize(QSize(PR.DERIVED_SIZE, PR.DERIVED_SIZE))
+        pf = PR.PreviewFiller(lst, PR.DERIVED_SIZE)
+        self._derived_fillers = getattr(self, "_derived_fillers", []) + [pf]
+        return pf
+
+    def drain_previews(self):
+        """Draw every pending Derived preview now (they are otherwise drawn one row per event-loop turn)."""
+        for pf in getattr(self, "_derived_fillers", []):
+            pf.drain()
 
     def _derived_alias(self, pid):
         return getattr(self, "_derived_aliases", {}).get(pid, pid)

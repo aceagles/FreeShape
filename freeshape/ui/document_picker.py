@@ -5,12 +5,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import kernel as K
 from .. import links
+from . import preview_rows as PR
 
 ROLE_ROW = Qt.UserRole + 5
 LOCAL = ""          # the doc_combo data of the `local_label` choice (never a Document id)
@@ -116,7 +117,7 @@ class DocumentVersionPicker(QWidget):
 
 def version_studios(folder, document, version, registry=None):
     """The Part Studio tabs of `document` at `version` with their parts, read-only through the open Document's
-    resolver: [{tab, name, parts: [{id, name}]}]. A tab that cannot be read lists no parts."""
+    resolver: [{tab, name, parts: [{id, name, part}]}] (`part`: the features.Part, for previews). A tab that cannot be read lists no parts."""
     desc = (registry or folder.registry).describe(document, version)
     out = []
     for t in desc["tabs"]:
@@ -125,7 +126,7 @@ def version_studios(folder, document, version, registry=None):
         src = {"kind": "studio", "tab": t["id"], "studio_name": t["name"], "document": document,
                "version": version}
         try:
-            parts = [{"id": p.id, "name": p.name} for p in folder.resolver._cross_doc(src, "studio").state.parts.values()]
+            parts = [{"id": p.id, "name": p.name, "part": p} for p in folder.resolver._cross_doc(src, "studio").state.parts.values()]
         except K.KernelError:
             parts = []
         out.append({"tab": t["id"], "name": t["name"], "parts": parts})
@@ -148,7 +149,9 @@ class OtherDocumentDialog(QDialog):
         self.tree.setObjectName("picker_parts")
         self.tree.setHeaderHidden(True)
         self.tree.setMinimumHeight(200)
+        self.tree.setIconSize(QSize(PR.INSERT_SIZE, PR.INSERT_SIZE))
         lay.addWidget(self.tree)
+        self.previews = PR.PreviewFiller(self.tree, PR.INSERT_SIZE)
         self.msg = QLabel("")
         self.msg.setObjectName("muted")
         self.msg.setWordWrap(True)
@@ -162,8 +165,12 @@ class OtherDocumentDialog(QDialog):
         self.picker.changed.connect(self.fill)
         self.fill()
 
+    def drain_previews(self):
+        self.previews.drain()
+
     def fill(self):
         self.tree.clear()
+        self.previews.reset()
         self.msg.setText("")
         sel = self.picker.selection()
         if sel is None:
@@ -182,7 +189,9 @@ class OtherDocumentDialog(QDialog):
                 it = QTreeWidgetItem([p["name"]])
                 it.setData(0, ROLE_ROW, {"document": doc, "version": ver, "tab": s["tab"], "part": p["id"],
                                          "name": s["name"]})
+                key, make = PR.part_job(p["part"], PR.INSERT_SIZE)
                 top.addChild(it)
+                self.previews.add(lambda ic, it=it: it.setIcon(0, ic), key, make)
             self.tree.addTopLevelItem(top)
             top.setExpanded(True)
         if not studios:

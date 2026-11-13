@@ -170,3 +170,47 @@ def test_insert_panel_still_lists_open_part_studios(make_window, tmp_path):
     mine = tops[0]
     assert [mine.child(i).text(0) for i in range(mine.childCount())] == \
         [p.name for p in w.studio_docs()[0].state.parts.values()]
+
+
+def _row_icons(tree):
+    from freeshape.ui import preview_rows as PR
+    out = []
+    for i in range(tree.topLevelItemCount()):
+        top = tree.topLevelItem(i)
+        for j in range(top.childCount()):
+            ic = top.child(j).icon(0)
+            out.append((not ic.isNull(), ic.cacheKey() != PR.placeholder_icon(PR.INSERT_SIZE).cacheKey()))
+    return out
+
+
+def test_insert_panel_part_rows_have_previews(make_window, tmp_path):
+    world = World(tmp_path)
+    w = make_window()
+    _open_assembly(w, world)
+    panel = _panel(w)
+    rows = _row_icons(panel.tree)
+    assert rows and all(nn for nn, _ in rows)
+    panel.drain_previews()
+    assert _row_icons(panel.tree) == [(True, True)] * len(rows)
+
+
+def test_other_document_picker_part_rows_have_previews_and_reopening_draws_nothing(make_window, tmp_path):
+    from freeshape.ui import preview_rows as PR
+    world = World(tmp_path)
+    w = make_window()
+    fd, _asm = _open_assembly(w, world)
+    dlg = DP.OtherDocumentDialog(fd)
+    assert dlg.choose(world.lib.id, "v1", world.st.id, world.pid)
+    rows = _row_icons(dlg.tree)
+    assert rows and all(nn for nn, _ in rows)
+    dlg.drain_previews()
+    assert _row_icons(dlg.tree) == [(True, True)] * len(rows)
+    drawn = PR.stats["drawn"]
+    dlg2 = DP.OtherDocumentDialog(fd)
+    assert dlg2.choose(world.lib.id, "v1", world.st.id, world.pid)
+    dlg2.drain_previews()
+    assert PR.stats["drawn"] == drawn
+    assert _row_icons(dlg2.tree) == [(True, True)] * len(rows)
+    panel = _panel(w)                       # the open Insert panel shares the cache with equal parts
+    panel.drain_previews()
+    assert _row_icons(panel.tree) and all(a and b for a, b in _row_icons(panel.tree))

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from .. import kernel as K
 from .. import assembly as A
 from .icons import icon
+from . import preview_rows as PR
 from .numparse import parse_number, fmt
 from .panels import swatch
 from .viewport import Pick
@@ -230,7 +231,8 @@ class InsertPanel(QFrame):
         lay.addWidget(hint)
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
-        self.tree.setIconSize(QSize(16, 16))
+        self.tree.setIconSize(QSize(PR.INSERT_SIZE, PR.INSERT_SIZE))
+        self.previews = PR.PreviewFiller(self.tree, PR.INSERT_SIZE)
         self.tree.setMinimumHeight(220)
         self.tree.itemDoubleClicked.connect(lambda it, _c: self._insert_item(it))
         lay.addWidget(self.tree)
@@ -262,8 +264,12 @@ class InsertPanel(QFrame):
         self.move(12, 12)
         self.show()
 
+    def drain_previews(self):
+        self.previews.drain()
+
     def fill(self):
         self.tree.clear()
+        self.previews.reset()
         for doc in self.ctl.w.studio_docs():
             top = QTreeWidgetItem([doc.name])
             top.setIcon(0, icon("part", 16))
@@ -276,6 +282,8 @@ class InsertPanel(QFrame):
                 it.setData(0, ROLE_KIND, "part")
                 it.setData(0, ROLE_ID, (doc.uid, p.id))
                 top.addChild(it)
+                key, make = PR.part_job(p, PR.INSERT_SIZE)
+                self.previews.add(lambda ic, it=it: it.setIcon(0, ic), key, make)
             if not shown:
                 it = QTreeWidgetItem(["(no parts yet)"])
                 it.setDisabled(True)

@@ -11,7 +11,8 @@ import os
 import time
 
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
+    QAbstractItemView, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -90,6 +91,7 @@ class VersionsDialog(QDialog):
         self.empty_label.setObjectName("muted")
         lay.addWidget(self.empty_label)
         self.list = QListWidget()
+        self.list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.list.itemSelectionChanged.connect(self._sync)
         self.list.itemDoubleClicked.connect(lambda _it: self.open_selected())
         lay.addWidget(self.list)
@@ -98,8 +100,11 @@ class VersionsDialog(QDialog):
         self.open_btn.clicked.connect(self.open_selected)
         self.workspace_btn = QPushButton("New Workspace from this version")
         self.workspace_btn.clicked.connect(self.new_workspace_selected)
+        self.compare_btn = QPushButton("Compare")
+        self.compare_btn.clicked.connect(self.compare_selected)
         row.addWidget(self.open_btn)
         row.addWidget(self.workspace_btn)
+        row.addWidget(self.compare_btn)
         lay.addLayout(row)
         self.import_btn = QPushButton("Import again from source")
         self.import_btn.clicked.connect(self.import_again)
@@ -129,8 +134,13 @@ class VersionsDialog(QDialog):
         self._sync()
 
     def selected(self):
-        it = self.list.currentItem()
-        return it.data(256) if it is not None else None
+        """The one selected version's name (None when none, or more than one, is selected)."""
+        names = self.selected_names()
+        return names[0] if len(names) == 1 else None
+
+    def selected_names(self):
+        """The selected versions' names, newest first."""
+        return [it.data(256) for it in sorted(self.list.selectedItems(), key=self.list.row)]
 
     def _sync(self):
         reason = self.problem
@@ -138,6 +148,12 @@ class VersionsDialog(QDialog):
         for b in (self.open_btn, self.workspace_btn):
             b.setEnabled(reason is None and have)
             b.setToolTip(f"Unavailable: {reason}" if reason else "" if have else "Pick a version first")
+        n = len(self.selected_names())
+        self.compare_btn.setEnabled(reason is None and n in (1, 2))
+        self.compare_btn.setToolTip(f"Unavailable: {reason}" if reason else
+                                    "What changed between the two selected versions" if n == 2 else
+                                    "What changed since the selected version" if n == 1 else
+                                    "Pick one version to compare with now, or two to compare them")
         self.import_btn.setEnabled(reason is None)
         self.import_btn.setToolTip(f"Unavailable: {reason}" if reason else
                                    "Clone the sender's Document folder again to pick up its newer versions")
@@ -154,6 +170,11 @@ class VersionsDialog(QDialog):
 
     def import_again(self):
         if self.ui.import_again():
+            self.accept()
+
+    def compare_selected(self):
+        names = self.selected_names()
+        if 1 <= len(names) <= 2 and self.ui.compare(names):
             self.accept()
 
 
@@ -215,6 +236,7 @@ class VersionsUI:
         self.w = window
         self.view = None            # {"fd": the read-only FolderDocument, "docs": [tab docs shown], "name": version}
         self.create_btn = self.versions_btn = self.updates_btn = self.back_btn = self.banner = None
+        self.compare_panel = None   # the open history_ui.HistoryPanel, if any
         self._widgets = ()
 
     # ------------------------------------------------------------------ top bar
@@ -266,6 +288,8 @@ class VersionsUI:
         self.back_btn.setVisible(self.view is not None)
         if self.view is not None:
             self.banner.setText(f"Viewing version “{self.view['name']}” (read-only)")
+        if self.compare_panel is not None:
+            self.compare_panel.refresh()
 
     def update_count(self):
         """The number shown on the badge (0 when it is hidden)."""
@@ -304,6 +328,36 @@ class VersionsUI:
         dlg = VersionsDialog(self)
         dlg.exec()
         return dlg
+
+    # ------------------------------------------------------------------ compare versions
+    def compare_blocked(self):
+        """Why Compare Versions can't run now, or ""."""
+        if self.w.folder is None:
+            return "Open a Document first: Versions belong to a Document"
+        problem = self.problem()
+        return f"Unavailable: {problem}" if problem else ""
+
+    def compare(self, select=None):
+        """Open the Compare Versions panel (history_ui.py) with `select` picked: one Version name (compared with
+        now) or two. With no `select`, toggle the panel. Returns the panel, or None."""
+        why = self.compare_blocked()
+        if why:
+            self.w.status.showMessage(why, 6000)
+            return None
+        p = self.compare_panel
+        if p is not None and p.folder is not self.w.folder:
+            p.close_panel()
+            p = None
+        if p is not None and select is None:
+            p.close_panel()
+            return None
+        if p is None:
+            from .history_ui import HistoryPanel
+            p = self.compare_panel = HistoryPanel(self, select or ())
+        else:
+            p.fill(select)
+            p.raise_()
+        return p
 
     def new_workspace_from(self, version):
         name, ok = QInputDialog.getText(self.w, APP_NAME, f"Name for the new Workspace (from version “{version}”):")

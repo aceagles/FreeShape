@@ -525,6 +525,10 @@ class MainWindow(QMainWindow):
               "open file", "File"),
             C("export", "Export", "Export the model as STEP, STL, 3MF, OBJ or BREP.",
               lambda: self.export(None, None), "save stl step 3mf obj brep", "File"),
+            Command("history", "Compare Versions", "What changed between two Versions of this Document, or since "
+                    "one: the features added, removed and changed in each Part Studio.",
+                    lambda: self.versions_ui.compare(), "version history what changed diff", "File",
+                    self.versions_ui.compare_blocked()),
             C("part", "Auto colour all parts", "Give each part a different colour; again for a different set.",
               lambda: self._auto_color(list(self.doc.state.parts)), "color colours appearance", "View"),
             C("undo", "Undo", "Undo the last change (Ctrl+Z).", self.undo, "", "Edit"),
@@ -687,6 +691,8 @@ class MainWindow(QMainWindow):
         self._tb(h, "configs", "Configurations — sizes / versions of this part from a table of variable values",
                  self.edit_configs)
         self._tb(h, "derived", "Derived — parts and sketches from another Part Studio of this Document", self._start_derived)
+        self._tb(h, "history", "Compare Versions — what changed between two Versions of this Document",
+                 lambda: self.versions_ui.compare())
         self.plugin_btn = self._tb(h, "plugin", "Plugins — features and commands added by Python plugins",
                                    lambda: None)
         self.plugin_btn.setPopupMode(QToolButton.InstantPopup)

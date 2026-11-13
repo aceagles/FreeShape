@@ -5,7 +5,9 @@ From upstream FreeShape 2.0's version history. Upstream keeps its versions insid
 one on every save. This fork does not: a Version is a git tag of the whole Document (ADR 0001,
 doc_folder.FolderDocument.create_version), so the in-file storage (create / restore / version blobs) is not
 here. What is kept is the comparison, which works on two snapshots however they were obtained: `snapshot(doc)`
-of an open Part Studio, or the same dict built from a Part Studio loaded out of a Version."""
+of an open Part Studio, or the same dict built from a Part Studio loaded out of a Version. `compare_versions` does
+that for a whole Document: two Versions (or one and the open tabs), Part Studio tab by tab, each Version read
+through FolderDocument.open_version."""
 from __future__ import annotations
 
 import copy
@@ -350,6 +352,94 @@ def compare(doc, old_snap, new_snap=None, geometry=True):
     return res
 
 
+# ---------------------------------------------------------------------- whole Documents (git Versions)
+NOW = None          # the "Version" name meaning the open Document as it is now, unsaved edits included
+NOT_COMPARED = "Not compared: the comparison covers Part Studios."
+
+
+def document_snapshot(folder) -> dict:
+    """The tabs of a FolderDocument as a comparison reads them: {"tabs": [{"id", "kind", "name", "snap"}]}, in tab
+    order. `snap` is `snapshot(tab.doc)` for a Part Studio and None for any other kind or an unreadable tab; an
+    unreadable tab also carries "error"."""
+    tabs = []
+    for t in folder.tabs:
+        row = {"id": t.id, "kind": t.kind, "name": t.name or (t.doc.name if t.doc is not None else t.id),
+               "snap": snapshot(t.doc) if t.kind == "studio" and t.doc is not None else None}
+        if t.doc is None:
+            row["error"] = folder.errors.get(t.id, "This tab could not be read")
+        tabs.append(row)
+    return {"tabs": tabs}
+
+
+def version_snapshot(folder, name) -> dict:
+    """`document_snapshot` of Version `name` of `folder`, read through `folder.open_version` (a read-only scratch
+    copy, closed straight after): the working folder and its open tabs are not touched."""
+    view = folder.open_version(name)
+    try:
+        return document_snapshot(view)
+    finally:
+        view.close()
+
+
+def compare_documents(old, new) -> dict:
+    """What changed from Document snapshot `old` to `new` (see `document_snapshot`), tab by tab.
+
+    {"tabs": [{"id", "name", "kind", "status", "lines", "features", "other", "old", "new"}]} in the newer side's tab
+    order, then the removed tabs. `status` is "added", "removed", "changed", "same", "not compared" (a tab that is
+    not a Part Studio) or "unreadable". `lines` are tab-level notes in words (a rename, why a tab was not compared);
+    `features` and `other` are `feature_changes` and `other_changes` of a Part Studio on both sides; `old` and `new`
+    are its two snapshots (None on a side that lacks it), for building each side's geometry."""
+    from . import tabkinds as TK
+    before = {t["id"]: t for t in old["tabs"]}
+    after = {t["id"] for t in new["tabs"]}
+    out = []
+
+    def row(t, status, o=None, n=None, lines=(), features=(), other=()):
+        rec = TK.find(t["kind"])
+        return {"id": t["id"], "name": t["name"], "kind": t["kind"], "label": rec.label if rec else t["kind"],
+                "status": status, "lines": list(lines), "features": list(features), "other": list(other),
+                "old": o, "new": n}
+
+    for t in new["tabs"]:
+        o = before.get(t["id"])
+        lines = [f"Renamed from “{o['name']}”"] if o is not None and o["name"] != t["name"] else []
+        if t["kind"] != "studio":
+            out.append(row(t, "not compared", lines=lines + [NOT_COMPARED]))
+        elif t.get("error") or (o is not None and o.get("error")):
+            out.append(row(t, "unreadable", lines=lines + [t.get("error") or o.get("error")]))
+        elif o is None:
+            out.append(row(t, "added", n=t["snap"]))
+        elif o["kind"] != "studio" or o["snap"] is None:
+            out.append(row(t, "added", n=t["snap"], lines=lines))
+        else:
+            feats, other = feature_changes(o["snap"], t["snap"]), other_changes(o["snap"], t["snap"])
+            status = "changed" if feats or other or lines else "same"
+            out.append(row(t, status, o["snap"], t["snap"], lines, feats, other))
+    for t in old["tabs"]:
+        if t["id"] not in after:
+            out.append(row(t, "removed", o=t["snap"]))
+    return {"tabs": out}
+
+
+def compare_versions(folder, old, new=NOW, cache=None) -> dict:
+    """What changed in the open Document `folder` from Version `old` to Version `new` (a name, or NOW for the open
+    tabs as they are, unsaved edits included): `compare_documents` of the two sides plus "old_label"/"new_label".
+    Each Version is read through `FolderDocument.open_version`; nothing is checked out. `cache` (a dict) keeps the
+    Versions' snapshots between calls: a Version never changes."""
+    cache = {} if cache is None else cache
+
+    def side(name):
+        if name is NOW:
+            return document_snapshot(folder)
+        if name not in cache:
+            cache[name] = version_snapshot(folder, name)
+        return cache[name]
+    res = compare_documents(side(old), side(new))
+    res["old_label"] = "now" if old is NOW else old
+    res["new_label"] = "now" if new is NOW else new
+    return res
+
+
 def _esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -393,4 +483,23 @@ def to_html(res, old_label="before", new_label="now") -> str:
             h.append("<p style='color:#888'>The parts' shapes didn't change.</p>")
     if not h:
         h.append(f"<p style='color:#888'>No changes between {_esc(old_label)} and {_esc(new_label)}.</p>")
+    return "".join(h)
+
+
+def document_html(res) -> str:
+    """A `compare_versions` result as simple HTML: a heading per tab, then what changed in it."""
+    old_label, new_label = res.get("old_label", "before"), res.get("new_label", "now")
+    h = [f"<p style='color:#555'>From <b>{_esc(old_label)}</b> to <b>{_esc(new_label)}</b>:</p>"]
+    status_words = {"added": "added", "removed": "removed", "same": "no changes", "changed": "",
+                    "not compared": "", "unreadable": "could not be read"}
+    for t in res["tabs"]:
+        word = status_words.get(t["status"], t["status"])
+        h.append(f"<p style='margin-bottom:2px'><b>{_esc(t['name'])}</b> <span style='color:#888'>"
+                 f"{_esc(t['label'])}{' · ' + word if word else ''}</span></p>")
+        for ln in t["lines"]:
+            h.append(f"<p style='color:#888; margin:0 0 0 10px'>{_esc(ln)}</p>")
+        if t["status"] == "changed" and (t["features"] or t["other"]):
+            h.append(to_html({"features": t["features"], "other": t["other"]}, old_label, new_label))
+    if not res["tabs"]:
+        h.append("<p style='color:#888'>This Document has no tabs.</p>")
     return "".join(h)

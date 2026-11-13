@@ -668,6 +668,14 @@ class AssemblyDoc:
         for m in self.mates:
             for side in ("a", "b"):
                 c = m[side]
+                if c.get("kind") == "named":
+                    # a named connector has no ref: its frame comes from its part's own list of connectors
+                    if c["inst"] in changed and c["inst"] in self.parts:
+                        try:
+                            c["frame"] = self.connector_by_name(c["inst"], c["name"])
+                        except K.KernelError as e:
+                            self.errors[m["id"]] = f"Lost its connector after the part changed: {e}"
+                    continue
                 if c["inst"] in changed and c.get("ref") and c["inst"] in self.parts:
                     shp = self.parts[c["inst"]].shape
                     named = self._named(c["inst"])
@@ -951,6 +959,75 @@ class AssemblyDoc:
 
     def world_frame(self, c):
         return transform_frame(self.T(c["inst"]), frame_from_json(c["frame"]))
+
+    def connector_by_name(self, iid, name):
+        """THE lookup of a named connector: the frame (JSON form, in the part's own coordinates) that instance
+        `iid`'s part offers under `name`. Raises KernelError when the instance or the name is not there.
+        Today only Standard parts offer named connectors (their `connectors(params)`). To let another kind of
+        part offer them, for example a Part Studio's mate connectors, add its branch here and nowhere else:
+        `named_connector` and the re-find block in `refresh` both go through this function."""
+        from .pyfeature import registry
+        inst = self.instance(iid)
+        if inst is None:
+            raise K.KernelError("The instance no longer exists")
+        src = inst["source"]
+        if src.get("kind") != "standard":
+            raise K.KernelError(f'This part has no connector named "{name}"')
+        label = self._standard_label(src)
+        cls = registry.standard_part(src.get("type"))
+        if cls is None:
+            raise K.KernelError(f"{label} is not installed")
+        try:
+            frames = cls().connectors(dict(src.get("params") or {}))
+        except Exception as e:
+            raise K.KernelError(f"{label} failed: {e}")
+        if name not in frames:
+            raise K.KernelError(f'{label} has no connector named "{name}"')
+        fr = dict(frames[name])
+        fr.setdefault("what", name)
+        return frame_to_json(frame_from_json(fr))
+
+    def named_connector(self, iid, name):
+        """A mate end on a part's own named connector, e.g. a screw's "under_head": {"inst", "kind": "named",
+        "name", "frame"}. No index, click, ref or snap. world_frame, place_for_mate and the solver read `frame`
+        like any other connector. Raises KernelError when the part offers no such name."""
+        return {"inst": iid, "kind": "named", "name": name, "frame": self.connector_by_name(iid, name)}
+
+    def set_standard_params(self, iids, changes):
+        """Apply the parameter `changes` (a dict) to each Standard part instance in `iids`, as ONE undo step.
+        Each instance is checked on its own (its type's validate, and a build): one that rejects the change
+        is left exactly as it was. Then the parts are rebuilt, named connector frames re-derived and the mates
+        solved. Returns {"changed": [iid, ...], "rejected": {iid: message}}. An instance whose cleaned
+        params equal its current ones is in neither. With nothing to change, no undo step is made."""
+        from .pyfeature import registry
+        todo, rejected = [], {}
+        for iid in dict.fromkeys(iids):
+            inst = self.instance(iid)
+            if inst is None:
+                rejected[iid] = "No such instance"
+                continue
+            src = inst["source"]
+            if src.get("kind") != "standard":
+                rejected[iid] = "Not a Standard part"
+                continue
+            cls = registry.standard_part(src.get("type"))
+            if cls is None:
+                rejected[iid] = f'{self._standard_label(src)} is not installed'
+                continue
+            try:
+                clean = cls().validate({**(src.get("params") or {}), **changes})
+                self._standard_part({"id": iid, "source": {**src, "params": clean}})    # builds into the cache
+            except Exception as e:
+                rejected[iid] = str(e)
+                continue
+            if clean != src.get("params"):
+                todo.append((inst, clean))
+        if todo:
+            self.checkpoint()
+            for inst, clean in todo:
+                inst["source"]["params"] = copy.deepcopy(clean)
+            self.refresh()
+        return {"changed": [i["id"] for i, _ in todo], "rejected": rejected}
 
     def make_mate(self, mtype):
         n = 1

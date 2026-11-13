@@ -44,6 +44,13 @@ def _translate_part(studio, pid):
     return getattr(studio, "part_aliases", {}).get(pid, pid)
 
 
+def _studio_state(studio, src):
+    """The model a source reads of a Part Studio: in the configuration it names ("config"), else the active one.
+    A configuration the studio does not have reads the active one (PartStudioDoc.state_for)."""
+    config = src.get("config")
+    return studio.state_for(config) if config else studio.state
+
+
 def studio_source(tab, part=None, document=None, version=None):
     """The source dict an assembly instance or drawing stores to link a Part Studio tab of a Document: the tab
     id and part id only -- no uid and no path, so it holds for a tab that has never been saved. For a tab of
@@ -95,18 +102,22 @@ class PublishedPart:
 @dataclass
 class StudioPackage:
     """What a Part Studio publishes, as a consumer reads it: its parts, its sketches (engine.contract.SketchOut,
-    with element names) and the digest of both. See LinkResolver.resolve_studio."""
+    with element names) and the digest of both. See LinkResolver.resolve_studio. A package of a configuration
+    (`config`) is another package than the studio's default one: its digest differs even where its parts do not."""
     parts: dict              # part id -> PublishedPart
     sketches: dict           # sketch feature id -> SketchOut
     aliases: dict = field(default_factory=dict)
     digest: str = ""         # of everything published: parts, their visibility, sketches
     error: str = ""          # why the studio is in error (its red features), "" when it builds clean
     connectors: dict = field(default_factory=dict)   # mate_connector feature id -> {name, part, frame, hash}
+    config: str = ""         # the configuration it is of; "" for the studio as it is (no configuration named)
 
     def digest_for(self, part=None):
         """The digest of what a link reading `part` (an id, or None / "*" for the whole studio) takes."""
         from .engine.linkgraph import package_digest
         digest = package_digest("studio", self._view(), [part])
+        if self.config:     # a source with no configuration keeps the digest it always had
+            digest = hashlib.sha1(f"{digest}|config|{self.config}".encode()).hexdigest()
         if self.error:      # a studio that turns red (or changes why) rekeys its consumers, parts unchanged
             digest = hashlib.sha1(f"{digest}|{self.error}".encode()).hexdigest()
         return digest
@@ -359,7 +370,7 @@ class LinkResolver:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
         if src.get("kind") == "sketch":
             return self._resolve_sketch(studio, src)
-        p = studio.state.parts.get(_translate_part(studio, src.get("part")))
+        p = _studio_state(studio, src).parts.get(_translate_part(studio, src.get("part")))
         if p is None or getattr(p, "reference", False):
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         return p
@@ -371,7 +382,7 @@ class LinkResolver:
         one that failed to build, is a KernelError."""
         from .features import Part
         fid = src.get("sketch")
-        res = studio.state.sketches.get(fid)
+        res = _studio_state(studio, src).sketches.get(fid)
         if res is None:
             raise K.KernelError(f"The sketch no longer exists in “{studio.name}”")
         name = (studio.feature(fid) or {}).get("name", fid)
@@ -384,7 +395,7 @@ class LinkResolver:
             studio = self._studio_for(src)
         except K.KernelError:
             return None
-        return None if studio is None else studio.state.named(_translate_part(studio, src.get("part")))
+        return None if studio is None else _studio_state(studio, src).named(_translate_part(studio, src.get("part")))
 
     def resolve_studio(self, src):
         """The published output of the Part Studio `src` names (a PartStudioDoc.link_inputs callable): a
@@ -397,7 +408,7 @@ class LinkResolver:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
         if self._encoder is None:
             self._encoder = Encoder(meshes=False)     # caches each shape's BREP and hash across calls
-        st = studio.state
+        st = _studio_state(studio, src)
         parts = {}
         for p in st.parts.values():
             named = st.named(p.id)
@@ -409,7 +420,8 @@ class LinkResolver:
                     for fid, res in st.sketches.items()}
         pkg = StudioPackage(parts, sketches, dict(getattr(studio, "part_aliases", {})),
                             error=_studio_error(studio),
-                            connectors={str(fid): plain(asdict(connector_out(fid, c))) for fid, c in st.connectors.items()})
+                            connectors={str(fid): plain(asdict(connector_out(fid, c))) for fid, c in st.connectors.items()},
+                            config=str(src.get("config") or ""))
         pkg.digest = pkg.digest_for(None)
         return pkg
 
@@ -441,7 +453,7 @@ class LinkResolver:
             pid = _translate_part(studio, src.get("part"))
             own = lambda c: c["part"] == pid and not c.get("sketch")  # noqa: E731
         return [{"id": str(fid), "name": c["name"], "frame": {k: [float(v) for v in c["frame"][k]] for k in ("o", "z", "x")}}
-                for fid, c in studio.state.connectors.items() if own(c)]
+                for fid, c in _studio_state(studio, src).connectors.items() if own(c)]
 
     # ------------------------------------------------------------------ drawing sources
     def resolve_drawing_source(self, src):
@@ -475,8 +487,9 @@ class LinkResolver:
         studio = self._studio_for(src)
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
+        st = _studio_state(studio, src)
         if src.get("part") in (None, "*"):
-            parts = [p for p in studio.state.parts.values() if p.id not in studio.hidden_parts
+            parts = [p for p in st.parts.values() if p.id not in studio.hidden_parts
                      and not getattr(p, "reference", False)]
             if not parts:
                 raise K.KernelError(f"“{studio.name}” has no parts")
@@ -486,13 +499,13 @@ class LinkResolver:
             if key not in self._shape_cache:
                 self._shape_cache[key] = K.compound([p.shape for p in parts])
             return self._shape_cache[key]
-        p = studio.state.parts.get(_translate_part(studio, src["part"]))
+        p = st.parts.get(_translate_part(studio, src["part"]))
         if p is None or getattr(p, "reference", False):
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         if src.get("flat"):
-            if p.id not in getattr(studio.state, "sheet", {}):
+            if p.id not in getattr(st, "sheet", {}):
                 raise K.KernelError(f"“{p.name}” isn't sheet metal any more")
-            fp = self.flat_pattern_of(studio.state, p.id)
+            fp = self.flat_pattern_of(st, p.id)
             # the drawing reads bend lines back out of the source on every refresh (see drawing.py), so this
             # is the one piece of derived data resolving does write back
             src["bends"] = [[list(map(float, a)), list(map(float, b)), lab] for a, b, lab in fp.bend_lines]

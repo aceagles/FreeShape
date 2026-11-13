@@ -76,6 +76,9 @@ STUDIO_OPS = {
     "rename_folder": "folder, name",
     "set_folder_open": "folder, value (a view setting: no undo step)",
     "set_folder_suppressed": "folder, value",
+    "set_configs": "rows ([{name, vars: {variable name: expression}, suppress: [feature id]}]), active (index, "
+                   "optional, default 0): the configuration table, replaced in one undo step",
+    "set_active_config": "config (a row's name or index)",
     "undo": "", "redo": "",
     "save": "path (optional)",
 }

@@ -40,9 +40,11 @@ from .. import naming as N
 from .. import tabkinds as TK
 from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
+from ..document import PartStudioDoc, config_row
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
-_EMPTY = {"features": [], "rollback": None, "folders": {}, "overrides": {}}
+_NO_CONFIGS = {"rows": [], "active": 0}
+_EMPTY = {"features": [], "rollback": None, "folders": {}, "overrides": {}, "configs": _NO_CONFIGS}
 _LIGHT = ("variable", "sketch", "plane")        # feature types re-run on the GUI thread (see the module doc)
 
 
@@ -50,9 +52,10 @@ _LIGHT = ("variable", "sketch", "plane")        # feature types re-run on the GU
 
 def snapshot(doc):
     """What the engine needs of a Part Studio: its features and rollback bar, folders and part colours / names,
-    copied."""
+    and its configurations, copied."""
     return {"features": copy.deepcopy(doc.features), "rollback": doc.rollback, "name": doc.name,
-            "folders": copy.deepcopy(doc.folders), "overrides": copy.deepcopy(doc.part_overrides)}
+            "folders": copy.deepcopy(doc.folders), "overrides": copy.deepcopy(doc.part_overrides),
+            "configs": copy.deepcopy(doc.configs)}
 
 
 def side(doc):
@@ -67,10 +70,10 @@ def _bare(f):
 
 def plan_edits(have, want):
     """The engine edits that turn a tab holding `have` into one holding `want` (both {"features": [...],
-    "rollback": n | None, "folders": {...}, "overrides": {...}}): delete what is gone, replace what changed, add
-    what is new or moved, put the features into the folders `want` has, give parts their names and colours, then
-    put the rollback bar where `want` has it. A feature's folder is not a change of the feature: moving one
-    between folders rebuilds nothing."""
+    "rollback": n | None, "folders": {...}, "overrides": {...}, "configs": {...}}): delete what is gone, replace
+    what changed, add what is new or moved, put the features into the folders `want` has, give parts their names
+    and colours, set the configuration table and the active configuration, then put the rollback bar where `want`
+    has it. A feature's folder is not a change of the feature: moving one between folders rebuilds nothing."""
     cur = [dict(f) for f in have["features"]]        # what the engine holds, with each feature's folder
     want_ids = {f["id"] for f in want["features"]}
     edits, structure = [], False
@@ -96,6 +99,7 @@ def plan_edits(have, want):
         structure = True
     edits += _plan_folders(have, want, cur)
     edits += _plan_overrides(have, want)
+    edits += _plan_configs(have, want)
     if want["rollback"] != have["rollback"] or (structure and have["rollback"] is not None):
         edits.append({"op": "set_rollback", "index": want["rollback"]})
     return edits
@@ -127,6 +131,18 @@ def _plan_folders(have, want, cur):
         if old.get(fo, {}).get("open", True) != info.get("open", True):
             edits.append({"op": "set_folder_open", "folder": fo, "value": info.get("open", True)})
     return edits
+
+
+def _plan_configs(have, want):
+    """set_configs when the configuration table changed, else set_active_config when only the active row did."""
+    old, new = have.get("configs") or _NO_CONFIGS, want.get("configs") or _NO_CONFIGS
+    rows = new.get("rows") or []
+    active = min(max(int(new.get("active", 0)), 0), len(rows) - 1) if rows else 0     # as config_row reads it
+    if (old.get("rows") or []) != rows:
+        return [{"op": "set_configs", "rows": copy.deepcopy(rows), "active": active}]
+    if rows and int(old.get("active", 0)) != active:
+        return [{"op": "set_active_config", "config": active}]
+    return []
 
 
 def _plan_overrides(have, want):
@@ -402,7 +418,9 @@ class StudioEngine(QObject):
         st.vars = dict(res.variables)
         n = len(res.snap["features"]) if res.snap["rollback"] is None else min(res.snap["rollback"],
                                                                                  len(res.snap["features"]))
+        row = config_row(res.snap.get("configs"))        # the variables the engine built with, not the raw ones
         for f in res.snap["features"][:n]:
+            f = PartStudioDoc._configured(f, row)
             if f["type"] in _LIGHT and not f.get("suppressed"):
                 try:
                     F.RUNNERS[f["type"]](st, F.prepare(f, st))

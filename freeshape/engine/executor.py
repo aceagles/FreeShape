@@ -319,6 +319,25 @@ class StudioTab(_Tab):
     def _set_folder_suppressed(self, edit):
         self.doc.set_folder_suppressed(self._folder(edit), bool(_need(edit, "value")))
 
+    def _set_configs(self, edit):
+        rows = _need(edit, "rows")
+        if not isinstance(rows, (list, tuple)) or not all(isinstance(r, dict) and r.get("name") for r in rows):
+            raise EngineError("set_configs needs rows: a list of {name, vars, suppress}")
+        names = [r["name"] for r in rows]
+        if len(set(names)) != len(names):
+            raise EngineError("two configurations have the same name")
+        active = edit.get("active", 0)
+        if rows and not (isinstance(active, int) and 0 <= active < len(rows)):
+            raise EngineError(f"no configuration {active!r} to make active")
+        self.doc.set_configs(copy.deepcopy(list(rows)), active)
+
+    def _set_active_config(self, edit):
+        config = _need(edit, "config")
+        names = self.doc.config_names()
+        if not (config in names or isinstance(config, int) and 0 <= config < len(names)):
+            raise EngineError(f"no configuration {config!r} in “{self.doc.name}”")
+        self.doc.set_active_config(config)
+
     def outputs(self):
         self.sync()
         doc, enc = self.doc, self.engine.encoder
@@ -677,14 +696,14 @@ class InProcessEngine(Engine):
         u = self._tabs.get(tab)
         if u is None:
             return None
-        return links.Edge(u.kind, keys, package_digest(u.kind, live_package(u.kind, u.doc, self.encoder), keys))
+        return links.Edge(u.kind, keys, package_digest(u.kind, live_package(u.kind, u.doc, self.encoder, keys), keys))
 
     def _digest_now(self, tab, edge):
         u = self._tabs.get(tab)
         if u is None:
             return edge.digest                    # closed: its consumers keep the version they have
         u.sync()
-        return package_digest(u.kind, live_package(u.kind, u.doc, self.encoder), edge.keys)
+        return package_digest(u.kind, live_package(u.kind, u.doc, self.encoder, edge.keys), edge.keys)
 
     def _label(self, tab):
         t = self._tabs.get(tab)

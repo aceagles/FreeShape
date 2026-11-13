@@ -49,7 +49,7 @@ from .contract import Engine, EngineError, TabErrored
 from .encode import Encoder
 from .executor import KINDS, fetch_blobs, file_kind, put_blobs, read_data
 from .inputs import cross_package, external_id
-from .linkgraph import lean_package, norm_key, package_digest, propagate
+from .linkgraph import key_configs, lean_package, link_key, package_digest, propagate
 
 STOP_GRACE_S = 3.0           # how long a closed tab's worker gets to finish before it is killed
 
@@ -117,9 +117,9 @@ class _Tab:
         self.pid = None
         self.error = None        # why the worker stopped, while the tab is errored
         self.epoch = 0           # bumps on every (re)start
-        self.wants = {}          # upstream tab id -> part ids it reads, as of the last `_upstream`
+        self.wants = {}          # upstream tab id -> link keys it reads, as of the last `_upstream`
         self.sent = None         # key of the upstream outputs the worker holds
-        self.lean = None         # (state key, package): this tab's outputs as an input of other tabs
+        self.lean = {}           # configurations -> (state key, package): this tab's outputs as an input of other tabs
         self.open_name = None    # the name open_tab_data was given (None: the data's own)
         self.lookup = None       # the blob lookup open_tab_data was given
         self.blobs = {}          # {key: bytes} the worker holds: sent from `lookup`, or returned by it (`tab_data`)
@@ -185,7 +185,7 @@ class ProcessEngine(Engine):
                 "open_name": t.open_name, "blobs": None if t.lookup is None else dict(t.blobs),
                 "by_tab_id": self.by_tab_id}
         t.epoch += 1
-        t.error, t.lean, t.sent = None, None, key
+        t.error, t.lean, t.sent = None, {}, key
         t.pool = SPARES.take(self._ctx, self.spares)
         t.take_meta(self._wait(t, t.pool.submit(W.load, spec)))
 
@@ -259,10 +259,12 @@ class ProcessEngine(Engine):
             return None
         try:
             doc = src.get("document") or self.document_id      # no Document named: a Version of this one (I1.11)
-            key = (doc, self.cross.registry.trusted_path(doc), src.get("version"), src.get("tab"), kind)
+            config = src.get("config") if kind == "studio" else None
+            key = (doc, self.cross.registry.trusted_path(doc), src.get("version"), src.get("tab"), kind, config)
             hit = self._pinned.get(key)
             if hit is None:
-                pkg = cross_package(kind, self.cross._cross_doc(dict(src, document=doc), kind), self._pin_enc)
+                pkg = cross_package(kind, self.cross._cross_doc(dict(src, document=doc), kind), self._pin_enc,
+                                    (config,) if config else ())
                 hit = self._pinned[key] = (external_id(src), pkg, package_digest(kind, lean_package(pkg)))
             return hit
         except Exception:               # noqa: BLE001 -- an unreadable pin is the consumer's error, not ours
@@ -293,14 +295,15 @@ class ProcessEngine(Engine):
         return hit if hit is not None and hit.kind == kind else None
 
     def _upstream(self, t, seen=()):
-        """({tab id: package}, key) of the outputs `t` consumes. The key changes whenever any of them does."""
+        """({tab id: package}, key) of the outputs `t` consumes. The key changes whenever any of them does. A
+        studio's package carries the configurations `t`'s sources name."""
         seen = seen + (t,)
-        pkgs, key, wants = {}, [], {}
+        pkgs, key, wants, live = {}, [], {}, []
         for src in list(t.sources):
             if links.is_pinned(src, self.document_id):      # a pinned input: its package, and no live edge
                 ext = self._external(src)
                 if ext is not None:
-                    wants.setdefault(ext[0], set()).add(norm_key(src.get("part")))
+                    wants.setdefault(ext[0], set()).add(link_key(src))
                     if ext[0] not in pkgs:
                         pkgs[ext[0]] = ext[1]
                         key.append((ext[0], ext[2]))
@@ -311,17 +314,20 @@ class ProcessEngine(Engine):
                 # Derived that closes the loop turns red naming it; the edge keeps the cycle in the Link graph.
                 loop = " -> ".join(self._label(x.tab) for x in (seen[seen.index(u):] + (u,)))
                 msg = "Circular link: " + loop
-                wants.setdefault(u.tab, set()).add(norm_key(src.get("part")))
+                wants.setdefault(u.tab, set()).add(link_key(src))
                 pkgs[u.tab] = {"kind": "studio", "uid": u.uid, "name": str(u.name), "path": u.path, "parts": [],
                                "error": msg}
                 key.append((u.tab, ("cycle", msg)))
                 continue
             if u is None or u in seen:
                 continue
-            wants.setdefault(u.tab, set()).add(norm_key(src.get("part")))
+            wants.setdefault(u.tab, set()).add(link_key(src))
+            if u not in live:
+                live.append(u)
+        for u in live:                  # once every source is seen: the configurations each tab is read in
             if u.tab in pkgs:
                 continue
-            lean = self._lean(u, seen)
+            lean = self._lean(u, seen, key_configs(wants[u.tab]))
             if lean is not None:
                 pkgs[u.tab] = lean[1]
                 key.append((u.tab, lean[0]))
@@ -343,7 +349,7 @@ class ProcessEngine(Engine):
 
     def _digest_now(self, tab, edge):
         u = self._tabs.get(tab)
-        lean = self._lean(u, ()) if u is not None else None
+        lean = self._lean(u, (), key_configs(edge.keys)) if u is not None else None
         if lean is None:                          # closed or down: its consumers keep the version they have
             return edge.digest
         return package_digest(u.kind, lean_package(lean[1]), edge.keys)
@@ -357,18 +363,21 @@ class ProcessEngine(Engine):
         return propagate(self.links.graph, tab, self._digest_now,
                          lambda x: self._call(self._tabs[x], "rebuild"), self._label)
 
-    def _lean(self, u, seen):
-        """(state key, package) of tab `u` as an input, cached until its revision or its own inputs change.
+    def _lean(self, u, seen, configs=()):
+        """(state key, package) of tab `u` as an input, carrying the configurations `configs` (a sorted tuple of
+        names) besides the active one; cached per `configs` until its revision or its own inputs change.
         None while `u` is errored: its consumers then keep showing its last version, as when it is closed."""
         if u.error is not None:
             return None
-        state = (u.epoch, u.revision, self._upstream(u, seen)[1])
-        if u.lean is None or u.lean[0] != state:
+        state = (u.epoch, u.revision, self._upstream(u, seen)[1], tuple(configs))
+        hit = u.lean.get(state[3])
+        if hit is None or hit[0] != state:
+            u.lean = {c: v for c, v in u.lean.items() if v[0][:3] == state[:3]}     # drop what is out of date
             try:
-                u.lean = (state, self._call(u, "upstream", seen=seen))
+                hit = u.lean[state[3]] = (state, self._call(u, "upstream", list(configs), seen=seen))
             except TabErrored:
                 return None
-        return u.lean
+        return hit
 
     # ------------------------------------------------------------------ tab registry
     def _get(self, tab) -> _Tab:

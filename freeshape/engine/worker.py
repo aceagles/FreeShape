@@ -67,13 +67,26 @@ class _StudioView:
     """What a link reads of a Part Studio (LinkResolver, links.repair_links), rebuilt from its outputs."""
     kind = "studio"
 
-    def __init__(self, pkg, parts):
+    def __init__(self, pkg, parts, configs=None):
         self.uid, self.name, self.path = pkg["uid"], pkg["name"], pkg["path"]
         self.part_aliases = dict(pkg.get("aliases") or {})
         self.hidden_parts = {p["id"] for p in pkg["parts"] if p["hidden"]}
-        self.state = SimpleNamespace(parts=PartMap(parts, aliases=self.part_aliases),
-                                     vars=dict(pkg.get("vars") or {}), sheet={})
-        self.package = None      # the links.StudioPackage a PartStudioDoc.link_inputs hands out (set by install)
+        self.state = self._state(parts, pkg)
+        # the configurations the parent sent (pkg["configs"]): name -> the state in that configuration
+        self.configs = {c: self._state(cparts, pkg) for c, cparts in (configs or {}).items()}
+        self.packages = {}       # configuration ("": none named) -> the links.StudioPackage link_inputs hands out
+
+    def _state(self, parts, pkg):
+        return SimpleNamespace(parts=PartMap(parts, aliases=self.part_aliases), vars=dict(pkg.get("vars") or {}),
+                               sheet={})
+
+    def state_for(self, config=None):
+        """The state in configuration `config` (as PartStudioDoc.state_for), if the parent sent it; else the
+        active one."""
+        return self.configs.get(config, self.state) if config else self.state
+
+    def package_for(self, config=None):
+        return self.packages.get(config or "", self.packages.get(""))
 
 
 class _VariablesView:
@@ -149,16 +162,17 @@ class _WorkerEngine(InProcessEngine):
             p.named = N.NamedShape(shp, names)
         return p
 
-    def _studio_package(self, pkg, parts):
-        """The links.StudioPackage of a studio the parent sent, with the digest LinkResolver.resolve_studio
-        gives the same studio (the parts and sketches carry the hashes the parent computed)."""
+    def _studio_package(self, pkg, parts, config=""):
+        """The links.StudioPackage of a studio the parent sent (in configuration `config`), with the digest
+        LinkResolver.resolve_studio gives the same studio (the parts and sketches carry the hashes the parent
+        computed)."""
         out = links.StudioPackage(
             {lp["id"]: links.PublishedPart(id=lp["id"], name=lp["name"], color=tuple(lp["color"]), hidden=lp["hidden"],
                                      shape=parts[lp["id"]].shape, names=lp["names"], hash=lp["hash"])
              for lp in pkg["parts"]},
             {sk["id"]: SketchOut(**sk) for sk in pkg.get("sketches") or ()}, dict(pkg.get("aliases") or {}),
             connectors={c["id"]: dict(c) for c in pkg.get("connectors") or ()},
-            error=pkg.get("error") or "")
+            error=pkg.get("error") or "", config=config)
         out.digest = out.digest_for(None)
         return out
 
@@ -168,9 +182,14 @@ class _WorkerEngine(InProcessEngine):
         views, used = {}, set()
         for tid, pkg in (upstream or {}).items():
             if pkg["kind"] == "studio":
-                views[tid] = _StudioView(pkg, {lp["id"]: self._part(lp) for lp in pkg["parts"]})
-                views[tid].package = self._studio_package(pkg, views[tid].state.parts)
-                used |= {lp["hash"] for lp in pkg["parts"]}
+                configs = pkg.get("configs") or {}
+                v = views[tid] = _StudioView(pkg, {lp["id"]: self._part(lp) for lp in pkg["parts"]},
+                                             {c: {lp["id"]: self._part(lp) for lp in sub["parts"]}
+                                              for c, sub in configs.items()})
+                v.packages[""] = self._studio_package(pkg, v.state.parts)
+                for c, sub in configs.items():
+                    v.packages[c] = self._studio_package(dict(pkg, **sub), v.configs[c].parts, c)
+                used |= {lp["hash"] for sub in [pkg, *configs.values()] for lp in sub["parts"]}
             elif pkg["kind"] == "variables":
                 views[tid] = _VariablesView(pkg)
             else:
@@ -263,20 +282,24 @@ class _Worker:
                 "revision": t.revision, "pid": os.getpid(),
                 "sources": plain(links.tab_sources(t.kind, doc))}
 
-    def upstream(self):
-        """This tab's outputs as another tab consumes them: parts without meshes, variables, placements."""
+    def upstream(self, configs=()):
+        """This tab's outputs as another tab consumes them: parts without meshes, variables, placements. A Part
+        Studio's also carry the configurations `configs` names, each under "configs"."""
         t = self.engine._get(self.tab)
         t.sync()
         doc, enc = t.doc, self.engine.encoder
         pkg = {"kind": t.kind, "uid": getattr(doc, "uid", None), "name": str(doc.name), "path": doc.path}
         if t.kind == "studio":
-            st = doc.state
-            pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(st.vars)), error=links._studio_error(doc),
-                       parts=[lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
-                              if not p.reference],      # I5.3: Context bodies are reference only
-                       sketches=[plain(asdict(sketch_out(fid, (doc.feature(fid) or {}).get("name", fid), res)))
-                                 for fid, res in st.sketches.items()],
-                       connectors=[plain(asdict(connector_out(fid, c))) for fid, c in st.connectors.items()])
+            def body(st):
+                return {"parts": [lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
+                                  if not p.reference],      # I5.3: Context bodies are reference only
+                        "sketches": [plain(asdict(sketch_out(fid, (doc.feature(fid) or {}).get("name", fid), res)))
+                                     for fid, res in st.sketches.items()],
+                        "connectors": [plain(asdict(connector_out(fid, c))) for fid, c in st.connectors.items()]}
+            pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(doc.state.vars)),
+                       error=links._studio_error(doc), **body(doc.state))
+            if configs:
+                pkg["configs"] = {c: body(doc.state_for(c)) for c in configs}
         elif t.kind == "variables":
             pkg.update(vars=plain(dict(doc.values()[0])))
         elif t.kind == "assembly":
@@ -302,7 +325,7 @@ class _Worker:
         if op == "outputs":
             return self.engine.outputs(self.tab)
         if op == "upstream":
-            return self.upstream()
+            return self.upstream(arg or ())
         if op == "rebuild":                       # a consumed output changed: re-read it now
             self.engine._get(self.tab).rebuild()
             return self.meta()

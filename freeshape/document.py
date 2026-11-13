@@ -150,6 +150,17 @@ def update_context(doc, fid, asm):
     doc.replace_feature(new)
 
 
+def config_row(configs, name=None):
+    """The row of a configuration table ({"rows", "active"}) named `name`, the active row for None; None when the
+    table has no rows or no row of that name."""
+    rows = (configs or {}).get("rows", [])
+    if not rows:
+        return None
+    if name is None:
+        return rows[min(max(int(configs.get("active", 0)), 0), len(rows) - 1)]
+    return next((r for r in rows if r["name"] == name), None)
+
+
 class PartStudioDoc:
     kind = "studio"
 
@@ -542,14 +553,10 @@ class PartStudioDoc:
         return rows[min(max(int(self.configs.get("active", 0)), 0), len(rows) - 1)]["name"]
 
     def _config_row(self, name=None):
-        rows = self.configs.get("rows", [])
-        if not rows:
-            return None
-        if name is None:
-            return rows[min(max(int(self.configs.get("active", 0)), 0), len(rows) - 1)]
-        return next((r for r in rows if r["name"] == name), None)
+        return config_row(self.configs, name)
 
-    def _configured(self, f, row):
+    @staticmethod
+    def _configured(f, row):
         """Feature f as the configuration `row` has it: its variable value and whether it's suppressed."""
         if row is None:
             return f
@@ -574,8 +581,8 @@ class PartStudioDoc:
             (k for k, r in enumerate(rows) if r["name"] == name_or_index), None)
         if i is None or not (0 <= i < len(rows)) or i == self.configs.get("active", 0):
             return
+        self.checkpoint()            # one undo step, so undo switches back
         self.configs["active"] = i
-        self.dirty = True
         self.rebuild()
 
     def state_for(self, config=None):

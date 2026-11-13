@@ -88,6 +88,10 @@ def main():
         from .step_worker import run
         run(sys.argv[2], sys.argv[3])
         return
+    if len(sys.argv) >= 2 and sys.argv[1] == "--step-thumb-worker":
+        from .step_thumb_worker import main as thumb_main
+        thumb_main()
+        return
     if len(sys.argv) >= 6 and sys.argv[1] == "--hlr-worker":
         from .hlr_worker import run as hlr_run
         hlr_run(*sys.argv[2:6])

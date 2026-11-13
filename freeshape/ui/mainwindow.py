@@ -294,6 +294,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._add_action(m, "Import STEP (new tab)…", self.import_step)
         self._add_action(m, "Import STEP into this tab…", lambda: self.import_step(into_current=True))
+        self._add_action(m, "Component library…", self.open_step_library, "Ctrl+Shift+L")
         self._add_action(m, "Export STEP…", lambda: self.export(None, "step"))
         self._add_action(m, "Export STL…", lambda: self.export(None, "stl"))
         m.addSeparator()
@@ -493,6 +494,8 @@ class MainWindow(QMainWindow):
                     "link import reference skeleton master", "Feature", self._derived_blocked() or ""),
             C("import", "Import STEP", "Open a STEP file in a new tab.", lambda: self.import_step(), "open file",
               "File"),
+            C("import", "Component library", "Search a folder of STEP parts, see their previews and insert one.",
+              self.open_step_library, "step parts browse servo motor bearing standard catalogue insert", "File"),
             C("export", "Export", "Export the model as STEP or STL.", lambda: self.export(None, None),
               "save stl step", "File"),
             C("undo", "Undo", "Undo the last change (Ctrl+Z).", self.undo, "", "Edit"),
@@ -560,6 +563,8 @@ class MainWindow(QMainWindow):
             C("drawing", "New Drawing", "Create a Drawing tab.", lambda: self.new_drawing(), "create tab", "File"),
             C("import", "Import STEP", "Open a STEP file in a new tab.", lambda: self.import_step(), "open file",
               "File"),
+            C("import", "Component library", "Search a folder of STEP parts, see their previews and insert one.",
+              self.open_step_library, "step parts browse servo motor bearing standard catalogue insert", "File"),
             C("export", "Save", "Save this tab (Ctrl+S).", self.save, "write store", "File"),
             C("export", "Save as", "Save this tab under a new name (Ctrl+Shift+S).", self.save_as, "write store",
               "File"),
@@ -3471,6 +3476,24 @@ class MainWindow(QMainWindow):
         if path:
             remember_dir(self.settings, "doc", path)
             self.import_step_file(path, into_current)
+
+    def open_step_library(self):
+        """The Component library browser: one window, kept so its search and scroll position survive."""
+        from .step_library_ui import StepLibraryDialog
+        d = getattr(self, "_step_library", None)
+        if d is None:
+            d = self._step_library = StepLibraryDialog(self.settings, self._insert_library_part, self)
+        d.show()
+        d.raise_()
+        d.activateWindow()
+        return d
+
+    def _insert_library_part(self, path, into_current):
+        """Insert a library part into this tab when it is a Part Studio or an Assembly, else in a new tab."""
+        if self.mode != "idle":
+            self._leave_modes()
+        can_take = self.doc is not None and getattr(self.doc, "kind", "studio") in ("studio", "assembly")
+        self.import_step_file(path, into_current and can_take)
 
     def import_step_file(self, path, into_current=False):
         from .progress import ImportProgress, read_step_in_background

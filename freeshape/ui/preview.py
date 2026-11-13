@@ -49,6 +49,33 @@ def clear_memory_cache():
     _memory.clear()
 
 
+def render_solids(tris, colors, size=256, lines=()) -> QImage:
+    """Triangles (m, 3, 3) with one colour each ((m, 3), 0..1) drawn in a single depth-sorted pass: the
+    thumbnail of a whole STEP file, whose solids and coloured faces must hide one another. `lines` are
+    (k, 3) polylines drawn on top, for a file that holds wires and no faces. Not cached."""
+    w, h = (size, size) if isinstance(size, int) else (int(size[0]), int(size[1]))
+    tris = np.asarray(tris, float).reshape(-1, 3, 3)
+    lines = [np.asarray(ln, float) for ln in lines if len(ln) >= 2]
+    img = QImage(w, h, QImage.Format_RGB32)
+    img.fill(BACKGROUND)
+    pts = [tris.reshape(-1, 3)] + lines
+    if not sum(len(a) for a in pts):
+        return img
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    try:
+        fit = _Fit(_project(np.vstack(pts))[0], w, h)
+        if len(tris):
+            _paint_tris(p, tris, fit, np.clip(np.asarray(colors, float).reshape(-1, 3), 0, 1))
+        p.setPen(QPen(QColor(40, 50, 70), max(1.2, min(w, h) / 128)))
+        p.setBrush(QColor(0, 0, 0, 0))
+        for ln in lines:
+            p.drawPolyline(QPolygonF([QPointF(*v) for v in fit(_project(ln)[0])]))
+    finally:
+        p.end()
+    return img
+
+
 def content_hash(item, part=None) -> str:
     if isinstance(item, PartOut):
         return "part:" + item.hash + ":" + _color_key(item.color)
@@ -166,8 +193,9 @@ def _paint_tris(p, tris, fit, color, alpha=255):
     n = np.where((n @ _EYE < 0)[:, None], -n, n)                          # two-sided: light the visible side
     shade = 0.3 + 0.7 * np.clip(n @ _LIGHT, 0, 1)
     order = np.argsort(depth, kind="stable")                              # far to near
-    base = _rgb(color)
-    cols = np.clip(base[None, :] * shade[:, None] * 255 + 0.5, 0, 255).astype(np.int64)
+    per_tri = isinstance(color, np.ndarray) and color.ndim == 2          # (m, 3): one colour per triangle
+    base = color if per_tri else _rgb(color)[None, :]
+    cols = np.clip(base * shade[:, None] * 255 + 0.5, 0, 255).astype(np.int64)
     last = None
     for i in order:
         if ln[i] < 1e-12:

@@ -22,6 +22,7 @@ import numpy as np
 from . import kernel as K
 from . import measure as MS
 from . import migrations as M
+from . import sketchref
 
 MATE_TYPES = {
     "fastened": ("Fastened", "No motion — the parts are locked together"),
@@ -636,9 +637,15 @@ def animate_values(start, end, steps, playback):
     return seq
 
 
+def is_sketch_source(source):
+    """True when an instance source is a Sketch instance's: {"kind": "sketch", "uid", "sketch"} (I1.2)."""
+    return isinstance(source, dict) and source.get("kind") == "sketch"
+
+
 def capture_context(asm, iid):
     """Plain data for editing instance `iid` in context (ADR 0004): every other instance with a part, as it
-    stands now. Each neighbour has its id, name, content hash (sha256 of its BREP bytes), BREP bytes,
+    stands now. A Sketch instance is a neighbour like a part (its shape is edges and vertices, its element names
+    are empty); `iid` itself must be a part instance. Each neighbour has its id, name, content hash (sha256 of its BREP bytes), BREP bytes,
     element names (as `_named` has them, {} when the part has none) and `T`, its placement relative to `iid`
     (inverse of `iid`'s transform times the neighbour's, 4x4 nested lists). `solved` is False while any
     mate is shown red. Reads the current state; changes nothing."""
@@ -646,6 +653,8 @@ def capture_context(asm, iid):
     from . import blobstore
     if asm.instance(iid) is None:
         raise K.KernelError(f"No instance {iid}")
+    if asm.is_sketch_instance(iid):
+        raise K.KernelError("A Context belongs to a part: it can't be taken from a Sketch instance")
     inv = np.linalg.inv(asm.T(iid))
     neighbours = []
     for inst in asm.instances:
@@ -691,6 +700,7 @@ class AssemblyDoc:
         # callable(source) -> [{"id", "name", "frame"}] or None: the mate connectors the Part Studio publishes for
         # the part a source links to (links.resolve_connectors). Left None, it is found on the resolver likewise.
         self.connector_resolver = None
+        self.studio_resolver = None      # callable(src) -> links.StudioPackage; default: the resolver's resolve_studio
         self._recovered = set()                  # (mate id, "a"/"b") found by signature, not by name; in memory only
         self.parts: dict[str, object] = {}       # instance id -> Part in its own coordinates
         self._fallback: dict[str, object] = {}   # instance id -> shape stored in the file
@@ -849,7 +859,8 @@ class AssemblyDoc:
     def _named(self, iid):
         """The element map of instance `iid`'s part, or None when it has none (a STEP part, a saved copy)."""
         inst, part = self.instance(iid), self.parts.get(iid)
-        if inst is None or part is None or inst["source"].get("kind") in ("step", "standard"):
+        if inst is None or part is None or inst["source"].get("kind") in ("step", "standard") \
+                or is_sketch_source(inst["source"]):
             return None
         fn = self.named_resolver or getattr(getattr(self.resolver, "__self__", None), "resolve_named", None)
         if fn is None:
@@ -859,6 +870,26 @@ class AssemblyDoc:
         except Exception:
             return None
         return nm if nm is not None and nm.shape is not None and nm.shape.IsSame(part.shape) else None
+
+    def is_sketch_instance(self, iid):
+        """True when instance `iid` is a Sketch instance (its source is a studio sketch), not a part instance."""
+        inst = self.instance(iid)
+        return inst is not None and is_sketch_source(inst["source"])
+
+    def sketch_out(self, iid):
+        """The published engine.contract.SketchOut (plane, solved sketch, hash) of Sketch instance `iid`, read
+        through the resolver's resolve_studio, or None for any other instance, a missing instance, or a studio
+        or sketch that can't be read now. Coordinates are the studio's; apply T(iid) for the world."""
+        if not self.is_sketch_instance(iid):
+            return None
+        src = self.instance(iid)["source"]
+        fn = self.studio_resolver or getattr(getattr(self.resolver, "__self__", None), "resolve_studio", None)
+        if fn is None:
+            return None
+        try:
+            return fn(src).sketches.get(str(src.get("sketch")))
+        except Exception:
+            return None
 
     def published_connectors(self, iid):
         """The mate connectors instance `iid` offers: what its Part Studio publishes plus the explicit origin
@@ -915,12 +946,58 @@ class AssemblyDoc:
                         "named": str(cid), "name": c.get("name", ""), "frame": fr}
         raise K.KernelError(f"The part has no published mate connector {cid!r}")
 
+    def sketch_end(self, iid, eid, role):
+        """A mate end on sketch geometry of Sketch instance `iid` (ADR 0011):
+        {"inst": iid, "kind": "sketch", "entity": eid, "role": role, "etype": <point|line|circle|arc>,
+         "sig": <geometric signature>, "frame": <frame_to_json dict, in the instance's own coordinates>}.
+        `eid` is a sketch entity id or a bare point id; `role` is one of sketchref.ROLES the entity has. The
+        frame is re-read from the published sketch on every refresh. Raises K.KernelError when `iid` is not a
+        Sketch instance, its sketch can't be read, or the entity or role doesn't exist."""
+        out = self.sketch_out(iid)
+        if out is None:
+            raise K.KernelError("Not a Sketch instance, or its sketch can't be read")
+        plane, sk = self._sketch_data(out)
+        d = sketchref.describe(sk, eid, role)
+        fr = sketchref.frame(plane, sk, eid, role)
+        return {"inst": iid, "kind": "sketch", "entity": eid, "role": role, "etype": d["etype"], "sig": d["sig"],
+                "frame": frame_to_json({**fr, "what": f"sketch {eid} {role}"})}
+
+    @staticmethod
+    def _sketch_data(out):
+        pl = out.plane
+        plane = {"origin": list(pl["origin"]), "xdir": list(pl["xdir"]), "normal": list(pl["normal"])} \
+            if isinstance(pl, dict) else {"origin": list(pl.origin), "xdir": list(pl.xdir), "normal": list(pl.normal)}
+        return plane, out.sketch
+
+    def _refresh_sketch_end(self, m, c, cache):
+        """Recompute sketch end `c` of mate `m` from the current published sketch; a missing or retyped entity
+        gives the mate a named error (it stays in doc.mates and is left out of the solve)."""
+        iid = c["inst"]
+        if iid not in cache:
+            cache[iid] = self.sketch_out(iid)
+        out = cache[iid]
+        if out is None:
+            return                              # sketch not readable: keep the last frame, as for a closed studio
+        plane, sk = self._sketch_data(out)
+        try:
+            sketchref.check(sk, c)
+            fr = sketchref.frame(plane, sk, c["entity"], c["role"])
+        except K.KernelError as e:
+            self.errors[m["id"]] = f"Lost its sketch geometry: {e}"
+            return
+        c["frame"] = frame_to_json({**fr, "what": f"sketch {c['entity']} {c['role']}"})
+
     def _refresh_named_ends(self):
-        """Re-read the frame of every named mate end; a connector the studio no longer publishes turns its mate red."""
+        """Re-read the frame of every named mate end; a connector the studio no longer publishes turns its mate red.
+        Sketch ends (kind "sketch") are recomputed from the published sketch the same way."""
         cache = {}
+        sk_cache = {}
         for m in self.mates:
             for side in ("a", "b"):
                 c = m.get(side)
+                if c and c.get("kind") == "sketch" and c["inst"] in self.parts:
+                    self._refresh_sketch_end(m, c, sk_cache)
+                    continue
                 if not c or not c.get("named") or c["inst"] not in self.parts:
                     continue
                 if c.get("kind") == "origin":      # an explicit connector: kept in this file, not in the studio
@@ -1062,6 +1139,8 @@ class AssemblyDoc:
     def _source_key(self, src):
         if src.get("kind") == "step":
             return ("step", src.get("blob"), src.get("index", 0))
+        if is_sketch_source(src):
+            return ("sketch", src.get("tab") or src.get("uid"), src.get("sketch"))
         if src.get("kind") == "standard":
             return ("standard", src.get("type"), json.dumps(src.get("params") or {}, sort_keys=True, default=str))
         return ("studio", src.get("tab") or src.get("uid"), src.get("part"))
@@ -2306,7 +2385,7 @@ class AssemblyDoc:
     # ------------------------------------------------------------------ analysis
     def interferences(self, progress=None):
         """Pairs of visible instances whose solids overlap: [(iid_a, iid_b, volume, overlap shape)]."""
-        vis = self.visible_instances()
+        vis = [i for i in self.visible_instances() if not is_sketch_source(i["source"])]
         shapes = {i["id"]: self.world_shape(i["id"]) for i in vis}
         boxes = {k: K.bbox(s) for k, s in shapes.items()}
         out = []
@@ -2340,6 +2419,8 @@ class AssemblyDoc:
             if inst.get("suppressed"):
                 continue
             src = inst["source"]
+            if is_sketch_source(src):
+                continue                                    # a Sketch instance is not a part
             key = self._source_key(src)
             if src.get("kind") == "standard":
                 # model_thread only changes the geometry detail, so it does not split a BOM row
@@ -2393,7 +2474,7 @@ class AssemblyDoc:
 
     def export(self, path, ids=None, options=None):
         insts = [i for i in self.instances if i["id"] in self.parts and (ids is None or i["id"] in ids)
-                 and not i.get("hidden") and not i.get("suppressed")]
+                 and not i.get("hidden") and not i.get("suppressed") and not is_sketch_source(i.get("source"))]
         if not insts:
             raise K.KernelError("Nothing to export")
         if str(path).lower().endswith(".stl"):

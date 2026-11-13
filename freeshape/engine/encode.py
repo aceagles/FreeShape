@@ -149,6 +149,10 @@ def connector_out(fid, entry) -> MateConnectorOut:
     """A studio's mate_connector (ModelState.connectors[fid]) as published output."""
     fr = entry["frame"]
     frame = {k: [float(v) for v in fr[k]] for k in ("o", "z", "x")}
-    body = {"name": str(entry["name"]), "part": str(entry["part"]), "frame": frame}
+    sketch = entry.get("sketch") or ""
+    body = {"name": str(entry["name"]), "part": "" if entry["part"] is None else str(entry["part"]), "frame": frame}
+    if sketch:          # left out when empty, so a part-owned connector keeps the hash it always had
+        body["sketch"] = str(sketch)
     digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
-    return MateConnectorOut(id=str(fid), name=body["name"], part=body["part"], frame=frame, hash=digest)
+    return MateConnectorOut(id=str(fid), name=body["name"], part=body["part"], frame=frame, hash=digest,
+                            sketch=str(sketch))

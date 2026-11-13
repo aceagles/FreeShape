@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QListWidget, QListWidgetItem, QWidget,
     QGraphicsDropShadowEffect, QTreeWidget, QTreeWidgetItem, QPushButton, QDialog, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QFileDialog, QMessageBox, QCheckBox, QTabWidget,
+    QMenu,
 )
 
 from .. import kernel as K
@@ -27,6 +28,8 @@ from .viewport import Pick
 
 ROLE_ID = Qt.UserRole + 1
 ROLE_KIND = Qt.UserRole
+SKETCH_ROLE_WORD = {"point": "point", "centre": "centre", "end1": "end 1", "end2": "end 2", "mid": "middle"}
+SKETCH_SNAP_KIND = {"end1": "vertex", "end2": "vertex", "point": "vertex", "mid": "mid", "centre": "center"}
 ROLE_NOTICE = Qt.UserRole + 2        # a Standard part instance's version notice text (marker in the list)
 NOTICE_MARK = "   ↻"
 
@@ -353,6 +356,15 @@ class AssemblyPanel(QWidget):
     relationClicked = Signal(str)
     relationDouble = Signal(str)
     relationContext = Signal(str, object)
+    visibilityChanged = Signal()
+
+    # What the visibility dropdown switches: (key, label, shown at first, tooltip)
+    VISIBILITY = (
+        ("connectors", "Mate connectors", True, "The mate connectors each part brings from its Part Studio, and the "
+                                                "ones added at a part's origin"),
+        ("mates", "Mates", False, "The two connectors of every mate, not only of the mates you select"),
+        ("sketches", "Sketches", True, "Sketches inserted into this Assembly"),
+    )
 
     def __init__(self):
         super().__init__()
@@ -360,9 +372,33 @@ class AssemblyPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
+        head = QWidget()
+        hl = QHBoxLayout(head)
+        hl.setContentsMargins(0, 0, 6, 0)
+        hl.setSpacing(0)
         self.inst_header = QLabel("Instances")
         self.inst_header.setObjectName("sectionHeader")
-        lay.addWidget(self.inst_header)
+        hl.addWidget(self.inst_header, 1)
+        # like Onshape's eye on the instance list: what the Assembly draws besides its parts
+        self.vis_btn = QToolButton()
+        self.vis_btn.setObjectName("asm_visibility")
+        self.vis_btn.setText("Show")
+        self.vis_btn.setToolTip("Show or hide mate connectors, mates and sketches")
+        self.vis_btn.setPopupMode(QToolButton.InstantPopup)
+        vm = QMenu(self.vis_btn)
+        vm.setToolTipsVisible(True)
+        self.vis_actions = {}
+        for key, label, on, tip in self.VISIBILITY:
+            a = QAction(label, self)
+            a.setCheckable(True)
+            a.setChecked(on)
+            a.setToolTip(tip)
+            a.toggled.connect(lambda _on=False: self.visibilityChanged.emit())
+            vm.addAction(a)
+            self.vis_actions[key] = a
+        self.vis_btn.setMenu(vm)
+        hl.addWidget(self.vis_btn)
+        lay.addWidget(head)
         self.instances = QListWidget()
         self.instances.setIconSize(QSize(14, 14))
         self.instances.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -494,7 +530,10 @@ class AssemblyPanel(QWidget):
             for side in ("a", "b"):
                 c = m.get(side)
                 inst = doc.instance(c["inst"]) if c else None
-                names.append(inst["name"] if inst else "?")
+                nm = inst["name"] if inst else "?"
+                if c and c.get("kind") == "sketch":      # sketch geometry: "<sketch name> <role word>"
+                    nm += " " + SKETCH_ROLE_WORD.get(c.get("role"), str(c.get("role")))
+                names.append(nm)
             tip = f"{A.MATE_TYPES[m['type']][0]}: {names[0]}  ↔  {names[1]}"
             err = doc.errors.get(m["id"])
             if m.get("suppressed"):
@@ -583,6 +622,10 @@ class AssemblyPanel(QWidget):
 
     def selected_mates(self):
         return [it.data(ROLE_ID) for it in self.mates.selectedItems()]
+
+    def shows(self, key):
+        """Whether the visibility dropdown has `key` ("connectors", "mates", "sketches") ticked."""
+        return self.vis_actions[key].isChecked()
 
     def select_instances(self, ids):
         self.instances.blockSignals(True)
@@ -689,6 +732,12 @@ class InsertPanel(QFrame):
                 it = QTreeWidgetItem(["(no parts yet)"])
                 it.setDisabled(True)
                 top.addChild(it)
+            for sid in doc.state.sketches:                   # the studio's sketches, under its parts
+                it = QTreeWidgetItem([str((doc.feature(sid) or {}).get("name", sid))])
+                it.setIcon(0, icon("sketch", 16))
+                it.setData(0, ROLE_KIND, "sketch")
+                it.setData(0, ROLE_ID, (doc.uid, sid))
+                top.addChild(it)
             self.tree.addTopLevelItem(top)
             top.setExpanded(True)
         if self.tree.topLevelItemCount() == 0:
@@ -703,6 +752,9 @@ class InsertPanel(QFrame):
         if kind == "part":
             uid, pid = it.data(0, ROLE_ID)
             self.ctl.insert_studio_parts(uid, [pid])
+        elif kind == "sketch":
+            uid, sid = it.data(0, ROLE_ID)
+            self.ctl.insert_studio_sketch(uid, sid)
         elif kind == "studio":
             self.ctl.insert_studio_parts(it.data(0, ROLE_ID), None)
         self.msg.setText(f"Inserted {it.text(0)}")
@@ -826,7 +878,9 @@ class MateDialog(QFrame):
             f.clear_btn.clicked.connect(lambda _=False, s=side: self._clear(s))
             lay.addWidget(f)
         hint = QLabel("Click a flat face, a round face (picks the end nearest the click), a circular edge "
-                      "or a straight edge on each part.")
+                      "or a straight edge on each part."
+                      + (" On a sketch, click a point, a line end or middle, a circle centre, or a teal connector."
+                         if any(self.doc.is_sketch_instance(i["id"]) for i in self.doc.instances) else ""))
         hint.setWordWrap(True)
         hint.setObjectName("muted")
         lay.addWidget(hint)
@@ -1051,7 +1105,7 @@ class MateDialog(QFrame):
             self.active.set_active(False)
         self.active = field
         field.set_active(True)
-        self.ctl.w.viewport.select_filter = {"face", "edge"}
+        self.ctl.w.viewport.select_filter = {"face", "edge", "sketch_point", "sketch_line"}
         self._refresh_fields()
 
     def _refresh_fields(self):
@@ -1062,12 +1116,18 @@ class MateDialog(QFrame):
                 f.text.setStyleSheet("color:#8a94a3;")
             else:
                 inst = self.doc.instance(c["inst"])
-                f.text.setText(f"{inst['name'] if inst else '?'} — {c['frame'].get('what', c['kind'])}")
+                if c.get("kind") == "sketch":
+                    f.text.setText(f"{inst['name'] if inst else '?'} {SKETCH_ROLE_WORD.get(c.get('role'), c.get('role'))}")
+                else:
+                    f.text.setText(f"{inst['name'] if inst else '?'} — {c['frame'].get('what', c['kind'])}")
                 f.text.setStyleSheet("")
         self.ctl.update_triads()
 
     def snap_candidates(self, pick: Pick):
-        """Snap points for the viewport to draw while hovering a face or edge."""
+        """Snap points for the viewport to draw while hovering a face or edge, or a Sketch instance's geometry
+        (one dot per role of the entity: end 1, middle, end 2, centre, the point)."""
+        if pick.kind in ("sketch_line", "sketch_point"):
+            return self._sketch_snaps(*pick.key)
         if pick.kind not in ("face", "edge"):
             return []
         iid, idx = pick.key
@@ -1111,19 +1171,102 @@ class MateDialog(QFrame):
                 best = (d, iid, pc["id"])
         return None if best is None else best[1:]
 
+    def _sketch_roles(self):
+        """[(instance id, entity id, role, world point)] for every role of every entity of every shown Sketch
+        instance. vp.sketches already carries each plane moved by its instance transform, so these are world points."""
+        from .. import sketchref
+        out = []
+        for iid, sr, _m in self.ctl.w.viewport.sketches:
+            if not self.doc.is_sketch_instance(iid):
+                continue
+            plane = {"origin": sr.plane.origin, "xdir": sr.plane.xdir, "normal": sr.plane.normal}
+            sk = sr.sketch.to_dict()
+            for eid in sk["entities"]:
+                try:
+                    for role in sketchref.roles(sk, eid):
+                        out.append((iid, eid, role, np.asarray(sketchref.frame(plane, sk, eid, role)["o"], float)))
+                except K.KernelError:
+                    continue
+        return out
+
+    def _sketch_snaps(self, iid, eid):
+        """Snap dots for the hovered sketch entity `eid` of Sketch instance `iid`: one per role. "type" picks the
+        label the viewport draws; "role" is what a click on the dot stores."""
+        return [{"type": SKETCH_SNAP_KIND[r], "p": pw, "pw": pw, "role": r, "inst": i, "entity": e}
+                for i, e, r, pw in self._sketch_roles() if i == iid and e == eid]
+
+    def _screen_hit(self, xy, tol=12.0):
+        """What is under screen point `xy` among the things that must win over the face and edge pick: a triad of an
+        instance's own connector ("named", iid, cid) or a sketch role dot ("sketch", iid, eid, role). The nearest in
+        screen space wins; a triad wins a tie. None when neither is within `tol` px."""
+        cam = self.ctl.w.viewport.cam
+        best = None
+        for iid, pc, fr in self.own_connectors():
+            sp = cam.to_screen(np.asarray(fr["o"], float))
+            d = math.hypot(sp[0] - xy[0], sp[1] - xy[1])
+            if d <= tol and (best is None or d < best[0]):
+                best = (d, ("named", iid, pc["id"]))
+        for iid, eid, role, pw in self._sketch_roles():
+            sp = cam.to_screen(pw)
+            d = math.hypot(sp[0] - xy[0], sp[1] - xy[1])
+            if d <= tol and (best is None or d < best[0]):
+                best = (d, ("sketch", iid, eid, role))
+        return None if best is None else best[1]
+
+    def _nearest_role(self, iid, eid, xy):
+        """The role of sketch entity `eid` whose dot is nearest screen point `xy` (a click on the line, off every dot)."""
+        cam = self.ctl.w.viewport.cam
+        cand = [(math.hypot(cam.to_screen(pw)[0] - xy[0], cam.to_screen(pw)[1] - xy[1]), r)
+                for i, e, r, pw in self._sketch_roles() if i == iid and e == eid]
+        return min(cand)[1] if cand else None
+
+    def _use_hit(self, hit):
+        if hit[0] == "named":
+            self.pick_named(hit[1], hit[2])
+        else:
+            self.pick_sketch(*hit[1:])
+
+    def pick_sketch(self, iid, eid, role):
+        """Use `role` of sketch entity `eid` on Sketch instance `iid` for the active field."""
+        try:
+            c = self.doc.sketch_end(iid, eid, role)
+        except Exception as e:
+            self._error(f"Can't use that: {e}")
+            return
+        side = "a" if self.active is self.fa else "b"
+        other = self.mate.get("b" if side == "a" else "a")
+        if other and other["inst"] == iid:
+            self._error("Pick the second connector on a different part.")
+            return
+        self.mate[side] = c
+        if side == "a" and not self.mate.get("b"):
+            self.activate(self.fb)
+        elif side == "b" and not self.mate.get("a"):
+            self.activate(self.fa)
+        self._refresh_fields()
+        self.schedule()
+
     def handle_miss(self):
-        """A click that hit no face or edge: it may still be on a connector triad floating off the part."""
+        """A click that hit no face or edge: it may still be on a connector triad or a sketch point floating off the part."""
         vp = self.ctl.w.viewport
-        hit = self._own_connector_at(vp.last_click) if vp.last_click else None
+        hit = self._screen_hit(vp.last_click) if vp.last_click else None
         if hit is not None:
-            self.pick_named(*hit)
+            vp.clear_snaps()
+            self._use_hit(hit)
 
     def handle_pick(self, pick: Pick):
         vp = self.ctl.w.viewport
-        hit = self._own_connector_at(vp.last_click) if vp.last_click else None
-        if hit is not None:                  # a click on an own-connector triad beats the face under it
+        hit = self._screen_hit(vp.last_click) if vp.last_click else None
+        if hit is not None:                  # a triad or a sketch dot under the pointer beats the face under it
             vp.clear_snaps()
-            self.pick_named(*hit)
+            self._use_hit(hit)
+            return
+        if pick.kind in ("sketch_line", "sketch_point"):     # on a sketch line but off every dot: the nearest role
+            vp.clear_snaps()
+            iid, eid = pick.key
+            role = self._nearest_role(iid, eid, vp.last_click) if vp.last_click else None
+            if role is not None:
+                self.pick_sketch(iid, eid, role)
             return
         snap, base = vp.snap_hi, vp.snap_base
         if snap is not None and base is not None and base.kind in ("face", "edge"):
@@ -1764,7 +1907,10 @@ class AssemblyController:
         p.relationClicked.connect(self.select_relation)
         p.relationDouble.connect(self.edit_relation)
         p.relationContext.connect(self.relation_menu)
-        # tests drive the controller with a plain stand-in window, which cannot parent a QAction
+        p.visibilityChanged.connect(self.show_scene)
+        from PySide6.QtCore import QObject
+        from PySide6.QtGui import QAction
+        # parented on the window so it is found by name; tests build this controller on a plain stand-in window
         self.act_edit_in_context = QAction("Edit in context", w if isinstance(w, QObject) else None)
         self.act_edit_in_context.setObjectName("edit_in_context")
         self.act_edit_in_context.triggered.connect(lambda _=False: self.edit_in_context())
@@ -1781,14 +1927,62 @@ class AssemblyController:
     def show_scene(self):
         doc = self.doc
         parts = []
+        sketches = []
         for inst in doc.visible_instances():
-            p = doc.parts[inst["id"]]
             T = np.array(inst["T"], float)
+            if doc.is_sketch_instance(inst["id"]):
+                # edges and points only, no faces: drawn by the viewport's sketch path, not as a part
+                sr = self._sketch_instance_result(inst["id"], T) if self.panel.shows("sketches") else None
+                if sr is not None:
+                    sketches.append((inst["id"], sr))
+                continue
+            p = doc.parts[inst["id"]]
             fc = p.face_colors if not inst.get("color") else None
             parts.append((inst["id"], K.located(p.shape, T), doc.instance_color(inst), fc, T, p.shape))
-        self.vp.set_scene(parts, [], [])
+        self.vp.set_scene(parts, [], sketches)
         self.vp.ghosts = self._interf or []
         self.update_triads()
+
+    def _sketch_instance_result(self, iid, T):
+        """A features.SketchResult (no regions) for Sketch instance `iid`, its plane moved by the instance's
+        transform `T` so the viewport draws it in the assembly's coordinates; None if the sketch can't be read."""
+        from .. import features as F
+        from ..sketch import Sketch
+        doc = self.doc
+        if doc.studio_resolver is None and not hasattr(getattr(doc.resolver, "__self__", None), "resolve_studio"):
+            # a loose Assembly resolves through the window, which can't publish a studio: give it the LinkResolver
+            doc.studio_resolver = self.w._resolver_for(doc).resolve_studio
+        self._wire_connector_resolver()                                               # a sketch's own connectors
+        out = doc.sketch_out(iid)
+        if out is None:
+            return None
+        R, t = T[:3, :3], T[:3, 3]
+        pl = out.plane
+        plane = K.Plane(R @ np.asarray(pl["origin"], float) + t, R @ np.asarray(pl["xdir"], float),
+                        R @ np.asarray(pl["normal"], float))
+        return F.SketchResult(plane, Sketch.from_dict(out.sketch), [], [])
+
+    def _wire_connector_resolver(self):
+        """A loose Assembly resolves through the window, which has no connector lookup: give it the LinkResolver's."""
+        doc = self.doc
+        make = getattr(self.w, "_resolver_for", None)       # tests drive the controller with a plain stand-in window
+        if make is not None and doc.connector_resolver is None \
+                and not hasattr(getattr(doc.resolver, "__self__", None), "resolve_connectors"):
+            doc.connector_resolver = make(doc).resolve_connectors
+
+    def _own_connector_triads(self):
+        """A triad for every mate connector a visible instance offers (its Part Studio's and its origin one)."""
+        doc, out = self.doc, []
+        self._wire_connector_resolver()
+        for inst in doc.visible_instances():
+            for pc in doc.published_connectors(inst["id"]) or []:
+                try:
+                    fr = doc.world_frame(doc.named_connector(inst["id"], pc["id"]))
+                except Exception:           # a connector that can't be placed is simply not drawn
+                    continue
+                z, x = A.unit(fr["z"]), A.unit(fr["x"])
+                out.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75)})
+        return out
 
     def update_triads(self):
         doc = self.doc
@@ -1803,7 +1997,8 @@ class AssemblyController:
                 if m:
                     conns += [m.get("a"), m.get("b")]
         else:
-            for mid in self.panel.selected_mates():
+            shown = [m["id"] for m in doc.mates] if self.panel.shows("mates") else self.panel.selected_mates()
+            for mid in shown:
                 m = doc.mate(mid)
                 if m:
                     conns += [m.get("a"), m.get("b")]
@@ -1820,12 +2015,8 @@ class AssemblyController:
                 x = A.unit(fr["x"])
                 tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75),
                             "size_px": 26, "width": 1.8})
-        for c in doc.connectors:             # explicit origin connectors, wherever their instance is
-            if doc.instance(c["inst"]) is not None and not doc.instance(c["inst"]).get("hidden"):
-                fr = doc.world_frame(doc.named_connector(c["inst"], c["id"]))
-                z = A.unit(fr["z"])
-                x = A.unit(fr["x"])
-                tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75)})
+        elif self.panel.shows("connectors"):  # ...and, with no dialog open, each part's connectors, to see
+            tri += self._own_connector_triads()
         self.vp.triads = tri
         self.vp.update()
 
@@ -1894,6 +2085,26 @@ class AssemblyController:
             pass
         self.w.status.showMessage(f"Inserted {len(first_new)} instance(s)", 4000)
         QTimer.singleShot(0, lambda: self.vp.fit())
+
+    def insert_studio_sketch(self, uid, sketch_id):
+        """Insert one Sketch instance of sketch `sketch_id` of the Part Studio `uid` (one undo checkpoint).
+        Returns the new instance id, or None when the studio or sketch is not there."""
+        studio = self.w.studio_by_uid(uid)
+        if studio is None or sketch_id not in studio.state.sketches:
+            return None
+        src = self.w.studio_link(studio, None)
+        # inside a Document the source names the tab (like a part's); loose studios carry uid + path
+        src = {**{k: v for k, v in src.items() if k != "part"}, "kind": "sketch", "sketch": sketch_id}
+        doc = self.doc
+        first = not doc.instances
+        try:
+            iid = doc.insert(src, T=np.eye(4) if first else None)
+        except K.KernelError as e:
+            QMessageBox.warning(self.w, "Insert", str(e))
+            return None
+        self.w.status.showMessage("Inserted 1 sketch instance", 4000)
+        QTimer.singleShot(0, lambda: self.vp.fit())
+        return iid
 
     def insert_document_sources(self, sources):
         """Insert one instance per cross-Document source (a part pinned to a Version of another Document)."""
@@ -2374,8 +2585,12 @@ class AssemblyController:
                 self.vp.set_selection([Pick("part", (iid,))])    # Edit in context acts on the selection
             m.addAction(self.act_edit_in_context)
         self.add_standard_actions(m, ids)
-        m.addAction("Mass properties", lambda: self.w._mass_props_shape(
+        a = m.addAction("Mass properties", lambda: self.w._mass_props_shape(
             inst["name"], doc.world_shape(iid), inst.get("material")))
+        a.setObjectName("mass_properties")
+        if doc.is_sketch_instance(iid):
+            a.setEnabled(False)                              # a sketch has no mass
+            a.setToolTip("A sketch instance has no mass")
         dof = doc.instance_dof(iid)
         a = m.addAction(f"Degrees of freedom: {dof}" + (" (fixed)" if inst.get("fixed") else ""))
         a.setEnabled(False)

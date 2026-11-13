@@ -342,3 +342,25 @@ def st6_wait(app, done, what, seconds=30.0):
         check(time.monotonic() < end, f"timed out waiting for {what}")
         app.processEvents()
         time.sleep(0.01)
+
+
+# --- added for SS1 (I1.9): the layout sketch Part Studio ---
+def layout_sketch(s):
+    """Two construction lines (20,0)-(50,0) and (50,0)-(50,25) and a free point at (30,12), none at the sketch origin."""
+    a, b, c = s.add_point(20, 0), s.add_point(50, 0), s.add_point(50, 25)
+    s.add_line(a, b, construction=True)
+    s.add_line(b, c, construction=True)
+    s.add_point_entity(s.add_point(30, 12))
+
+
+def layout_studio():
+    """A Part Studio Document holding the layout sketch (on the Front plane) and a 40 x 40 x 20 block.
+    Returns (document, sketch feature id, block part id)."""
+    from conftest import FRONT, add, rect_lines, region_refs, sketch_feature
+    from freeshape.document import PartStudioDoc
+    doc = PartStudioDoc()
+    sid = sketch_feature(doc, layout_sketch, FRONT)
+    rid = sketch_feature(doc, lambda s: rect_lines(s, 0, 0, 40, 40), FRONT)
+    add(doc, "extrude", regions=region_refs(doc, rid), depth=20, op="new")
+    check(not doc.errors, doc.errors)
+    return doc, sid, next(iter(doc.state.parts))

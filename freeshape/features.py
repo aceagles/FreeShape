@@ -1108,7 +1108,8 @@ def _derived_sketch(out, fid, label):
 
 
 def run_mate_connector(state, f):
-    """A Mate connector on a face or edge of a part (or on the studio origin, owned by a part).
+    """A Mate connector on a face or edge of a part (or on the studio origin, owned by a part). It belongs to the
+    picked element's part unless `owner` names another part or sketch (Onshape's Owner part).
     The element is found by name (`resolve`); the frame comes from assembly.connector_frame (or snap_frame for a
     snap point) and X is rebuilt from the stored `x_ref` (I1.14), so an edit that changes which face edge is
     longest does not turn X round. `flip` reverses Z and keeps X. A missing element or owner part is an error."""
@@ -1117,12 +1118,20 @@ def run_mate_connector(state, f):
     ref = p.get("ref")
     if not ref:
         raise K.KernelError("Pick a face or edge, or the origin, for the mate connector")
-    if ref.get("origin"):
+    sketch_fid = None
+    if ref.get("origin") and p.get("owner") not in state.parts and p.get("owner") in state.sketches:
+        pid, sketch_fid = None, p["owner"]
+        fr = {"o": np.zeros(3), "z": np.array([0.0, 0.0, 1.0]), "x": np.array([1.0, 0.0, 0.0])}
+    elif ref.get("origin"):
         owner = p.get("owner")
         if owner not in state.parts:
             raise K.KernelError(f"Part {owner} is gone: the origin connector has no owner" if owner
                                 else "Pick the part that owns the origin connector")
         pid, fr = owner, {"o": np.zeros(3), "z": np.array([0.0, 0.0, 1.0]), "x": np.array([1.0, 0.0, 0.0])}
+    elif ref.get("sketch"):
+        pid, sketch_fid, fr = None, ref["sketch"], _sketch_connector_frame(state, ref)
+        if p.get("x_ref") is not None:
+            fr = AS.apply_x_ref(fr, p["x_ref"])
     else:
         kind = p.get("kind", "face")
         pid, sub = resolve(state, ref, kind, f["id"])
@@ -1135,6 +1144,14 @@ def run_mate_connector(state, f):
             fr = AS.connector_frame(shape, kind, index, p.get("click"))
         if p.get("x_ref") is not None:
             fr = AS.apply_x_ref(fr, p["x_ref"])
+    owner = p.get("owner")
+    if owner and not ref.get("origin"):      # Owner part: the frame stays on the picked element, the owner is chosen
+        if owner in state.parts:
+            pid, sketch_fid = owner, None
+        elif owner in state.sketches:
+            pid, sketch_fid = None, owner
+        else:
+            raise K.KernelError(f"Part {owner} is gone: the mate connector has no owner")
     z = AS.unit(fr["z"])
     x = AS.unit(np.asarray(fr["x"], float) - (np.asarray(fr["x"], float) @ z) * z)
     if p.get("flip"):
@@ -1142,6 +1159,21 @@ def run_mate_connector(state, f):
     state.connectors[f["id"]] = {"name": str(p.get("name") or f.get("name") or ""), "part": pid,
                                  "frame": {"o": [float(a) for a in fr["o"]], "z": [float(a) for a in z],
                                            "x": [float(a) for a in x]}}
+    if sketch_fid is not None:
+        state.connectors[f["id"]]["sketch"] = sketch_fid
+
+
+def _sketch_connector_frame(state, ref):
+    """The frame of the sketch geometry `ref` ({"sketch", "entity", "role", "etype", "sig"}, ADR 0011), in studio
+    coordinates, from the solved sketch above this feature. A missing sketch or entity is a KernelError naming it."""
+    from . import sketchref
+    res = state.sketches.get(ref["sketch"])
+    if res is None:
+        raise K.KernelError(f"Sketch {ref['sketch']} is gone: the mate connector has nothing to sit on")
+    sk = res.sketch.to_dict() if hasattr(res.sketch, "to_dict") else res.sketch
+    sketchref.check(sk, ref)
+    plane = {"origin": res.plane.origin, "xdir": res.plane.xdir, "normal": res.plane.normal}
+    return sketchref.frame(plane, sk, ref["entity"], ref["role"])
 
 
 def context_blobs(capture):

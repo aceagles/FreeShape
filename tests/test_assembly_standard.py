@@ -205,3 +205,23 @@ def test_old_file_still_loads_and_solves(name, tmp_path):
     for inst in old["instances"]:
         assert np.allclose(back.T(inst["id"]), asm.T(inst["id"]))
         assert "standard" not in json.dumps(back.instance(inst["id"])["source"])
+
+
+def test_version_3_standard_part_file_loads_through_the_merged_chain(tmp_path):
+    """A file saved before Mates Parity was merged says version 3, holds a Standard part and has no groups or
+    relations. It runs master's steps 3->4..5->6 and the marker step 6->7."""
+    src = {"kind": "standard", "type": TYPE, "plugin": "fasteners", "plugin_version": "1.0.0", "params": PARAMS}
+    d = {"format": A.FILE_FORMAT, "version": 3, "name": "A", "uid": "u",
+         "instances": [{"id": "I1", "name": "S <1>", "source": src, "T": np.eye(4).tolist(),
+                        "fixed": False, "hidden": False}], "mates": [], "blobs": {}}
+    path = str(tmp_path / "v3.fasm")
+    json.dump(d, open(path, "w"))
+    assert Mig.latest_version("assembly") == 7
+    asm = A.AssemblyDoc.load(path)
+    assert "I1" in asm.parts and not asm.errors
+    assert asm.instance("I1")["source"] == src
+    assert asm.groups == [] and asm.relations == []
+    out = str(tmp_path / "v7.fasm")
+    asm.save(out)
+    saved = json.load(open(out))
+    assert saved["version"] == 7 and saved["groups"] == [] and saved["relations"] == []

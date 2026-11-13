@@ -85,6 +85,30 @@ def _ray_tris_kept(o, d, V, T, kept):
     return float(t[k]), int(k)
 
 
+def _ray_hits(o, d, V, T, kept=None):
+    """Every ray hit on the triangles (optionally only those surviving the section cut), as (t, tri_index)
+    arrays; _ray_tris and _ray_tris_kept keep just the nearest."""
+    if len(T) == 0:
+        return np.zeros(0), np.zeros(0, int)
+    v0 = V[T[:, 0]].astype(np.float64)
+    e1 = V[T[:, 1]] - v0
+    e2 = V[T[:, 2]] - v0
+    p = np.cross(d, e2)
+    det = np.einsum("ij,ij->i", e1, p)
+    ok = np.abs(det) > 1e-12
+    inv = np.zeros_like(det)
+    inv[ok] = 1.0 / det[ok]
+    s = o - v0
+    u = np.einsum("ij,ij->i", s, p) * inv
+    q = np.cross(s, e1)
+    v = (q @ d) * inv
+    t = np.einsum("ij,ij->i", e2, q) * inv
+    idx = np.where(ok & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (t > 0))[0]
+    if kept is not None and len(idx):
+        idx = idx[kept(o + np.outer(t[idx], d))]
+    return t[idx], idx
+
+
 def _seg_dist(px, py, A, B):
     """Distance from a screen point to many screen segments (n,2). Returns (dist, param)."""
     ab = B - A
@@ -1439,6 +1463,100 @@ class Viewport(QOpenGLWidget):
         if best_face[1] is not None and (allowed("face") or part_ok):
             return best_face[1]
         return plane_hit[1]
+
+    def pick_all(self, x, y, kinds=None) -> list[Pick]:
+        """Everything under the cursor, front to back, including what other geometry hides. Same kinds, filter,
+        section and tolerances as pick(); overlays are not included. Each element appears once. Ordered by
+        depth; pick()'s own result comes first when it is level with the front-most element (it ignores depth for
+        edges when faces are not asked for, so a hidden edge it happens to choose must not lead)."""
+        allowed = (lambda k: k in kinds) if kinds is not None else self._allowed
+        o, d = self.cam.ray(x, y)
+        found = {}                                  # Pick -> view z (larger is nearer the eye)
+
+        def add(pk, z):
+            if pk not in found or z > found[pk]:
+                found[pk] = z
+
+        part_ok, face_ok = allowed("part"), allowed("face")
+        if face_ok or part_ok:
+            kept = self._kept if self.section is not None else None
+            for pid, m in self._ray_parts(o, d):
+                ts, ti = _ray_hits(o, d, m.verts, m.tris, kept)
+                if part_ok and not face_ok:
+                    if len(ts):
+                        add(Pick("part", (pid,)), self.cam.view_z_of_t(ts.min()))
+                    continue
+                for t, i in zip(ts, ti):
+                    add(Pick("face", (pid, int(m.tri_face[i]))), self.cam.view_z_of_t(t))
+
+        if allowed("vertex"):
+            for pid, m in self._ray_parts(o, d, self.cam.scale * 10):
+                V = getattr(m, "vertices", None)
+                if V is None or len(V) == 0:
+                    continue
+                V = np.asarray(V, float)
+                S = self.cam.to_screen(V)
+                near = np.nonzero(np.hypot(S[:, 0] - x, S[:, 1] - y) < 9.0)[0]
+                if self.section is not None:
+                    near = near[self._kept(V[near])]
+                for i in near:
+                    add(Pick("vertex", (pid, int(i))), float(S[i, 2]))
+
+        if allowed("sketch_point"):
+            for fid, sr, _ in self.sketches:
+                if self.sketcher and self.sketcher.fid == fid:
+                    continue
+                for eid, e in sr.sketch.entities.items():
+                    if e["type"] != "point" or e["p"] not in sr.sketch.points:
+                        continue
+                    s = self.cam.to_screen(np.asarray(sr.plane.to_world(*sr.sketch.points[e["p"]]), float))
+                    if np.hypot(s[0] - x, s[1] - y) < 9.0:
+                        add(Pick("sketch_point", (fid, eid)), float(s[2]))
+
+        want_edge, want_sl = allowed("edge"), allowed("sketch_line")
+        if want_edge or want_sl:
+            A, B, owner = self._segments_near(o, d)
+            if len(owner):
+                sa = self.cam.to_screen(A)
+                sb = self.cam.to_screen(B)
+                dist, t = _seg_dist(x, y, sa[:, :2], sb[:, :2])
+                z = sa[:, 2] + t * (sb[:, 2] - sa[:, 2])
+                kept_a = self._kept(A) if self.section is not None else None
+                for i in np.nonzero(dist <= 7)[0]:
+                    kind, key = owner[i]
+                    if (kind == "edge" and not want_edge) or (kind == "sketch_line" and not want_sl):
+                        continue
+                    if kept_a is not None and kind == "edge" and not kept_a[i]:
+                        continue
+                    add(Pick(kind, key), float(z[i]))
+
+        if allowed("region"):
+            for fid, sr, meshes in self.sketches:
+                if self.sketcher and self.sketcher.fid == fid:
+                    continue
+                for ri, m in enumerate(meshes):
+                    ts, _ = _ray_hits(o, d, m.verts, m.tris)
+                    if len(ts):
+                        add(Pick("region", (fid, ri)), self.cam.view_z_of_t(ts.min()))
+
+        if allowed("plane") and self.show_planes and self.sketcher is None:
+            for key, pl, label, half in self.planes:
+                denom = d @ pl.normal
+                if abs(denom) < 1e-9:
+                    continue
+                tt = ((pl.origin - o) @ pl.normal) / denom
+                if tt <= 0:
+                    continue
+                u, v = pl.to_local(o + tt * d)
+                if abs(u) <= half and abs(v) <= half:
+                    add(Pick("plane", key), self.cam.view_z_of_t(tt))
+
+        out = sorted(found, key=lambda pk: -found[pk])       # stable: equal depths keep discovery order
+        head = self.pick(x, y, kinds)
+        if head in found and found[head] >= found[out[0]] - self.cam.scale * 12 - 1e-6:    # pick's tie-break only
+            out.remove(head)
+            out.insert(0, head)
+        return out
 
     def _pick_overlay(self, x, y, o, d):
         best_poly = (6.0, None)

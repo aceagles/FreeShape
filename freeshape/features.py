@@ -970,6 +970,30 @@ def signed_extent(value, flip=False):
     return v, flip
 
 
+def _upto_distance(state, p, profs, n):
+    """Signed distance from the profile plane to the `upto` target along the profile normal `n`. The
+    target is a vertex reference (`resolve_point`) or a plane / planar-face reference (`resolve_plane`);
+    a plane that is not parallel to the profile is refused."""
+    ref = p.get("upto")
+    if not ref:
+        raise K.KernelError("Select a vertex, or a face or plane parallel to the sketch")
+    if p.get("regions"):
+        origin = state.sketches[p["regions"][0]["sketch"]].plane.origin
+    else:
+        origin = K.planar_face_plane(profs[0]).origin
+    if ref.get("kind") == "vertex":
+        target = resolve_point(state, ref)
+    else:
+        pl = resolve_plane(state, ref)
+        if abs(float(np.dot(pl.normal, n))) < 1 - 1e-9:
+            raise K.KernelError("Up to needs a vertex, or a face or plane parallel to the sketch")
+        target = pl.origin
+    dist = float(np.dot(np.asarray(target, float) - np.asarray(origin, float), n))
+    if abs(dist) < 1e-9:
+        raise K.KernelError("Up to target is in the sketch plane: the distance is zero")
+    return dist
+
+
 def run_extrude(state, f):
     p = f["params"]
     profs = _profiles(state, p, f["id"])
@@ -981,7 +1005,13 @@ def run_extrude(state, f):
     depth, flip = signed_extent(p.get("depth", 10), p.get("flip", False))
     symmetric = end == "symmetric"
     cutting = op in ("remove", "intersect")
-    if cutting and not p.get("regions"):
+    upto = end == "upto"
+    if upto:
+        # up to a target is a blind extrude of the signed distance; Flip, symmetric and second depth do not apply
+        dist = _upto_distance(state, p, profs, n)
+        depth, flip = abs(dist), dist < 0
+        end = "blind"
+    elif cutting and not p.get("regions"):
         # cutting from a face goes into the part by default
         flip = not flip
 
@@ -994,14 +1024,14 @@ def run_extrude(state, f):
             dd = float(np.linalg.norm(hi - lo)) * 2 + 10 if state.parts else depth
             both = p.get("both", False) or (cutting and p.get("regions"))
             return K.extrude(profs, direction, dd, depth2=dd if both else 0.0, with_history=True)
-        depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric else 0.0
+        depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric and not upto else 0.0
         if depth + depth2 <= 0 and depth2:
             raise K.KernelError("The second depth cancels the first")
         return K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
 
     d = -n if flip else n
     body, hist = make(d)
-    if cutting and end == "blind" and not p.get("second") and state.parts:
+    if cutting and end == "blind" and not upto and not p.get("second") and state.parts:
         # like Onshape, a cut that misses everything is tried in the other direction
         targets = [state.parts[i] for i in (p.get("scope") or state.parts) if i in state.parts]
         if not any(K.intersects(t.shape, body) for t in targets):

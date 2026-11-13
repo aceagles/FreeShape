@@ -416,9 +416,12 @@ SCHEMAS = {
     "extrude": [
         _ops(),
         _sel("profiles", "Faces and sketch regions to extrude", {"region", "face"}),
-        _choice("end", "End type", [("blind", "Blind"), ("symmetric", "Symmetric"), ("through", "Through all")]),
-        _num("depth", "Depth", visible=lambda p: p.get("end") != "through", signed=True),
-        _check("flip", "Opposite direction", visible=lambda p: p.get("end") != "symmetric"),
+        _choice("end", "End type", [("blind", "Blind"), ("symmetric", "Symmetric"), ("through", "Through all"),
+                                   ("upto", "Up to a vertex, face or plane")]),
+        _sel("upto_sel", "Vertex, or face or plane parallel to the sketch", {"vertex", "plane"}, multi=False,
+             visible=lambda p: p.get("end") == "upto"),
+        _num("depth", "Depth", visible=lambda p: p.get("end") not in ("through", "upto"), signed=True),
+        _check("flip", "Opposite direction", visible=lambda p: p.get("end") not in ("symmetric", "upto")),
         _check("second", "Second end position", visible=lambda p: p.get("end") == "blind"),
         _num("depth2", "Second depth", visible=lambda p: p.get("end") == "blind" and p.get("second")),
         _check("both", "Both directions", visible=lambda p: p.get("end") == "through"),
@@ -608,6 +611,9 @@ def params_to_fields(ftype, p):
     f = {}
     if ftype in ("extrude", "revolve", "sweep"):
         f["profiles"] = [("region", r) for r in p.get("regions", [])] + [("face", r) for r in p.get("faces", [])]
+    if ftype == "extrude":
+        u = p.get("upto")
+        f["upto_sel"] = [("vertex" if u.get("kind") == "vertex" else "plane", u)] if u else []
     if ftype in SCOPE_FEATURES:
         f["scope"] = [("part", i) for i in p.get("scope", [])]
     if ftype == "sm_base":
@@ -664,6 +670,12 @@ def fields_to_params(ftype, fields, p):
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
     if ftype == "sm_flange":
         p["edges"] = [r for k, r in fields.get("edges", []) if k == "edge"]
+    if ftype == "extrude":
+        sel = fields.get("upto_sel", [])
+        if sel and p.get("end") == "upto":
+            p["upto"] = sel[0][1]
+        else:
+            p.pop("upto", None)
     if ftype in ("extrude", "revolve", "sweep"):
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
         p["faces"] = [r for k, r in fields.get("profiles", []) if k == "face"]

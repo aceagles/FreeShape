@@ -585,6 +585,8 @@ SCHEMAS = {
         {"t": "derived_checks", "key": "parts", "label": "Parts"},
         {"t": "derived_checks", "key": "sketches", "label": "Sketches"},
         {"t": "derived_connectors", "key": "connectors", "label": "Mate connectors"},
+        {"t": "derived_location", "key": "placement", "label": "Location"},
+        {"t": "derived_base", "key": "placement", "label": "Placement base"},
     ],
     "hole": [
         {"t": "sketch_choice", "key": "sketch", "label": "Sketch with hole centres"},
@@ -1059,6 +1061,10 @@ class FeatureDialog(_ResizableFrame):
             return self._make_derived_checks(spec, p, row, h)
         if t == "derived_connectors":
             return self._make_derived_connectors(spec, p, row, h)
+        if t == "derived_location":
+            return self._make_derived_location(spec, p, row, h)
+        if t == "derived_base":
+            return self._make_derived_base(spec, p, row, h)
         return None
 
     # ------------------------------------------------------------------ Derived rows (I1.9)
@@ -1294,6 +1300,108 @@ class FeatureDialog(_ResizableFrame):
 
     def _derived_alias(self, pid):
         return getattr(self, "_derived_aliases", {}).get(pid, pid)
+
+    # Location and Placement base (I4.2): both write params["placement"] = {"location", "base"} through
+    # `_derived_write_placement`; no Location means no `placement` key at all.
+    def _derived_write_placement(self):
+        p = self.feature["params"]
+        loc = self._derived_loc.currentData()
+        if loc is None:
+            p.pop("placement", None)
+        else:
+            p["placement"] = {"location": loc, "base": self._derived_base.currentData() or "origin"}
+        self._derived_base.setEnabled(loc is not None)
+        self._set_unlisted()
+
+    def _derived_location_candidates(self):
+        """{connector id: connector} of this studio defined above the Derived (state.connectors of the state
+        before it), in feature order."""
+        return dict(getattr(self.base_state, "connectors", {}) or {})
+
+    def _make_derived_location(self, spec, p, row, h):
+        """Location: a mate connector of this studio defined above the Derived, from a list or by clicking its
+        axes in the viewport (`overlays` draws them pickable, `_pick_location` takes the click)."""
+        h.setDirection(QBoxLayout.TopToBottom)
+        cb = QComboBox()
+        cb.setObjectName("derived_location")
+        cb.addItem("— not placed —", None)
+        cands = self._derived_location_candidates()
+        want = (p.get(spec["key"]) or {}).get("location")
+        for cid, c in cands.items():
+            cb.addItem(str(c.get("name") or cid), cid)
+        if want and want not in cands:      # defined below the Derived now, or gone: say so, the build reports it
+            cb.addItem(f"{want}  (not defined above this feature)", want)
+        cb.setCurrentIndex(max(0, cb.findData(want)))
+        cb.setToolTip("Put everything this Derived brings in so that its Placement base lands on this Mate connector.")
+        hint = QLabel("Pick from the list, or click a connector's axes in the viewport.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#8a94a3;")
+        self._derived_loc = cb
+        cb.currentIndexChanged.connect(lambda _i: self._derived_write_placement())
+        h.addWidget(cb)
+        h.addWidget(hint)
+        self.widgets["location"] = cb
+        return row
+
+    def _pick_location(self, pick):
+        """A click on a connector's axes (an overlay keyed ("placement_loc", id)) sets the Location."""
+        if self.ftype != "derived" or pick.kind != "overlay" or pick.key[0] != "placement_loc":
+            return False
+        i = self._derived_loc.findData(pick.key[1])
+        if i >= 0:
+            self._derived_loc.setCurrentIndex(i)
+        return True
+
+    def _derived_location_overlays(self):
+        """One short polyline (X axis end, origin, Z axis end) per candidate Location, pickable in the viewport."""
+        scale = self.main.viewport.cam.scale * 34
+        out = []
+        for cid, c in self._derived_location_candidates().items():
+            fr = c["frame"]
+            o, z, x = (np.asarray(fr[k], float) for k in ("o", "z", "x"))
+            out.append((("placement_loc", cid), ("poly", np.array([o + x * scale * 0.8, o, o + z * scale * 1.25]))))
+        return out
+
+    def _make_derived_base(self, spec, p, row, h):
+        """Placement base: Base origin, or one of the source's TICKED mate connectors. It refills when the source
+        or the connector ticks change; a base that is no longer ticked goes back to Base origin."""
+        cb = QComboBox()
+        cb.setObjectName("derived_base")
+        want = [(p.get(spec["key"]) or {}).get("base") or "origin"]
+        self._derived_base = cb
+
+        def fill():
+            pkg, _why = self._derived_package()
+            ticked = list(self.feature["params"].get("connectors") or [])
+            keep = want[0]
+            parts = {} if pkg is None else {i: v.name for i, v in pkg.parts.items()}
+            cb.blockSignals(True)
+            cb.clear()
+            cb.addItem("Base origin", "origin")
+            for cid in ticked:
+                c = None if pkg is None else pkg.connectors.get(cid)
+                cb.addItem(f"{c['name']}  ({parts.get(c['part'], c['part'])})" if c is not None
+                           else f"{cid}  (no longer published)", cid)
+            i = cb.findData(keep)
+            cb.setCurrentIndex(max(0, i))
+            cb.blockSignals(False)
+            want[0] = cb.currentData()
+            if hasattr(self, "_derived_loc"):
+                self._derived_write_placement()
+
+        def chosen(_i):
+            want[0] = cb.currentData()
+            self._derived_write_placement()
+        cb.currentIndexChanged.connect(chosen)
+        self._derived_fills.append(fill)
+        for k_ in ("connectors", "parts"):
+            if k_ in self.widgets:      # runs after the tick list's own handler, so params already hold the ticks
+                self.widgets[k_].itemChanged.connect(lambda _it: fill())
+        cb.setEnabled(bool((p.get("placement") or {}).get("location")))
+        h.addWidget(cb)
+        self.widgets["base"] = cb
+        fill()
+        return row
 
     # ------------------------------------------------------------------ Variable Studio reference rows
     def _variable_tabs(self):
@@ -1566,7 +1674,7 @@ class FeatureDialog(_ResizableFrame):
 
     def handle_pick(self, pick: Pick):
         """Called by the main window when the user clicks in the viewport."""
-        if self._pick_sketch(pick):
+        if self._pick_sketch(pick) or self._pick_location(pick):
             return
         if self.ftype == "mate_connector" and pick.kind != "overlay":
             self._pick_connector(pick)
@@ -1702,6 +1810,8 @@ class FeatureDialog(_ResizableFrame):
                 g = item_geometry(self.base_state, item, half)
                 if g is not None:
                     out.append(((key, i), g))
+        if self.ftype == "derived":
+            out += self._derived_location_overlays()
         return out
 
     # ------------------------------------------------------------------ drag arrows

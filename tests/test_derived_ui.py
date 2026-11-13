@@ -267,3 +267,162 @@ def test_the_connector_list_refuses_a_connector_without_its_part(win):
     finally:
         _drop_source_connector(w, cid)
         w.studio_engine.settle(120)
+
+
+# ---- I4.2: Location and Placement base
+
+def _in_process(w):
+    """The current studio's state built in-process: the engine hands the window parts only, no sketches."""
+    return w.use.state_before(len(w.use.features))
+
+
+def _local_connector(w, name="Spot", below=None):
+    """A part and a Mate connector on its top face in the current studio; returns (box id, connector id).
+    With `below` (a box id) only the connector is added, on that box."""
+    from freeshape import assembly as A
+    from freeshape import features as F
+    from freeshape import kernel as K
+    if below is None:
+        sid = sketch_feature(w.use, lambda s: rect_lines(s, 200, 200, 8, 6))
+        st = _in_process(w)
+        refs = [F.region_ref(st, sid, r) for r in st.sketches[sid].regions]
+        box = add(w.use, "extrude", regions=refs, depth=4, op="new")["id"]
+    else:
+        box = below
+    st = _in_process(w)
+    pid = next(p for p in st.parts if p.startswith(f"{box}/"))
+    part = st.parts[pid]
+    top = K.bbox(part.shape)[1][2]
+    i = next(i for i, fc in enumerate(K.faces(part.shape))
+             if (K.face_info(fc).get("n") is not None and K.face_info(fc)["n"][2] > 0.9
+                 and abs(K.face_info(fc)["c"][2] - top) < 1e-6))
+    fr = A.connector_frame(part.shape, "face", i)
+    c = add(w.use, "mate_connector", name=name, ref=A._ref_signature(part.shape, "face", i, st.named(pid)),
+            kind="face", x_ref=A.connector_x_ref(fr), flip=False)
+    assert w.studio_engine.settle(120)
+    return box, c["id"]
+
+
+def _bbox(shape):
+    from freeshape import kernel as K
+    lo, hi = K.bbox(shape)
+    return [round(float(v), 6) for v in (*lo, *hi)]
+
+
+def _combo_data(cb):
+    return [cb.itemData(i) for i in range(cb.count())]
+
+
+def _cleanup_local(w, *fids):
+    w.use.delete_features([f for f in fids if f])
+    w.studio_engine.settle(120)
+
+
+def test_location_and_base_are_written_to_placement_and_preview_equals_committed(win):
+    w = win
+    cid = _source_connector(w)
+    box, loc = _local_connector(w)
+    try:
+        w.start_feature("derived")
+        d = w.dialog
+        _choose(w, w.src_tab)
+        _tick_all(d.widgets["parts"])
+        d.widgets["connectors"].item(0).setCheckState(Qt.Checked)
+        assert "placement" not in d.feature["params"] and not d.widgets["base"].isEnabled()
+        assert _combo_data(d.widgets["base"]) == ["origin", cid]          # Base origin + the ticked connector
+        d.widgets["location"].setCurrentIndex(d.widgets["location"].findData(loc))
+        assert d.feature["params"]["placement"] == {"location": loc, "base": "origin"}
+        d.widgets["base"].setCurrentIndex(d.widgets["base"].findData(cid))
+        assert d.feature["params"]["placement"] == {"location": loc, "base": cid}
+        d._do_preview()
+        assert not d.err.isVisible()
+        shown = {pid: _bbox(s) for pid, s in w.viewport.part_shapes.items() if pid.startswith(d.feature["id"] + "/")}
+        assert shown
+        w.commit_dialog()
+        assert w.studio_engine.settle(120)
+        f = _derived(w)[0]
+        assert not w.use.errors.get(f["id"]) and f["params"]["placement"] == {"location": loc, "base": cid}
+        done = {pid: _bbox(p.shape) for pid, p in w.use.state.parts.items() if pid.startswith(f["id"] + "/")}
+        assert done == shown
+        # base connector (top of the 20x10x5 source box) on the location (top of the local box at 200,200, z=4):
+        # the part sits with its top at z=4 and its centre over the local box, not where the source has it
+        (bb,) = done.values()
+        assert bb[5] == pytest.approx(4.0) and bb[0] < 200 < bb[3] and bb != _bbox(w.src_tab.doc.state.parts["F2/1"].shape)
+        _undo_all(w)
+    finally:
+        _cleanup_local(w, loc, box)
+        _drop_source_connector(w, cid)
+        w.studio_engine.settle(120)
+
+
+def test_the_location_list_offers_only_connectors_above_the_derived(win):
+    w = win
+    box, above = _local_connector(w, "Above")
+    try:
+        w.start_feature("derived")
+        _choose(w, w.src_tab)
+        _tick_all(w.dialog.widgets["parts"])
+        w.commit_dialog()
+        assert w.studio_engine.settle(120)
+        fid = _derived(w)[0]["id"]
+        _, below = _local_connector(w, "Below", below=box)
+        w.start_feature("derived", edit_fid=fid)
+        loc = w.dialog.widgets["location"]
+        assert _combo_data(loc) == [None, above]
+        assert above in {t["id"] for t in w.viewport.triads} and below in {t["id"] for t in w.viewport.triads}
+        assert [k for k, _ in w.dialog.overlays() if k[0] == "placement_loc"] == [("placement_loc", above)]
+        w.cancel_dialog()
+        _cleanup_local(w, below)
+        _undo_all(w)
+    finally:
+        _cleanup_local(w, above, box)
+
+
+def test_a_click_on_a_connector_sets_the_location_and_clearing_it_removes_placement(win):
+    from freeshape.ui.viewport import Pick
+    w = win
+    box, loc = _local_connector(w)
+    try:
+        w.start_feature("derived")
+        d = w.dialog
+        _choose(w, w.src_tab)
+        _tick_all(d.widgets["parts"])
+        d.handle_pick(Pick("overlay", ("placement_loc", loc)))          # the viewport pick of the connector's axes
+        assert d.feature["params"]["placement"]["location"] == loc
+        w.commit_dialog()
+        assert w.studio_engine.settle(120)
+        f = _derived(w)[0]
+        assert f["params"]["placement"]["location"] == loc
+        w.start_feature("derived", edit_fid=f["id"])                    # editing shows it again
+        d = w.dialog
+        assert d.widgets["location"].currentData() == loc
+        d.widgets["location"].setCurrentIndex(0)                        # clear it
+        assert "placement" not in d.feature["params"]
+        w.commit_dialog()
+        assert w.studio_engine.settle(120)
+        assert "placement" not in _derived(w)[0]["params"]
+        _undo_all(w)
+    finally:
+        _cleanup_local(w, loc, box)
+
+
+def test_unticking_the_base_connector_drops_the_base(win):
+    w = win
+    cid = _source_connector(w)
+    box, loc = _local_connector(w)
+    try:
+        w.start_feature("derived")
+        d = w.dialog
+        _choose(w, w.src_tab)
+        _tick_all(d.widgets["parts"])
+        d.widgets["connectors"].item(0).setCheckState(Qt.Checked)
+        d.widgets["location"].setCurrentIndex(d.widgets["location"].findData(loc))
+        d.widgets["base"].setCurrentIndex(d.widgets["base"].findData(cid))
+        d.widgets["connectors"].item(0).setCheckState(Qt.Unchecked)
+        assert _combo_data(d.widgets["base"]) == ["origin"]
+        assert d.feature["params"]["placement"] == {"location": loc, "base": "origin"}
+        w.cancel_dialog()
+    finally:
+        _cleanup_local(w, loc, box)
+        _drop_source_connector(w, cid)
+        w.studio_engine.settle(120)

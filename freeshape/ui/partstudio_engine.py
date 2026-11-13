@@ -322,7 +322,9 @@ class StudioEngine(QObject):
             if names:
                 st.set_named(p.id, N.NamedShape(shape, names))
         st.engine_names = {p.id: p.names for p, *_ in res.parts}      # the engine's name maps, for picking
-        st.connectors = {c.id: {"name": c.name, "part": c.part, "frame": c.frame} for c in res.connectors}
+        st.connectors = {c.id: dict({"name": c.name, "part": c.part or None, "frame": c.frame},
+                                    **({"sketch": c.sketch} if getattr(c, "sketch", "") else {}))
+                         for c in res.connectors}
         st.vars = dict(res.variables)
         n = len(res.snap["features"]) if res.snap["rollback"] is None else min(res.snap["rollback"],
                                                                                  len(res.snap["features"]))

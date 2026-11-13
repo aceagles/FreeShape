@@ -426,9 +426,14 @@ class LinkResolver:
             return None
         if studio is None:
             return None
-        pid = _translate_part(studio, src.get("part"))
+        from .assembly import is_sketch_source
+        if is_sketch_source(src):
+            own = lambda c: c.get("sketch") == src.get("sketch")      # noqa: E731
+        else:
+            pid = _translate_part(studio, src.get("part"))
+            own = lambda c: c["part"] == pid and not c.get("sketch")  # noqa: E731
         return [{"id": str(fid), "name": c["name"], "frame": {k: [float(v) for v in c["frame"][k]] for k in ("o", "z", "x")}}
-                for fid, c in studio.state.connectors.items() if c["part"] == pid]
+                for fid, c in studio.state.connectors.items() if own(c)]
 
     # ------------------------------------------------------------------ drawing sources
     def resolve_drawing_source(self, src):

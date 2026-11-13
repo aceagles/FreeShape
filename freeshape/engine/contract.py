@@ -151,6 +151,7 @@ class MateConnectorOut:
     part: str                # id of the part that owns it
     frame: dict              # {"o", "z", "x"}: 3-lists, in the studio's coordinates
     hash: str = ""           # sha256 hex over name, part and frame: changes when the connector moves
+    sketch: str = ""         # id of the sketch feature that owns it ("" for a part-owned connector; then part is "")
 
 
 @dataclass

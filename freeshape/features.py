@@ -1106,12 +1106,20 @@ def run_mate_connector(state, f):
     ref = p.get("ref")
     if not ref:
         raise K.KernelError("Pick a face or edge, or the origin, for the mate connector")
-    if ref.get("origin"):
+    sketch_fid = None
+    if ref.get("origin") and p.get("owner") not in state.parts and p.get("owner") in state.sketches:
+        pid, sketch_fid = None, p["owner"]
+        fr = {"o": np.zeros(3), "z": np.array([0.0, 0.0, 1.0]), "x": np.array([1.0, 0.0, 0.0])}
+    elif ref.get("origin"):
         owner = p.get("owner")
         if owner not in state.parts:
             raise K.KernelError(f"Part {owner} is gone: the origin connector has no owner" if owner
                                 else "Pick the part that owns the origin connector")
         pid, fr = owner, {"o": np.zeros(3), "z": np.array([0.0, 0.0, 1.0]), "x": np.array([1.0, 0.0, 0.0])}
+    elif ref.get("sketch"):
+        pid, sketch_fid, fr = None, ref["sketch"], _sketch_connector_frame(state, ref)
+        if p.get("x_ref") is not None:
+            fr = AS.apply_x_ref(fr, p["x_ref"])
     else:
         kind = p.get("kind", "face")
         pid, sub = resolve(state, ref, kind, f["id"])
@@ -1131,6 +1139,21 @@ def run_mate_connector(state, f):
     state.connectors[f["id"]] = {"name": str(p.get("name") or f.get("name") or ""), "part": pid,
                                  "frame": {"o": [float(a) for a in fr["o"]], "z": [float(a) for a in z],
                                            "x": [float(a) for a in x]}}
+    if sketch_fid is not None:
+        state.connectors[f["id"]]["sketch"] = sketch_fid
+
+
+def _sketch_connector_frame(state, ref):
+    """The frame of the sketch geometry `ref` ({"sketch", "entity", "role", "etype", "sig"}, ADR 0011), in studio
+    coordinates, from the solved sketch above this feature. A missing sketch or entity is a KernelError naming it."""
+    from . import sketchref
+    res = state.sketches.get(ref["sketch"])
+    if res is None:
+        raise K.KernelError(f"Sketch {ref['sketch']} is gone: the mate connector has nothing to sit on")
+    sk = res.sketch.to_dict() if hasattr(res.sketch, "to_dict") else res.sketch
+    sketchref.check(sk, ref)
+    plane = {"origin": res.plane.origin, "xdir": res.plane.xdir, "normal": res.plane.normal}
+    return sketchref.frame(plane, sk, ref["entity"], ref["role"])
 
 
 def context_blobs(capture):

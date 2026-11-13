@@ -3448,7 +3448,7 @@ class MainWindow(QMainWindow):
             if self._folder_tab(doc) is None:
                 doc.resolver = self._resolve_drawing_source
             doc.hlr_async = self.dwg.request_exact
-            doc.bom_resolver = self.resolver.resolve_drawing_bom
+            doc.bom_resolver = self._resolver_for(doc).resolve_drawing_bom
             doc._update_bom()
             doc.changed(notify=False)
         i = self.tabs.addTab(icon({"assembly": "assembly", "drawing": "drawing"}.get(doc.kind, "part"), 16), doc.name)

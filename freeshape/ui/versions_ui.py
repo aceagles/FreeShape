@@ -391,6 +391,7 @@ class VersionsUI:
                 tab.doc.resolver = view.resolver.resolve_source
             elif tab.kind == "drawing":
                 tab.doc.resolver = view.resolver.resolve_drawing_source
+                tab.doc.bom_resolver = view.resolver.resolve_drawing_bom
             tab.doc.dirty = False
             w._refresh_tab_title(tab.doc)
             shown.append(tab.doc)

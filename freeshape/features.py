@@ -941,6 +941,13 @@ def run_variable_studio_ref(state, f):
     values = f["params"].get("resolved")
     if values is None:
         src = f["params"].get("source") or {}
+        if src.get("document") and not src.get("version"):     # another Document is only ever linked at a Version
+            raise K.KernelError(f"Variable Studio reference “{src.get('name') or src.get('tab')}”: the link to "
+                                f"Document “{src['document']}” has no Version pinned")
+        if src.get("document"):
+            raise K.KernelError(f"Variable Studio reference “{src.get('name') or src.get('tab')}”: Document not found: "
+                                f"“{src['document']}” (or its Version “{src.get('version')}” or the Variable Studio in it "
+                                f"is not there)")
         raise K.KernelError(f"Variable Studio not found: {src.get('name') or src.get('path') or src.get('tab') or '(none linked)'}")
     names = f["params"].get("names")
     if names is not None:       # a subset: only the ticked names; one the Studio no longer has is an error

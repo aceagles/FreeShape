@@ -370,8 +370,14 @@ class LinkResolver:
 
     def resolve_variables(self, src):
         """{name: value} of the Variable Studio tab `src` names inside the open Document (a Document.var_inputs
-        callable), or None when it names no tab of the Document."""
-        vs = self._folder_doc(src, "variables")
+        callable), or None when it names no tab of the Document. A source of another Document that cannot be read
+        (no Version pinned, Document, Version or tab not found) is None too: the feature then says which."""
+        try:
+            vs = self._folder_doc(src, "variables")
+        except K.KernelError:
+            if is_cross_link(src, getattr(self.folder, "id", None)):
+                return None
+            raise
         return None if vs is None else dict(vs.values()[0])
 
     def resolve_connectors(self, src):

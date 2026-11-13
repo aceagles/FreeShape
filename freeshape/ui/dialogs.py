@@ -571,6 +571,7 @@ SCHEMAS = {
         {"t": "text", "key": "expr", "label": "Value", "placeholder": "e.g. 3 or #wall * 2", "expr": True},
     ],
     "variable_studio_ref": [
+        {"t": "variable_document", "key": "source", "label": "Document"},
         {"t": "studio_choice", "key": "source", "label": "Variable Studio"},
         {"t": "studio_names", "key": "names", "label": "Variables"},
     ],
@@ -1048,6 +1049,8 @@ class FeatureDialog(_ResizableFrame):
             return self._make_studio_choice(spec, p, row, h)
         if t == "studio_names":
             return self._make_studio_names(spec, p, row, h)
+        if t == "variable_document":
+            return self._make_variable_document(spec, p, row, h)
         if t == "derived_document":
             return self._make_derived_document(spec, p, row, h)
         if t == "derived_source":
@@ -1294,41 +1297,125 @@ class FeatureDialog(_ResizableFrame):
 
     # ------------------------------------------------------------------ Variable Studio reference rows
     def _variable_tabs(self):
-        """The Variable Studio tabs of the open Document's manifest (none for a loose file)."""
+        """The Variable Studio tabs of the open Document's manifest (none for a loose file); with another Document
+        chosen (`_ref_scope` = (document id, Version)), the Variable Studio tabs of that Version."""
+        scope = getattr(self, "_ref_scope", None)
+        if scope is not None:
+            if scope[1] is None:
+                return []
+            try:
+                tabs = self.main.folder.registry.describe(scope[0], scope[1])["tabs"]
+            except K.KernelError:
+                return []
+            return [SimpleNamespace(id=t["id"], name=t["name"], kind=t["kind"]) for t in tabs
+                    if t.get("kind") == "variables"]
         fd = getattr(self.main, "folder", None)
         return [t for t in (fd.tabs if fd is not None else []) if t.kind == "variables"]
+
+    def _ref_pending(self):
+        """Another Document is chosen but no Version yet: the reference cannot be committed (a link to another
+        Document is always pinned)."""
+        scope = getattr(self, "_ref_scope", None)
+        return scope is not None and scope[1] is None
+
+    def _ref_gate(self):
+        pending = self._ref_pending()
+        self.ok_button.setEnabled(not pending)
+        self.ok_button.setToolTip("Choose a Version of the Document first" if pending else "Accept (Enter)")
+
+    def _ref_source(self, tab):
+        """The source dict of a Variable Studio tab of the chosen scope (pinned when it is another Document's)."""
+        src = {"kind": "variables", "tab": tab.id, "name": tab.name}
+        scope = getattr(self, "_ref_scope", None)
+        if scope is not None:
+            src.update(document=scope[0], version=scope[1])
+        return src
 
     def _studio_variable_names(self):
         """The names the chosen Variable Studio defines now, in table order (empty if it is not found)."""
         src = self.feature["params"].get("source") or {}
-        tab = next((t for t in self._variable_tabs() if t.id == src.get("tab")), None)
-        if tab is None or tab.doc is None:
-            return []
-        values = tab.doc.values()[0]
-        return [n for n in dict.fromkeys(str(r.get("name") or "").strip() for r in tab.doc.rows) if n in values]
+        if src.get("document") and src.get("version"):          # a pinned Version of another Document, read-only
+            try:
+                vs = self.main.folder.resolver._cross_doc(src, "variables")
+            except K.KernelError:
+                return []
+            values, rows = vs.values()[0], vs.rows
+        else:
+            tab = next((t for t in self._variable_tabs() if t.id == src.get("tab")), None)
+            if tab is None or getattr(tab, "doc", None) is None:
+                return []
+            values, rows = tab.doc.values()[0], tab.doc.rows
+        return [n for n in dict.fromkeys(str(r.get("name") or "").strip() for r in rows) if n in values]
+
+    def _make_variable_document(self, spec, p, row, h):
+        """`This Document`, or another Document and one of its Versions (ui.document_picker). The chosen scope decides
+        which Variable Studios `studio_choice` lists; changing it clears the source and the ticked names."""
+        from .document_picker import DocumentVersionPicker
+        fd = self.main.folder
+        pk = DocumentVersionPicker(fd.registry, exclude_id=getattr(fd, "id", None), local_label="This Document")
+        pk.setObjectName("variable_document")
+        src = p.get(spec["key"]) or {}
+        self._ref_scope = None
+        if src.get("document") and src["document"] != getattr(fd, "id", None):
+            pk.select(src["document"], src.get("version"))
+            self._ref_scope = (src["document"], src.get("version"))
+
+        def scope_changed():
+            self._ref_scope = None if pk.is_local() else (pk.doc_combo.currentData(), pk.version_combo.currentData())
+            refill = getattr(self, "_ref_refill_tabs", None)
+            if refill is not None:
+                refill()
+            self._ref_gate()
+        pk.changed.connect(scope_changed)
+        h.setDirection(QBoxLayout.TopToBottom)
+        h.addWidget(pk)
+        self.widgets["document"] = pk
+        return row
 
     def _make_studio_choice(self, spec, p, row, h):
         cb = QComboBox()                 # the row's label is already in `h`
-        tabs = self._variable_tabs()
-        for t_ in tabs:
-            cb.addItem(t_.name, t_.id)
-        if not tabs:
-            cb.addItem("— no Variable Studio in this Document —", None)
-        cur = (p.get(spec["key"]) or {}).get("tab")
+        key = spec["key"]
+
+        def fill_tabs():
+            tabs = self._variable_tabs()
+            cb.blockSignals(True)
+            cb.clear()
+            for t_ in tabs:
+                cb.addItem(t_.name, t_.id)
+            if not tabs:
+                cb.addItem("— no Variable Studio in this Document —" if getattr(self, "_ref_scope", None) is None
+                           else "— choose a Version first —" if self._ref_pending()
+                           else "— no Variable Studio in this Version —", None)
+            cb.blockSignals(False)
+            return tabs
+
+        tabs = fill_tabs()
+        cur = (p.get(key) or {}).get("tab")
         if cur is None and tabs:
-            p[spec["key"]] = {"kind": "variables", "tab": tabs[0].id, "name": tabs[0].name}
-        cb.setCurrentIndex(max(0, cb.findData((p.get(spec["key"]) or {}).get("tab"))))
+            p[key] = self._ref_source(tabs[0])
+        cb.setCurrentIndex(max(0, cb.findData((p.get(key) or {}).get("tab"))))
 
         def chosen(i, cb=cb):
             tid = cb.itemData(i)
             t_ = next((x for x in self._variable_tabs() if x.id == tid), None)
             if t_ is not None:
                 self.feature["params"].pop("names", None)           # another Studio: its own names
-                self._set(spec["key"], {"kind": "variables", "tab": t_.id, "name": t_.name})
+                self._set(key, self._ref_source(t_))
                 self._fill_names()
         cb.currentIndexChanged.connect(chosen)
+
+        def scope_changed():
+            """Another Document or Version: its own Variable Studios, so no source and no names carry over."""
+            self.feature["params"].pop("names", None)
+            tabs = fill_tabs()
+            self.feature["params"][key] = self._ref_source(tabs[0]) if tabs else {}
+            cb.setCurrentIndex(0)
+            self._fill_names()
+            self._set_unlisted()
+        self._ref_refill_tabs = scope_changed
+        self._ref_gate()
         h.addWidget(cb)
-        self.widgets[spec["key"]] = cb
+        self.widgets[key] = cb
         return row
 
     def _make_studio_names(self, spec, p, row, h):
@@ -1721,6 +1808,8 @@ class FeatureDialog(_ResizableFrame):
     def accept(self):
         if self.ftype == "derived" and self._derived_pending():
             return                              # another Document without a Version: nothing to pin yet
+        if self.ftype == "variable_studio_ref" and self._ref_pending():
+            return                              # likewise a Variable Studio reference
         self._timer.stop()
         self.feature["name"] = self.title.text().strip() or self.feature["name"]
         if self.ftype == "hole":

@@ -115,8 +115,14 @@ class CrossTabInputs:
 
     def variables(self, src):
         """{name: value} of the Variable Studio tab a "variable_studio_ref" source names (by tab id, uid, then
-        file path), live and unsaved; None if no tab matches. A Document.var_inputs callable."""
+        file path), live and unsaved; None if no tab matches. A Document.var_inputs callable. A pinned Version of
+        another Document is the package the parent sent (None if it was not sent)."""
         with self._resolving(src):
+            if links.is_cross_link(src):
+                try:
+                    return dict(self._external_doc(src, "variables").values()[0])
+                except K.KernelError:
+                    return None
             doc = self._provide("variables", src.get("uid"), src.get("path"), src.get("tab"))
         return None if doc is None else dict(doc.values()[0])
 

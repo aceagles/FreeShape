@@ -562,6 +562,22 @@ FreeShape needs for placing a joint once an element reference has resolved.
   (`/opt/freecad-src/src/Mod/Assembly/JointObject.py:648`, the Distance special case at
   `/opt/freecad-src/src/Mod/Assembly/JointObject.py:649`).
 
+### 8.1 FreeShape's connector X axis
+
+FreeShape follows FreeCAD's orientation rule for a mate connector on a flat face: X is fixed in the
+plane's own frame, not derived from the face's edges. An edit that changes which edge is longest
+therefore does not turn X round. One addition keeps existing connectors where they are:
+
+* When a connector is made, X still starts along the face's longest straight edge, so square parts
+  line up squarely. The connector stores that X as `x_ref`: its components along the plane's own X
+  axis and Z × X (`connector_x_ref` in `freeshape/assembly.py`).
+* When the part changes, the frame is rebuilt from `x_ref` against the new face's plane
+  (`apply_x_ref`). Edge lengths take no part.
+* Every other connector kind stores `x_ref` against perp(Z) and Z × perp(Z), which is `[1, 0]`;
+  its frame is unchanged.
+* `x_ref` is optional in `.fasm` files. A connector loaded without one takes X from the
+  longest-edge rule on its first refresh, then stores it, so saved assemblies keep their mates.
+
 ## 9. Scenarios
 
 The cases later cards port as tests. Each names the reference test it comes from, under

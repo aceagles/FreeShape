@@ -144,14 +144,18 @@ def connector_frame(shape, kind, index, click=None):
         if st == GeomAbs_Plane:
             z = unit(info["n"])
             o = np.array(info["c"], float)
-            # X along the longest straight edge, so square things line up squarely
+            # X along the longest straight edge, so square things line up squarely. This only picks X when the
+            # connector is made: the connector then stores X against the plane's own axes ("xb"; see
+            # connector_x_ref), because an edit can change which edge is longest.
             best, x = 0.0, None
             for e in K.edges(f):
                 ei = K.edge_info(e)
                 if "d" in ei and ei["len"] > best:
                     best, x = ei["len"], np.array(ei["d"], float)
             x = unit(x - (x @ z) * z) if x is not None else perp(z)
-            return {"o": o, "z": z, "x": x, "what": "flat face"}
+            px = K._np(ad.Plane().XAxis().Direction())
+            px = unit(px - (px @ z) * z)
+            return {"o": o, "z": z, "x": x, "what": "flat face", "xb": (px, np.cross(z, px))}
         if st in (GeomAbs_Cylinder, GeomAbs_Cone):
             if st == GeomAbs_Cylinder:
                 p0, d, _r, zmin, zmax, _hole = K.cylinder_face_frame(f)
@@ -220,6 +224,36 @@ def connector_frame(shape, kind, index, click=None):
     ad.D1(t, p, v)
     z = unit(np.array([v.X(), v.Y(), v.Z()]))
     return {"o": K._np(p), "z": z, "x": perp(z), "what": "edge"}
+
+
+def _x_basis(fr):
+    """The two axes a connector's X is stored against: the plane's own X and Z x X for a flat face (FreeCAD's
+    Assembly orients a planar-face joint by the plane's own placement too), else perp(Z) and Z x perp(Z)."""
+    if fr.get("xb") is not None:
+        return fr["xb"]
+    z = unit(fr["z"])
+    bx = perp(z)
+    return bx, np.cross(z, bx)
+
+
+def connector_x_ref(fr):
+    """The stored X reference of a connector frame: X's components [u, v] along the frame's base axes."""
+    bx, by = _x_basis(fr)
+    x = np.asarray(fr["x"], float)
+    return [float(x @ bx), float(x @ by)]
+
+
+def apply_x_ref(fr, x_ref):
+    """`fr` with X rebuilt from a stored X reference, so X does not depend on the face's edge lengths."""
+    try:
+        u, v = float(x_ref[0]), float(x_ref[1])
+    except (TypeError, ValueError, IndexError):
+        return fr
+    bx, by = _x_basis(fr)
+    x = u * bx + v * by
+    if np.linalg.norm(x) < 1e-9:
+        return fr
+    return dict(fr, x=unit(x))
 
 
 # =========================================================================== hover snap points
@@ -572,6 +606,11 @@ class AssemblyDoc:
                             fr = snap_frame(shp, c["kind"], ok_idx, c["snap"])
                         else:
                             fr = connector_frame(shp, c["kind"], ok_idx, c.get("click"))
+                        if c.get("x_ref") is not None:
+                            fr = apply_x_ref(fr, c["x_ref"])
+                        else:
+                            # a connector from an older file: X by the longest-edge rule this once, then kept
+                            c["x_ref"] = connector_x_ref(fr)
                         c["frame"] = frame_to_json(fr)
                         c["index"] = ok_idx
                     except Exception:
@@ -759,6 +798,7 @@ class AssemblyDoc:
         else:
             fr = connector_frame(p.shape, kind, index, click)
         out["frame"] = frame_to_json(fr)
+        out["x_ref"] = connector_x_ref(fr)
         return out
 
     def snap_points(self, iid, kind, index):

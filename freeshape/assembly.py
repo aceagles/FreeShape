@@ -21,6 +21,7 @@ import numpy as np
 
 from . import kernel as K
 from . import migrations as M
+from . import sketchref
 
 MATE_TYPES = {
     "fastened": ("Fastened", "No motion — the parts are locked together"),
@@ -677,12 +678,58 @@ class AssemblyDoc:
                         "named": str(cid), "name": c.get("name", ""), "frame": fr}
         raise K.KernelError(f"The part has no published mate connector {cid!r}")
 
+    def sketch_end(self, iid, eid, role):
+        """A mate end on sketch geometry of Sketch instance `iid` (ADR 0011):
+        {"inst": iid, "kind": "sketch", "entity": eid, "role": role, "etype": <point|line|circle|arc>,
+         "sig": <geometric signature>, "frame": <frame_to_json dict, in the instance's own coordinates>}.
+        `eid` is a sketch entity id or a bare point id; `role` is one of sketchref.ROLES the entity has. The
+        frame is re-read from the published sketch on every refresh. Raises K.KernelError when `iid` is not a
+        Sketch instance, its sketch can't be read, or the entity or role doesn't exist."""
+        out = self.sketch_out(iid)
+        if out is None:
+            raise K.KernelError("Not a Sketch instance, or its sketch can't be read")
+        plane, sk = self._sketch_data(out)
+        d = sketchref.describe(sk, eid, role)
+        fr = sketchref.frame(plane, sk, eid, role)
+        return {"inst": iid, "kind": "sketch", "entity": eid, "role": role, "etype": d["etype"], "sig": d["sig"],
+                "frame": frame_to_json({**fr, "what": f"sketch {eid} {role}"})}
+
+    @staticmethod
+    def _sketch_data(out):
+        pl = out.plane
+        plane = {"origin": list(pl["origin"]), "xdir": list(pl["xdir"]), "normal": list(pl["normal"])} \
+            if isinstance(pl, dict) else {"origin": list(pl.origin), "xdir": list(pl.xdir), "normal": list(pl.normal)}
+        return plane, out.sketch
+
+    def _refresh_sketch_end(self, m, c, cache):
+        """Recompute sketch end `c` of mate `m` from the current published sketch; a missing or retyped entity
+        gives the mate a named error (it stays in doc.mates and is left out of the solve)."""
+        iid = c["inst"]
+        if iid not in cache:
+            cache[iid] = self.sketch_out(iid)
+        out = cache[iid]
+        if out is None:
+            return                              # sketch not readable: keep the last frame, as for a closed studio
+        plane, sk = self._sketch_data(out)
+        try:
+            sketchref.check(sk, c)
+            fr = sketchref.frame(plane, sk, c["entity"], c["role"])
+        except K.KernelError as e:
+            self.errors[m["id"]] = f"Lost its sketch geometry: {e}"
+            return
+        c["frame"] = frame_to_json({**fr, "what": f"sketch {c['entity']} {c['role']}"})
+
     def _refresh_named_ends(self):
-        """Re-read the frame of every named mate end; a connector the studio no longer publishes turns its mate red."""
+        """Re-read the frame of every named mate end; a connector the studio no longer publishes turns its mate red.
+        Sketch ends (kind "sketch") are recomputed from the published sketch the same way."""
         cache = {}
+        sk_cache = {}
         for m in self.mates:
             for side in ("a", "b"):
                 c = m.get(side)
+                if c and c.get("kind") == "sketch" and c["inst"] in self.parts:
+                    self._refresh_sketch_end(m, c, sk_cache)
+                    continue
                 if not c or not c.get("named") or c["inst"] not in self.parts:
                     continue
                 if c.get("kind") == "origin":      # an explicit connector: kept in this file, not in the studio

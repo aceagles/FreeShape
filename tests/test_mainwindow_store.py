@@ -2,15 +2,21 @@
 Document backed by a counting store opens, edits, autosaves, saves, crashes and recovers with every Document-tab
 read and write going through the store, and `mainwindow.py` itself opens no `document.json` and no tab file of that
 Document. A folder Document autosaves to the same file with the same bytes as before the store held autosaves, and
-a loose file opens, autosaves and recovers as it did. Offscreen; every modal is stubbed and the autosave timer is
-driven by direct calls."""
+a loose file opens, autosaves and recovers as it did. Since I4.9 a tab's binary data is in blobs, so an autosave
+carries the blobs its data names and recovery finds them; dropping it drops them. Offscreen; every modal is stubbed
+and the autosave timer is driven by direct calls."""
+import base64
 import builtins
 import hashlib
 import json
 import os
+import re
 import sys
 
+import numpy as np
 import pytest
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.gp import gp_Pnt
 
 from conftest import TOP, add, rect_lines, region_refs, sketch_feature
 
@@ -22,18 +28,26 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
+from freeshape import assembly as A  # noqa: E402
+from freeshape import blobstore  # noqa: E402
 from freeshape import doc_folder as DF  # noqa: E402
 from freeshape import docstore as DS  # noqa: E402
+from freeshape import drawing as DW  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
+from freeshape import links as L  # noqa: E402
 from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.ui import home as H  # noqa: E402
 from freeshape.ui import mainwindow as MW  # noqa: E402
 
 # What the app wrote for the fixed Document below before autosaves went through the store (recorded on the
 # untouched build): the file name, and the sha256 of its bytes with the Document's folder and id replaced.
-BEFORE_DOCUMENT_TAB = {"name": "<ID>.T1.fshape", "sha": "74f2ef370e69658da8d0ca84a0d4965ed58b13d12468fc893ab3130d4b475b73"}
+# The names are as recorded before I4.8. The sha256 values were re-recorded after I4.9, which changed the Part
+# Studio format (version 2 -> 3), so the same tab writes other bytes; the tests still check those bytes against
+# the old writer's shape (`_legacy_autosave_bytes`) applied to the tab's own `to_json`. Before I4.9 they were
+# 74f2ef37...b475b73 (Document tab) and 078cba49...b238e0 (loose file).
+BEFORE_DOCUMENT_TAB = {"name": "<ID>.T1.fshape", "sha": "03356164071d5d8a4ef023a1b5bd6db5a648e14dd44d9c0ac2aecf39edf1a628"}
 BEFORE_LOOSE = {"name": "loose-fixed.fshape",
-                "sha": "078cba49d94654aa70e59e17ee708e618d09213888103c8b25694187e7b238e0"}
+                "sha": "a5627f800d3a521caa8812bcd2e3c343e4585c62b74381c3a8125707254a44e3"}
 FIXED_TIME = 1234.5
 
 
@@ -209,14 +223,22 @@ def test_loose_file_autosaves_the_same_file_with_the_same_bytes(make_window, tmp
 
 
 def test_an_autosave_left_by_the_previous_version_is_recovered(make_window, tmp_path, monkeypatch):
-    """The reverse direction: a file the old code wrote is found and offered by the new one."""
+    """The reverse direction: a file the old code wrote is found and offered by the new one. It is in the Part
+    Studio format before I4.9 (version 2: an imported STEP file inline, no blobs), so it is recovered through the
+    migration, which holds the STEP file in memory until the next save writes it to the Document's blobs."""
     w = make_window()
     fd, tab = _fixed_document(w, str(tmp_path / "Doc"))
+    raw = _step_raw(tmp_path, "box.step", [_mkbox(5, 6, 7, (40, 0, 0))])
+    fid = _import(tab.doc, raw, "box.step")
+    want = _studio_hashes(tab.doc)
     tab.doc.name = tab.name = "Left behind"
     tab.doc.dirty = True
-    legacy = _legacy_autosave_bytes(w, tab.doc, tab)
+    legacy = json.loads(_legacy_autosave_bytes(w, tab.doc, tab))
+    legacy["version"] = 2
+    imp = next(f for f in legacy["features"] if f["id"] == fid)
+    imp["params"] = {"data": base64.b64encode(raw).decode(), "filename": "box.step"}
     d = tmp_path / "autosave" / "pid"
-    (d / f"{fd.id}.T1.fshape").write_bytes(legacy)                           # as the previous version left it
+    (d / f"{fd.id}.T1.fshape").write_bytes(json.dumps(legacy).encode())     # as the previous version left it
     w.folder = None
     dead = _kill(tmp_path)
     w2 = make_window("pid2")
@@ -227,6 +249,12 @@ def test_an_autosave_left_by_the_previous_version_is_recovered(make_window, tmp_
     got = w2.folder.tab("T1")
     assert got.doc.dirty and got.doc.features and got.doc.name == "Left behind"
     assert not (dead / f"{fd.id}.T1.fshape").exists()
+    assert _studio_hashes(got.doc) == want and not got.doc.errors
+    key = blobstore.key_of(raw)
+    assert json.loads(got.doc.to_json())["version"] == 3
+    assert next(f for f in json.loads(got.doc.to_json())["features"] if f["id"] == fid)["params"]["blob"] == key
+    w2.folder.save()
+    assert w2.folder.store.has_blob(key, "T1")
 
 
 # =========================================================================== through the store
@@ -342,3 +370,217 @@ def test_a_loose_file_opens_autosaves_and_recovers(make_window, tmp_path, monkey
     w2.offer_recovery()
     assert w2.doc.name == "Loose edit (recovered)" and w2.doc.dirty and w2.doc.features
     assert w2.doc.path == path
+
+
+# =========================================================================== autosaves carry their blobs (I4.9)
+
+def _mkbox(x, y, z, at=(0, 0, 0)):
+    return BRepPrimAPI_MakeBox(gp_Pnt(*at), float(x), float(y), float(z)).Shape()
+
+
+def _step_raw(tmp_path, name, shapes):
+    p = str(tmp_path / name)
+    K.export_step(shapes, p)
+    with open(p, "rb") as fh:
+        return fh.read()
+
+
+def _import(studio, raw, name):
+    """An import feature, made as the Import command makes it (the STEP file inline, held as a blob)."""
+    f = studio.make_feature("import")
+    f["params"] = {"data": base64.b64encode(raw).decode(), "filename": name}
+    studio.add_feature(f)
+    assert not studio.errors, studio.errors
+    return f["id"]
+
+
+def _hash(shape):
+    """The shape's geometry key. Not the engine's BREP hash: that one also covers OCCT's "checked" flags, which
+    meshing a shape for display sets, so the same geometry shown in a window and freshly loaded would differ."""
+    return blobstore.geometry_key(shape)
+
+
+def _new_tab(w, doc):
+    """A tab made in the window's open Document, as New Assembly / New Drawing make one; returns its Tab."""
+    w._register_in_document(doc, like=w.folder.tabs[0].doc)
+    w._add_tab(doc)
+    return w.folder.tab(doc.tab_id)
+
+
+def _studio_hashes(doc):
+    return sorted(_hash(p.shape) for p in doc.state.parts.values())
+
+
+def _asm_hash(a):
+    rows = [[i["id"], _hash(a.parts[i["id"]].shape), [[round(x, 9) for x in r] for r in i["T"]]]
+            for i in a.instances if i["id"] in a.parts]
+    assert len(rows) == len(a.instances), a.errors
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+
+
+def _named_keys(data):
+    return set(re.findall(r'"([0-9a-f]{64})"', data.decode() if isinstance(data, bytes) else data))
+
+
+def _two_boxes(tmp_path):
+    return _step_raw(tmp_path, "two.step", [_mkbox(10, 10, 10, (0, 40, 0)), _mkbox(5, 5, 5, (20, 40, 0))])
+
+
+def _insert_step(asm, raw):
+    key = asm.add_step_blob(raw)
+    for i in range(2):
+        asm.insert({"kind": "step", "blob": key, "index": i, "filename": "two.step"}, T=np.eye(4))
+    return key
+
+
+def test_document_tabs_autosave_their_blobs_and_recover_the_same_geometry(make_window, tmp_path, monkeypatch):
+    """A Part Studio with an imported STEP file, an Assembly of a studio part and of an imported STEP file, and a
+    Drawing of the Assembly: none ever saved. Their autosaves carry every blob they name; after the process dies
+    the tabs are recovered from those alone, with the same geometry, and hold their blobs once the autosaves (and
+    their blobs) are gone, so the next save writes them into the Document."""
+    w = make_window()
+    path = str(tmp_path / "Doc")
+    _new_document(w, path)
+    fd = w.folder
+    st = fd.tabs[0]
+    _box(st.doc)
+    raw_cyl = _step_raw(tmp_path, "one.step", [_mkbox(3, 4, 5, (60, 0, 0))])
+    _import(st.doc, raw_cyl, "one.step")
+    pid = next(i for i, p in st.doc.state.parts.items() if not p.reference)
+    asm = _new_tab(w, A.AssemblyDoc())
+    asm.doc.insert(L.studio_source(st, pid), name="Plate")
+    step_key = _insert_step(asm.doc, _two_boxes(tmp_path))
+    asm.doc.refresh(solve=False, notify=False)
+    assert len(asm.doc.parts) == 3 and not asm.doc.errors, asm.doc.errors
+    w.dwg.request_exact = lambda *a, **k: None                  # no background hidden-line work
+    dwg = _new_tab(w, DW.DrawingDoc())
+    dwg.doc.source = L.assembly_source(asm)
+    dwg.doc.refresh(notify=False)
+    dwg.doc.add_view((0, 0, 1), (0, 1, 0), (150.0, 100.0))
+    assert dwg.doc.shape is not None and not dwg.doc.error, dwg.doc.error
+    want = {"studio": _studio_hashes(st.doc), "asm": _asm_hash(asm.doc), "dwg": _hash(dwg.doc.shape)}
+    ids = {"studio": st.id, "asm": asm.id, "dwg": dwg.id}
+    for t in (st, asm, dwg):
+        t.doc.dirty = True
+
+    w.autosave()
+    folder = tmp_path / "autosave" / "pid"
+    files = {n for n in os.listdir(folder) if n != "blobs"}
+    assert files == {f"{fd.id}.{ids[k]}{ext}" for k, ext in (("studio", ".fshape"), ("asm", ".fasm"),
+                                                              ("dwg", ".fdwg"))}
+    named = set().union(*(_named_keys((folder / n).read_bytes()) for n in files))
+    assert step_key in named and blobstore.key_of(raw_cyl) in named
+    assert len(named) >= 5                      # STEP x2, a part copy for the studio instance, the Drawing's shape
+    assert named <= set(os.listdir(folder / "blobs"))
+    assert not fd.store.has_blob(step_key, asm.id)                  # never saved: only the autosave has it
+
+    w.folder = None                                                # the in-memory tabs are gone
+    w._autosave_timer.stop()
+    dead = _kill(tmp_path)
+    w2 = make_window("pid2")
+    w2.dwg.request_exact = lambda *a, **k: None
+    w2.offer_recovery()
+    assert not [m for k, m in w2._asked if k in ("warning", "critical")], w2._asked
+    back = {k: w2.folder.tab(t).doc for k, t in ids.items()}
+    assert _studio_hashes(back["studio"]) == want["studio"]
+    assert _asm_hash(back["asm"]) == want["asm"] and not back["asm"].errors
+    assert back["dwg"].shape is not None and _hash(back["dwg"].shape) == want["dwg"]
+    assert not [p for p in dead.rglob("*") if p.is_file()]          # autosaves and their blobs are gone
+
+    w2.folder.save()                                                # the blobs were held: the save writes them
+    store = w2.folder.store
+    assert store.folder == path
+    for k, t in ids.items():
+        keys = _named_keys(store.read_tab(t))
+        assert keys and all(store.has_blob(x, t) for x in keys), k
+    assert store.has_blob(step_key, ids["asm"])
+
+
+def test_a_loose_assembly_autosaves_its_blobs_and_recovers(make_window, tmp_path):
+    path = str(tmp_path / "loose.fasm")
+    a = A.AssemblyDoc()
+    key = _insert_step(a, _two_boxes(tmp_path))
+    a.save(path)
+    want = _asm_hash(a)
+    w = make_window()
+    w.open_file(path)
+    doc = w.doc
+    assert doc.path == path and w.folder is None and len(doc.parts) == 2
+    doc.name = "Loose asm"
+    doc.dirty = True
+    w.autosave()
+    folder = tmp_path / "autosave" / "pid"
+    assert os.listdir(folder / "blobs") == [key]
+    for name in os.listdir(tmp_path / "blobs"):                     # the file's own blobs are lost too
+        os.remove(tmp_path / "blobs" / name)
+    w._autosave_timer.stop()
+    dead = _kill(tmp_path)
+    w2 = make_window("pid2")
+    w2.offer_recovery()
+    got = w2.doc
+    assert got.name == "Loose asm (recovered)" and got.path == path and got.dirty
+    assert _asm_hash(got) == want and not got.errors
+    assert not dead.exists()                                        # the autosave, its blobs and its folder
+    got.save(str(tmp_path / "again.fasm"))                          # held: written beside the new file
+    assert blobstore.store_for(str(tmp_path / "again.fasm")).has(key)
+
+
+def test_an_autosave_writes_each_blob_once_and_dropping_it_drops_its_blobs(make_window, tmp_path, monkeypatch):
+    """Two Document tabs and a loose Part Studio import the same STEP file: one blob in the autosave folder. A
+    second autosave tick writes no blob. Dropping an autosave keeps the blobs another one names; dropping the last
+    removes them and the blobs folder."""
+    raw = _step_raw(tmp_path, "one.step", [_mkbox(3, 4, 5)])
+    key = blobstore.key_of(raw)
+    loose_path = str(tmp_path / "loose.fshape")
+    src = PartStudioDoc()
+    _import(src, raw, "one.step")
+    src.save(loose_path)
+    w = make_window()
+    _new_document(w, str(tmp_path / "Doc"))
+    fd = w.folder
+    one = fd.tabs[0]
+    two = _new_tab(w, PartStudioDoc())
+    for doc in (one.doc, two.doc):
+        _import(doc, raw, "one.step")
+    w.open_file(loose_path)
+    loose = w.doc
+    assert loose.path == loose_path and w.folder is fd and len(w.docs) == 3
+    for doc in (loose, one.doc, two.doc):
+        doc.dirty = True
+    w.autosave()
+    folder = tmp_path / "autosave" / "pid"
+    assert os.listdir(folder / "blobs") == [key]
+    assert len([n for n in os.listdir(folder) if n != "blobs"]) == 3
+
+    puts = []
+    real = blobstore.BlobStore.put
+    monkeypatch.setattr(blobstore.BlobStore, "put", lambda self, data: puts.append(1) or real(self, data))
+    w.autosave()
+    assert puts == []                                               # already there: not written again
+
+    w._drop_autosave(one.doc)
+    assert os.listdir(folder / "blobs") == [key]
+    w._drop_autosave(loose)
+    assert os.listdir(folder / "blobs") == [key]
+    w._drop_autosave(two.doc)
+    assert os.listdir(folder) == []                                 # no autosave, no blob, no blobs folder
+
+
+def test_a_memory_store_autosave_carries_its_blobs(tmp_path):
+    store = DS.MemoryStore()
+    fd = DF.FolderDocument.create_on(store, "Mem")
+    tab = fd.add_tab("studio", "Studio")
+    raw = _step_raw(tmp_path, "one.step", [_mkbox(3, 4, 5)])
+    _import(tab.doc, raw, "one.step")
+    want = _studio_hashes(tab.doc)
+    key = blobstore.key_of(raw)
+    where = str(tmp_path / "x")
+    tab.doc.write_blobs(store=fd.autosave_blobs(where))
+    akey = fd.autosave_tab(tab.id, tab.kind, tab.doc.to_data(), where=where)
+    assert not (tmp_path / "x").exists() and not store.has_blob(key, tab.id)
+    assert store.side_blobs(where).has(key)
+    back = fd.recover_tab(tab.kind, akey, tab.id, where=where)
+    assert _studio_hashes(back) == want
+    fd.discard_autosave(akey, where=where)
+    assert not store.side_blobs(where).has(key)                     # dropped with the autosave
+    assert back._blob_get(key) == raw                               # held by the recovered tab

@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 
+import numpy as np
 import pytest
 from conftest import TOP, add, rect_lines, region_refs, sketch_feature
 
@@ -294,3 +295,93 @@ def test_tab_data_equals_what_save_writes(make_engine, tmp_path):
             keys = {k for rec in json.loads(data)["python_builds"].values() for p in rec["parts"]
                     for k in (p["brep"], p["names"])}
             assert keys and all(sink.has_blob(k) for k in keys)
+
+
+# =========================================================================== Assemblies and Drawings: their blobs
+
+def _step_document(tmp_path):
+    """A MemoryStore Document: a studio with a box, an Assembly of that box and of the two solids of an imported
+    STEP file, and a Drawing of the Assembly, saved by FolderDocument.save."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    p = str(tmp_path / "two.step")
+    K.export_step([BRepPrimAPI_MakeBox(gp_Pnt(0, 40, 0), 10.0, 10.0, 10.0).Shape(),
+                   BRepPrimAPI_MakeBox(gp_Pnt(20, 40, 0), 5.0, 5.0, 5.0).Shape()], p)
+    with open(p, "rb") as fh:
+        raw = fh.read()
+    store = DS.MemoryStore()
+    fd = DF.FolderDocument.create_on(store, name="step")
+    st = fd.add_tab("studio", "Studio")
+    sid = sketch_feature(st.doc, lambda s: rect_lines(s, 0, 0, 10, 10), TOP)
+    ext = add(st.doc, "extrude", regions=region_refs(st.doc, sid), depth=20, op="new")["id"]
+    asm = fd.add_tab("assembly", "Asm")
+    asm.doc.insert(L.studio_source(st, next(iter(st.doc.state.parts))), name="Plate")
+    key = asm.doc.add_step_blob(raw)
+    for i in range(2):
+        asm.doc.insert({"kind": "step", "blob": key, "index": i, "filename": "two.step"}, T=np.eye(4))
+    asm.doc.refresh(solve=False, notify=False)
+    assert len(asm.doc.parts) == 3 and not asm.doc.errors, asm.doc.errors
+    dwg = fd.add_tab("drawing", "Dwg")
+    dwg.doc.source = L.assembly_source(asm)
+    dwg.doc.refresh(notify=False)
+    assert dwg.doc.shape is not None
+    fd.save()
+    return store, fd, {"studio": st, "assembly": asm, "drawing": dwg}, key, ext
+
+
+def _all_blobs(store):
+    return {(t, k) for t, held in store._blobs.items() for k in held}
+
+
+def test_an_unchanged_assembly_and_drawing_save_with_the_blob_keys_folderdocument_wrote(make_engine, refuse_opens,
+                                                                                        tmp_path):
+    """The engine's part shapes are parsed from the BREP its studio sent, another text for the same shape than
+    FolderDocument.save wrote; an unchanged Assembly or Drawing keeps the copy it was loaded with, so its bytes and
+    blob keys are the same, and saving again adds no blob. The STEP file and the copies went to the worker by
+    data (every blob-folder open is refused)."""
+    store, fd, tabs, key, _ext = _step_document(tmp_path)
+    refused = len(W.refused_opens())                     # what earlier tests in this process probed
+    saved = {k: store.read_tab(t.id) for k, t in tabs.items()}
+    blobs = _all_blobs(store)
+    assert (tabs["assembly"].id, key) in blobs
+    assert sum(1 for i in json.loads(saved["assembly"])["instances"] if i.get("_brep_blob")) == 1
+    assert json.loads(saved["drawing"]).get("_brep_blob")
+    engine = make_engine()
+    engine.use_document(fd.id)
+    for kind in ("studio", "assembly", "drawing"):
+        t = tabs[kind]
+        engine.open_tab_data(t.kind, store.read_tab(t.id), t.id, t.name, blobs=store.blobs(t.id))
+    for t in tabs.values():
+        assert not engine.outputs(t.id).errors, t.kind
+    assert len(engine.outputs(tabs["assembly"].id).instances) == 3
+    for _ in range(2):
+        for kind, t in tabs.items():
+            d = json.loads(engine.tab_data(t.id))
+            d["_tab_id"] = t.id
+            assert json.dumps(d, indent=1).encode("utf-8") == saved[kind], kind
+        assert _all_blobs(store) == blobs
+    assert W.refused_opens()[refused:] == []
+
+
+def test_an_assembly_with_an_imported_step_instance_is_edited_saved_and_reopened_by_a_session(refuse_opens,
+                                                                                             tmp_path):
+    from freeshape.session import DocumentSession
+    store, fd, tabs, key, ext = _step_document(tmp_path)
+    ids = {k: t.id for k, t in tabs.items()}
+    with DocumentSession(store, spares=0) as s:
+        assert s.errors() == {}
+        assert s.submit_edit(ids["studio"], {"op": "set_param", "feature": ext, "key": "depth", "value": 5}) == \
+            [ids["studio"], ids["assembly"], ids["drawing"]]
+        asm = s.outputs(ids["assembly"])
+        want = (sorted(asm.parts), _asm_volumes(asm), s.outputs(ids["drawing"]).model)
+        assert want[1] == [125.0, 500.0, 1000.0]
+        assert s.save() == list(ids.values())
+    saved = json.loads(store.read_tab(ids["assembly"]))
+    copy = next(i["_brep_blob"] for i in saved["instances"] if i["source"]["kind"] == "studio")
+    assert store.has_blob(copy, ids["assembly"]) and store.has_blob(key, ids["assembly"])
+    with DocumentSession(store, spares=0) as again:
+        assert again.errors() == {}
+        asm = again.outputs(ids["assembly"])
+        assert (sorted(asm.parts), _asm_volumes(asm), again.outputs(ids["drawing"]).model) == want
+        for tid in ids.values():
+            assert again._eng.run_in_worker(tid, W.refused_opens) == []

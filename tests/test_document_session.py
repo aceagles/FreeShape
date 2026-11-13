@@ -133,24 +133,19 @@ def layout(request, tmp_path, monkeypatch):
     return store, ids, ext, request.param
 
 
-def _strip_brep(x):
-    if isinstance(x, dict):
-        return {k: _strip_brep(v) for k, v in x.items() if k != "_brep"}
-    if isinstance(x, list):
-        return [_strip_brep(v) for v in x]
-    return x
-
-
 def _same_as_saved(now, before, kinds):
-    """`now` equals `before` byte for byte, except that an Assembly or Drawing carries the BREP of its parts as
-    the engine serialised it (`_brep`: another text for the same shape, which I4.9 moves to blobs): those tabs
-    are equal once that cache is set aside."""
+    """`now` equals `before` byte for byte, for every kind (`kinds`: tab id -> kind, named in the message). An
+    Assembly or Drawing names its part copies by blob key; the engine's copy of a part is another BREP text of
+    the same shape, so an unchanged tab keeps the copy it was loaded with (blobstore.same_copy) and its keys."""
     for tid, data in now.items():
-        if kinds[tid] in ("assembly", "drawing"):
-            assert _strip_brep(json.loads(data)) == _strip_brep(json.loads(before[tid])), tid
-            assert data.decode().replace(" ", "").count("_brep") == before[tid].decode().replace(" ", "").count("_brep")
-        else:
-            assert data == before[tid], tid
+        assert data == before[tid], (tid, kinds[tid])
+
+
+def _blob_keys(store, ids):
+    """{(tab id, key)} of every blob the store holds for the tabs `ids`."""
+    if isinstance(store, DS.MemoryStore):
+        return {(t, k) for t in ids for k in store._blobs.get(t, {})}
+    return {(t, k) for t in ids for k in store.blobs(t).keys()}
 
 
 def _saved(store, ids):
@@ -170,10 +165,13 @@ def test_acceptance_scenario_on_both_stores(layout, sessions):
     assert _volumes(s.outputs(ids["asm"])) == [2000.0, 4000.0]
     assert isinstance(s.outputs(ids["a"]), StudioOutputs) and isinstance(s.outputs(ids["vars"]), VariablesOutputs)
 
-    # saved with no edit, each tab's bytes equal what FolderDocument.save wrote
-    assert s.save() == list(ids.values())
-    _same_as_saved(_saved(store, ids), original, {ids["vars"]: "variables", ids["a"]: "studio",
-                                                  ids["b"]: "studio", ids["asm"]: "assembly"})
+    # saved with no edit, each tab's bytes equal what FolderDocument.save wrote, and no blob is added, twice
+    blobs = _blob_keys(store, ids.values())
+    for _ in range(2):
+        assert s.save() == list(ids.values())
+        _same_as_saved(_saved(store, ids), original, {ids["vars"]: "variables", ids["a"]: "studio",
+                                                      ids["b"]: "studio", ids["asm"]: "assembly"})
+        assert _blob_keys(store, ids.values()) == blobs
 
     # an edit to the Variable Studio rebuilds both studios and the Assembly, upstream first
     rebuilt = s.submit_edit(ids["vars"], {"op": "set_row", "index": 0, "expression": "30 mm"})
@@ -345,6 +343,8 @@ def test_blobs_survive_save_and_a_fresh_session(world2, sessions):
     _same_as_saved({v: store.read_tab(v) for k, v in ids.items() if k != "bad"},
                    {v: before[k] for k, v in ids.items()}, {ids["studio"]: "studio", ids["asm"]: "assembly",
                                                             ids["dwg"]: "drawing"})
+    blobs = _blob_keys(store, ids.values())
+    assert s.save() == written and _blob_keys(store, ids.values()) == blobs     # a second save adds no blob
     assert store.read_tab(ids["bad"]) == b"{ not json"            # a tab that never opened is left alone
     builds = json.loads(store.read_tab(ids["studio"]))["python_builds"]
     keys = {k for rec in builds[world2.feature]["parts"] for k in (rec["brep"], rec["names"])}

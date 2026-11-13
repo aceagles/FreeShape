@@ -73,6 +73,15 @@ def _attribute_lines():
     return [f"{MANIFEST_NAME} -merge"] + [f"*{ext} -merge" for ext in TK.extensions()]
 
 
+def hold_blobs(doc):
+    """`doc`, with every blob its data names read into memory (held until its next save writes them). A tab loaded
+    from an autosave finds its blobs beside the autosave, which is removed once the tab is recovered; a kind
+    reads blobs only when it needs them, so they are read now (I4.9). A kind with no blobs is returned as is."""
+    if hasattr(doc, "write_blobs"):
+        doc.write_blobs(store=DS.HeldBlobs({}))
+    return doc
+
+
 class DirtyWorkspaceError(K.KernelError):
     """A Workspace switch was refused because tabs have unsaved changes; `tabs` names them."""
 
@@ -371,6 +380,12 @@ class FolderDocument:
         self.store.write_side(key, data, where)
         return key
 
+    def autosave_blobs(self, where=None):
+        """Where an autosave puts the blobs its data names (I4.9), before `autosave_tab` writes the data: the
+        store's side blobs (`DocumentStore.side_blobs`), each written only when it is not there yet. Dropping or
+        discarding the autosave drops the blobs no other autosave names."""
+        return DS.NewBlobsOnly(self.store.side_blobs(where))
+
     def drop_autosave(self, tab_id, kind, where=None):
         self.store.delete_side(self.autosave_key(tab_id, kind), where)
 
@@ -384,10 +399,13 @@ class FolderDocument:
         rec, store = TK.get(kind), self.store
         path = store.side_path(key, where)
         if path is not None:
-            return rec.load(path)
-        if rec.from_data is None:
+            doc = rec.load(path)            # its blobs are beside the side file (`autosave_blobs`)
+        elif rec.from_data is None:
             raise K.KernelError(f"{rec.label}: loads only from a file, and {store.describe()} keeps none")
-        return rec.from_data(store.read_side(key, where), blobs=store.blobs(tab_id))
+        else:
+            doc = rec.from_data(store.read_side(key, where),
+                                blobs=DS.ChainedBlobs(store.side_blobs(where), store.blobs(tab_id)))
+        return hold_blobs(doc)
 
     @staticmethod
     def _tab_bytes(tab):

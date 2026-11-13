@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from abc import ABC, abstractmethod
 
 from . import blobstore
@@ -141,15 +142,32 @@ class DocumentStore(ABC):
             raise K.KernelError(f"side key {key!r}: nothing is kept under it in {where}") from None
 
     def delete_side(self, key, where=None) -> None:
-        """Drop the data under a side key; nothing happens when there is none."""
+        """Drop the data under a side key, and the side blobs no side data names any more (`side_blobs`);
+        nothing happens when there is none."""
         name = self._side_name(key)
         if not self.has_folder:
-            self.__dict__.get("_side", {}).pop(name, None)
+            side = self.__dict__.get("_side", {})
+            side.pop(name, None)
+            held = self.__dict__.get("_side_blobs")
+            if held:
+                keep = named_blobs(side.values(), HeldBlobs(held))
+                for k in [k for k in held if k not in keep]:
+                    del held[k]
             return
         try:
             os.remove(os.path.join(where, name))
         except FileNotFoundError:
             pass
+        sweep_side_blobs(where)
+
+    def side_blobs(self, where=None):
+        """The blobs kept with side data (an object with `get`, `put` and `has`): those an autosave names, which
+        its tab may hold nowhere else yet (I4.9). A store that keeps files keeps them in `<where>/blobs`, beside the
+        side files, where a tab loaded from a side file looks for them (blobstore.store_for); any other store holds
+        them in memory. `delete_side` drops the ones no side data names any more."""
+        if self.has_folder:
+            return blobstore.BlobStore(os.path.join(where, "blobs"))
+        return HeldBlobs(self.__dict__.setdefault("_side_blobs", {}))
 
     def side_path(self, key, where=None):
         """The file holding a side key's data, or None when the store keeps no files. The path a kind that loads
@@ -193,6 +211,119 @@ class BlobView:
 
     def has(self, key):
         return self.store.has_blob(key, self.tab_id)
+
+
+class HeldBlobs:
+    """Blobs held in a dict {key: bytes}, with the method names of blobstore.BlobStore."""
+
+    def __init__(self, held):
+        self.held = held
+
+    def get(self, key, max_bytes=blobstore.DEFAULT_MAX_BYTES):
+        blobstore._check_key(key)
+        data = self.held.get(key)
+        if data is None:
+            raise blobstore.BlobError(f"no blob {key}")
+        if len(data) > max_bytes:
+            raise blobstore.BlobError(f"blob is {len(data)} bytes, over the {max_bytes} byte limit")
+        return data
+
+    def put(self, data):
+        data = bytes(data)
+        key = hashlib.sha256(data).hexdigest()
+        self.held[key] = data
+        return key
+
+    def has(self, key):
+        return isinstance(key, str) and key in self.held
+
+
+class NewBlobsOnly:
+    """A blob sink that puts into `target` only the blobs it does not have yet: an autosave runs on a timer and
+    must not write (or read back to compare) the same blobs on every tick."""
+
+    def __init__(self, target):
+        self.target = target
+
+    def put(self, data):
+        data = bytes(data)
+        key = hashlib.sha256(data).hexdigest()
+        if not self.target.has(key):
+            self.target.put(data)
+        return key
+
+
+class ChainedBlobs:
+    """A blob lookup that reads from each of `lookups` in turn (for `get` and `has`); it is read-only."""
+
+    def __init__(self, *lookups):
+        self.lookups = [x for x in lookups if x is not None]
+
+    def get(self, key, max_bytes=blobstore.DEFAULT_MAX_BYTES):
+        why = None
+        for x in self.lookups:
+            try:
+                return x.get(key, max_bytes=max_bytes)
+            except blobstore.BlobError as e:
+                why = why or e
+        raise why or blobstore.BlobError(f"no blob {key}")
+
+    def has(self, key):
+        return any(x.has(key) for x in self.lookups)
+
+
+_NAMED_KEY = re.compile(rb'"([0-9a-f]{64})"')
+
+
+def named_blobs(datas, lookup):
+    """The set of blob keys that `datas` (bytes of tab data, as JSON text) name and `lookup` has, followed through
+    blobs that are JSON themselves (a Context capture's listing names its neighbours' blobs). A key is any quoted
+    64-hex string, so text that is not valid JSON (a file half written) still keeps the keys it names."""
+    out, todo = set(), list(datas)
+    while todo:
+        for m in _NAMED_KEY.finditer(bytes(todo.pop())):
+            key = m.group(1).decode("ascii")
+            if key in out or not lookup.has(key):
+                continue
+            out.add(key)
+            try:
+                data = lookup.get(key)
+            except blobstore.BlobError:
+                continue
+            if data[:1] in (b"{", b"["):
+                todo.append(data)
+    return out
+
+
+def sweep_side_blobs(where):
+    """Remove from `<where>/blobs` every blob that no side file in `where` (an autosave, of a Document tab or a
+    loose file) names, then the `blobs` folder itself when it is left empty. A side file that cannot be read keeps
+    every blob. Nothing happens when `where` has no `blobs` folder."""
+    if not where:
+        return
+    store = blobstore.BlobStore(os.path.join(where, "blobs"))
+    keys = store.keys()
+    if keys:
+        datas = []
+        try:
+            for name in os.listdir(where):
+                full = os.path.join(where, name)
+                if name != "blobs" and not name.endswith(".tmp") and os.path.isfile(full):
+                    with open(full, "rb") as fh:
+                        datas.append(fh.read())
+        except OSError:
+            return
+        keep = named_blobs(datas, store)
+        for key in keys:
+            if key not in keep:
+                try:
+                    os.remove(os.path.join(store.root, key))
+                except OSError:
+                    pass
+    try:
+        os.rmdir(store.root)            # only when it is empty
+    except OSError:
+        pass
 
 
 def git_folder(store):

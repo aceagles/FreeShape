@@ -680,6 +680,7 @@ class AssemblyDoc:
         self.blobs: dict[str, bytes] = {}
         self.blob_view = None                    # this tab's blobs in a Document store (docstore.BlobView), if any
         self._breps: dict[int, tuple] = {}       # id(shape) -> (shape, key, bytes) of a part copy; memory only
+        self._copy_geometry: dict = {}           # sha256 of a saved part copy -> its blobstore.geometry_key
         self.path = None
         self.dirty = False
         self.listeners = []
@@ -2408,15 +2409,27 @@ class AssemblyDoc:
                                   self.instance_color(i)) for i in insts], path, self.name)
 
     # ------------------------------------------------------------------ files
-    def _part_brep(self, shape):
+    def _part_brep(self, shape, prior=None):
         """(key, bytes) of the saved copy of a part shape (K.shape_to_brep, the bytes the base64 `_brep` held
-        before I4.9), or (None, None) when it cannot be written. Kept per shape until the shape is gone."""
+        before I4.9), or (None, None) when it cannot be written. Kept per shape until the shape is gone.
+        `prior` is the copy the instance names now (`_brep_blob` as loaded): when it holds the same shape
+        (blobstore.same_copy), its key and bytes are kept. A shape that reached this Assembly another way (an
+        engine worker parses the BREP its Part Studio sent; meshing for display adds triangles) writes other
+        bytes for the same shape, so without this every save of an unchanged Assembly would add a blob."""
         hit = self._breps.get(id(shape))
         if hit is not None and hit[0] is shape:
             return hit[1:]
         from . import blobstore
+        raw = None
+        if prior:
+            try:
+                old = self._blob_get(prior)
+            except blobstore.BlobError:
+                old = None
+            if old is not None and blobstore.same_copy(shape, old, self._copy_geometry):
+                raw = old
         try:
-            raw = K.shape_to_brep(shape)
+            raw = raw if raw is not None else K.shape_to_brep(shape)
         except Exception:
             return None, None
         self._breps[id(shape)] = (shape, blobstore.key_of(raw), raw)
@@ -2435,7 +2448,7 @@ class AssemblyDoc:
             if kind == "step":
                 key = inst["source"].get("blob")
             elif embed and inst["id"] in self.parts:
-                key, raw = self._part_brep(self.parts[inst["id"]].shape)
+                key, raw = self._part_brep(self.parts[inst["id"]].shape, inst.get("_brep_blob"))
                 if key is not None:
                     out[key] = raw
                 continue
@@ -2477,7 +2490,7 @@ class AssemblyDoc:
                 p = self.parts.get(inst["id"])
                 if p is None:
                     continue
-                key, _ = self._part_brep(p.shape)
+                key, _ = self._part_brep(p.shape, inst.get("_brep_blob"))
                 if key:
                     inst["_brep_blob"] = key
                 if self.path:

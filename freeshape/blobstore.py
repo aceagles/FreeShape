@@ -199,6 +199,40 @@ def brep_bytes(shape) -> bytes:
     return brep_text(shape)
 
 
+_FLAGS = re.compile(rb"[01]{7}")
+
+
+def geometry_key(shape) -> str:
+    """A key of a shape's geometry and topology alone: the sha256 of `brep_bytes` with the "checked" digit of
+    every flag line set to 0. That digit records whether OCCT has validated the sub-shape yet (a shape just read
+    from text has not; meshing it validates it), so it varies with what was done to the shape, not with what it
+    is. Used to tell whether a saved part copy (K.shape_to_brep bytes, which carry the shape's own sharing,
+    stray pcurves and any display triangles) holds the same shape as a live one, so that an unchanged shape keeps
+    the key it was saved under (assembly.AssemblyDoc._part_brep, drawing.DrawingDoc._copy)."""
+    lines = brep_bytes(shape).split(b"\n")
+    for i, ln in enumerate(lines):
+        if _FLAGS.fullmatch(ln):
+            lines[i] = ln[:2] + b"0" + ln[3:]
+    return hashlib.sha256(b"\n".join(lines)).hexdigest()
+
+
+def same_copy(shape, raw, known=None):
+    """True when `raw` (K.shape_to_brep bytes of a saved copy) holds the same shape as `shape` (geometry_key).
+    `known` is an optional {sha256 of raw: geometry key} memo, so each saved copy is parsed once."""
+    from . import kernel as K
+    memo = known if known is not None else {}
+    k = key_of(raw)
+    if k not in memo:
+        try:
+            memo[k] = geometry_key(K.shape_from_brep(raw))
+        except Exception:                   # noqa: BLE001 -- an unreadable copy is simply not the same
+            memo[k] = None
+    try:
+        return memo[k] is not None and memo[k] == geometry_key(shape)
+    except Exception:                       # noqa: BLE001
+        return False
+
+
 def shape_from_brep(data: bytes):
     """Parse BREP bytes into a shape. Raises BlobError on unreadable data; never returns a null shape.
     Call only with bytes that came out of `BlobStore.get`, which has checked their hash."""

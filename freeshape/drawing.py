@@ -209,6 +209,8 @@ class DrawingDoc:
         self.blob_view = None                # this tab's blobs in a Document store (docstore.BlobView), if any
         self._fallback_lost = None           # why the saved shape could not be read (a missing blob), for `error`
         self._embedded = None                # (shape, brep key, brep bytes) of the last saved copy; memory only
+        self._prior_copy = None              # the `_brep_blob` key the file was loaded with, if any
+        self._copy_geometry: dict = {}       # sha256 of a saved copy -> its blobstore.geometry_key
         # attributes some generic window code looks at
         from .features import ModelState
         self.features = []
@@ -1388,10 +1390,7 @@ class DrawingDoc:
             return keys, out
         from . import blobstore
         try:
-            if self._embedded is None or self._embedded[0] is not self.shape:
-                raw = K.shape_to_brep(self.shape)
-                self._embedded = (self.shape, blobstore.key_of(raw), raw)
-            _, key, raw = self._embedded
+            key, raw = self._copy()
             keys["_brep_blob"], out[key] = key, raw
             import hashlib
             saved = []
@@ -1406,6 +1405,24 @@ class DrawingDoc:
         except Exception:
             pass
         return keys, out
+
+    def _copy(self):
+        """(key, bytes) of the saved copy of the shown shape: K.shape_to_brep, or the copy the file was loaded
+        with when it holds the same shape (blobstore.same_copy), so an unchanged Drawing keeps its key whichever
+        way its shape arrived (see AssemblyDoc._part_brep). Kept until the shape changes. Raises on no shape."""
+        if self._embedded is None or self._embedded[0] is not self.shape:
+            from . import blobstore
+            raw = None
+            if self._prior_copy:
+                try:
+                    old = self._blob_get(self._prior_copy)
+                except blobstore.BlobError:
+                    old = None
+                if old is not None and blobstore.same_copy(self.shape, old, self._copy_geometry):
+                    raw = old
+            raw = raw if raw is not None else K.shape_to_brep(self.shape)
+            self._embedded = (self.shape, blobstore.key_of(raw), raw)
+        return self._embedded[1:]
 
     def _blob_get(self, key):
         """A blob of this Drawing: held in memory, else read from its store. Raises blobstore.BlobError."""
@@ -1489,6 +1506,7 @@ class DrawingDoc:
             if os.path.exists(cand):
                 src["path"] = cand
         if d.get("_brep_blob"):
+            g._prior_copy = d["_brep_blob"]
             try:
                 g._fallback = K.shape_from_brep(g._blob_get(d["_brep_blob"]))
             except Exception as e:
@@ -1513,7 +1531,7 @@ class DrawingDoc:
             return
         try:
             import hashlib
-            if hashlib.sha1(K.shape_to_brep(self.shape)).hexdigest() != sv.get("model"):
+            if hashlib.sha1(self._copy()[1]).hexdigest() != sv.get("model"):     # the bytes a save writes
                 return
             for item in sv.get("views", []):
                 K.hlr_store(self.shape, item["d"], item["up"], item["curves"])

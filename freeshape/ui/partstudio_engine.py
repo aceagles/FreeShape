@@ -31,6 +31,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 
+from .. import blobstore
+from .. import docstore
 from .. import features as F
 from .. import kernel as K
 from .. import links
@@ -498,6 +500,10 @@ class LiveTabs:
         snap = {"sig": sig, "name": doc.name}
         if sig != rec.sig or rec.tab is None:
             snap["json"] = doc.to_json(embed=False)
+            if rec.kind == "assembly":      # the blobs that JSON names (its STEP files), read here on the GUI thread
+                held = docstore.HeldBlobs({})
+                doc.write_blobs(store=held, embed=False)
+                snap["blobs"] = held.held
         return snap
 
     @staticmethod
@@ -585,8 +591,10 @@ class LiveTabs:
         path = os.path.join(self._tmp, f"{rec.want_tab}-{next(self._files)}{ext}")
         with open(path, "w") as fh:
             fh.write(snap["json"])
-        if rec.kind == "assembly":      # its STEP files, which the JSON names by blob key (I4.9)
-            rec.doc.write_blobs(path, embed=False)
+        if snap.get("blobs"):           # its STEP files, which the JSON names by blob key (I4.9): the worker reads
+            store = blobstore.store_for(path)       # them beside the copy, as `open_tab` gives it no blob lookup
+            for raw in snap["blobs"].values():
+                store.put(raw)
         if any(t[0] == rec.want_tab for t in eng.tabs()):
             eng.close_tab(rec.want_tab)
         self.bind_document(eng)

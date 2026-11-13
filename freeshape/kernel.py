@@ -1547,7 +1547,7 @@ class Mesh:
     face_edges: list = field(default_factory=list)    # per face: indices (into edge_polys) of its boundary edges
 
 
-def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.3, edges_too: bool = True) -> Mesh:
+def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.2, edges_too: bool = True) -> Mesh:
     """Triangulate every face. edges_too=False skips the edge polylines (mesh export does not need them)."""
     if lin_defl is None:
         lo, hi = bbox(shape)

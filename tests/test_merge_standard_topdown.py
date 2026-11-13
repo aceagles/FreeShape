@@ -29,10 +29,10 @@ PARAMS = {"size": "M3", "length": 10}
 
 
 def test_file_versions_after_the_merge():
-    """Master added no migration step: Standard part marker (6 -> 7) is still the last assembly step."""
-    assert Mig.latest_version("assembly") == 7
-    assert Mig.latest_version("document") == 2 and Mig.latest_version("drawing") == 2
-    assert A.AssemblyDoc().to_json().count('"version": 7') == 1
+    """Parity Sweep moved inline geometry to blobs: one step each on top of the Standard part marker (assembly 7)."""
+    assert Mig.latest_version("assembly") == 8
+    assert Mig.latest_version("document") == 3 and Mig.latest_version("drawing") == 3
+    assert A.AssemblyDoc().to_json().count('"version": 8') == 1
 
 
 @pytest.fixture

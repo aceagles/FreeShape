@@ -43,7 +43,9 @@ from .. import links
 from .. import migrations as M
 from . import worker as W
 from .contract import Engine, EngineError, TabErrored
+from .encode import Encoder
 from .executor import KINDS, file_kind
+from .inputs import cross_package, external_id
 from .linkgraph import lean_package, norm_key, package_digest, propagate
 
 STOP_GRACE_S = 3.0           # how long a closed tab's worker gets to finish before it is killed
@@ -131,18 +133,11 @@ def _file_sources(kind, d, path):
     if kind == "variables":
         return []
     try:
-        d = M.migrate(kind, copy.deepcopy(d), path)
+        d = M.migrate("document" if kind == "studio" else kind, copy.deepcopy(d), path)
     except Exception:            # noqa: BLE001 -- the worker's own load reports a bad file
         return []
-    if kind == "studio":
-        srcs = [f.get("params", {}).get("source") for f in d.get("features", [])
-                if f.get("type") == "variable_studio_ref"]
-    else:
-        srcs = [i.get("source") for i in d.get("instances", [])] if kind == "assembly" else [d.get("source")]
     out = []
-    for src in srcs:
-        if not isinstance(src, dict):
-            continue
+    for src in links.tab_sources(kind, d):
         src = dict(src)
         if src.get("relpath") and not (src.get("path") and os.path.exists(src["path"])):    # as the loaders do
             cand = os.path.normpath(os.path.join(os.path.dirname(path), src["relpath"]))
@@ -167,6 +162,10 @@ class ProcessEngine(Engine):
         self.spares = spares
         self._ctx = multiprocessing.get_context("spawn")
         self.links = links.LinkResolver()      # the Link graph: edges only, nothing is resolved through it
+        self.document_id = None                # the Document these tabs belong to (`use_document`)
+        self.cross = None                      # resolves a source naming another Document, pinned to a Version
+        self._pinned = {}                      # (Document, folder path, Version, tab, kind) -> (id, package, state)
+        self._pin_enc = Encoder(meshes=False)
         self._tabs: dict[str, _Tab] = {}
         self._ids = itertools.count(1)
 
@@ -231,12 +230,40 @@ class ProcessEngine(Engine):
         return self._wait(t, self._submit(t, op, arg, seen))
 
     # ------------------------------------------------------------------ the Link graph
+    def use_document(self, document_id, registry=None):
+        """Say which Document the tabs belong to. A source naming another Document is then never matched to a
+        tab, and is resolved through `registry` at its pinned Version (`_external`)."""
+        if document_id != self.document_id or registry is not getattr(self.cross, "registry", None):
+            self.document_id = document_id
+            self.cross = links.LinkResolver(registry=registry) if registry is not None else None
+            if self.cross is not None:
+                self.cross.own_id = document_id
+            self._pinned.clear()
+
+    def _external(self, src):
+        """(id, package, state) of the pinned view a cross-Document source names, or None when it does not
+        resolve (the consumer's worker then reports the unresolved link). Cached per Document, folder path,
+        Version and tab: a Version does not change."""
+        kind = src.get("kind")
+        if kind not in ("studio", "assembly", "variables") or self.cross is None:
+            return None
+        try:
+            doc = src.get("document") or self.document_id      # no Document named: a Version of this one (I1.11)
+            key = (doc, self.cross.registry.trusted_path(doc), src.get("version"), src.get("tab"), kind)
+            hit = self._pinned.get(key)
+            if hit is None:
+                pkg = cross_package(kind, self.cross._cross_doc(dict(src, document=doc), kind), self._pin_enc)
+                hit = self._pinned[key] = (external_id(src), pkg, package_digest(kind, lean_package(pkg)))
+            return hit
+        except Exception:               # noqa: BLE001 -- an unreadable pin is the consumer's error, not ours
+            return None
+
     def _match(self, src):
         """The open tab a link source names -- by uid, then file path -- opening the file as a tab of its own
         if no tab has it. The rule of InProcessEngine.provide; worker._WorkerEngine.provide applies it again
-        to what is sent, so both sides agree."""
+        to what is sent, so both sides agree. A source of another Document names no tab of this one."""
         kind = src.get("kind")
-        if kind not in ("studio", "assembly", "variables"):
+        if kind not in ("studio", "assembly", "variables") or links.is_pinned(src, self.document_id):
             return None
         uid, path = src.get("uid"), src.get("path")
         tabs = [t for t in self._tabs.values() if t.kind == kind]
@@ -260,7 +287,25 @@ class ProcessEngine(Engine):
         seen = seen + (t,)
         pkgs, key, wants = {}, [], {}
         for src in list(t.sources):
+            if links.is_pinned(src, self.document_id):      # a pinned input: its package, and no live edge
+                ext = self._external(src)
+                if ext is not None:
+                    wants.setdefault(ext[0], set()).add(norm_key(src.get("part")))
+                    if ext[0] not in pkgs:
+                        pkgs[ext[0]] = ext[1]
+                        key.append((ext[0], ext[2]))
+                continue
             u = self._match(src)
+            if u is not None and u in seen and u.kind == "studio" and u.tab not in pkgs:
+                # I1.8: a source that leads back to `t`. Its consumer gets an empty studio that is in error, so the
+                # Derived that closes the loop turns red naming it; the edge keeps the cycle in the Link graph.
+                loop = " -> ".join(self._label(x.tab) for x in (seen[seen.index(u):] + (u,)))
+                msg = "Circular link: " + loop
+                wants.setdefault(u.tab, set()).add(norm_key(src.get("part")))
+                pkgs[u.tab] = {"kind": "studio", "uid": u.uid, "name": str(u.name), "path": u.path, "parts": [],
+                               "error": msg}
+                key.append((u.tab, ("cycle", msg)))
+                continue
             if u is None or u in seen:
                 continue
             wants.setdefault(u.tab, set()).add(norm_key(src.get("part")))
@@ -357,10 +402,12 @@ class ProcessEngine(Engine):
         t.sources = _file_sources(kind, d, path)
         return self._register(t, tab)
 
-    def new_tab(self, kind, name=None, tab=None):
+    def new_tab(self, kind, name=None, tab=None, sources=()):
         if kind not in KINDS:
             raise EngineError(f"unknown tab kind {kind!r}")
-        return self._register(_Tab(kind, None, None, name), tab)
+        t = _Tab(kind, None, None, name)
+        t.sources = [copy.deepcopy(s) for s in sources if isinstance(s, dict)]
+        return self._register(t, tab)
 
     def close_tab(self, tab):
         """Drop the tab and end its worker (killed if it has not finished within STOP_GRACE_S)."""
@@ -377,14 +424,9 @@ class ProcessEngine(Engine):
         """Send one edit to the tab's worker; the Future gives the tab's new revision, or raises EngineError
         for an edit the tab refuses and TabErrored if the worker died first."""
         t = self._get(tab)
-        if isinstance(edit, dict) and edit.get("op") == "set_source" and isinstance(edit.get("source"), dict):
-            if edit["source"] not in t.sources:
-                t.sources.append(copy.deepcopy(edit["source"]))      # so its input goes with the edit
-        if isinstance(edit, dict) and edit.get("op") in ("add_feature", "replace_feature"):
-            f = edit.get("feature")
-            src = f.get("params", {}).get("source") if isinstance(f, dict) and f.get("type") == "variable_studio_ref" else None
-            if isinstance(src, dict) and src not in t.sources:
-                t.sources.append(copy.deepcopy(src))                 # so its input goes with the edit
+        src = links.source_edit(edit)
+        if src is not None and src not in t.sources:
+            t.sources.append(copy.deepcopy(src))                     # so its input goes with the edit
         logged = copy.deepcopy(edit)
         fut, out, epoch = self._submit(t, "edit", edit), Future(), t.epoch
 
@@ -431,7 +473,9 @@ class ProcessEngine(Engine):
         t = self._get(tab)
         self._stop(t)
         try:
-            self._start(t, *self._upstream(t))
+            upstream = self._upstream(t)
+            self._start(t, *upstream)
+            self._record_inputs(t, upstream[0])
         except BrokenProcessPool as e:
             self._died(t, e)
             raise TabErrored(t.tab, t.error) from e
@@ -446,4 +490,8 @@ class ProcessEngine(Engine):
         tests and diagnostics."""
         t = self._get(tab)
         self._check_alive(t)
+        upstream, key = self._upstream(t)
+        if key != t.sent:                  # fn reads the inputs as they are now, like any other call
+            self._wait(t, t.pool.submit(W.call, "meta", None, upstream, key))
+            t.sent = key
         return self._wait(t, t.pool.submit(fn, *args))

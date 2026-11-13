@@ -608,6 +608,31 @@ def animate_values(start, end, steps, playback):
     return seq
 
 
+def capture_context(asm, iid):
+    """Plain data for editing instance `iid` in context (ADR 0004): every other instance with a part, as it
+    stands now. Each neighbour has its id, name, content hash (sha256 of its BREP bytes), BREP bytes,
+    element names (as `_named` has them, {} when the part has none) and `T`, its placement relative to `iid`
+    (inverse of `iid`'s transform times the neighbour's, 4x4 nested lists). `solved` is False while any
+    mate is shown red. Reads the current state; changes nothing."""
+    import hashlib
+    from . import blobstore
+    if asm.instance(iid) is None:
+        raise K.KernelError(f"No instance {iid}")
+    inv = np.linalg.inv(asm.T(iid))
+    neighbours = []
+    for inst in asm.instances:
+        nid = inst["id"]
+        if nid == iid or nid not in asm.parts:
+            continue
+        data = blobstore.brep_bytes(asm.parts[nid].shape)
+        named = asm._named(nid)
+        neighbours.append({"id": nid, "name": inst["name"], "hash": hashlib.sha256(data).hexdigest(),
+                           "brep": data, "names": dict(named.names) if named is not None else {},
+                           "T": (inv @ asm.T(nid)).tolist()})
+    solved = not any(v.startswith("Can't be solved") for v in asm.errors.values())
+    return {"assembly": asm.uid, "instance": iid, "solved": solved, "neighbours": neighbours}
+
+
 class AssemblyDoc:
     kind = "assembly"
 
@@ -620,6 +645,8 @@ class AssemblyDoc:
         # Relations: {"id", "type", "name", "a": {"mate", "dof"}, "b": {"mate", "dof"}, "ratio", "reverse",
         # "phase", "suppressed"}; value_b = sign x ratio x value_a + phase (ADR 0005)
         self.relations: list[dict] = []
+        # explicit mate connectors at an instance's origin: {id, inst, name, kind: "origin"}; additive in .fasm
+        self.connectors: list[dict] = []
         self.blobs: dict[str, str] = {}          # embedded STEP files (base64), keyed by content hash
         self.path = None
         self.dirty = False
@@ -628,6 +655,9 @@ class AssemblyDoc:
         # callable(source) -> naming.NamedShape or None: the element map of the part a source links to.
         # Left None, it is found on the resolver when that is a LinkResolver method (links.py).
         self.named_resolver = None
+        # callable(source) -> [{"id", "name", "frame"}] or None: the mate connectors the Part Studio publishes for
+        # the part a source links to (links.resolve_connectors). Left None, it is found on the resolver likewise.
+        self.connector_resolver = None
         self._recovered = set()                  # (mate id, "a"/"b") found by signature, not by name; in memory only
         self.parts: dict[str, object] = {}       # instance id -> Part in its own coordinates
         self._fallback: dict[str, object] = {}   # instance id -> shape stored in the file
@@ -656,6 +686,7 @@ class AssemblyDoc:
         self._counter += 1
         used = {i["id"] for i in self.instances} | {m["id"] for m in self.mates} | {g["id"] for g in self.groups}
         used |= {r["id"] for r in self.relations}
+        used |= {c["id"] for c in self.connectors}
         while f"{prefix}{self._counter}" in used:
             self._counter += 1
         return f"{prefix}{self._counter}"
@@ -672,13 +703,14 @@ class AssemblyDoc:
     # ------------------------------------------------------------------ undo / redo
     def _snapshot(self):
         return json.dumps({"instances": self.instances, "mates": self.mates, "name": self.name,
-                           "groups": self.groups, "relations": self.relations})
+                           "groups": self.groups, "relations": self.relations, "connectors": self.connectors})
 
     def _restore(self, snap):
         d = json.loads(snap)
         self.instances, self.mates = d["instances"], d["mates"]
         self.groups = d.get("groups", [])
         self.relations = d.get("relations", [])
+        self.connectors = d.get("connectors", [])
 
     def checkpoint(self):
         self._undo.append(self._snapshot())
@@ -786,6 +818,84 @@ class AssemblyDoc:
             return None
         return nm if nm is not None and nm.shape is not None and nm.shape.IsSame(part.shape) else None
 
+    def published_connectors(self, iid):
+        """The mate connectors instance `iid` offers: what its Part Studio publishes plus the explicit origin
+        connectors added to it (None when neither exists)."""
+        pub = self._studio_connectors(iid)
+        mine = [{"id": c["id"], "name": c.get("name", ""), "frame": {"o": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0],
+                                                                       "x": [1.0, 0.0, 0.0]}}
+                for c in self.connectors if c["inst"] == iid]
+        return pub if not mine else (pub or []) + mine
+
+    def add_instance_origin_connector(self, iid, name=None):
+        """An explicit mate connector at instance `iid`'s part origin (one per instance). Returns its id."""
+        inst = self.instance(iid)
+        if inst is None:
+            raise K.KernelError("No such instance")
+        have = next((c for c in self.connectors if c["inst"] == iid), None)
+        if have is not None:
+            return have["id"]
+        self.checkpoint()
+        c = {"id": self.new_id("C"), "inst": iid, "name": name or f"{inst['name']} origin", "kind": "origin"}
+        self.connectors.append(c)
+        self.notify()
+        return c["id"]
+
+    def _studio_connectors(self, iid):
+        """[{"id", "name", "frame"}] the Part Studio publishes for instance `iid`'s part (frames in the part's
+        coordinates, plain lists), or None when it can't be asked (a STEP part, the studio is closed)."""
+        inst = self.instance(iid)
+        if inst is None or inst["source"].get("kind") in ("step", "standard"):
+            return None     # a Standard part's own connectors are named (`connector_by_name`), not published
+        fn = self.connector_resolver or getattr(getattr(self.resolver, "__self__", None), "resolve_connectors", None)
+        if fn is None:
+            return None
+        try:
+            return fn(inst["source"])
+        except Exception:
+            return None
+
+    def _published_named_connector(self, iid, cid):
+        """A mate end on the part's own published connector `cid`: {"inst", "named": cid, ...}. Its frame is
+        re-read from the Part Studio on every refresh. (Explicit origin connectors go through here too.)"""
+        for c in self.published_connectors(iid) or []:
+            if str(c["id"]) == str(cid):
+                fr = frame_to_json({**c["frame"], "what": f"connector {c['name']}" if c.get("name") else "connector"})
+                kind = "origin" if any(x["id"] == str(cid) and x["inst"] == iid for x in self.connectors) else "connector"
+                return {"inst": iid, "kind": kind, "index": None, "click": None, "ref": None,
+                        "named": str(cid), "name": c.get("name", ""), "frame": fr}
+        raise K.KernelError(f"The part has no published mate connector {cid!r}")
+
+    def _refresh_named_ends(self):
+        """Re-read the frame of every named mate end; a connector the studio no longer publishes turns its mate red."""
+        cache = {}
+        for m in self.mates:
+            for side in ("a", "b"):
+                c = m.get(side)
+                if not c or not c.get("named") or c["inst"] not in self.parts:
+                    continue
+                if c.get("kind") == "origin":      # an explicit connector: kept in this file, not in the studio
+                    own = next((x for x in self.connectors if x["id"] == c["named"] and x["inst"] == c["inst"]), None)
+                    if own is None:
+                        self.errors[m["id"]] = f"Lost its mate connector “{c.get('name') or c['named']}”: it was removed"
+                    else:
+                        c["name"] = own.get("name", "")
+                        c["frame"] = frame_to_json({"o": [0.0, 0.0, 0.0], "z": [0.0, 0.0, 1.0], "x": [1.0, 0.0, 0.0],
+                                                    "what": f"connector {c['name']}"})
+                    continue
+                if c["inst"] not in cache:
+                    cache[c["inst"]] = self._studio_connectors(c["inst"])
+                pub = cache[c["inst"]]
+                if pub is None:
+                    continue                    # studio not reachable: keep the last frame, as for a closed studio
+                hit = next((p for p in pub if str(p["id"]) == c["named"]), None)
+                if hit is None:
+                    self.errors[m["id"]] = (f"Lost its mate connector “{c.get('name') or c['named']}”: "
+                                            "the Part Studio no longer publishes it")
+                    continue
+                c["name"] = hit.get("name", c.get("name", ""))
+                c["frame"] = frame_to_json({**hit["frame"], "what": f"connector {c['name']}" if c["name"] else "connector"})
+
     def recovered_connectors(self):
         """[(mate id, "a"/"b")] of the connectors the last refresh found by signature instead of by name: legacy
         references (made before elements were named) and named ones on a part that has no element map. Their
@@ -878,6 +988,7 @@ class AssemblyDoc:
                         c["index"] = ok_idx
                     except Exception:
                         pass
+        self._refresh_named_ends()
         if solve:
             self.solve()
         else:
@@ -1049,6 +1160,7 @@ class AssemblyDoc:
         ids = set(ids)
         self.instances = [i for i in self.instances if i["id"] not in ids]
         self.mates = [m for m in self.mates if m["a"]["inst"] not in ids and m["b"]["inst"] not in ids]
+        self.connectors = [c for c in self.connectors if c["inst"] not in ids]
         for i in ids:
             self.parts.pop(i, None)
         for g in self.groups:
@@ -1206,10 +1318,18 @@ class AssemblyDoc:
         return frame_to_json(frame_from_json(fr))
 
     def named_connector(self, iid, name):
-        """A mate end on a part's own named connector, e.g. a screw's "under_head": {"inst", "kind": "named",
-        "name", "frame"}. No index, click, ref or snap. world_frame, place_for_mate and the solver read `frame`
-        like any other connector. Raises KernelError when the part offers no such name."""
-        return {"inst": iid, "kind": "named", "name": name, "frame": self.connector_by_name(iid, name)}
+        """A mate end on a part's own connector `name`. Two kinds of part offer them:
+        - a Standard part's named connector, e.g. a screw's "under_head": {"inst", "kind": "named", "name",
+          "frame"}, re-derived from the Plugin on change (`connector_by_name`);
+        - a studio part's published mate connector, or an explicit origin connector, looked up by its id
+          (`_published_named_connector`: kind "connector"/"origin", "named": id).
+        An id of an explicit origin connector on the instance wins, so a Standard part can carry one too.
+        No index, click, ref or snap. Raises KernelError when the part offers no such name."""
+        inst = self.instance(iid)
+        if inst is not None and inst["source"].get("kind") == "standard" and not any(
+                c["id"] == str(name) and c["inst"] == iid for c in self.connectors):
+            return {"inst": iid, "kind": "named", "name": name, "frame": self.connector_by_name(iid, name)}
+        return self._published_named_connector(iid, name)
 
     def set_standard_params(self, iids, changes):
         """Apply the parameter `changes` (a dict) to each Standard part instance in `iids`, as ONE undo step.
@@ -2193,6 +2313,7 @@ class AssemblyDoc:
         return json.dumps({"format": FILE_FORMAT, "version": M.latest_version("assembly"), "name": self.name,
                            "uid": self.uid, "instances": insts, "mates": self.mates, "groups": self.groups,
                            "relations": self.relations,
+                           **({"connectors": self.connectors} if self.connectors else {}),
                            "blobs": {k: v for k, v in self.blobs.items() if k in used}}, indent=1)
 
     def save(self, path=None):
@@ -2218,6 +2339,7 @@ class AssemblyDoc:
         a.mates = d.get("mates", [])
         a.groups = d.get("groups", [])
         a.relations = d.get("relations", [])
+        a.connectors = d.get("connectors", [])
         a.blobs = d.get("blobs", {})
         a.path = path
         base = os.path.dirname(os.path.abspath(path))
@@ -2227,7 +2349,7 @@ class AssemblyDoc:
                 cand = os.path.normpath(os.path.join(base, src["relpath"]))
                 if os.path.exists(cand):
                     src["path"] = cand
-        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0) for x in a.instances + a.mates + a.groups + a.relations]
+        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0) for x in a.instances + a.mates + a.groups + a.relations + a.connectors]
         a._counter = max(nums + [0])
         a.resolver = resolver
         a.refresh(solve=False, notify=False)

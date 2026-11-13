@@ -19,12 +19,15 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import asdict
 from types import SimpleNamespace
 
 from .. import kernel as K
+from .. import links
 from .. import naming as N
 from ..features import Part, PartMap
-from .contract import EngineError, plain
+from .contract import EngineError, SketchOut, plain
+from .encode import connector_out, sketch_out
 from .executor import InProcessEngine
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
@@ -70,6 +73,7 @@ class _StudioView:
         self.hidden_parts = {p["id"] for p in pkg["parts"] if p["hidden"]}
         self.state = SimpleNamespace(parts=PartMap(parts, aliases=self.part_aliases),
                                      vars=dict(pkg.get("vars") or {}), sheet={})
+        self.package = None      # the links.StudioPackage a Document.link_inputs hands out (set by install)
 
 
 class _VariablesView:
@@ -145,6 +149,19 @@ class _WorkerEngine(InProcessEngine):
             p.named = N.NamedShape(shp, names)
         return p
 
+    def _studio_package(self, pkg, parts):
+        """The links.StudioPackage of a studio the parent sent, with the digest LinkResolver.resolve_studio
+        gives the same studio (the parts and sketches carry the hashes the parent computed)."""
+        out = links.StudioPackage(
+            {lp["id"]: links.PublishedPart(id=lp["id"], name=lp["name"], color=tuple(lp["color"]), hidden=lp["hidden"],
+                                     shape=parts[lp["id"]].shape, names=lp["names"], hash=lp["hash"])
+             for lp in pkg["parts"]},
+            {sk["id"]: SketchOut(**sk) for sk in pkg.get("sketches") or ()}, dict(pkg.get("aliases") or {}),
+            connectors={c["id"]: dict(c) for c in pkg.get("connectors") or ()},
+            error=pkg.get("error") or "")
+        out.digest = out.digest_for(None)
+        return out
+
     def install(self, upstream, key):
         """Replace the upstream tabs with the parent's latest. Bumps the generation, so the tab re-reads its
         inputs on its next edit or outputs -- the same staleness rule as in process."""
@@ -152,6 +169,7 @@ class _WorkerEngine(InProcessEngine):
         for tid, pkg in (upstream or {}).items():
             if pkg["kind"] == "studio":
                 views[tid] = _StudioView(pkg, {lp["id"]: self._part(lp) for lp in pkg["parts"]})
+                views[tid].package = self._studio_package(pkg, views[tid].state.parts)
                 used |= {lp["hash"] for lp in pkg["parts"]}
             elif pkg["kind"] == "variables":
                 views[tid] = _VariablesView(pkg)
@@ -213,17 +231,9 @@ class _Worker:
         """The parent's view of this tab: name, path, uid, revision, and the link sources it holds."""
         t = self.engine._get(self.tab)
         doc = t.doc
-        if t.kind == "assembly":
-            sources = [i.get("source") for i in doc.instances]
-        elif t.kind == "drawing":
-            sources = [doc.source]
-        elif t.kind == "studio":
-            sources = [f["params"].get("source") for f in doc.features if f.get("type") == "variable_studio_ref"]
-        else:
-            sources = []
         return {"name": str(doc.name), "path": doc.path, "uid": getattr(doc, "uid", None),
                 "revision": t.revision, "pid": os.getpid(),
-                "sources": plain([s for s in sources if isinstance(s, dict)])}
+                "sources": plain(links.tab_sources(t.kind, doc))}
 
     def upstream(self):
         """This tab's outputs as another tab consumes them: parts without meshes, variables, placements."""
@@ -233,8 +243,12 @@ class _Worker:
         pkg = {"kind": t.kind, "uid": getattr(doc, "uid", None), "name": str(doc.name), "path": doc.path}
         if t.kind == "studio":
             st = doc.state
-            pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(st.vars)),
-                       parts=[lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()])
+            pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(st.vars)), error=links._studio_error(doc),
+                       parts=[lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
+                              if not p.reference],      # I5.3: Context bodies are reference only
+                       sketches=[plain(asdict(sketch_out(fid, (doc.feature(fid) or {}).get("name", fid), res)))
+                                 for fid, res in st.sketches.items()],
+                       connectors=[plain(asdict(connector_out(fid, c))) for fid, c in st.connectors.items()])
         elif t.kind == "variables":
             pkg.update(vars=plain(dict(doc.values()[0])))
         elif t.kind == "assembly":

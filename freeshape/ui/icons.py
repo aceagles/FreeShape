@@ -270,6 +270,15 @@ def draw(name: str, p: QPainter):
         _arrow(p, 14, 18, 26, 6, ORANGE, 1.8)
         p.setPen(_pen(BLUE, 1.4))
         p.drawArc(QRectF(15, 15, 13, 13), 200 * 16, 140 * 16)
+    elif name == "mate_connector":
+        _box(p, 4, 17, 14, 10, 5)
+        p.setPen(_pen(BLUE, 2))
+        p.drawLine(QPointF(14, 14), QPointF(14, 3))
+        p.setPen(_pen(ORANGE, 2))
+        p.drawLine(QPointF(14, 14), QPointF(26, 14))
+        p.setPen(_pen(GREEN, 2))
+        p.drawLine(QPointF(14, 14), QPointF(8, 20))
+        _dot(p, 14, 14, ORANGE, 3)
     elif name == "sk_fillet":
         p.setPen(_pen(INK, 2))
         path = QPainterPath()
@@ -316,6 +325,18 @@ def draw(name: str, p: QPainter):
         p.drawArc(QRectF(3, 5, 10, 22), 100 * 16, 160 * 16)
         p.drawArc(QRectF(19, 5, 10, 22), -80 * 16, 160 * 16)
         _text(p, "x", BLUE, 15, True, QRectF(6, 4, 20, 22))
+    elif name == "variable_studio_ref":
+        p.setPen(_pen(INK, 1.8))
+        p.drawArc(QRectF(3, 5, 10, 22), 100 * 16, 160 * 16)
+        p.drawArc(QRectF(19, 5, 10, 22), -80 * 16, 160 * 16)
+        _arrow(p, 9, 22, 23, 10, BLUE, 1.6)
+    elif name == "derived":
+        # a source block with an arrow into a dashed (linked) copy
+        _box(p, 3, 5, 12, 12, 5)
+        p.setPen(_pen(ORANGE, 1.6, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(17, 15, 11, 11))
+        _arrow(p, 10, 20, 15, 20, ORANGE, 2)
     elif name == "measure":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(QColor("#f5d77a"))

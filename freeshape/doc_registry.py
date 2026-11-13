@@ -14,8 +14,12 @@ import json
 import os
 import sys
 
+from . import gitstore as G
+from . import kernel as K
+
 REGISTRY_NAME = "documents.json"
 VERSION = 1
+MANIFEST_NAME = "document.json"       # the folder manifest (same name as doc_folder.MANIFEST_NAME)
 
 
 def data_dir():
@@ -129,3 +133,71 @@ class DocRegistry:
         else:
             self.documents.pop(doc_id, None)
         self._save()
+
+    # ------------------------------------------------------------------ listing
+    def _trusted_record(self, doc_id):
+        """The trusted record `trusted_path` would pick, but a missing folder still counts."""
+        rows = [r for r in self.records(doc_id) if r.get("created") or r.get("clone") == r["path"]]
+        return ([r for r in rows if r.get("created")] or rows or [None])[-1]
+
+    def list_documents(self):
+        """Every trusted Document: [{id, name, path, missing}], sorted by name then id. Only Documents the app
+        registered as its own (created or cloned) are listed; a folder the app never registered is not. `name` is
+        the manifest's name (the folder name if the manifest is unreadable). A Document whose folder is gone has
+        `missing: True`."""
+        self._load()
+        out = []
+        for doc_id in list(self.documents):
+            rec = self._trusted_record(doc_id)
+            if rec is None:
+                continue
+            path = rec["path"]
+            missing = not os.path.isdir(path)
+            name = os.path.basename(path.rstrip(os.sep))
+            if not missing:
+                try:
+                    name = _manifest_workspace(path).get("name") or name
+                except (OSError, ValueError, AttributeError):
+                    pass
+            out.append({"id": doc_id, "name": name, "path": path, "missing": missing})
+        return sorted(out, key=lambda d: (d["name"].lower(), d["id"]))
+
+    def describe(self, doc_id, version=None):
+        """The tabs of a trusted Document and its Versions: {id, name, path, version, tabs: [{id, kind, name}],
+        versions: [names, newest first]}. `version=None` reads the current Workspace's manifest from the folder;
+        a Version name reads that tag's manifest through git, without a checkout. Raises DocumentMissing if the id
+        is not a trusted Document or its folder is gone, and KernelError for an unknown Version."""
+        rec = self._trusted_record(doc_id)
+        if rec is None:
+            raise DocumentMissing(f"No trusted Document {doc_id!r} in the registry")
+        path = rec["path"]
+        if not os.path.isdir(path):
+            raise DocumentMissing(f"Document {doc_id!r} is registered but its folder is missing: {path}")
+        tags = G.list_tags(path) if G.is_repo(path) else []
+        if version is None:
+            data = _manifest_workspace(path)
+        else:
+            try:
+                commit = G.resolve_version(path, version)
+                data = json.loads(G.read_file_at(path, commit, MANIFEST_NAME).decode("utf-8"))
+            except ValueError as e:
+                raise K.KernelError(f"Version {version!r} of Document {doc_id!r} has an unreadable manifest: {e}")
+        tabs = [{"id": t.get("id"), "kind": t.get("kind"), "name": t.get("name")}
+                for t in data.get("tabs", []) if isinstance(t, dict)]
+        return {"id": doc_id, "name": data.get("name"), "path": path, "version": version, "tabs": tabs,
+                "versions": [t["name"] for t in reversed(tags)]}
+
+
+class DocumentMissing(K.KernelError):
+    """A Document the registry lists has no folder on disk (or is not trusted)."""
+
+
+def _manifest_workspace(folder):
+    p = os.path.join(folder, MANIFEST_NAME)
+    if os.path.islink(p):
+        raise K.KernelError(f"{MANIFEST_NAME}: refusing to open a symlink")
+    with open(p) as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError("manifest is not an object")
+    return data

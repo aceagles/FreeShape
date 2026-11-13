@@ -434,6 +434,11 @@ def snap_transform(m, FA, FB):
 
 # =========================================================================== the document
 
+def is_sketch_source(source):
+    """True when an instance source is a Sketch instance's: {"kind": "sketch", "uid", "sketch"} (I1.2)."""
+    return isinstance(source, dict) and source.get("kind") == "sketch"
+
+
 def capture_context(asm, iid):
     """Plain data for editing instance `iid` in context (ADR 0004): every other instance with a part, as it
     stands now. Each neighbour has its id, name, content hash (sha256 of its BREP bytes), BREP bytes,
@@ -480,6 +485,7 @@ class AssemblyDoc:
         # callable(source) -> [{"id", "name", "frame"}] or None: the mate connectors the Part Studio publishes for
         # the part a source links to (links.resolve_connectors). Left None, it is found on the resolver likewise.
         self.connector_resolver = None
+        self.studio_resolver = None      # callable(src) -> links.StudioPackage; default: the resolver's resolve_studio
         self._recovered = set()                  # (mate id, "a"/"b") found by signature, not by name; in memory only
         self.parts: dict[str, object] = {}       # instance id -> Part in its own coordinates
         self._fallback: dict[str, object] = {}   # instance id -> shape stored in the file
@@ -589,7 +595,7 @@ class AssemblyDoc:
     def _named(self, iid):
         """The element map of instance `iid`'s part, or None when it has none (a STEP part, a saved copy)."""
         inst, part = self.instance(iid), self.parts.get(iid)
-        if inst is None or part is None or inst["source"].get("kind") == "step":
+        if inst is None or part is None or inst["source"].get("kind") == "step" or is_sketch_source(inst["source"]):
             return None
         fn = self.named_resolver or getattr(getattr(self.resolver, "__self__", None), "resolve_named", None)
         if fn is None:
@@ -599,6 +605,26 @@ class AssemblyDoc:
         except Exception:
             return None
         return nm if nm is not None and nm.shape is not None and nm.shape.IsSame(part.shape) else None
+
+    def is_sketch_instance(self, iid):
+        """True when instance `iid` is a Sketch instance (its source is a studio sketch), not a part instance."""
+        inst = self.instance(iid)
+        return inst is not None and is_sketch_source(inst["source"])
+
+    def sketch_out(self, iid):
+        """The published engine.contract.SketchOut (plane, solved sketch, hash) of Sketch instance `iid`, read
+        through the resolver's resolve_studio, or None for any other instance, a missing instance, or a studio
+        or sketch that can't be read now. Coordinates are the studio's; apply T(iid) for the world."""
+        if not self.is_sketch_instance(iid):
+            return None
+        src = self.instance(iid)["source"]
+        fn = self.studio_resolver or getattr(getattr(self.resolver, "__self__", None), "resolve_studio", None)
+        if fn is None:
+            return None
+        try:
+            return fn(src).sketches.get(str(src.get("sketch")))
+        except Exception:
+            return None
 
     def published_connectors(self, iid):
         """The mate connectors instance `iid` offers: what its Part Studio publishes plus the explicit origin
@@ -776,6 +802,8 @@ class AssemblyDoc:
     def _source_key(self, src):
         if src.get("kind") == "step":
             return ("step", src.get("blob"), src.get("index", 0))
+        if is_sketch_source(src):
+            return ("sketch", src.get("tab") or src.get("uid"), src.get("sketch"))
         return ("studio", src.get("tab") or src.get("uid"), src.get("part"))
 
     def instance_color(self, inst):
@@ -1318,7 +1346,7 @@ class AssemblyDoc:
     # ------------------------------------------------------------------ analysis
     def interferences(self, progress=None):
         """Pairs of visible instances whose solids overlap: [(iid_a, iid_b, volume, overlap shape)]."""
-        vis = self.visible_instances()
+        vis = [i for i in self.visible_instances() if not is_sketch_source(i["source"])]
         shapes = {i["id"]: self.world_shape(i["id"]) for i in vis}
         boxes = {k: K.bbox(s) for k, s in shapes.items()}
         out = []
@@ -1344,6 +1372,8 @@ class AssemblyDoc:
         rows = {}
         for inst in self.instances:
             src = inst["source"]
+            if is_sketch_source(src):
+                continue                                    # a Sketch instance is not a part
             key = self._source_key(src)
             if src.get("kind") == "step":
                 where = src.get("filename", "STEP")
@@ -1363,7 +1393,7 @@ class AssemblyDoc:
 
     def export(self, path, ids=None):
         insts = [i for i in self.instances if i["id"] in self.parts and (ids is None or i["id"] in ids)
-                 and not i.get("hidden")]
+                 and not i.get("hidden") and not is_sketch_source(i["source"])]
         if not insts:
             raise K.KernelError("Nothing to export")
         if str(path).lower().endswith(".stl"):

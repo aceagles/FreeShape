@@ -280,6 +280,12 @@ class InsertPanel(QFrame):
                 it = QTreeWidgetItem(["(no parts yet)"])
                 it.setDisabled(True)
                 top.addChild(it)
+            for sid in doc.state.sketches:                   # the studio's sketches, under its parts
+                it = QTreeWidgetItem([str((doc.feature(sid) or {}).get("name", sid))])
+                it.setIcon(0, icon("sketch", 16))
+                it.setData(0, ROLE_KIND, "sketch")
+                it.setData(0, ROLE_ID, (doc.uid, sid))
+                top.addChild(it)
             self.tree.addTopLevelItem(top)
             top.setExpanded(True)
         if self.tree.topLevelItemCount() == 0:
@@ -294,6 +300,9 @@ class InsertPanel(QFrame):
         if kind == "part":
             uid, pid = it.data(0, ROLE_ID)
             self.ctl.insert_studio_parts(uid, [pid])
+        elif kind == "sketch":
+            uid, sid = it.data(0, ROLE_ID)
+            self.ctl.insert_studio_sketch(uid, sid)
         elif kind == "studio":
             self.ctl.insert_studio_parts(it.data(0, ROLE_ID), None)
         self.msg.setText(f"Inserted {it.text(0)}")
@@ -916,14 +925,39 @@ class AssemblyController:
     def show_scene(self):
         doc = self.doc
         parts = []
+        sketches = []
         for inst in doc.visible_instances():
-            p = doc.parts[inst["id"]]
             T = np.array(inst["T"], float)
+            if doc.is_sketch_instance(inst["id"]):
+                # edges and points only, no faces: drawn by the viewport's sketch path, not as a part
+                sr = self._sketch_instance_result(inst["id"], T)
+                if sr is not None:
+                    sketches.append((inst["id"], sr))
+                continue
+            p = doc.parts[inst["id"]]
             fc = p.face_colors if not inst.get("color") else None
             parts.append((inst["id"], K.located(p.shape, T), doc.instance_color(inst), fc, T, p.shape))
-        self.vp.set_scene(parts, [], [])
+        self.vp.set_scene(parts, [], sketches)
         self.vp.ghosts = self._interf or []
         self.update_triads()
+
+    def _sketch_instance_result(self, iid, T):
+        """A features.SketchResult (no regions) for Sketch instance `iid`, its plane moved by the instance's
+        transform `T` so the viewport draws it in the assembly's coordinates; None if the sketch can't be read."""
+        from .. import features as F
+        from ..sketch import Sketch
+        doc = self.doc
+        if doc.studio_resolver is None and not hasattr(getattr(doc.resolver, "__self__", None), "resolve_studio"):
+            # a loose Assembly resolves through the window, which can't publish a studio: give it the LinkResolver
+            doc.studio_resolver = self.w._resolver_for(doc).resolve_studio
+        out = doc.sketch_out(iid)
+        if out is None:
+            return None
+        R, t = T[:3, :3], T[:3, 3]
+        pl = out.plane
+        plane = K.Plane(R @ np.asarray(pl["origin"], float) + t, R @ np.asarray(pl["xdir"], float),
+                        R @ np.asarray(pl["normal"], float))
+        return F.SketchResult(plane, Sketch.from_dict(out.sketch), [], [])
 
     def update_triads(self):
         doc = self.doc
@@ -1024,6 +1058,26 @@ class AssemblyController:
             pass
         self.w.status.showMessage(f"Inserted {len(first_new)} instance(s)", 4000)
         QTimer.singleShot(0, lambda: self.vp.fit())
+
+    def insert_studio_sketch(self, uid, sketch_id):
+        """Insert one Sketch instance of sketch `sketch_id` of the Part Studio `uid` (one undo checkpoint).
+        Returns the new instance id, or None when the studio or sketch is not there."""
+        studio = self.w.studio_by_uid(uid)
+        if studio is None or sketch_id not in studio.state.sketches:
+            return None
+        src = self.w.studio_link(studio, None)
+        # inside a Document the source names the tab (like a part's); loose studios carry uid + path
+        src = {**{k: v for k, v in src.items() if k != "part"}, "kind": "sketch", "sketch": sketch_id}
+        doc = self.doc
+        first = not doc.instances
+        try:
+            iid = doc.insert(src, T=np.eye(4) if first else None)
+        except K.KernelError as e:
+            QMessageBox.warning(self.w, "Insert", str(e))
+            return None
+        self.w.status.showMessage("Inserted 1 sketch instance", 4000)
+        QTimer.singleShot(0, lambda: self.vp.fit())
+        return iid
 
     def insert_document_sources(self, sources):
         """Insert one instance per cross-Document source (a part pinned to a Version of another Document)."""
@@ -1357,7 +1411,11 @@ class AssemblyController:
             if ids != [iid]:
                 self.vp.set_selection([Pick("part", (iid,))])    # Edit in context acts on the selection
             m.addAction(self.act_edit_in_context)
-        m.addAction("Mass properties", lambda: self.w._mass_props_shape(inst["name"], doc.world_shape(iid)))
+        a = m.addAction("Mass properties", lambda: self.w._mass_props_shape(inst["name"], doc.world_shape(iid)))
+        a.setObjectName("mass_properties")
+        if doc.is_sketch_instance(iid):
+            a.setEnabled(False)                              # a sketch has no mass
+            a.setToolTip("A sketch instance has no mass")
         dof = doc.instance_dof(iid)
         a = m.addAction(f"Degrees of freedom: {dof}" + (" (fixed)" if inst.get("fixed") else ""))
         a.setEnabled(False)

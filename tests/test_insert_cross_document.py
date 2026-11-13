@@ -19,7 +19,7 @@ os.environ["FREESHAPE_NO_HOME"] = "1"
 pytest.importorskip("PySide6.QtWidgets")
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
-from PySide6.QtCore import QSettings  # noqa: E402
+from PySide6.QtCore import QSettings, Qt  # noqa: E402
 from PySide6.QtGui import QAction  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 
@@ -168,5 +168,6 @@ def test_insert_panel_still_lists_open_part_studios(make_window, tmp_path):
     tops = [panel.tree.topLevelItem(i) for i in range(panel.tree.topLevelItemCount())]
     assert [t.text(0) for t in tops] == [d.name for d in w.studio_docs()] and tops
     mine = tops[0]
-    assert [mine.child(i).text(0) for i in range(mine.childCount())] == \
+    # the studio's sketches (I1.7) sit among its children too: compare the part rows
+    assert [mine.child(i).text(0) for i in range(mine.childCount()) if mine.child(i).data(0, Qt.UserRole) == "part"] == \
         [p.name for p in w.studio_docs()[0].state.parts.values()]

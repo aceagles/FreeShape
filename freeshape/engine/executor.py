@@ -22,7 +22,7 @@ from ..variable_studio import VariableStudioDoc
 from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
                        DrawingOutputs, Engine, EngineError, InstanceOut, MateOut, StudioOutputs, VariablesOutputs,
                        plain)
-from .encode import Encoder, sketch_out
+from .encode import Encoder, connector_out, sketch_out
 from .inputs import CrossTabInputs
 from .linkgraph import live_package, package_digest, propagate
 from .. import links
@@ -193,9 +193,10 @@ class StudioTab(_Tab):
         for fid, res in st.sketches.items():
             f = doc.feature(fid)
             sketches.append(sketch_out(fid, f["name"] if f else fid, res))
+        connectors = [connector_out(fid, c) for fid, c in st.connectors.items()]
         return StudioOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
                              errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts,
-                             sketches=sketches, variables=plain(dict(st.vars)))
+                             sketches=sketches, connectors=connectors, variables=plain(dict(st.vars)))
 
 
 class VariablesTab(_Tab):

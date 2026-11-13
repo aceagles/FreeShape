@@ -3,8 +3,11 @@ the frame with assembly.connector_frame + apply_x_ref and stores it in ModelStat
 import copy
 
 import numpy as np
+import pytest
 
 from conftest import add, only_part, try_add, shape_fingerprint
+from freeshape.engine import InProcessEngine, ProcessEngine
+from freeshape.engine.linkgraph import lean_package, live_package, package_digest
 from freeshape import assembly as A
 from freeshape import features as F
 from freeshape import kernel as K
@@ -132,3 +135,67 @@ def test_studio_without_connectors_builds_same_parts():
     assert len(with_c.state.connectors) == 2
     assert shape_fingerprint(only_part(plain).shape) == shape_fingerprint(only_part(with_c).shape)
     assert [p.id for p in plain.state.parts.values()] == [p.id for p in with_c.state.parts.values()]
+
+
+# --- I3.2: a Part Studio publishes its mate connectors ---------------------------------------------------------
+
+ENGINES = {"inprocess": InProcessEngine, "process": ProcessEngine}
+
+
+@pytest.fixture(params=sorted(ENGINES))
+def engine(request):
+    e = ENGINES[request.param]()
+    yield e
+    e.close()
+
+
+def _published_studio(tmp_path):
+    doc, ids = plate_studio()
+    f = add(doc, "mate_connector", **connector_params(doc))
+    path = str(tmp_path / "studio.fshape")
+    doc.save(path)
+    return doc, ids, f["id"], path
+
+
+def _digest(engine, tab):
+    if isinstance(engine, InProcessEngine):
+        pkg = live_package("studio", engine._get(tab).doc, engine.encoder)
+    else:
+        pkg = lean_package(engine._lean(engine._tabs[tab], ())[1])
+    return package_digest("studio", pkg, ())
+
+
+def test_studio_publishes_its_connector(engine, tmp_path):
+    doc, ids, cid, path = _published_studio(tmp_path)
+    tab = engine.open_tab(path)
+    out = engine.outputs(tab)
+    assert [c.id for c in out.connectors] == [cid]
+    c, want = out.connectors[0], doc.state.connectors[cid]
+    assert c.name == "C1" and c.part == want["part"] and len(c.hash) == 64
+    for k in ("o", "z", "x"):
+        assert np.allclose(c.frame[k], want["frame"][k], atol=1e-9)
+
+
+def test_studio_without_connectors_publishes_none(engine, tmp_path):
+    doc, ids = plate_studio()
+    path = str(tmp_path / "plain.fshape")
+    doc.save(path)
+    tab = engine.open_tab(path)
+    assert engine.outputs(tab).connectors == []
+
+
+def test_moving_the_connector_changes_the_digest_but_a_sketch_rename_does_not(engine, tmp_path):
+    doc, ids, cid, path = _published_studio(tmp_path)
+    tab = engine.open_tab(path)
+    before = _digest(engine, tab)
+    f = copy.deepcopy(doc.feature(ids["sketch"]))
+    f["name"] = "renamed"
+    engine.submit_edit(tab, {"op": "replace_feature", "feature": f})
+    engine.outputs(tab)
+    assert _digest(engine, tab) == before
+    f = copy.deepcopy(doc.feature(cid))
+    f["params"]["flip"] = True                      # reverses Z: the published frame moves
+    engine.submit_edit(tab, {"op": "replace_feature", "feature": f})
+    out = engine.outputs(tab)
+    assert np.allclose(out.connectors[0].frame["z"], [0, 0, -1], atol=1e-9)
+    assert _digest(engine, tab) != before

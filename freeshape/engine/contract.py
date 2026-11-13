@@ -144,6 +144,16 @@ class SketchOut:
 
 
 @dataclass
+class MateConnectorOut:
+    """A Mate connector a Part Studio publishes (a mate_connector feature, I3.2)."""
+    id: str                  # the mate_connector feature's id
+    name: str
+    part: str                # id of the part that owns it
+    frame: dict              # {"o", "z", "x"}: 3-lists, in the studio's coordinates
+    hash: str = ""           # sha256 hex over name, part and frame: changes when the connector moves
+
+
+@dataclass
 class ConnectorOut:
     """One side of a mate: a face or edge of an instance's part, and the frame on it."""
     instance: str
@@ -190,6 +200,7 @@ class TabOutputs:
 class StudioOutputs(TabOutputs):
     parts: list = field(default_factory=list)          # [PartOut], in the studio's part order
     sketches: list = field(default_factory=list)       # [SketchOut]
+    connectors: list = field(default_factory=list)     # [MateConnectorOut], in feature order
     variables: dict = field(default_factory=dict)      # name -> number
 
 

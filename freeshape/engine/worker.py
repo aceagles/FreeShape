@@ -27,7 +27,7 @@ from .. import links
 from .. import naming as N
 from ..features import Part, PartMap
 from .contract import EngineError, plain
-from .encode import sketch_out
+from .encode import connector_out, sketch_out
 from .executor import InProcessEngine
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
@@ -231,7 +231,8 @@ class _Worker:
             pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(st.vars)),
                        parts=[lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()],
                        sketches=[plain(asdict(sketch_out(fid, (doc.feature(fid) or {}).get("name", fid), res)))
-                                 for fid, res in st.sketches.items()])
+                                 for fid, res in st.sketches.items()],
+                       connectors=[plain(asdict(connector_out(fid, c))) for fid, c in st.connectors.items()])
         elif t.kind == "variables":
             pkg.update(vars=plain(dict(doc.values()[0])))
         elif t.kind == "assembly":

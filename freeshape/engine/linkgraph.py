@@ -18,7 +18,7 @@ import json
 
 from .. import links
 from .contract import LinkCycleError, TabErrored
-from .encode import sketch_out
+from .encode import connector_out, sketch_out
 
 
 def norm_key(part):
@@ -35,7 +35,8 @@ def live_package(kind, doc, enc):
     if kind == "studio":
         return {"parts": {str(p.id): enc.brep(p.shape)[1] for p in doc.state.parts.values()},
                 "hidden": sorted(map(str, doc.hidden_parts)), "aliases": dict(getattr(doc, "part_aliases", {})),
-                "sketches": {str(fid): sketch_out(fid, "", res).hash for fid, res in doc.state.sketches.items()}}
+                "sketches": {str(fid): sketch_out(fid, "", res).hash for fid, res in doc.state.sketches.items()},
+                "connectors": {str(fid): connector_out(fid, c).hash for fid, c in doc.state.connectors.items()}}
     if kind == "variables":
         return {"vars": dict(doc.values()[0])}
     if kind == "assembly":
@@ -55,7 +56,8 @@ def lean_package(pkg):
         return {"parts": {str(p["id"]): p["hash"] for p in pkg["parts"]},
                 "hidden": sorted(str(p["id"]) for p in pkg["parts"] if p["hidden"]),
                 "aliases": dict(pkg.get("aliases") or {}),
-                "sketches": {str(s["id"]): s["hash"] for s in pkg.get("sketches") or []}}
+                "sketches": {str(s["id"]): s["hash"] for s in pkg.get("sketches") or []},
+                "connectors": {str(c["id"]): c["hash"] for c in pkg.get("connectors") or []}}
     if kind == "variables":
         return {"vars": dict(pkg["vars"])}
     if kind == "assembly":
@@ -73,6 +75,8 @@ def package_digest(kind, view, keys=()):
             body = [[pid, h, pid in view["hidden"]] for pid, h in sorted(parts.items())]
             if view.get("sketches"):     # a consumer of the whole studio also sees its sketches
                 body = [body, sorted(view["sketches"].items())]
+            if view.get("connectors"):   # ... and its mate connectors
+                body = [body, ["connectors", sorted(view["connectors"].items())]]
         else:
             body = [[k, parts.get(aliases.get(k, k))] for k in sorted(keys)]
     else:

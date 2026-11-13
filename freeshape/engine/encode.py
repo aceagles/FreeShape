@@ -26,7 +26,7 @@ from OCP.BRepTools import BRepTools
 from OCP.TopTools import TopTools_FormatVersion
 
 from .. import kernel as K
-from .contract import MeshOut, PartOut, SketchOut, plain
+from .contract import MateConnectorOut, MeshOut, PartOut, SketchOut, plain
 
 _BREP_VERSION = TopTools_FormatVersion.TopTools_FormatVersion_VERSION_1
 _KIND_OF_LETTER = {"F": "face", "E": "edge", "V": "vertex"}
@@ -144,3 +144,12 @@ def sketch_out(fid, name, result) -> SketchOut:
     digest = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
     return SketchOut(id=str(fid), name=str(name), plane=plane, sketch=plain(sk), regions=regions,
                      names=names, region_names=region_names, hash=digest)
+
+
+def connector_out(fid, entry) -> MateConnectorOut:
+    """A studio's mate_connector (ModelState.connectors[fid]) as published output."""
+    fr = entry["frame"]
+    frame = {k: [float(v) for v in fr[k]] for k in ("o", "z", "x")}
+    body = {"name": str(entry["name"]), "part": str(entry["part"]), "frame": frame}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+    return MateConnectorOut(id=str(fid), name=body["name"], part=body["part"], frame=frame, hash=digest)

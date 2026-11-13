@@ -1395,7 +1395,13 @@ class AssemblyDoc:
         out = []
         ids = [i["id"] for i in vis]
         pairs = [(a, b) for k, a in enumerate(ids) for b in ids[k + 1:]]
+        # a Standard part overlaps what it is fastened to by design (a screw in a tap-drill hole)
+        std = {i["id"] for i in self.instances if i["source"].get("kind") == "standard"}
+        joined = {frozenset((m["a"]["inst"], m["b"]["inst"])) for m in self.mates
+                  if m.get("type") == "fastened" and not m.get("suppressed") and m.get("a") and m.get("b")}
         for n, (a, b) in enumerate(pairs):
+            if (a in std or b in std) and frozenset((a, b)) in joined:
+                continue
             if progress:
                 progress(n, len(pairs))
             (la, ha), (lb, hb) = boxes[a], boxes[b]
@@ -1416,8 +1422,15 @@ class AssemblyDoc:
         for inst in self.instances:
             src = inst["source"]
             key = self._source_key(src)
+            if src.get("kind") == "standard":
+                # model_thread only changes the geometry detail, so it does not split a BOM row
+                key = ("standard", src.get("type"), json.dumps(
+                    {k: v for k, v in (src.get("params") or {}).items() if k != "model_thread"},
+                    sort_keys=True, default=str))
             if src.get("kind") == "step":
                 where = src.get("filename", "STEP")
+            elif src.get("kind") == "standard":
+                where = "Standard part"
             else:
                 where = src.get("studio_name") or os.path.basename(src.get("path") or "") or "Part Studio"
             p = self.parts.get(inst["id"])

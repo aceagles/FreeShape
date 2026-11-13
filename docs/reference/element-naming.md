@@ -286,6 +286,20 @@ name from a padded sketch looks like
 at `/opt/freecad-src/src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py:2998` —
 read right to left it is a face named from its edges, named from a vertex of the sketch.
 
+**FreeShape: sketch regions.** A FreeShape sketch hands the solid features *regions* — the bounded
+faces left when its curves split the sketch plane — rather than wires, so the sketch root is named
+in two steps (`naming.name_sketch`). Each curve's edge is seeded with the sketch entity id as its
+label, `<entity id>;SKT;:H<sketch id>,E`, and its vertices as `<entity id>v<n>`, the counterpart of
+FreeCAD's `g<geometry id>` and `g<id>v<n>`. The split is then named through its own history (the
+Splitter's `BRepTools_History`): an edge the split leaves alone keeps its seed name, one it rebuilds
+gets `;:M`, and an edge cut into pieces gives `;:M`, `;:M2`, … as in "An edge is split" below.
+Region faces have no history entry, so the forward pass names each from the edges of its outer
+wire, `;:L` (rule 4 below): a region is identified by the entities that bound it, and a hole inside
+it does not rename it. Only the regions are named; the unbounded pieces of the plane are outside
+the result and their history entries are skipped (section 3). A region reference stores this name
+and resolves by it alone. A reference with no name is a legacy one: it is matched by its geometric
+signature and the consuming feature is marked recovered.
+
 **How a pad's elements get their names.** The pad feeds the sketch face to `BRepPrimAPI_MakePrism`
 and names the result through `MapperMaker`
 (`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:4214`). The three passes of section 2

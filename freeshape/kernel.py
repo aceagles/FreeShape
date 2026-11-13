@@ -514,23 +514,28 @@ def edge_line(edge):
 
 # --------------------------------------------------------------------------- sketch → regions
 
-def make_sketch_edges(plane: Plane, curves) -> list:
-    """curves: list of dicts {'type': 'line'|'circle'|'arc', ...} in sketch (u, v) coordinates."""
+def make_sketch_edges(plane: Plane, curves, with_ids=False) -> list:
+    """curves: list of dicts {'type': 'line'|'circle'|'arc', ...} in sketch (u, v) coordinates.
+
+    with_ids=True returns (curve id, edge) pairs instead, the id being the curve's "id" (the sketch
+    entity id, see Sketch.curves) or None. A degenerate curve is skipped as a whole, so it never
+    shifts the pairing of the curves after it."""
     out = []
     ax3 = plane.gp_ax3()
     for c in curves:
+        edge = None
         try:
             if c["type"] == "line":
                 a = plane.to_world(*c["p1"])
                 b = plane.to_world(*c["p2"])
                 if np.linalg.norm(a - b) < 1e-7:
                     continue
-                out.append(BRepBuilderAPI_MakeEdge(_pnt(a), _pnt(b)).Edge())
+                edge = BRepBuilderAPI_MakeEdge(_pnt(a), _pnt(b)).Edge()
             elif c["type"] == "circle":
                 if c["r"] < 1e-7:
                     continue
                 ax2 = gp_Ax2(_pnt(plane.to_world(*c["c"])), ax3.Direction(), ax3.XDirection())
-                out.append(BRepBuilderAPI_MakeEdge(gp_Circ(ax2, float(c["r"]))).Edge())
+                edge = BRepBuilderAPI_MakeEdge(gp_Circ(ax2, float(c["r"]))).Edge()
             elif c["type"] == "arc":
                 p1 = plane.to_world(*c["p1"])
                 pm = plane.to_world(*c["pm"])
@@ -538,20 +543,34 @@ def make_sketch_edges(plane: Plane, curves) -> list:
                 if min(np.linalg.norm(p1 - pm), np.linalg.norm(p2 - pm), np.linalg.norm(p1 - p2)) < 1e-7:
                     continue
                 arc = GC_MakeArcOfCircle(_pnt(p1), _pnt(pm), _pnt(p2)).Value()
-                out.append(BRepBuilderAPI_MakeEdge(arc).Edge())
+                edge = BRepBuilderAPI_MakeEdge(arc).Edge()
         except Exception:
             continue
+        if edge is not None:
+            out.append((c.get("id"), edge) if with_ids else edge)
     return out
 
 
-def sketch_regions(plane: Plane, curves) -> list:
+def sketch_regions(plane: Plane, curves, with_history=False) -> list:
     """Split the sketch plane by all sketch curves and return every bounded region as a face.
 
     This mirrors Onshape: overlapping profiles give separate, individually selectable regions.
+
+    with_history=True returns (regions, history, edges): the Splitter's BRepTools_History and the
+    (curve id, edge) pairs it was given, which is what the history starts at. naming.name_sketch
+    names the regions from those (docs/reference/element-naming.md § 4).
     """
-    edges_ = make_sketch_edges(plane, curves)
+    pairs = make_sketch_edges(plane, curves, with_ids=True)
+    edges_ = [e for _, e in pairs]
+
+    def done(regions, sp=None, big=None):
+        if not with_history:
+            return regions
+        hist = _maker_history(sp, [big] + edges_) if sp is not None else BRepTools_History()
+        return regions, hist, pairs
+
     if not edges_:
-        return []
+        return done([])
     lo, hi = bbox(compound(edges_))
     pts = [plane.to_local(p) for p in (lo, hi, [lo[0], hi[1], lo[2]], [hi[0], lo[1], hi[2]],
                                        [lo[0], lo[1], hi[2]], [hi[0], hi[1], lo[2]])]
@@ -566,7 +585,7 @@ def sketch_regions(plane: Plane, curves) -> list:
     sp.SetFuzzyValue(1e-6)
     sp.Build()
     if not sp.IsDone():
-        return []
+        return done([])
     regions = []
     tol = 1e-4 * margin
     for f in faces(sp.Shape()):
@@ -586,7 +605,7 @@ def sketch_regions(plane: Plane, curves) -> list:
             if touches:
                 continue
         regions.append(f)
-    return regions
+    return done(regions, sp, big)
 
 
 def _vertices_np(shape):

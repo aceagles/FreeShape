@@ -186,21 +186,22 @@ class Sketch:
         return np.zeros((0, 2))
 
     def curves(self) -> list[dict]:
-        """Non-construction geometry in the format kernel.sketch_regions expects."""
+        """Non-construction geometry in the format kernel.sketch_regions expects. Each curve carries
+        its entity id as "id", which is what names the regions and edges built from it."""
         out = []
         for eid, e in self.entities.items():
             if e.get("construction"):
                 continue
             if e["type"] == "line":
-                out.append({"type": "line", "p1": self.points[e["p1"]], "p2": self.points[e["p2"]]})
+                out.append({"type": "line", "id": eid, "p1": self.points[e["p1"]], "p2": self.points[e["p2"]]})
             elif e["type"] == "circle":
-                out.append({"type": "circle", "c": self.points[e["c"]], "r": e["r"]})
+                out.append({"type": "circle", "id": eid, "c": self.points[e["c"]], "r": e["r"]})
             elif e["type"] == "arc":
                 c = self.P(e["c"])
                 r = self.radius(eid)
                 a1, a2 = self.arc_angles(eid)
                 am = (a1 + a2) / 2
-                out.append({"type": "arc", "p1": self.points[e["p1"]],
+                out.append({"type": "arc", "id": eid, "p1": self.points[e["p1"]],
                             "pm": (c + r * np.array([math.cos(am), math.sin(am)])).tolist(),
                             "p2": (c + r * np.array([math.cos(a2), math.sin(a2)])).tolist()})
         return out

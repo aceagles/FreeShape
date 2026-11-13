@@ -488,3 +488,34 @@ def name_result(shape, history, sources, tag, op=OP_MAKER) -> NamedShape:
         raise NamingError("nothing to name: the operation returned no shape")
     sources = [s for s in sources if s is not None]
     return _Naming(shape, history, sources, tag, op).run()
+
+
+# --------------------------------------------------------------------------- sketch roots (§ 4)
+
+def name_sketch(regions, history, edges, tag) -> NamedShape:
+    """The names of a sketch's regions, their edges and their vertices.
+
+    `regions`, `history` and `edges` are what `kernel.sketch_regions(..., with_history=True)` returns:
+    the region faces, the Splitter's history and the (sketch entity id, edge) pairs it split the
+    plane with. `tag` is the sketch feature's id.
+
+    FreeCAD names a sketch's geometry by the sketch's own geometry ids before any solid exists (§ 4),
+    so each input edge is seeded as `<entity id>;SKT;:H<tag>` and its vertices as
+    `<entity id>v<n>;SKT;...`. The Splitter's history then carries those names onto the region
+    edges: an edge the split left alone keeps its name, one it rebuilt gets `;:M`, and an edge cut
+    in pieces gives `;:M`, `;:M2`, ... in the order OCCT reports them (§ 4 "An edge is split").
+    Region faces have no history of their own, so the forward pass names each one from the edges of
+    its outer wire, `;:L` -- the rule FreeCAD applies to a pad's faces, and why a hole in a region
+    does not rename it. Only the regions are named; the unbounded pieces of the split plane are not
+    part of the result, so their history entries are skipped (§ 3).
+    """
+    seeds = []
+    for i, (eid, edge) in enumerate(edges, 1):
+        label = str(eid) if eid else f"n{i}"         # no entity id: only a caller outside a sketch
+        el = _Elements(edge)
+        labels = {(EDGE, 1): label}
+        labels.update({(VERTEX, k): f"{label}v{k}" for _, k in el.keys(VERTEX)})
+        seeds.append(seed(edge, tag, OP_SKETCH, labels))
+    if not regions:
+        return NamedShape(None, {})
+    return name_result(K.compound(regions), history, seeds, tag, op=None)

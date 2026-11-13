@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import kernel as K
+from . import naming as N
 from .sketch import Sketch
 from .expr import parse_number, var_names
 
@@ -198,6 +199,17 @@ class SketchResult:
     regions: list            # TopoDS_Face list
     region_info: list        # signature per region (see region_signature)
     bb: tuple = None         # (lo, hi) of all regions, for position-relative matching
+    # Element names built from the sketch entity ids (naming.name_sketch): `named` names every region
+    # face, edge and vertex, `region_names[i]` is the name of regions[i] (None if it has none).
+    named: object = None
+    region_names: list = field(default_factory=list)
+
+    def region_index(self, face):
+        """The position of a region face in `regions`, or None."""
+        for i, r in enumerate(self.regions):
+            if r.IsSame(face):
+                return i
+        return None
 
 
 @dataclass
@@ -213,10 +225,14 @@ class ModelState:
     # Never pruned, so it keeps every id ever assigned across a whole replay -- used to build the alias
     # table a v1 studio is migrated with, and to rekey the part ids baked into tests/golden/.
     old_ids: dict = field(default_factory=dict)
+    # ids of the features that found a reference only through the geometric signature matcher, because
+    # the reference carries no element name (a legacy reference). Their result is a best guess.
+    recovered: set = field(default_factory=set)
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
-                          dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids))
+                          dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
+                          set(self.recovered))
 
     def new_part(self, shape, fid, color=None):
         self.part_counter += 1
@@ -539,12 +555,27 @@ def _region_score(info, r, bb):
     return s
 
 
-def resolve_regions(state: ModelState, refs):
+def resolve_regions(state: ModelState, refs, fid=None):
+    """The region faces a list of region references point at.
+
+    A reference that carries a name resolves to the region of that name and to nothing else: a name
+    missing from the rebuilt sketch is an error naming the lost region (ADR 0003,
+    docs/reference/element-naming.md § 6), never a nearest match. Only a legacy reference with no name
+    falls back to the geometric `_region_score` matcher, and then feature `fid` is flagged recovered."""
     out = []
     for r in refs:
         sk = state.sketches.get(r["sketch"])
         if sk is None:
             raise K.KernelError("Missing sketch")
+        name = r.get("name")
+        if name:
+            if name not in sk.region_names:
+                raise K.KernelError(f"Sketch region {name} is gone: the sketch no longer has a region "
+                                    "bounded by those curves")
+            out.append(sk.regions[sk.region_names.index(name)])
+            continue
+        if fid is not None:
+            state.recovered.add(fid)
         best, best_s = None, 1e9
         for f, info in zip(sk.regions, sk.region_info):
             s = _region_score(info, r, sk.bb)
@@ -562,6 +593,9 @@ def region_ref(state_or_result, sketch_fid, face):
     if isinstance(sr, ModelState):
         sr = sr.sketches.get(sketch_fid)
     ref = {"sketch": sketch_fid, **region_signature(face)}
+    i = sr.region_index(face) if sr is not None else None
+    if i is not None and i < len(sr.region_names) and sr.region_names[i]:
+        ref["name"] = sr.region_names[i]
     if sr is not None and sr.bb is not None:
         ref["bb"] = [list(map(float, sr.bb[0])), list(map(float, sr.bb[1]))]
     return ref
@@ -715,13 +749,19 @@ def run_sketch(state, f):
         c["value"] = val
     if driven:
         sk.solve()
-    regions = K.sketch_regions(plane, sk.curves())
+    regions, history, edges = K.sketch_regions(plane, sk.curves(), with_history=True)
     bb = K.bbox(K.compound(regions)) if regions else None
-    state.sketches[f["id"]] = SketchResult(plane, sk, regions, [region_signature(r) for r in regions], bb)
+    try:
+        named = N.name_sketch(regions, history, edges, f["id"])
+        names = [named.name_of(r) for r in regions]
+    except N.NamingError:
+        named, names = None, [None] * len(regions)     # unnameable ids: references fall back to signatures
+    state.sketches[f["id"]] = SketchResult(plane, sk, regions, [region_signature(r) for r in regions], bb,
+                                           named, names)
 
 
-def _profiles(state, p):
-    profs = resolve_regions(state, p.get("regions", []))
+def _profiles(state, p, fid=None):
+    profs = resolve_regions(state, p.get("regions", []), fid)
     for fr in p.get("faces", []):
         _, face = resolve(state, fr, "face")
         profs.append(face)
@@ -747,7 +787,7 @@ def signed_extent(value, flip=False):
 
 def run_extrude(state, f):
     p = f["params"]
-    profs = _profiles(state, p)
+    profs = _profiles(state, p, f["id"])
     if not profs:
         raise K.KernelError("Select sketch regions or a planar face")
     n = _profile_normal(state, p, profs)
@@ -788,7 +828,7 @@ def run_extrude(state, f):
 
 def run_revolve(state, f):
     p = f["params"]
-    profs = _profiles(state, p)
+    profs = _profiles(state, p, f["id"])
     a, d = resolve_axis(state, p.get("axis", {}))
     end = p.get("end", "full")
     angle, flip = signed_extent(360.0 if end == "full" else p.get("angle", 180), p.get("flip", False))
@@ -1165,7 +1205,7 @@ def _path_wire(state, refs):
 
 def run_sweep(state, f):
     p = f["params"]
-    profs = _profiles(state, p)
+    profs = _profiles(state, p, f["id"])
     if not p.get("path"):
         raise K.KernelError("Select the path to sweep along")
     body = K.sweep(profs, _path_wire(state, p["path"]))
@@ -1177,7 +1217,7 @@ def run_loft(state, f):
     profs = []
     for item in p.get("profiles", []):
         if item["kind"] == "region":
-            profs += resolve_regions(state, [item["ref"]])
+            profs += resolve_regions(state, [item["ref"]], f["id"])
         else:
             profs.append(resolve(state, item["ref"], "face")[1])
     body = K.loft(profs, p.get("ruled", False))
@@ -1235,7 +1275,7 @@ def run_sm_base(state, f):
     """Sheet metal from sketch regions: a flat sheet of the given thickness (one part per region)."""
     from . import sheetmetal as SM
     p = f["params"]
-    regions = resolve_regions(state, p.get("regions", []))
+    regions = resolve_regions(state, p.get("regions", []), f["id"])
     if not regions:
         raise K.KernelError("Select the sketch region(s) for the sheet")
     t, r, k = float(p.get("thickness", 1.5)), float(p.get("radius", 1.5)), float(p.get("k", 0.44))

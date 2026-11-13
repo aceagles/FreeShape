@@ -44,6 +44,25 @@ MATE_VALUE_DOFS = {
     "parallel": ("tx", "ty", "tz", "rz"),
     "ball": (),
 }
+# The kind of each freedom (from its name: r* turns, t* slides), its stored unit, and how a residual in that
+# unit is scaled to mm like the mate residuals: a rotation as mm of arc at the part's size L, a translation as is.
+DOF_KINDS = {
+    "rotation": {"unit": "deg", "scale": lambda L: np.radians(1.0) * L},
+    "translation": {"unit": "mm", "scale": lambda L: 1.0},
+}
+
+
+def dof_kind(dof):
+    """The kind of a Mate value name: "rz" is a rotation, "tz" a translation."""
+    return "rotation" if dof.startswith("r") else "translation"
+
+
+# Relation types: the kind of freedom each side accepts. The ratio is in b's unit per a's unit, so
+# value_b = sign x ratio x value_a + phase holds in b's stored unit (ADR 0005).
+RELATION_TYPES = {
+    "linear": {"label": "Linear", "a": "translation", "b": "translation",
+               "help": "Ties one slide to another: the second moves ratio times as far"},
+}
 FILE_FORMAT = "freeshape-assembly"
 
 
@@ -85,6 +104,15 @@ def _add_mate_limits(data):
 
 
 M.register("assembly", _add_mate_limits)
+
+
+def _add_relations(data):
+    """Assembly file version 5 -> 6 (I2.1): add the empty list of Relations."""
+    data.setdefault("relations", [])
+    return data
+
+
+M.register("assembly", _add_relations)
 INSTANCE_COLORS = [(0.60, 0.74, 0.85), (0.72, 0.74, 0.78), (0.86, 0.66, 0.40), (0.56, 0.78, 0.56),
                    (0.85, 0.55, 0.55), (0.70, 0.60, 0.85), (0.50, 0.78, 0.78), (0.85, 0.78, 0.45)]
 
@@ -538,6 +566,9 @@ class AssemblyDoc:
         self.instances: list[dict] = []
         self.mates: list[dict] = []
         self.groups: list[dict] = []             # {"id", "name", "instances": [ids]}; an instance is in at most one
+        # Relations: {"id", "type", "name", "a": {"mate", "dof"}, "b": {"mate", "dof"}, "ratio", "reverse",
+        # "phase", "suppressed"}; value_b = sign x ratio x value_a + phase (ADR 0005)
+        self.relations: list[dict] = []
         self.blobs: dict[str, str] = {}          # embedded STEP files (base64), keyed by content hash
         self.path = None
         self.dirty = False
@@ -568,6 +599,7 @@ class AssemblyDoc:
     def new_id(self, prefix):
         self._counter += 1
         used = {i["id"] for i in self.instances} | {m["id"] for m in self.mates} | {g["id"] for g in self.groups}
+        used |= {r["id"] for r in self.relations}
         while f"{prefix}{self._counter}" in used:
             self._counter += 1
         return f"{prefix}{self._counter}"
@@ -584,12 +616,13 @@ class AssemblyDoc:
     # ------------------------------------------------------------------ undo / redo
     def _snapshot(self):
         return json.dumps({"instances": self.instances, "mates": self.mates, "name": self.name,
-                           "groups": self.groups})
+                           "groups": self.groups, "relations": self.relations})
 
     def _restore(self, snap):
         d = json.loads(snap)
         self.instances, self.mates = d["instances"], d["mates"]
         self.groups = d.get("groups", [])
+        self.relations = d.get("relations", [])
 
     def checkpoint(self):
         self._undo.append(self._snapshot())
@@ -903,6 +936,9 @@ class AssemblyDoc:
     def delete_mates(self, ids):
         self.checkpoint()
         self.mates = [m for m in self.mates if m["id"] not in set(ids)]
+        for r in self.relations:                  # a relation stays, inert, when one of its mates goes (I2.3/I2.5)
+            if r["a"]["mate"] in set(ids) or r["b"]["mate"] in set(ids):
+                r["phase"] = None
         self._update_status()
         self.notify()
 
@@ -1120,8 +1156,13 @@ class AssemblyDoc:
         for i, old in enumerate(self.mates):
             if old["id"] == m["id"]:
                 self.mates[i] = m
+        touched = [r for r in self.relations if m["id"] in (r["a"]["mate"], r["b"]["mate"])]
+        for r in touched:
+            r["phase"] = None     # ...and recaptures the phase of its relations, after the solve
         self.place_for_mate(m)
         self.solve()
+        for r in touched:
+            self._capture_phase(r)
         self.notify()
 
     # ------------------------------------------------------------------ driving a mate to a value
@@ -1183,6 +1224,127 @@ class AssemblyDoc:
         out = self._drive_steps(m, dof, float(target))
         self.notify()
         return out
+
+    # ------------------------------------------------------------------ relations (ADR 0005)
+    def relation(self, rid):
+        return next((r for r in self.relations if r["id"] == rid), None)
+
+    def make_relation(self, rtype):
+        """A new, unattached relation of a type in RELATION_TYPES; fill "a" and "b" ({"mate", "dof"}) and add it."""
+        label = RELATION_TYPES[rtype]["label"]
+        names = {r["name"] for r in self.relations}
+        n = 1
+        while f"{label} {n}" in names:
+            n += 1
+        return {"id": self.new_id("R"), "type": rtype, "name": f"{label} {n}", "a": None, "b": None,
+                "ratio": 1.0, "reverse": False, "phase": 0.0, "suppressed": False}
+
+    def _check_relation(self, r):
+        """Raise ValueError unless r names two existing mate freedoms of the kinds its type accepts."""
+        spec = RELATION_TYPES.get(r.get("type"))
+        if spec is None:
+            raise ValueError(f"Unknown relation type {r.get('type')!r}")
+        for side in ("a", "b"):
+            ref = r.get(side) or {}
+            m = self.mate(ref.get("mate"))
+            if m is None:
+                raise ValueError(f"Relation side {side} names no mate")
+            if ref.get("dof") not in MATE_VALUE_DOFS.get(m["type"], ()):
+                raise ValueError(f"Mate {m['name']!r} ({m['type']}) has no freedom {ref.get('dof')!r}")
+            if dof_kind(ref["dof"]) != spec[side]:
+                raise ValueError(f"A {spec['label']} relation needs a {spec[side]} on side {side}")
+        if (r["a"]["mate"], r["a"]["dof"]) == (r["b"]["mate"], r["b"]["dof"]):
+            raise ValueError("A relation needs two different freedoms")
+        ratio = float(r.get("ratio", 1.0))
+        if not np.isfinite(ratio) or ratio == 0.0:
+            raise ValueError("The ratio must be a non-zero number")
+
+    def _capture_phase(self, r):
+        """Set r's phase so it holds at the current stored Mate values: nothing moves (ADR 0005). Leaves the
+        phase None (the relation inert) while either freedom has no value yet."""
+        ma, mb = self.mate(r["a"]["mate"]), self.mate(r["b"]["mate"])
+        if ma is None or mb is None:
+            r["phase"] = None
+            return
+        self._update_mate_values([ma, mb], fill_only=True)
+        va, vb = (ma.get("values") or {}).get(r["a"]["dof"]), (mb.get("values") or {}).get(r["b"]["dof"])
+        if va is None or vb is None:
+            r["phase"] = None
+            return
+        sign = -1.0 if r.get("reverse") else 1.0
+        r["phase"] = float(vb) - sign * float(r["ratio"]) * float(va)
+
+    def add_relation(self, r, checkpoint=True):
+        """Add a relation, capturing its phase from the current values; no instance moves."""
+        self._check_relation(r)
+        if checkpoint:
+            self.checkpoint()
+        r["ratio"] = float(r.get("ratio", 1.0))
+        self._capture_phase(r)
+        self.relations.append(r)
+        self.notify()
+
+    def replace_relation(self, r):
+        """Replace the relation with r's id (an edit), recapturing the phase; no instance moves."""
+        if self.relation(r["id"]) is None:
+            raise ValueError(f"No relation {r['id']!r}")
+        self._check_relation(r)
+        self.checkpoint()
+        r["ratio"] = float(r.get("ratio", 1.0))
+        self._capture_phase(r)
+        self.relations = [r if x["id"] == r["id"] else x for x in self.relations]
+        self.notify()
+
+    def set_relation_suppressed(self, rid, value):
+        """Suppress or unsuppress a relation. Unsuppressing recaptures the phase, so nothing moves."""
+        r = self.relation(rid)
+        if r is None:
+            raise ValueError(f"No relation {rid!r}")
+        self.checkpoint()
+        r["suppressed"] = bool(value)
+        if not r["suppressed"]:
+            self._capture_phase(r)
+        self.notify()
+
+    def delete_relation(self, rid):
+        if self.relation(rid) is None:
+            raise ValueError(f"No relation {rid!r}")
+        self.checkpoint()
+        self.relations = [r for r in self.relations if r["id"] != rid]
+        self.notify()
+
+    def _relation_value(self, m, dof, Ts, frames):
+        """Freedom `dof` of mate m measured at trial poses Ts, a rotation unwrapped to the turn nearest
+        its stored value (as _update_mate_values does after a solve)."""
+        FA = transform_frame(Ts[m["a"]["inst"]], frames[m["id"]][0])
+        FB = transform_frame(Ts[m["b"]["inst"]], frames[m["id"]][1])
+        v = mate_values(m, FA, FB)[dof]
+        old = (m.get("values") or {}).get(dof)
+        if dof_kind(dof) == "rotation" and old is not None:
+            v = float(old) + _wrap_deg(v - float(old))
+        return v
+
+    def _relation_residuals(self, mates, Ts, frames, L):
+        """The hook relations use: one residual per active relation whose two mates are both in `mates`,
+        value_b - (sign x ratio x value_a + phase) in b's unit, scaled to mm by DOF_KINDS. Empty without relations."""
+        if not self.relations:
+            return np.zeros(0)
+        by_id = {m["id"]: m for m in mates}
+        out = []
+        for r in self.relations:
+            if r.get("suppressed") or r.get("phase") is None or not r.get("a") or not r.get("b"):
+                continue
+            ma, mb = by_id.get(r["a"]["mate"]), by_id.get(r["b"]["mate"])
+            if ma is None or mb is None:
+                continue
+            da, db = r["a"]["dof"], r["b"]["dof"]
+            if da not in MATE_VALUE_DOFS.get(ma["type"], ()) or db not in MATE_VALUE_DOFS.get(mb["type"], ()):
+                continue
+            sign = -1.0 if r.get("reverse") else 1.0
+            va = self._relation_value(ma, da, Ts, frames)
+            vb = self._relation_value(mb, db, Ts, frames)
+            out.append((vb - (sign * float(r["ratio"]) * va + float(r["phase"]))) * DOF_KINDS[dof_kind(db)]["scale"](L))
+        return np.array(out, float)
 
     # ------------------------------------------------------------------ solving
     def _groups(self, exclude=None):
@@ -1258,6 +1420,7 @@ class AssemblyDoc:
             out.append(self._drive_residual(m, FA, FB, L))
             if self._limit_holds:
                 out.append(self._hold_residuals(m, FA, FB, L))
+        out.append(self._relation_residuals(mates, Ts, frames, L))
         return np.concatenate(out) if out else np.zeros(0)
 
     def solve(self, drag=None, iters=40, keep=None):
@@ -1644,6 +1807,7 @@ class AssemblyDoc:
         used = {i["source"]["blob"] for i in self.instances if i["source"].get("kind") == "step"}
         return json.dumps({"format": FILE_FORMAT, "version": M.latest_version("assembly"), "name": self.name,
                            "uid": self.uid, "instances": insts, "mates": self.mates, "groups": self.groups,
+                           "relations": self.relations,
                            "blobs": {k: v for k, v in self.blobs.items() if k in used}}, indent=1)
 
     def save(self, path=None):
@@ -1668,6 +1832,7 @@ class AssemblyDoc:
         a.instances = d.get("instances", [])
         a.mates = d.get("mates", [])
         a.groups = d.get("groups", [])
+        a.relations = d.get("relations", [])
         a.blobs = d.get("blobs", {})
         a.path = path
         base = os.path.dirname(os.path.abspath(path))
@@ -1677,7 +1842,7 @@ class AssemblyDoc:
                 cand = os.path.normpath(os.path.join(base, src["relpath"]))
                 if os.path.exists(cand):
                     src["path"] = cand
-        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0) for x in a.instances + a.mates + a.groups]
+        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0) for x in a.instances + a.mates + a.groups + a.relations]
         a._counter = max(nums + [0])
         a.resolver = resolver
         a.refresh(solve=False, notify=False)

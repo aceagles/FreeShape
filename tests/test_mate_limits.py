@@ -157,7 +157,7 @@ def test_version_4_file_loads_without_limits(tmp_path):
         json.dump(d, fh)
     b = A.AssemblyDoc.load(path)
     assert "limits" not in b.mates[0]
-    assert M.latest_version("assembly") == 5
+    assert M.latest_version("assembly") >= 5
 
 
 def test_no_limits_never_sets_holds(monkeypatch):

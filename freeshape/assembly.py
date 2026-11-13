@@ -995,6 +995,66 @@ class AssemblyDoc:
         self.solve()
         self.notify()
 
+    # ------------------------------------------------------------------ driving a mate to a value
+    _drive = None        # (mate id, freedom, value) while drive_mate holds one freedom at a step value
+
+    def _drive_residual(self, m, FA, FB, L):
+        """The hook drive_mate uses: one extra residual holding a freedom of mate m at the step value
+        (rotations in mm of arc at the part's size, like the mate residuals). Empty when nothing is driven."""
+        if self._drive is None or self._drive[0] != m["id"]:
+            return np.zeros(0)
+        _mid, dof, value = self._drive
+        d = mate_values(m, FA, FB)[dof] - value
+        if dof.startswith("r"):
+            return np.array([np.radians(_wrap_deg(d)) * L])
+        return np.array([d])
+
+    def _drive_steps(self, m, dof, target):
+        """Move freedom `dof` of mate m towards `target` in steps of at most 30 degrees or 0.25 x length_scale()
+        mm, each solved with the freedom held at the step value. Stops at the last step that held, with the
+        poses and values of that step. Returns (reached value, ok). No checkpoint, no notify: callers add
+        their own (Set value, limits, Animate)."""
+        if not m.get("values"):
+            self._update_mate_values([m], fill_only=True)
+        cur = float((m.get("values") or {}).get(dof, 0.0))
+        step = 30.0 if dof.startswith("r") else 0.25 * self.length_scale()
+        n = max(1, int(np.ceil(abs(target - cur) / step - 1e-9))) if target != cur else 0
+        ok = True
+        try:
+            for k in range(1, n + 1):
+                want = cur + (target - cur) * k / n
+                poses = {i["id"]: list(i["T"]) for i in self.instances}
+                held = dict(m["values"])
+                self._drive = (m["id"], dof, want)
+                solved = self.solve()
+                got = float(m["values"].get(dof, want))
+                if solved and m["id"] not in self._conflicts and abs(got - want) < 1e-5:
+                    continue
+                for i in self.instances:
+                    i["T"] = poses[i["id"]]
+                m["values"] = held
+                ok = False
+                break
+        finally:
+            self._drive = None
+        if not ok:
+            self.solve()          # settle errors and status at the last step that held
+        return float(m["values"].get(dof, cur)), ok
+
+    def drive_mate(self, mid, dof, target):
+        """Move freedom `dof` of mate `mid` to `target` (degrees or mm, a turn past 180 counts) while every other
+        mate stays enforced. Returns (reached value, ok); ok is False when a step could not hold and the
+        motion stopped at the last one that did. One undo checkpoint, one notify."""
+        m = next((x for x in self.mates if x["id"] == mid), None)
+        if m is None:
+            raise ValueError(f"No mate {mid!r}")
+        if dof not in MATE_VALUE_DOFS.get(m["type"], ()):
+            raise ValueError(f"Mate {mid!r} ({m['type']}) has no freedom {dof!r}")
+        self.checkpoint()
+        out = self._drive_steps(m, dof, float(target))
+        self.notify()
+        return out
+
     # ------------------------------------------------------------------ solving
     def _groups(self, exclude=None):
         """Connected groups of instances through (unsuppressed) mates, ignoring mate `exclude`."""
@@ -1066,6 +1126,7 @@ class AssemblyDoc:
             FA = transform_frame(Ts[m["a"]["inst"]], frames[m["id"]][0])
             FB = transform_frame(Ts[m["b"]["inst"]], frames[m["id"]][1])
             out.append(mate_residuals(m, FA, FB, L))
+            out.append(self._drive_residual(m, FA, FB, L))
         return np.concatenate(out) if out else np.zeros(0)
 
     def solve(self, drag=None, iters=40, keep=None):

@@ -357,6 +357,19 @@ class LinkResolver:
         vs = self._folder_doc(src, "variables")
         return None if vs is None else dict(vs.values()[0])
 
+    def resolve_connectors(self, src):
+        """The mate connectors the Part Studio publishes for the part `src` links to, as [{"id", "name", "frame"}]
+        (frames in the studio's coordinates, which are the part's), or None when the studio is not found."""
+        try:
+            studio = self._studio_for(src)
+        except K.KernelError:
+            return None
+        if studio is None:
+            return None
+        pid = _translate_part(studio, src.get("part"))
+        return [{"id": str(fid), "name": c["name"], "frame": {k: [float(v) for v in c["frame"][k]] for k in ("o", "z", "x")}}
+                for fid, c in studio.state.connectors.items() if c["part"] == pid]
+
     # ------------------------------------------------------------------ drawing sources
     def resolve_drawing_source(self, src):
         """The shape a drawing shows (kept as the same object while the model is unchanged, so views aren't

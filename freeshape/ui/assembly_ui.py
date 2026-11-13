@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 
 import numpy as np
@@ -528,8 +529,51 @@ class MateDialog(QFrame):
         iid, idx = pick.key
         return self.doc.snap_points(iid, pick.kind, idx)
 
+    def own_connectors(self):
+        """[(instance id, published connector dict, world frame)] for every instance's own mate connectors."""
+        out = []
+        for inst in self.doc.visible_instances():
+            for pc in self.doc.published_connectors(inst["id"]) or []:
+                out.append((inst["id"], pc, self.doc.world_frame(self.doc.named_connector(inst["id"], pc["id"]))))
+        return out
+
+    def pick_named(self, iid, cid):
+        """Use instance `iid`'s own published connector `cid` for the active field."""
+        try:
+            c = self.doc.named_connector(iid, cid)
+        except Exception as e:
+            self._error(f"Can't use that: {e}")
+            return
+        side = "a" if self.active is self.fa else "b"
+        other = self.mate.get("b" if side == "a" else "a")
+        if other and other["inst"] == iid:
+            self._error("Pick the second connector on a different part.")
+            return
+        self.mate[side] = c
+        if side == "a" and not self.mate.get("b"):
+            self.activate(self.fb)
+        elif side == "b" and not self.mate.get("a"):
+            self.activate(self.fa)
+        self._refresh_fields()
+        self.schedule()
+
+    def _own_connector_at(self, xy, tol=12.0):
+        """The (instance id, connector id) whose triad origin is within `tol` px of screen point `xy`, or None."""
+        best = None
+        for iid, pc, fr in self.own_connectors():
+            sp = self.ctl.w.viewport.cam.to_screen(np.asarray(fr["o"], float))
+            d = math.hypot(sp[0] - xy[0], sp[1] - xy[1])
+            if d <= tol and (best is None or d < best[0]):
+                best = (d, iid, pc["id"])
+        return None if best is None else best[1:]
+
     def handle_pick(self, pick: Pick):
         vp = self.ctl.w.viewport
+        hit = self._own_connector_at(vp.last_click) if vp.last_click else None
+        if hit is not None:                  # a click on an own-connector triad beats the face under it
+            vp.clear_snaps()
+            self.pick_named(*hit)
+            return
         snap, base = vp.snap_hi, vp.snap_base
         if snap is not None and base is not None and base.kind in ("face", "edge"):
             pick = base                      # a highlighted snap point wins over whatever is under the cursor
@@ -869,6 +913,12 @@ class AssemblyController:
             z = A.unit(fr["z"])
             x = A.unit(fr["x"])
             tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z})
+        if self.mate_dialog is not None:     # each part's own published connectors, to pick
+            for _iid, _pc, fr in self.mate_dialog.own_connectors():
+                z = A.unit(fr["z"])
+                x = A.unit(fr["x"])
+                tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75),
+                            "size_px": 26, "width": 1.8})
         self.vp.triads = tri
         self.vp.update()
 

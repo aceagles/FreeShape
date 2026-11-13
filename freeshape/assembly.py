@@ -475,6 +475,9 @@ class AssemblyDoc:
         # callable(source) -> naming.NamedShape or None: the element map of the part a source links to.
         # Left None, it is found on the resolver when that is a LinkResolver method (links.py).
         self.named_resolver = None
+        # callable(source) -> [{"id", "name", "frame"}] or None: the mate connectors the Part Studio publishes for
+        # the part a source links to (links.resolve_connectors). Left None, it is found on the resolver likewise.
+        self.connector_resolver = None
         self._recovered = set()                  # (mate id, "a"/"b") found by signature, not by name; in memory only
         self.parts: dict[str, object] = {}       # instance id -> Part in its own coordinates
         self._fallback: dict[str, object] = {}   # instance id -> shape stored in the file
@@ -593,6 +596,51 @@ class AssemblyDoc:
             return None
         return nm if nm is not None and nm.shape is not None and nm.shape.IsSame(part.shape) else None
 
+    def published_connectors(self, iid):
+        """[{"id", "name", "frame"}] the Part Studio publishes for instance `iid`'s part (frames in the part's
+        coordinates, plain lists), or None when it can't be asked (a STEP part, the studio is closed)."""
+        inst = self.instance(iid)
+        if inst is None or inst["source"].get("kind") == "step":
+            return None
+        fn = self.connector_resolver or getattr(getattr(self.resolver, "__self__", None), "resolve_connectors", None)
+        if fn is None:
+            return None
+        try:
+            return fn(inst["source"])
+        except Exception:
+            return None
+
+    def named_connector(self, iid, cid):
+        """A mate end on the part's own published connector `cid`: {"inst", "named": cid, ...}. Its frame is
+        re-read from the Part Studio on every refresh."""
+        for c in self.published_connectors(iid) or []:
+            if str(c["id"]) == str(cid):
+                fr = frame_to_json({**c["frame"], "what": f"connector {c['name']}" if c.get("name") else "connector"})
+                return {"inst": iid, "kind": "connector", "index": None, "click": None, "ref": None,
+                        "named": str(cid), "name": c.get("name", ""), "frame": fr}
+        raise K.KernelError(f"The part has no published mate connector {cid!r}")
+
+    def _refresh_named_ends(self):
+        """Re-read the frame of every named mate end; a connector the studio no longer publishes turns its mate red."""
+        cache = {}
+        for m in self.mates:
+            for side in ("a", "b"):
+                c = m.get(side)
+                if not c or not c.get("named") or c["inst"] not in self.parts:
+                    continue
+                if c["inst"] not in cache:
+                    cache[c["inst"]] = self.published_connectors(c["inst"])
+                pub = cache[c["inst"]]
+                if pub is None:
+                    continue                    # studio not reachable: keep the last frame, as for a closed studio
+                hit = next((p for p in pub if str(p["id"]) == c["named"]), None)
+                if hit is None:
+                    self.errors[m["id"]] = (f"Lost its mate connector “{c.get('name') or c['named']}”: "
+                                            "the Part Studio no longer publishes it")
+                    continue
+                c["name"] = hit.get("name", c.get("name", ""))
+                c["frame"] = frame_to_json({**hit["frame"], "what": f"connector {c['name']}" if c["name"] else "connector"})
+
     def recovered_connectors(self):
         """[(mate id, "a"/"b")] of the connectors the last refresh found by signature instead of by name: legacy
         references (made before elements were named) and named ones on a part that has no element map. Their
@@ -668,6 +716,7 @@ class AssemblyDoc:
                         c["index"] = ok_idx
                     except Exception:
                         pass
+        self._refresh_named_ends()
         if solve:
             self.solve()
         else:

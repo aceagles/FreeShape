@@ -155,6 +155,7 @@ def _saved(store, ids):
 def test_acceptance_scenario_on_both_stores(layout, sessions):
     store, ids, ext, kind = layout
     original = _saved(store, ids)
+    refused_before = len(W.refused_opens())      # refusals other tests recorded in this process do not count
     s = sessions(store)
 
     tabs = s.tabs()
@@ -204,7 +205,7 @@ def test_acceptance_scenario_on_both_stores(layout, sessions):
     assert again.errors() == {}
 
     if kind == "memory":      # the guard was live in this process and in every worker, and nothing it covers opened
-        assert W.refused_opens() == []
+        assert W.refused_opens()[refused_before:] == []
         for e in (s, again):
             for tid in ids.values():
                 assert e._eng.run_in_worker(tid, W.refused_opens) == []

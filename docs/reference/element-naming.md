@@ -614,6 +614,33 @@ Split and merge are the same mechanism read in two directions, so they are descr
   its index, so the tag of instance *k* (1-based; instance 0 is the source) is `<feature id>_<k>`.
   The same source face has one distinct name per copy, and a change of count leaves the names of the
   other instances alone.
+### I1.11 Sheet metal: base, flange, flat pattern
+
+**Not checked against FreeCAD.** FreeCAD 1.0.2 has no sheet metal code: the SheetMetal workbench is an
+addon that is not in `/opt/freecad-src` (a search of `src` for "sheet metal" finds nothing). These rules
+apply the general rules of sections 2, 3 and 7 to FreeShape's sheet metal kernel steps. No claim is made
+about what the addon names or how.
+
+* **Base.** The sheet is a prism of a sketch region, moved into the panel's frame. `run_sm_base` names it
+  as an extrude (op `XTR`, section 4): side faces `;:G` from the sketch edge, end faces from the region.
+  The history chains the move of the region into panel coordinates, the prism (caps recorded) and the move
+  back. `make_base(..., with_history=True)` returns it.
+* **Flange.** A flange fuses a bend solid and a new-panel solid to the part, then trims or notches it
+  (inside position, corner relief) and merges faces (`ShapeUpgrade_UnifySameDomain`). `add_flange(...,
+  with_history=True)` chains every step's history. The runner names the result under op `FUS` with
+  `stamp=False`, so the sheet's own faces and edges keep their names; an attachment edge keeps the name
+  it had on the sheet. The two tool solids have no sketch behind them, so they are seeded
+  (`naming.seed`) with a label made of the tool's role (bend or new panel), the new panel's number and the
+  element's place in the tool. The tools are built the same way on every rebuild, so the labels, and the
+  names the faces take from them, repeat.
+* **Flat pattern.** Each folded face on a panel's z = 0 side is moved into the flat, extruded to a slab,
+  fused with the others, notched for the corner reliefs, unified, and the flat faces are extruded again to
+  the clean solid. `flat_pattern(shape, model, named)` chains these histories and names the solid once,
+  from the folded part's map, under op `UNF` (`naming.OP_FOR["flat_pattern"]`; a FreeShape code, FreeCAD has
+  none). A flat face's name is therefore its folded counterpart's name plus `;UNF;:HFLAT`, which tells
+  it apart from the folded face. The tag is the fixed text `FLAT`: an unfold belongs to no feature. Bend
+  strips have no folded counterpart and stay unnamed unless the merge gives them a source. The map is
+  `FlatPattern.named`. Callers that do not pass `named` get the flat pattern as before, with no names.
 
 ## 8. Joint frame
 

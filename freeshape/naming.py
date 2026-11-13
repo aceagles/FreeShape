@@ -58,6 +58,7 @@ OP_FOR = {
     "circular_pattern": "XFM",
     "draft": "DFT",
     "fillet": "FLT",
+    "flat_pattern": "UNF",
     "import": "IMP",
     "linear_pattern": "XFM",
     "loft": "LFT",

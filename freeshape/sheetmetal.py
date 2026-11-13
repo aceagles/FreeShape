@@ -25,6 +25,7 @@ import math
 import numpy as np
 
 from . import kernel as K
+from . import naming as N
 
 
 # --------------------------------------------------------------------------- small geometry helpers
@@ -67,20 +68,30 @@ def _polygon_face(pts3):
     return BRepBuilderAPI_MakeFace(mp.Wire(), True).Face()
 
 
-def _prism(face, vec):
+def _prism(face, vec, with_history=False):
+    """The prism of a face; with_history also returns its history (the caps are recorded)."""
     from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
-    return BRepPrimAPI_MakePrism(face, K._vec(vec)).Shape()
+    mk = BRepPrimAPI_MakePrism(face, K._vec(vec))
+    if with_history:
+        return mk.Shape(), K._maker_history(mk, [face], caps=True)
+    return mk.Shape()
 
 
-def _moved(shape, M):
+def _moved(shape, M, with_history=False):
+    """A moved copy of a shape; with_history also returns the history that maps each element to its image."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
-    return BRepBuilderAPI_Transform(shape, K.trsf_from_matrix(M), True).Shape()
+    mk = BRepBuilderAPI_Transform(shape, K.trsf_from_matrix(M), True)
+    if with_history:
+        return mk.Shape(), K._maker_history(mk, [shape])
+    return mk.Shape()
 
 
-def _unify(shape):
+def _unify(shape, with_history=False):
     from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
     u = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
     u.Build()
+    if with_history:
+        return u.Shape(), K._maker_history(u, [shape])
     return u.Shape()
 
 
@@ -191,26 +202,35 @@ def _same_seg(a, b, c, d, tol=1e-6):
 
 
 # --------------------------------------------------------------------------- building
-def make_base(region_face, plane: K.Plane, thickness, radius, k, flip=False, relief="rect", relief_scale=1.5):
-    """A flat sheet from a sketch region: returns (solid, model)."""
+def make_base(region_face, plane: K.Plane, thickness, radius, k, flip=False, relief="rect", relief_scale=1.5,
+              with_history=False):
+    """A flat sheet from a sketch region: returns (solid, model); with_history returns (solid, model,
+    history) where the history starts at the region face (docs/reference/element-naming.md, I1.11)."""
     z = -plane.normal if flip else plane.normal
     M = frame(plane.origin, plane.xdir, z)
     Minv = np.linalg.inv(M)
-    local = _moved(region_face, Minv)                       # the region in the panel's own 2D coordinates
+    local, h_local = _moved(region_face, Minv, True)        # the region in the panel's own 2D coordinates
     local = K.faces(local)[0]
-    solid = _moved(_prism(local, (0, 0, thickness)), M)
+    prism, h_prism = _prism(local, (0, 0, thickness), True)
+    solid, h_fold = _moved(prism, M, True)
     m = SheetModel(thickness, radius, k, relief, relief_scale)
     m.panels.append({"id": "P0", "face": local, "fold": M, "flat": M, "parent": None, "bend": None})
-    return K.solids(solid)[0] if K.solids(solid) else solid, m
+    out = K.solids(solid)[0] if K.solids(solid) else solid
+    if with_history:
+        return out, m, K._chain(h_local, h_prism, h_fold)
+    return out, m
 
 
 def add_flange(shape, model: SheetModel, panel, a, b, o, length, angle, radius=None, up=True,
-               position="outside", fid="F"):
+               position="outside", fid="F", with_history=False):
     """Bend a new flange off panel edge a→b (local 2D, o = outward). length is measured from the outside of
     the bend (the virtual sharp). position: 'outside' = the bend starts at the edge (the part grows);
     'inside' = the flange's outer face lines up with the old edge (the outline stays the same size).
-    Returns (new shape, new model)."""
+    Returns (new shape, new model). With with_history it returns (new shape, new model, history, seeds):
+    the history runs from the old shape and the seeds (the bend's and the new panel's NamedShape, named by
+    role and panel number, which a rebuild keeps) to the new shape (docs/reference/element-naming.md, I1.11)."""
     m = model.copy()
+    steps = []
     panel = m.panel(panel["id"])
     t = m.thickness
     R = float(radius if radius is not None else m.radius)
@@ -228,7 +248,8 @@ def add_flange(shape, model: SheetModel, panel, a, b, o, length, angle, radius=N
         strip2 = [a, b, b - o * setback, a - o * setback]
         panel["face"] = _trim_face(panel["face"], strip2)
         box = _prism(_polygon_face([(q[0], q[1], -1e-3) for q in strip2]), (0, 0, t + 2e-3))
-        shape = K.cut(shape, _moved(box, Mf))
+        shape, h = K.cut(shape, _moved(box, Mf), with_history=True)
+        steps.append(h)
         a, b = a - o * setback, b - o * setback
     # run along the edge so that "left" of it is outward: then the new panel's local y points away from the bend
     dd = (b - a) / np.linalg.norm(b - a)
@@ -258,7 +279,12 @@ def add_flange(shape, model: SheetModel, panel, a, b, o, length, angle, radius=N
     L_flat = frame(a3 + o3 * ba, d3, zv)
     child_face = _polygon_face([(0, 0, 0), (w, 0, 0), (w, flat_len, 0), (0, flat_len, 0)])
     slab = _moved(_prism(child_face, (0, 0, t)), L_fold)
-    new = K.fuse(K.fuse(shape, _moved(bend_solid, Mf)), _moved(slab, Mf))
+    bend_tool, slab_tool = _moved(bend_solid, Mf), _moved(slab, Mf)
+    seeds = [_seeded(bend_tool, fid, f"b{len(m.panels)}"), _seeded(slab_tool, fid, f"s{len(m.panels)}")]
+    new, h = K.fuse(shape, bend_tool, with_history=True)
+    steps.append(h)
+    new, h = K.fuse(new, slab_tool, with_history=True)
+    steps.append(h)
     cid = f"{fid}:{len(m.panels)}"
     m.panels.append({"id": cid, "face": child_face, "fold": Mf @ L_fold, "flat": panel["flat"] @ L_flat,
                      "parent": panel["id"], "bend": len(m.bends)})
@@ -273,10 +299,25 @@ def add_flange(shape, model: SheetModel, panel, a, b, o, length, angle, radius=N
                 continue
             rel = _corner(m, bend, other, setback)
             if rel is not None:
-                new = _cut_relief(new, m, panel, rel, (bend, other))
+                new = _cut_relief(new, m, panel, rel, (bend, other), steps)
                 m.reliefs.append(rel)
     sols = K.solids(new)
-    return (_unify(sols[0]) if len(sols) == 1 else new), m
+    if len(sols) == 1:
+        new, h = _unify(sols[0], True)
+        steps.append(h)
+    if with_history:
+        return new, m, K._chain(*steps), seeds
+    return new, m
+
+
+def _seeded(tool, fid, role):
+    """The starting map of a flange tool (its bend or its new panel): each element is named by the role of
+    the tool and its place in it, which is the same on every rebuild because the tool is built the same way."""
+    keys = N.NamedShape(tool, {}).el.keys()
+    try:
+        return N.seed(tool, fid, N.OP_SKETCH, {k: f"{role}{k[0].lower()}{k[1]}" for k in keys})
+    except N.NamingError:
+        return N.NamedShape(tool, {})
 
 
 def _line_hit(a1, d1, a2, d2):
@@ -314,8 +355,9 @@ def _relief_square(rel, z0, z1):
     return _prism(_polygon_face([(q[0], q[1], z0) for q in pts]), (0, 0, z1 - z0))
 
 
-def _cut_relief(shape, m, panel, rel, bends):
-    """Cut the notch out of the folded part: the panel's corner, and the end of each bend next to it."""
+def _cut_relief(shape, m, panel, rel, bends, steps=None):
+    """Cut the notch out of the folded part: the panel's corner, and the end of each bend next to it.
+    Each cut's history is appended to `steps` when a list is given."""
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
     from OCP.gp import gp_Ax1
     t = m.thickness
@@ -343,7 +385,11 @@ def _cut_relief(shape, m, panel, rel, bends):
                                       bd["theta"] + 1e-6).Shape()
         tools.append(piece)
     for tool in tools:
-        shape = K.cut(shape, _moved(tool, panel["fold"]))
+        if steps is None:
+            shape = K.cut(shape, _moved(tool, panel["fold"]))
+        else:
+            shape, h = K.cut(shape, _moved(tool, panel["fold"]), with_history=True)
+            steps.append(h)
     return shape
 
 
@@ -365,12 +411,18 @@ def _single_face(shape, bottom=False):
 
 
 # --------------------------------------------------------------------------- flat pattern
+FLAT_TAG = "FLAT"      # the tag of every flat pattern name: an unfold belongs to no feature of the document
+
+
 class FlatPattern:
     def __init__(self, face, bend_lines, M_base, thickness):
         self.face = face                  # the flat sheet (in world space, in the base panel's plane)
         self.bend_lines = bend_lines      # [(p0_world, p1_world, label)]
         self.M_base = M_base              # base panel frame: world -> 2D via its inverse
         self.thickness = thickness
+        # naming.NamedShape of solid(): each face takes its name from its folded counterpart (None when
+        # flat_pattern was not given the part's map)
+        self.named = None
 
     def solid(self):
         if getattr(self, "_solid", None) is not None:
@@ -383,9 +435,15 @@ class FlatPattern:
         return float(q[0]), float(q[1])
 
 
-def flat_pattern(shape, m: SheetModel):
+def flat_pattern(shape, m: SheetModel, named=None):
     """Unfold: each panel's face on its z = 0 side goes to its flat place; each bend becomes a strip of its
-    bend allowance. Cuts made in panels come along."""
+    bend allowance. Cuts made in panels come along.
+
+    `named` is the NamedShape of `shape` (`state.named(part_id)`). With it, the flat pattern's faces are named
+    from the folded faces they came from and `FlatPattern.named` is the map of `solid()`
+    (docs/reference/element-naming.md, I1.11). A bend strip has no folded counterpart, so it stays unnamed."""
+    want = named is not None and named.shape is not None and named.shape.IsSame(shape)
+    steps = []
     faces = []
     tol = 1e-5 * (1 + float(np.linalg.norm(K.bbox(shape)[1] - K.bbox(shape)[0])))
     all_faces = K.faces(shape)
@@ -404,7 +462,12 @@ def flat_pattern(shape, m: SheetModel):
             c = apply(Minv, _inside_point(f))
             if not _face_contains(p["face"], (c[0], c[1]), tol=max(tol, 1e-4)):
                 continue
-            faces.append(_moved(f, to_flat))
+            if want:
+                g, h = _moved(f, to_flat, True)
+                steps.append(h)
+                faces.append(g)
+            else:
+                faces.append(_moved(f, to_flat))
     bend_lines = []
     for bd in m.bends:
         parent = m.panel(bd["panel"])
@@ -423,12 +486,32 @@ def flat_pattern(shape, m: SheetModel):
     # join everything as thin slabs (solids merge far more reliably than loose faces), then keep the bottom
     base = m.panels[0]
     zdir = base["flat"][:3, 2] * m.thickness
-    slab = K.fuse_all([_prism(f, zdir) for f in faces])
+    prisms = []
+    for f in faces:
+        if want:
+            pr, h = _prism(f, zdir, True)
+            steps.append(h)
+            prisms.append(pr)
+        else:
+            prisms.append(_prism(f, zdir))
+    if want:
+        slab, h = K.fuse_all(prisms, with_history=True)
+        steps.append(h)
+    else:
+        slab = K.fuse_all(prisms)
     for rel in m.reliefs:
         parent = m.panel(rel["panel"])
         tool = _relief_square(rel, -1.0, 1.0 + m.thickness)
-        slab = K.cut(slab, _moved(tool, parent["flat"]))
-    slab = _unify(slab)
+        if want:
+            slab, h = K.cut(slab, _moved(tool, parent["flat"]), with_history=True)
+            steps.append(h)
+        else:
+            slab = K.cut(slab, _moved(tool, parent["flat"]))
+    if want:
+        slab, h = _unify(slab, True)
+        steps.append(h)
+    else:
+        slab = _unify(slab)
     Binv = np.linalg.inv(base["flat"])
     bottom = []
     for f in K.faces(slab):
@@ -444,7 +527,19 @@ def flat_pattern(shape, m: SheetModel):
     sheet = bottom[0] if len(bottom) == 1 else K.compound(bottom)
     fp = FlatPattern(sheet, bend_lines, base["flat"], m.thickness)
     # a clean solid straight from the outline (no seams left over from joining the strips)
-    fp._solid = K.fuse_all([_prism(f, zdir) for f in bottom]) if len(bottom) > 1 else _prism(bottom[0], zdir)
+    if want:
+        outs = [_prism(f, zdir, True) for f in bottom]
+        steps.extend(o[1] for o in outs)
+        fp._solid = outs[0][0]
+        if len(outs) > 1:
+            fp._solid, h = K.fuse_all([o[0] for o in outs], with_history=True)
+            steps.append(h)
+        try:
+            fp.named = N.name_result(fp._solid, K._chain(*steps), [named], FLAT_TAG, N.OP_FOR["flat_pattern"])
+        except N.NamingError:
+            fp.named = N.NamedShape(fp._solid, {})
+    else:
+        fp._solid = K.fuse_all([_prism(f, zdir) for f in bottom]) if len(bottom) > 1 else _prism(bottom[0], zdir)
     return fp
 
 

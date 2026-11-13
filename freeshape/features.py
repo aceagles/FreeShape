@@ -1432,9 +1432,13 @@ def run_sm_base(state, f):
         raise K.KernelError("The K-factor is between 0 and 1 (0.44 suits most steel and aluminium)")
     plane = state.sketches[p["regions"][0]["sketch"]].plane
     for face in regions:
-        solid, model = SM.make_base(face, plane, t, r, k, bool(p.get("flip")),
-                                    "rect" if p.get("relief", True) else "none", float(p.get("relief_scale", 1.5)))
+        solid, model, hist = SM.make_base(face, plane, t, r, k, bool(p.get("flip")),
+                                          "rect" if p.get("relief", True) else "none",
+                                          float(p.get("relief_scale", 1.5)), with_history=True)
+        # a sheet is a prism of the region: named like an extrude from the sketch's names
+        named = name_feature(state, f["id"], _profile_names(state, p), solid, hist, "extrude")
         part = state.new_part(solid, f["id"])
+        state.set_named(part.id, named)
         state.sheet[part.id] = model
 
 
@@ -1461,10 +1465,13 @@ def run_sm_flange(state, f):
             raise K.KernelError("Flanges go on sheet metal parts — make the part with Sheet metal first")
         panel, a, b, o = model.find_edge(ref, scale)
         radius = float(p["radius"]) if p.get("own_radius") else None
-        shape, model = SM.add_flange(part.shape, model, panel, a, b, o, float(p.get("length", 20)),
-                                     float(p.get("angle", 90)), radius, not p.get("down"),
-                                     p.get("position", "outside"), f["id"])
+        shape, model, hist, seeds = SM.add_flange(part.shape, model, panel, a, b, o, float(p.get("length", 20)),
+                                                  float(p.get("angle", 90)), radius, not p.get("down"),
+                                                  p.get("position", "outside"), f["id"], with_history=True)
+        # the part's own faces keep their names (stamp=False); the bend and the new panel are named from seeds
+        named = name_feature(state, f["id"], [pid] + seeds, shape, hist, "fuse", stamp=False)
         state.parts[pid] = Part(pid, part.name, shape, part.color)
+        state.set_named(pid, named)
         state.sheet[pid] = model
 
 

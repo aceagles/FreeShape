@@ -561,7 +561,8 @@ def _tab_uses(folder, tab):
                 found.append((SOURCE_FEATURE_LABELS.get(f["type"], f["type"]), src, f["id"]))
     elif doc is not None:
         label = ASSEMBLY_INSTANCE if tab.kind == "assembly" else DRAWING_SOURCE
-        found = [(label, s, None) for s in tab_sources(tab.kind, doc)]
+        # an instance of a Standard part or a STEP file reads no other tab: it is not a link
+        found = [(label, s, None) for s in tab_sources(tab.kind, doc) if s.get("kind") in ("studio", "assembly")]
     out = []
     for label, src, fid in found:
         e = {"kind": label, "feature": fid, "document": None, "document_name": None, "target": src.get("tab"),

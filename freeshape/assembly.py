@@ -877,8 +877,8 @@ class AssemblyDoc:
         """[{"id", "name", "frame"}] the Part Studio publishes for instance `iid`'s part (frames in the part's
         coordinates, plain lists), or None when it can't be asked (a STEP part, the studio is closed)."""
         inst = self.instance(iid)
-        if inst is None or inst["source"].get("kind") == "step":
-            return None
+        if inst is None or inst["source"].get("kind") in ("step", "standard"):
+            return None     # a Standard part's own connectors are named (`connector_by_name`), not published
         fn = self.connector_resolver or getattr(getattr(self.resolver, "__self__", None), "resolve_connectors", None)
         if fn is None:
             return None
@@ -887,16 +887,9 @@ class AssemblyDoc:
         except Exception:
             return None
 
-    def named_connector(self, iid, cid):
-        """A mate end on one of the part's own connectors.
-        A Standard part offers connectors by name, e.g. a screw's "under_head": `cid` is that name and the end is
-        {"inst", "kind": "named", "name", "frame"}, with no index, click, ref or snap (see connector_by_name).
-        Any other part offers its published mate connectors by id: {"inst", "named": cid, ...}, whose frame is
-        re-read from the Part Studio on every refresh. world_frame, place_for_mate and the solver read `frame`
-        like any other connector. Raises KernelError when the part offers no such connector."""
-        inst = self.instance(iid)
-        if inst is not None and inst["source"].get("kind") == "standard":
-            return {"inst": iid, "kind": "named", "name": cid, "frame": self.connector_by_name(iid, cid)}
+    def _published_named_connector(self, iid, cid):
+        """A mate end on the part's own published connector `cid`: {"inst", "named": cid, ...}. Its frame is
+        re-read from the Part Studio on every refresh. (Explicit origin connectors go through here too.)"""
         for c in self.published_connectors(iid) or []:
             if str(c["id"]) == str(cid):
                 fr = frame_to_json({**c["frame"], "what": f"connector {c['name']}" if c.get("name") else "connector"})
@@ -1453,6 +1446,20 @@ class AssemblyDoc:
         fr = dict(frames[name])
         fr.setdefault("what", name)
         return frame_to_json(frame_from_json(fr))
+
+    def named_connector(self, iid, name):
+        """A mate end on a part's own connector `name`. Two kinds of part offer them:
+        - a Standard part's named connector, e.g. a screw's "under_head": {"inst", "kind": "named", "name",
+          "frame"}, re-derived from the Plugin on change (`connector_by_name`);
+        - a studio part's published mate connector, or an explicit origin connector, looked up by its id
+          (`_published_named_connector`: kind "connector"/"origin", "named": id).
+        An id of an explicit origin connector on the instance wins, so a Standard part can carry one too.
+        No index, click, ref or snap. Raises KernelError when the part offers no such name."""
+        inst = self.instance(iid)
+        if inst is not None and inst["source"].get("kind") == "standard" and not any(
+                c["id"] == str(name) and c["inst"] == iid for c in self.connectors):
+            return {"inst": iid, "kind": "named", "name": name, "frame": self.connector_by_name(iid, name)}
+        return self._published_named_connector(iid, name)
 
     def set_standard_params(self, iids, changes):
         """Apply the parameter `changes` (a dict) to each Standard part instance in `iids`, as ONE undo step.

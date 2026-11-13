@@ -174,7 +174,7 @@ class ProcessEngine(Engine):
     def _start(self, t, upstream, key):
         spec = {"tab": t.tab, "kind": t.kind, "path": t.path, "data": t.data, "name": t.name,
                 "edits": copy.deepcopy(t.edits), "revision": t.revision, "meshes": self.meshes,
-                "upstream": upstream, "upstream_key": key}
+                "upstream": upstream, "upstream_key": key, "document_id": self.document_id}
         t.epoch += 1
         t.error, t.lean, t.sent = None, None, key
         t.pool = SPARES.take(self._ctx, self.spares)

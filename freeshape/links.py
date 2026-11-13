@@ -283,7 +283,7 @@ class LinkResolver:
         lies inside its folder -- the old uid/path flow then applies). Raises KernelError for a tab id the
         manifest doesn't have, a tab that failed to open, and a legacy path outside the Document folder,
         which is refused before any file is touched."""
-        if is_pinned(src, getattr(self.folder, "id", None)):
+        if is_pinned(src, getattr(self.folder, "id", None) or self.own_id):
             return self._cross_doc(src, kind)
         folder = self.folder
         if folder is None:

@@ -187,6 +187,7 @@ class _Worker:
     def __init__(self, spec):
         self.tab = spec["tab"]
         self.engine = _WorkerEngine(meshes=spec["meshes"])
+        self.engine.use_document(spec.get("document_id"))     # whose tab ids the sources name: see CrossTabInputs
         self.engine.install(spec.get("upstream"), spec.get("upstream_key"))
         if spec.get("data") is None:
             self.engine.new_tab(spec["kind"], spec.get("name"), tab=self.tab)

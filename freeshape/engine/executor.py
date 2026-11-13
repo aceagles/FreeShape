@@ -383,8 +383,19 @@ class InProcessEngine(Engine):
         self.encoder = Encoder(meshes=meshes)
         self.inputs = CrossTabInputs(self)
         self.links = self.inputs.resolver
+        self.document_id = None        # the Document these tabs belong to (`use_document`)
+        self.cross = None              # resolves a source naming another Document, pinned to a Version
         self._tabs: dict[str, _Tab] = {}
         self._counter = 0
+
+    def use_document(self, document_id, registry=None):
+        """Say which Document the tabs belong to: a source naming another Document is then never matched to a
+        tab, and is read at its pinned Version through `registry` (the rule of ProcessEngine.use_document)."""
+        self.document_id = document_id
+        self.links.own_id = document_id
+        self.cross = links.LinkResolver(registry=registry) if registry is not None else None
+        if self.cross is not None:
+            self.cross.own_id = document_id
 
     # ------------------------------------------------------------------ tab registry
     def _new_id(self):

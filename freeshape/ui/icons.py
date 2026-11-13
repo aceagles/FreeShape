@@ -499,6 +499,46 @@ def draw(name: str, p: QPainter):
         p.setBrush(Qt.NoBrush)
         p.setPen(_pen(BLUE, 1.5))
         p.drawArc(QRectF(4, 2, 24, 24), 30 * 16, 120 * 16)
+    elif name == "r_gear":
+        for cx, cy in ((10, 16), (22, 16)):
+            p.setPen(_pen(INK, 1.4))
+            p.setBrush(FACE)
+            p.drawEllipse(QPointF(cx, cy), 7, 7)
+            p.setBrush(FACE_DARK)
+            p.drawEllipse(QPointF(cx, cy), 2.4, 2.4)
+            for k in range(6):
+                a = k * math.pi / 3 + (0.3 if cx > 16 else 0.0)
+                p.drawLine(QPointF(cx + 7 * math.cos(a), cy + 7 * math.sin(a)),
+                           QPointF(cx + 9.5 * math.cos(a), cy + 9.5 * math.sin(a)))
+        _arrow(p, 6, 4, 14, 4, BLUE, 1.4)
+    elif name == "r_rack_pinion":
+        p.setPen(_pen(INK, 1.4))
+        p.setBrush(FACE_DARK)
+        p.drawRect(QRectF(3, 22, 26, 5))
+        for x in range(5, 28, 4):
+            p.drawLine(QPointF(x, 22), QPointF(x, 19.5))
+        p.setBrush(FACE)
+        p.drawEllipse(QPointF(16, 13), 7, 7)
+        _dot(p, 16, 13, INK, 1.8)
+        _arrow(p, 6, 31, 26, 31, BLUE, 1.4)
+    elif name == "r_screw":
+        p.setPen(_pen(INK, 1.4))
+        p.setBrush(FACE)
+        p.drawRect(QRectF(11, 4, 10, 24))
+        p.setPen(_pen(INK, 1.2))
+        for y in range(8, 27, 5):
+            p.drawLine(QPointF(11, y + 3), QPointF(21, y))
+        _arrow(p, 26, 24, 26, 6, BLUE, 1.5)
+    elif name == "r_linear":
+        p.setPen(_pen(INK, 1.4))
+        p.setBrush(FACE_DARK)
+        p.drawRect(QRectF(3, 9, 26, 4))
+        p.drawRect(QRectF(3, 21, 26, 4))
+        p.setBrush(FACE)
+        p.drawRect(QRectF(6, 5, 7, 8))
+        p.drawRect(QRectF(15, 17, 11, 8))
+        _arrow(p, 8, 3, 18, 3, BLUE, 1.4)
+        _arrow(p, 17, 29, 27, 29, BLUE, 1.4)
     elif name == "fix":
         p.setPen(_pen(INK, 1.6))
         p.drawLine(QPointF(16, 5), QPointF(16, 24))

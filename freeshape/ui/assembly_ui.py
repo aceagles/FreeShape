@@ -820,6 +820,315 @@ class MateDialog(QFrame):
             super().keyPressEvent(e)
 
 
+# =========================================================================== relation dialog
+
+def mate_freedoms(mate, kind):
+    """The freedoms of `mate` of one kind (DOF_KINDS), in MATE_VALUE_DOFS order."""
+    return [d for d in A.MATE_VALUE_DOFS.get(mate["type"], ()) if A.dof_kind(d) == kind]
+
+
+class RelationDialog(QFrame):
+    """Add or edit a relation (gear, rack and pinion, screw, linear), driven by A.RELATION_TYPES. Two mate fields
+    are filled from the mate list or by clicking a part near a mate's connector (one field for a same_mate type).
+    A freedom chooser appears for a side only when its mate has several freedoms of the kind that side needs.
+    Nothing is previewed: adding a relation moves no part (ADR 0005)."""
+    accepted = Signal()
+    rejected = Signal()
+
+    def __init__(self, ctl, rel, is_new):
+        super().__init__(ctl.w.viewport)
+        _floating(self)
+        self.ctl = ctl
+        self.doc = ctl.doc
+        self.rel = copy.deepcopy(rel)
+        self.is_new = is_new
+        self.result = None
+        self.sel = {s: (rel.get(s) or {}).get("mate") for s in ("a", "b")}
+        self.dof_choice = {s: (rel.get(s) or {}).get("dof") for s in ("a", "b")}
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 10)
+        lay.setSpacing(6)
+        head, self.title = _head(self, self.rel["name"], "r_" + self.rel["type"], self.accept, self.reject)
+        self.head_icon = head.itemAt(0).widget()
+        lay.addLayout(head)
+        lay.addWidget(_hline())
+        trow = QHBoxLayout()
+        trow.setSpacing(2)
+        self.type_buttons = {}
+        for t, spec in A.RELATION_TYPES.items():
+            b = QToolButton()
+            b.setIcon(icon("r_" + t))
+            b.setIconSize(QSize(22, 22))
+            b.setCheckable(True)
+            b.setToolTip(f"{spec['label']} — {spec['help']}")
+            b.clicked.connect(lambda _=False, tt=t: self.set_type(tt))
+            trow.addWidget(b)
+            self.type_buttons[t] = b
+        trow.addStretch(1)
+        lay.addLayout(trow)
+        self.type_label = QLabel("")
+        self.type_label.setObjectName("muted")
+        self.type_label.setWordWrap(True)
+        lay.addWidget(self.type_label)
+        self.fields, self.choosers = {}, {}
+        for side in ("a", "b"):
+            f = ConnectorField("")
+            f.activated.connect(self.activate)
+            f.clear_btn.clicked.connect(lambda _=False, s=side: self._clear(s))
+            lay.addWidget(f)
+            self.fields[side] = f
+            combo = QComboBox()
+            combo.currentIndexChanged.connect(lambda _i, s=side: self._chosen(s))
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            lab = QLabel("Freedom")
+            lab.setFixedWidth(60)
+            h.addWidget(lab)
+            h.addWidget(combo, 1)
+            lay.addWidget(row)
+            self.choosers[side] = (row, combo)
+        hint = QLabel("Click a mate in the list, or a part next to a mate's connector in the view.")
+        hint.setWordWrap(True)
+        hint.setObjectName("muted")
+        lay.addWidget(hint)
+        rrow = QWidget()
+        h = QHBoxLayout(rrow)
+        h.setContentsMargins(0, 0, 0, 0)
+        self.ratio_label = QLabel("Ratio")
+        self.ratio_label.setFixedWidth(60)
+        h.addWidget(self.ratio_label)
+        self.ratio = QLineEdit(fmt(float(self.rel.get("ratio", 1.0))))
+        h.addWidget(self.ratio, 1)
+        self.ratio_unit = QLabel("")
+        h.addWidget(self.ratio_unit)
+        lay.addWidget(rrow)
+        self.reverse = QCheckBox("Reverse")
+        self.reverse.setChecked(bool(self.rel.get("reverse")))
+        self.reverse.setToolTip("Make the second freedom move the opposite way")
+        lay.addWidget(self.reverse)
+        self.err = QLabel("")
+        self.err.setObjectName("dialogError")
+        self.err.setWordWrap(True)
+        self.err.hide()
+        lay.addWidget(self.err)
+        self.active = self.fields["a"]
+        self.set_type(self.rel["type"])
+        self.activate(self.fields["a"] if not self.sel["a"] else self.fields["b"] if not self.sel["b"]
+                      else self.fields["a"])
+        self.setFixedWidth(300)
+        self.adjustSize()
+        self.move(12, 12)
+        self.show()
+
+    # ------------------------------------------------------------------ state
+    @property
+    def spec(self):
+        return A.RELATION_TYPES[self.rel["type"]]
+
+    def set_type(self, t):
+        old = self.rel["type"]
+        self.rel["type"] = t
+        spec = self.spec
+        for k, b in self.type_buttons.items():
+            b.setChecked(k == t)
+        self.type_label.setText(f"<b>{spec['label']}</b> — {spec['help']}")
+        self.head_icon.setPixmap(icon("r_" + t).pixmap(20, 20))
+        if self.is_new and self.title.text() == self.doc.make_relation(old)["name"]:
+            self.title.setText(self.doc.make_relation(t)["name"])
+        self.ratio_label.setText("Distance" if spec["ratio_unit"].endswith("/rev") else "Ratio")
+        self.ratio_unit.setText(spec["ratio_unit"])
+        if spec.get("same_mate"):
+            self.sel["a"] = self.sel["a"] or self.sel["b"]
+            self.sel["b"] = self.sel["a"]
+            self.active = self.fields["a"]
+        elif A.RELATION_TYPES[old].get("same_mate") and self.sel["a"] == self.sel["b"]:
+            self.sel["b"] = None
+        self.fields["b"].setVisible(not spec.get("same_mate"))
+        self._normalise()
+        self._refresh()
+
+    def _side_label(self, side):
+        spec = self.spec
+        if spec.get("same_mate"):
+            return "Cylindrical mate"
+        kind = spec[side]
+        if spec["a"] != spec["b"]:
+            return f"{'Rotation' if kind == 'rotation' else 'Slide'} mate"
+        return f"{'First' if side == 'a' else 'Second'} mate"
+
+    def _options(self, side):
+        m = self.doc.mate(self.sel[side]) if self.sel[side] else None
+        return mate_freedoms(m, self.spec[side]) if m is not None else []
+
+    def _normalise(self):
+        """A type with two different kinds (rack and pinion) wants the rotation on a and the translation on b:
+        if the mates were picked the other way round, swap them."""
+        spec = self.spec
+        if spec["a"] == spec["b"] or spec.get("same_mate") or not (self.sel["a"] and self.sel["b"]):
+            return
+        if not self._options("a") or not self._options("b"):
+            swapped = {"a": self.sel["b"], "b": self.sel["a"]}
+            ma, mb = self.doc.mate(swapped["a"]), self.doc.mate(swapped["b"])
+            if ma is not None and mb is not None and mate_freedoms(ma, spec["a"]) and mate_freedoms(mb, spec["b"]):
+                self.sel = swapped
+                self.dof_choice = {"a": None, "b": None}
+
+    def _refresh(self):
+        problems = []
+        for side in ("a", "b"):
+            f = self.fields[side]
+            f.findChild(QLabel).setText(self._side_label(side) + f" ({self.spec[side]})")
+            mid = self.sel[side]
+            m = self.doc.mate(mid) if mid else None
+            if m is None:
+                self.sel[side] = None
+                f.text.setText("Click to select" if f is self.active else "—")
+                f.text.setStyleSheet("color:#8a94a3;")
+            else:
+                f.text.setText(m["name"])
+                f.text.setStyleSheet("")
+            opts = self._options(side)
+            row, combo = self.choosers[side]
+            if m is not None and not opts:
+                problems.append(f"{m['name']} has no {self.spec[side]} freedom.")
+            if [combo.itemData(i) for i in range(combo.count())] != opts:
+                combo.blockSignals(True)
+                combo.clear()
+                for d in opts:
+                    combo.addItem(f"{VALUE_LABELS.get(d, d)} ({value_unit(d)})", d)
+                combo.blockSignals(False)
+            if self.dof_choice[side] not in opts:
+                self.dof_choice[side] = opts[0] if opts else None
+            if opts:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(opts.index(self.dof_choice[side]))
+                combo.blockSignals(False)
+            row.setVisible(len(opts) > 1)
+        self._error(" ".join(problems))
+        self.adjustSize()
+        self.ctl.update_triads()
+
+    def _chosen(self, side):
+        d = self.choosers[side][1].currentData()
+        if d is not None:
+            self.dof_choice[side] = d
+
+    def _clear(self, side):
+        self.sel[side] = None
+        if self.spec.get("same_mate"):
+            self.sel["a"] = self.sel["b"] = None
+        self.dof_choice[side] = None
+        self.activate(self.fields[side])
+        self._refresh()
+
+    def activate(self, field):
+        if self.active is not None:
+            self.active.set_active(False)
+        self.active = field
+        field.set_active(True)
+        self.ctl.w.viewport.select_filter = {"face", "edge"}
+        self._refresh()
+
+    def _active_side(self):
+        return "a" if self.active is self.fields["a"] or self.spec.get("same_mate") else "b"
+
+    def pick_mate(self, mid):
+        """Put mate `mid` into the active field; when only the other side's kind fits (rack and pinion) it
+        goes there instead. Returns True if the mate was taken."""
+        m = self.doc.mate(mid)
+        if m is None:
+            return False
+        spec = self.spec
+        want = self._active_side()
+        sides = [want] if spec.get("same_mate") else [want, "b" if want == "a" else "a"]
+        target = next((s for s in sides if mate_freedoms(m, spec[s])), None)
+        if target is None:
+            kinds = " or ".join(sorted({spec["a"], spec["b"]}))
+            self._error(f"{m['name']} has no {kinds} freedom for a {spec['label']} relation.")
+            return False
+        self.sel[target] = mid
+        self.dof_choice[target] = None
+        if spec.get("same_mate"):
+            self.sel["b"] = mid
+            self.dof_choice["b"] = None
+        self._normalise()
+        other = "b" if target == "a" else "a"
+        if not self.sel[other] and not spec.get("same_mate"):
+            self.activate(self.fields[other])
+        else:
+            self._refresh()
+        return True
+
+    def handle_pick(self, pick: Pick):
+        """A click on a part: take the mate whose connector on that part is nearest the click."""
+        if pick.kind not in ("face", "edge", "part"):
+            return
+        iid = pick.key[0]
+        vp = self.ctl.w.viewport
+        click = vp.surface_point(*vp.last_click) if vp.last_click else None
+        spec = self.spec
+        cands = []
+        for m in self.doc.mates:
+            for side in ("a", "b"):
+                c = m.get(side)
+                if c and c["inst"] == iid and any(mate_freedoms(m, spec[s]) for s in ("a", "b")):
+                    o = np.asarray(self.doc.world_frame(c)["o"], float)
+                    d = 0.0 if click is None else float(np.linalg.norm(o - click))
+                    cands.append((d, m["id"]))
+        if not cands:
+            self._error("No mate on that part has a freedom this relation can use.")
+            return
+        self.pick_mate(min(cands)[1])
+
+    def _error(self, text):
+        self.err.setText(text)
+        self.err.setVisible(bool(text))
+        self.adjustSize()
+
+    # ------------------------------------------------------------------ result
+    def build(self):
+        """The relation as the fields stand. Raises ValueError, with a message for the user, if it can't be."""
+        if not (self.sel["a"] and self.sel["b"]):
+            raise ValueError("Pick a mate for each side first." if not self.spec.get("same_mate")
+                             else "Pick a cylindrical mate first.")
+        text = self.ratio.text().strip()
+        v = None
+        try:
+            v = parse_number(text)
+        except Exception:
+            pass
+        if v is None:
+            raise ValueError(f"{self.ratio_label.text()}: can't read \"{text}\" as a number")
+        r = copy.deepcopy(self.rel)
+        r["name"] = self.title.text().strip() or r["name"]
+        r["a"] = {"mate": self.sel["a"], "dof": self.dof_choice["a"]}
+        r["b"] = {"mate": self.sel["b"], "dof": self.dof_choice["b"]}
+        r["ratio"] = float(v)
+        r["reverse"] = self.reverse.isChecked()
+        self.doc._check_relation(r)
+        return r
+
+    def accept(self):
+        try:
+            self.result = self.build()
+        except ValueError as e:
+            self._error(str(e))
+            return
+        self.accepted.emit()
+
+    def reject(self):
+        self.rejected.emit()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.accept()
+        elif e.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(e)
+
+
 # =========================================================================== precise move
 
 class MoveDialog(QFrame):
@@ -1006,6 +1315,7 @@ class AssemblyController:
         self.panel = AssemblyPanel()
         self.insert_panel = None
         self.mate_dialog = None
+        self.relation_dialog = None
         self.move_dialog = None
         self._drag = None
         self._interf = None          # last interference result (ghost meshes)
@@ -1015,7 +1325,7 @@ class AssemblyController:
         p.instanceClicked.connect(self._instance_clicked)
         p.instanceDouble.connect(self.open_source)
         p.instanceContext.connect(self.instance_menu)
-        p.mateClicked.connect(lambda _mid: self.update_triads())
+        p.mateClicked.connect(self._mate_clicked)
         p.mateDouble.connect(self.edit_mate)
         p.mateContext.connect(self.mate_menu)
         p.groupClicked.connect(self.select_group)
@@ -1049,6 +1359,11 @@ class AssemblyController:
         if self.mate_dialog is not None:
             m = self.mate_dialog.mate
             conns = [m.get("a"), m.get("b")]
+        elif self.relation_dialog is not None:
+            for side in ("a", "b"):
+                m = doc.mate(self.relation_dialog.sel[side])
+                if m:
+                    conns += [m.get("a"), m.get("b")]
         else:
             for mid in self.panel.selected_mates():
                 m = doc.mate(mid)
@@ -1243,6 +1558,75 @@ class AssemblyController:
 
     def _mate_rejected(self):
         self._close_mate()
+        self.on_changed()
+
+    # ------------------------------------------------------------------ relations
+    def _mate_clicked(self, mid):
+        if self.relation_dialog is not None:
+            self.relation_dialog.pick_mate(mid)
+        self.update_triads()
+
+    def start_relation(self, rtype, edit_rid=None):
+        w = self.w
+        if w.mode != "idle":
+            if self.relation_dialog is not None and self.relation_dialog.is_new and edit_rid is None:
+                self.relation_dialog.set_type(rtype)
+            return
+        if not self.doc.mates:
+            w.status.showMessage("Add a mate before adding a relation", 5000)
+            return
+        self.close_insert()
+        if edit_rid:
+            r = self.doc.relation(edit_rid)
+            if r is None:
+                return
+            is_new = False
+        else:
+            r, is_new = self.doc.make_relation(rtype), True
+        w.mode = "dialog"
+        self.relation_dialog = RelationDialog(self, r, is_new)
+        w._adapt_tree(self.relation_dialog)
+        self.relation_dialog.accepted.connect(self._relation_accepted)
+        self.relation_dialog.rejected.connect(self._relation_rejected)
+        self.vp.pick_handler = self.relation_dialog.handle_pick
+        if is_new:                                   # mates already selected in the list fill the fields
+            for mid in self.panel.selected_mates()[:2]:
+                self.relation_dialog.pick_mate(mid)
+
+    def edit_relation(self, rid):
+        r = self.doc.relation(rid)
+        if r is not None and self.w.mode == "idle":
+            self.start_relation(r["type"], rid)
+
+    def _close_relation(self):
+        d = self.relation_dialog
+        if d is not None:
+            d.hide()
+            d.deleteLater()
+        self.relation_dialog = None
+        self.w.mode = "idle"
+        vp = self.vp
+        vp.pick_handler = None
+        vp.select_filter = None
+        vp.clear_selection()
+        return d
+
+    def _relation_accepted(self):
+        d = self._close_relation()
+        r = d.result
+        try:
+            if d.is_new:
+                self.doc.add_relation(r)
+            else:
+                self.doc.replace_relation(r)
+        except ValueError as e:
+            self.w.status.showMessage(str(e), 6000)
+        else:
+            self.w.status.showMessage(f"{r['name']} added" if d.is_new else f"{r['name']} updated", 6000)
+        self.update_triads()
+
+    def _relation_rejected(self):
+        self._close_relation()
         self.on_changed()
 
     # ------------------------------------------------------------------ moving
@@ -1730,6 +2114,8 @@ class AssemblyController:
     def escape(self):
         if self.mate_dialog is not None:
             self.mate_dialog.reject()
+        elif self.relation_dialog is not None:
+            self.relation_dialog.reject()
         elif self.move_dialog is not None:
             self.move_dialog.reject()
         elif self.insert_panel is not None:
@@ -1744,6 +2130,8 @@ class AssemblyController:
         """Close any open assembly dialog (switching tabs etc.)."""
         if self.mate_dialog is not None:
             self.mate_dialog.reject()
+        if self.relation_dialog is not None:
+            self.relation_dialog.reject()
         if self.move_dialog is not None:
             self.move_dialog.reject()
         self.close_insert()

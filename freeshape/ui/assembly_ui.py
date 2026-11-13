@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QLineEdit, QListWidget, QListWidgetItem, QWidget,
     QGraphicsDropShadowEffect, QTreeWidget, QTreeWidgetItem, QPushButton, QDialog, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QFileDialog, QMessageBox, QCheckBox, QTabWidget,
+    QMenu,
 )
 
 from .. import kernel as K
@@ -355,6 +356,15 @@ class AssemblyPanel(QWidget):
     relationClicked = Signal(str)
     relationDouble = Signal(str)
     relationContext = Signal(str, object)
+    visibilityChanged = Signal()
+
+    # What the visibility dropdown switches: (key, label, shown at first, tooltip)
+    VISIBILITY = (
+        ("connectors", "Mate connectors", True, "The mate connectors each part brings from its Part Studio, and the "
+                                                "ones added at a part's origin"),
+        ("mates", "Mates", False, "The two connectors of every mate, not only of the mates you select"),
+        ("sketches", "Sketches", True, "Sketches inserted into this Assembly"),
+    )
 
     def __init__(self):
         super().__init__()
@@ -362,9 +372,33 @@ class AssemblyPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
+        head = QWidget()
+        hl = QHBoxLayout(head)
+        hl.setContentsMargins(0, 0, 6, 0)
+        hl.setSpacing(0)
         self.inst_header = QLabel("Instances")
         self.inst_header.setObjectName("sectionHeader")
-        lay.addWidget(self.inst_header)
+        hl.addWidget(self.inst_header, 1)
+        # like Onshape's eye on the instance list: what the Assembly draws besides its parts
+        self.vis_btn = QToolButton()
+        self.vis_btn.setObjectName("asm_visibility")
+        self.vis_btn.setText("Show")
+        self.vis_btn.setToolTip("Show or hide mate connectors, mates and sketches")
+        self.vis_btn.setPopupMode(QToolButton.InstantPopup)
+        vm = QMenu(self.vis_btn)
+        vm.setToolTipsVisible(True)
+        self.vis_actions = {}
+        for key, label, on, tip in self.VISIBILITY:
+            a = QAction(label, self)
+            a.setCheckable(True)
+            a.setChecked(on)
+            a.setToolTip(tip)
+            a.toggled.connect(lambda _on=False: self.visibilityChanged.emit())
+            vm.addAction(a)
+            self.vis_actions[key] = a
+        self.vis_btn.setMenu(vm)
+        hl.addWidget(self.vis_btn)
+        lay.addWidget(head)
         self.instances = QListWidget()
         self.instances.setIconSize(QSize(14, 14))
         self.instances.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -588,6 +622,10 @@ class AssemblyPanel(QWidget):
 
     def selected_mates(self):
         return [it.data(ROLE_ID) for it in self.mates.selectedItems()]
+
+    def shows(self, key):
+        """Whether the visibility dropdown has `key` ("connectors", "mates", "sketches") ticked."""
+        return self.vis_actions[key].isChecked()
 
     def select_instances(self, ids):
         self.instances.blockSignals(True)
@@ -1869,6 +1907,7 @@ class AssemblyController:
         p.relationClicked.connect(self.select_relation)
         p.relationDouble.connect(self.edit_relation)
         p.relationContext.connect(self.relation_menu)
+        p.visibilityChanged.connect(self.show_scene)
         from PySide6.QtCore import QObject
         from PySide6.QtGui import QAction
         # parented on the window so it is found by name; tests build this controller on a plain stand-in window
@@ -1893,7 +1932,7 @@ class AssemblyController:
             T = np.array(inst["T"], float)
             if doc.is_sketch_instance(inst["id"]):
                 # edges and points only, no faces: drawn by the viewport's sketch path, not as a part
-                sr = self._sketch_instance_result(inst["id"], T)
+                sr = self._sketch_instance_result(inst["id"], T) if self.panel.shows("sketches") else None
                 if sr is not None:
                     sketches.append((inst["id"], sr))
                 continue
@@ -1913,8 +1952,7 @@ class AssemblyController:
         if doc.studio_resolver is None and not hasattr(getattr(doc.resolver, "__self__", None), "resolve_studio"):
             # a loose Assembly resolves through the window, which can't publish a studio: give it the LinkResolver
             doc.studio_resolver = self.w._resolver_for(doc).resolve_studio
-        if doc.connector_resolver is None and not hasattr(getattr(doc.resolver, "__self__", None), "resolve_connectors"):
-            doc.connector_resolver = self.w._resolver_for(doc).resolve_connectors     # a sketch's own connectors
+        self._wire_connector_resolver()                                               # a sketch's own connectors
         out = doc.sketch_out(iid)
         if out is None:
             return None
@@ -1923,6 +1961,28 @@ class AssemblyController:
         plane = K.Plane(R @ np.asarray(pl["origin"], float) + t, R @ np.asarray(pl["xdir"], float),
                         R @ np.asarray(pl["normal"], float))
         return F.SketchResult(plane, Sketch.from_dict(out.sketch), [], [])
+
+    def _wire_connector_resolver(self):
+        """A loose Assembly resolves through the window, which has no connector lookup: give it the LinkResolver's."""
+        doc = self.doc
+        make = getattr(self.w, "_resolver_for", None)       # tests drive the controller with a plain stand-in window
+        if make is not None and doc.connector_resolver is None \
+                and not hasattr(getattr(doc.resolver, "__self__", None), "resolve_connectors"):
+            doc.connector_resolver = make(doc).resolve_connectors
+
+    def _own_connector_triads(self):
+        """A triad for every mate connector a visible instance offers (its Part Studio's and its origin one)."""
+        doc, out = self.doc, []
+        self._wire_connector_resolver()
+        for inst in doc.visible_instances():
+            for pc in doc.published_connectors(inst["id"]) or []:
+                try:
+                    fr = doc.world_frame(doc.named_connector(inst["id"], pc["id"]))
+                except Exception:           # a connector that can't be placed is simply not drawn
+                    continue
+                z, x = A.unit(fr["z"]), A.unit(fr["x"])
+                out.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75)})
+        return out
 
     def update_triads(self):
         doc = self.doc
@@ -1937,7 +1997,8 @@ class AssemblyController:
                 if m:
                     conns += [m.get("a"), m.get("b")]
         else:
-            for mid in self.panel.selected_mates():
+            shown = [m["id"] for m in doc.mates] if self.panel.shows("mates") else self.panel.selected_mates()
+            for mid in shown:
                 m = doc.mate(mid)
                 if m:
                     conns += [m.get("a"), m.get("b")]
@@ -1954,12 +2015,8 @@ class AssemblyController:
                 x = A.unit(fr["x"])
                 tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75),
                             "size_px": 26, "width": 1.8})
-        for c in doc.connectors:             # explicit origin connectors, wherever their instance is
-            if doc.instance(c["inst"]) is not None and not doc.instance(c["inst"]).get("hidden"):
-                fr = doc.world_frame(doc.named_connector(c["inst"], c["id"]))
-                z = A.unit(fr["z"])
-                x = A.unit(fr["x"])
-                tri.append({"o": fr["o"], "x": x, "y": np.cross(z, x), "z": z, "color": (0.15, 0.7, 0.75)})
+        elif self.panel.shows("connectors"):  # ...and, with no dialog open, each part's connectors, to see
+            tri += self._own_connector_triads()
         self.vp.triads = tri
         self.vp.update()
 

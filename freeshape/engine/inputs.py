@@ -126,6 +126,8 @@ class CrossTabInputs:
         view carries the package the parent sent (`package`); otherwise it is read from the open tab. Raises
         KernelError when no tab matches."""
         with self._resolving(src):
+            if links.is_cross_link(src):         # a pinned Version of another Document: the package the parent sent
+                return self._external_doc(src, "studio").package
             doc = self._provide("studio", src.get("uid"), src.get("path"), src.get("tab"))
             if doc is None:
                 raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")

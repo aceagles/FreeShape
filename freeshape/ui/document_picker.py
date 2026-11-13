@@ -13,14 +13,17 @@ from .. import kernel as K
 from .. import links
 
 ROLE_ROW = Qt.UserRole + 5
+LOCAL = ""          # the doc_combo data of the `local_label` choice (never a Document id)
 
 
 class DocumentVersionPicker(QWidget):
     """Two combos, objectNames `picker_document` and `picker_version`. `selection()` is (document id, Version name)
-    or None. Lists the registry's trusted Documents whose folder exists, except `exclude_id` (the open Document)."""
+    or None. Lists the registry's trusted Documents whose folder exists, except `exclude_id` (the open Document).
+    `local_label` adds a first choice of that name (`is_local()`, no Version, `selection()` None) for a picker
+    that may also stay in the open Document; the Version combo then starts on a "choose" row, not the newest."""
     changed = Signal()
 
-    def __init__(self, registry, exclude_id=None, parent=None):
+    def __init__(self, registry, exclude_id=None, parent=None, local_label=None):
         super().__init__(parent)
         self.registry = registry
         form = QFormLayout(self)
@@ -35,6 +38,9 @@ class DocumentVersionPicker(QWidget):
         self.note.setObjectName("muted")
         self.note.setWordWrap(True)
         form.addRow(self.note)
+        self.local_label = local_label
+        if local_label:
+            self.doc_combo.addItem(local_label, LOCAL)
         docs = registry.list_documents() if registry is not None else []
         for d in docs:
             if not d["missing"] and d["id"] != exclude_id:
@@ -48,7 +54,10 @@ class DocumentVersionPicker(QWidget):
         self.version_combo.clear()
         self.note.setText("")
         doc = self.doc_combo.currentData()
-        if doc is None:
+        self.version_combo.setEnabled(doc != LOCAL)
+        if doc == LOCAL:
+            pass
+        elif doc is None:
             self.note.setText("No other Documents on this machine.")
         else:
             try:
@@ -56,6 +65,8 @@ class DocumentVersionPicker(QWidget):
             except K.KernelError as e:
                 versions = []
                 self.note.setText(str(e))
+            if self.local_label and versions:      # a pin is chosen, never defaulted
+                self.version_combo.addItem("— choose a Version —", None)
             for v in versions:
                 self.version_combo.addItem(v, v)
             if doc is not None and not versions and not self.note.text():
@@ -63,9 +74,13 @@ class DocumentVersionPicker(QWidget):
         self.version_combo.blockSignals(False)
         self.changed.emit()
 
+    def is_local(self):
+        """Whether the `local_label` choice is the current one."""
+        return self.doc_combo.currentData() == LOCAL
+
     def selection(self):
         doc, ver = self.doc_combo.currentData(), self.version_combo.currentData()
-        return (doc, ver) if doc is not None and ver is not None else None
+        return (doc, ver) if doc not in (None, LOCAL) and ver is not None else None
 
     def select(self, document, version):
         """Choose a Document by id and one of its Versions; False if either is not listed."""

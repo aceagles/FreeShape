@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -578,6 +579,7 @@ SCHEMAS = {
     #   Mate connectors tick list: after `derived_sketches`, key "connectors".
     #   Location and Placement base: after that.
     "derived": [
+        {"t": "derived_document", "key": "source", "label": "Document"},
         {"t": "derived_source", "key": "source", "label": "Part Studio"},
         {"t": "derived_checks", "key": "parts", "label": "Parts"},
         {"t": "derived_checks", "key": "sketches", "label": "Sketches"},
@@ -897,6 +899,7 @@ class FeatureDialog(_ResizableFrame):
         ok.setText("✓")
         ok.setToolTip("Accept (Enter)")
         ok.clicked.connect(self.accept)
+        self.ok_button = ok
         cancel = QToolButton()
         cancel.setObjectName("cancelButton")
         cancel.setText("✕")
@@ -1045,6 +1048,8 @@ class FeatureDialog(_ResizableFrame):
             return self._make_studio_choice(spec, p, row, h)
         if t == "studio_names":
             return self._make_studio_names(spec, p, row, h)
+        if t == "derived_document":
+            return self._make_derived_document(spec, p, row, h)
         if t == "derived_source":
             return self._make_derived_source(spec, p, row, h)
         if t == "derived_checks":
@@ -1058,7 +1063,18 @@ class FeatureDialog(_ResizableFrame):
     # params the lists own and calls each. A later row that lists the source's output (Mate connectors) appends
     # its own callback and registers its params key in `_derived_owned`.
     def _derived_tabs(self):
-        """The Part Studio tabs of the open Document's manifest other than this one, open or not."""
+        """The Part Studio tabs of the open Document's manifest other than this one, open or not; with another
+        Document chosen (`_derived_scope` = (document id, Version)), the Part Studio tabs of that Version."""
+        scope = getattr(self, "_derived_scope", None)
+        if scope is not None:
+            if scope[1] is None:
+                return []
+            try:
+                tabs = self.main.folder.registry.describe(scope[0], scope[1])["tabs"]
+            except K.KernelError:
+                return []
+            return [SimpleNamespace(id=t["id"], name=t["name"], kind=t["kind"]) for t in tabs
+                    if t.get("kind") == "studio"]
         fd = getattr(self.main, "folder", None)
         mine = self.main._folder_tab(self.doc) if hasattr(self.main, "_folder_tab") else None
         return [t for t in (fd.tabs if fd is not None else []) if t.kind == "studio" and t is not mine]
@@ -1073,19 +1089,62 @@ class FeatureDialog(_ResizableFrame):
         except Exception as e:          # source not found, in error, or not loadable: the list stays empty
             return None, str(e)
 
+    def _derived_pending(self):
+        """Another Document is chosen but no Version yet: the Derived cannot be committed (a link to another
+        Document is always pinned)."""
+        scope = getattr(self, "_derived_scope", None)
+        return scope is not None and scope[1] is None
+
+    def _derived_gate(self):
+        pending = self._derived_pending()
+        self.ok_button.setEnabled(not pending)
+        self.ok_button.setToolTip("Choose a Version of the Document first" if pending else "Accept (Enter)")
+
+    def _make_derived_document(self, spec, p, row, h):
+        """`This Document`, or another Document and one of its Versions (ui.document_picker). The chosen scope decides
+        which Part Studio tabs `derived_source` lists; the source is re-read when it changes."""
+        from .document_picker import DocumentVersionPicker
+        fd = self.main.folder
+        pk = DocumentVersionPicker(fd.registry, exclude_id=getattr(fd, "id", None), local_label="This Document")
+        pk.setObjectName("derived_document")
+        src = p.get(spec["key"]) or {}
+        self._derived_scope = None
+        if src.get("document") and src["document"] != getattr(fd, "id", None):
+            pk.select(src["document"], src.get("version"))
+            self._derived_scope = (src["document"], src.get("version"))
+        self._derived_picker = pk
+
+        def scope_changed():
+            self._derived_scope = None if pk.is_local() else (pk.doc_combo.currentData(), pk.version_combo.currentData())
+            refill = getattr(self, "_derived_refill_tabs", None)
+            if refill is not None:
+                refill()
+            self._derived_gate()
+        pk.changed.connect(scope_changed)
+        h.setDirection(QBoxLayout.TopToBottom)
+        h.addWidget(pk)
+        self.widgets["document"] = pk
+        return row
+
     def _make_derived_source(self, spec, p, row, h):
         from .. import links as L
         self._derived_fills = []
         self._derived_owned = ["parts", "sketches", "connectors"]      # params keys that belong to the source and are cleared with it
         cb = QComboBox()
-        cb.addItem("— choose a Part Studio —", None)
-        for t_ in self._derived_tabs():
-            cb.addItem(t_.name, t_.id)
         key = spec["key"]
         cur = (p.get(key) or {}).get("tab")
-        if cur and cb.findData(cur) < 0:        # the source tab is gone: say so instead of silently changing it
-            cb.addItem(f"{(p[key].get('studio_name') or cur)} (not in this Document)", cur)
-        cb.setCurrentIndex(max(0, cb.findData(cur)))
+
+        def fill_tabs(keep=None):
+            cb.blockSignals(True)
+            cb.clear()
+            cb.addItem("— choose a Part Studio —", None)
+            for t_ in self._derived_tabs():
+                cb.addItem(t_.name, t_.id)
+            if keep and cb.findData(keep) < 0:     # the source tab is gone: say so instead of silently changing it
+                cb.addItem(f"{(p[key].get('studio_name') or keep)} (not in this Document)", keep)
+            cb.setCurrentIndex(max(0, cb.findData(keep)))
+            cb.blockSignals(False)
+        fill_tabs(cur)
         self._derived_note = QLabel("")
         self._derived_note.setWordWrap(True)
         self._derived_note.setStyleSheet("color:#8a94a3;")
@@ -1097,14 +1156,28 @@ class FeatureDialog(_ResizableFrame):
             tab = next((x for x in self._derived_tabs() if x.id == tid), None)
             for k_ in self._derived_owned:
                 self.feature["params"][k_] = []          # another source: its own parts and sketches
+            scope = getattr(self, "_derived_scope", None)
             if tab is not None:
-                self.feature["params"][key] = L.studio_source(tab)
+                self.feature["params"][key] = (L.studio_source(tab) if scope is None else
+                                               L.studio_source(tab, document=scope[0], version=scope[1]))
             elif tid is None:
                 self.feature["params"][key] = {}
             for fill in self._derived_fills:
                 fill()
             self._set_unlisted()
         cb.currentIndexChanged.connect(chosen)
+
+        def scope_changed():
+            """Another Document or Version: its own tabs, so no source, parts or sketches carry over."""
+            for k_ in self._derived_owned:
+                self.feature["params"][k_] = []
+            self.feature["params"][key] = {}
+            fill_tabs()
+            for fill in self._derived_fills:
+                fill()
+            self._set_unlisted()
+        self._derived_refill_tabs = scope_changed
+        self._derived_gate()
         h.addWidget(cb)
         h.setDirection(QBoxLayout.TopToBottom)
         h.addWidget(self._derived_note)
@@ -1646,6 +1719,8 @@ class FeatureDialog(_ResizableFrame):
         self.adjustSize()
 
     def accept(self):
+        if self.ftype == "derived" and self._derived_pending():
+            return                              # another Document without a Version: nothing to pin yet
         self._timer.stop()
         self.feature["name"] = self.title.text().strip() or self.feature["name"]
         if self.ftype == "hole":

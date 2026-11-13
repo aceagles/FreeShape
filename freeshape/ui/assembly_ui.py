@@ -69,6 +69,21 @@ def _hline():
 
 # =========================================================================== left panel
 
+# What each Mate value is called in the UI, and its unit (rotations in degrees, translations in mm).
+VALUE_LABELS = {"rz": "Rotation", "tz": "Slide", "tx": "Slide X", "ty": "Slide Y"}
+
+
+def value_unit(dof):
+    return "°" if dof.startswith("r") else "mm"
+
+
+def value_rows(mate):
+    """(freedom, label, text, unit) for each Mate value of `mate`; empty for fastened and ball."""
+    vals = mate.get("values") or {}
+    return [(d, VALUE_LABELS.get(d, d), fmt(float(vals.get(d, 0.0))), value_unit(d))
+            for d in A.MATE_VALUE_DOFS.get(mate["type"], ())]
+
+
 class AssemblyPanel(QWidget):
     instanceClicked = Signal(str)
     instanceDouble = Signal(str)
@@ -200,6 +215,8 @@ class AssemblyPanel(QWidget):
                 it.setForeground(QColor("#d93025"))
                 it.setIcon(icon("error"))
                 tip += "\n" + err
+            for _d, label, text, unit in value_rows(m):
+                tip += f"\n{label}: {text} {unit}"
             if m["id"] == editing:
                 it.setBackground(QColor("#ffe9b8"))
             it.setToolTip(tip)
@@ -452,12 +469,20 @@ class MateDialog(QFrame):
         lay.addWidget(self.offset_row)
         self.angle_row, self.angle = self._num_row("Angle", self.mate.get("angle", 0.0), "angle", "°")
         lay.addWidget(self.angle_row)
+        self.values_box = QWidget()
+        self.values_lay = QVBoxLayout(self.values_box)
+        self.values_lay.setContentsMargins(0, 0, 0, 0)
+        self.values_lay.setSpacing(2)
+        self.value_labels = {}
+        lay.addWidget(self.values_box)
         self.err = QLabel("")
         self.err.setObjectName("dialogError")
         self.err.setWordWrap(True)
         self.err.hide()
         lay.addWidget(self.err)
         self.active = None
+        self._live = True
+        self.doc.listeners.append(self._doc_notified)
         self.set_type(self.mate["type"], preview=False)
         self.flip.setChecked(bool(self.mate.get("flip")))
         self._apply_preselection(preselection)
@@ -514,6 +539,7 @@ class MateDialog(QFrame):
         self.offset_row.setVisible(t in ("fastened", "revolute", "planar", "ball"))
         self.rot.setVisible(t in ("fastened", "slider"))
         self.flip.setVisible(t != "ball")
+        self._refresh_values()
         self.adjustSize()
         if preview:
             self.schedule()
@@ -521,6 +547,47 @@ class MateDialog(QFrame):
     def _set(self, key, value):
         self.mate[key] = value
         self.schedule()
+
+    # read-only Mate values: one row per freedom, kept current while the document changes
+    def _refresh_values(self):
+        live = self.doc.mate(self.mate["id"]) if not self.is_new else None
+        src = dict(self.mate)
+        if live is not None and live["type"] == self.mate["type"]:
+            src["values"] = live.get("values")
+        rows = value_rows(src)
+        if list(self.value_labels) != [r[0] for r in rows]:
+            while self.values_lay.count():
+                self.values_lay.takeAt(0).widget().deleteLater()
+            self.value_labels = {}
+            for d, label, _t, unit in rows:
+                w = QWidget()
+                h = QHBoxLayout(w)
+                h.setContentsMargins(0, 0, 0, 0)
+                lab = QLabel("Value" if len(rows) == 1 else label)
+                lab.setFixedWidth(60)
+                h.addWidget(lab)
+                val = QLabel()
+                val.setObjectName("muted")
+                h.addWidget(val, 1)
+                h.addWidget(QLabel(unit))
+                self.values_lay.addWidget(w)
+                self.value_labels[d] = val
+        for d, _l, text, _u in rows:
+            self.value_labels[d].setText(text)
+        self.values_box.setVisible(bool(rows))
+
+    def _doc_notified(self):
+        if not self._live:
+            return
+        try:
+            self._refresh_values()
+        except RuntimeError:             # the dialog was deleted without accept/reject
+            self._detach()
+
+    def _detach(self):
+        self._live = False
+        if self._doc_notified in self.doc.listeners:
+            self.doc.listeners.remove(self._doc_notified)
 
     def _rotate90(self):
         a = (float(self.mate.get("angle", 0.0) or 0.0) + 90.0) % 360.0
@@ -636,6 +703,7 @@ class MateDialog(QFrame):
         else:
             self.doc.solve()
             self._error("")
+        self._refresh_values()
         self.ctl.show_scene()
         self.ctl.update_triads()
 
@@ -645,11 +713,13 @@ class MateDialog(QFrame):
         if not (self.mate.get("a") and self.mate.get("b")):
             self._error("Pick a mate connector on each of the two parts first.")
             return
+        self._detach()
         self._restore()
         self.accepted.emit()
 
     def reject(self):
         self._timer.stop()
+        self._detach()
         self._restore()
         self.doc.solve()
         self.rejected.emit()
@@ -1368,6 +1438,8 @@ class AssemblyController:
         m.addAction("Rename…", lambda: self.rename(mid))
         m.addAction("Unsuppress" if mt.get("suppressed") else "Suppress",
                     lambda: doc.set_suppressed(mid, not mt.get("suppressed")))
+        if A.MATE_VALUE_DOFS.get(mt["type"]):
+            m.addAction("Set value…", lambda: self.set_value_dialog(mid))
         m.addSeparator()
         m.addAction("Delete", lambda: doc.delete_mates(ids))
         err = doc.errors.get(mid)
@@ -1376,6 +1448,39 @@ class AssemblyController:
             a = m.addAction("⚠ " + err)
             a.setEnabled(False)
         m.exec(gpos)
+
+    def set_value_dialog(self, mid):
+        """Ask for the freedom (when there are several) and a number, then drive the mate there."""
+        from PySide6.QtWidgets import QInputDialog
+        mt = self.doc.mate(mid)
+        rows = value_rows(mt) if mt else []
+        if not rows:
+            return
+        row = rows[0]
+        if len(rows) > 1:
+            names = [f"{r[1]} ({r[3]})" for r in rows]
+            pick, ok = QInputDialog.getItem(self.w, "Set value", "Freedom:", names, 0, False)
+            if not ok:
+                return
+            row = rows[names.index(pick)]
+        dof, label, text, unit = row
+        v, ok = QInputDialog.getDouble(self.w, "Set value", f"{label} ({unit}):", float(text), -1e6, 1e6, 3)
+        if ok:
+            self.set_mate_value(mid, dof, v)
+
+    def set_mate_value(self, mid, dof, value):
+        """Drive freedom `dof` of mate `mid` to `value`; a failure goes to the status bar. Returns (reached, ok)."""
+        mt = self.doc.mate(mid)
+        name = mt["name"] if mt else mid
+        try:
+            reached, ok = self.doc.drive_mate(mid, dof, float(value))
+        except ValueError as e:
+            self.w.status.showMessage(str(e), 6000)
+            return None, False
+        if not ok:
+            self.w.status.showMessage(
+                f"{name}: stopped at {fmt(reached)} {value_unit(dof)}, it can't reach {fmt(float(value))}", 8000)
+        return reached, ok
 
     def viewport_menu(self, pk, gpos):
         from PySide6.QtWidgets import QMenu

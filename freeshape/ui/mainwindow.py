@@ -699,7 +699,7 @@ class MainWindow(QMainWindow):
         self._sketch_buttons["dimension"] = b
         h.addWidget(_sep())
         for name in ("coincident", "horizontal", "vertical", "parallel", "perpendicular", "tangent",
-                     "equal", "midpoint", "concentric", "symmetric", "fix"):
+                     "equal", "midpoint", "concentric", "symmetric", "fix", "normal"):
             label = name.capitalize()
             keys = {"coincident": " (I)", "horizontal": " (H)", "vertical": " (V)", "equal": " (E)", "tangent": " (T)"}
             b = self._tb(h, name, label + keys.get(name, "") + " — " + CONSTRAINT_TOOLS[name],
@@ -2647,6 +2647,9 @@ class MainWindow(QMainWindow):
             return
         m = QMenu(self)
         if self.mode == "sketch":
+            if self.viewport.sketcher:
+                lp_ = self.viewport.mapFromGlobal(gpos)
+                self.viewport.sketcher.add_context_actions(m, self.viewport, lp_.x(), lp_.y())
             m.addAction("Normal to sketch", self._normal_to_sketch)
             m.addAction("Finish sketch", self.finish_sketch)
             m.addAction("Cancel sketch", self.cancel_sketch)

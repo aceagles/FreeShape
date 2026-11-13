@@ -32,6 +32,7 @@ CONSTRAINT_TOOLS = {
     "concentric": "Select two arcs/circles",
     "symmetric": "Select two points (or two circles/lines) and the line they're symmetric about",
     "fix": "Select points or curves to fix in place",
+    "normal": "Select a line and an arc/circle: the line passes through the curve's centre",
 }
 
 TOOL_HINTS = {
@@ -767,6 +768,16 @@ class Sketcher:
                         internal = d < max(sk.radius(a), sk.radius(b))
                         val = -1.0 if internal else 1.0
                     made.append(("tangent", [a, b], val))
+        if tool == "normal" and len(picks) == 2:
+            a, b = picks
+            ta, tb = types
+            if ta == "line" and tb in curves:
+                a, b = b, a
+            elif not (tb == "line" and ta in curves):
+                a = None
+            if a is not None:
+                # point-on-line residual on the curve's centre, flagged so the badge reads "normal"
+                made.append(("point_on", [sk.entities[a]["c"], b], None))
         if tool == "symmetric" and len(picks) == 3:
             lines_ = [p for p, t in zip(picks, types) if t == "line"]
             axis = picks[2] if types[2] == "line" else (lines_[-1] if lines_ else None)
@@ -797,9 +808,34 @@ class Sketcher:
             return False
         self.push_undo()
         for t, refs, val in made:
-            sk.add_constraint(t, *refs, value=val)
+            c = sk.add_constraint(t, *refs, value=val)
+            if tool == "normal":
+                c["normal"] = True
         self.changed(True)
         return True
+
+    def toggle_radius_diameter(self, cid) -> bool:
+        """Switch a radius dimension to a diameter one (or back): same references, value doubled or halved.
+        An expression is wrapped, not evaluated, so variables keep working. One undo step."""
+        c = self._constraint(cid)
+        if c is None or c["type"] not in ("radius", "diameter"):
+            return False
+        to_dia = c["type"] == "radius"
+        self.push_undo()
+        c["type"] = "diameter" if to_dia else "radius"
+        c["value"] = float(c["value"]) * (2.0 if to_dia else 0.5)
+        if isinstance(c.get("expr"), str) and c["expr"].strip():
+            c["expr"] = f"({c['expr']})*2" if to_dia else f"({c['expr']})/2"
+        self.changed(True)
+        return True
+
+    def add_context_actions(self, menu, vp, x, y):
+        """Add right-click actions for whatever sits under (x, y) in the viewport."""
+        h = self.hit(vp, x, y, kinds=("constraint",))
+        c = self._constraint(h[1]) if h else None
+        if c and c["type"] in ("radius", "diameter"):
+            label = "Show as diameter" if c["type"] == "radius" else "Show as radius"
+            menu.addAction(label, lambda cid=c["id"]: (self.toggle_radius_diameter(cid), vp.update()))
 
     # ------------------------------------------------------------------ drawing tools
     def _draw_click(self, vp, x, y):
@@ -1743,8 +1779,10 @@ class Sketcher:
             slots = {}
             for c in sk.constraints:
                 t = c["type"]
-                if t in DIMENSIONS or t in ("coincident", "point_on", "normal_at"):
+                if t in DIMENSIONS or t in ("coincident", "normal_at") or (t == "point_on" and not c.get("normal")):
                     continue
+                if t == "point_on":
+                    t = "normal"
                 for ref in c["refs"][:2]:
                     anchor = self._anchor_screen(vp, ref)
                     if anchor is None:

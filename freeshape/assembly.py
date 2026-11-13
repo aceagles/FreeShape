@@ -47,8 +47,8 @@ MATE_VALUE_DOFS = {
 # The kind of each freedom (from its name: r* turns, t* slides), its stored unit, and how a residual in that
 # unit is scaled to mm like the mate residuals: a rotation as mm of arc at the part's size L, a translation as is.
 DOF_KINDS = {
-    "rotation": {"unit": "deg", "scale": lambda L: np.radians(1.0) * L},
-    "translation": {"unit": "mm", "scale": lambda L: 1.0},
+    "rotation": {"unit": "deg", "scale": lambda L: np.radians(1.0) * L, "ui_unit": "rev", "per_ui_unit": 360.0},
+    "translation": {"unit": "mm", "scale": lambda L: 1.0, "ui_unit": "mm", "per_ui_unit": 1.0},
 }
 
 
@@ -57,12 +57,29 @@ def dof_kind(dof):
     return "rotation" if dof.startswith("r") else "translation"
 
 
-# Relation types: the kind of freedom each side accepts. The ratio is in b's unit per a's unit, so
-# value_b = sign x ratio x value_a + phase holds in b's stored unit (ADR 0005).
+# Relation types: the kind of freedom each side accepts. The user's ratio is in b's UI unit per a's UI unit
+# (DOF_KINDS "ui_unit": a rotation counts in revolutions, a translation in mm); "ratio_unit" is its label.
+# Stored values are in DOF_KINDS "unit" (deg, mm), so relation_ratio() converts: value_b = sign x ratio x
+# value_a + phase holds in stored units (ADR 0005). "same_mate" marks a type whose two sides are one mate.
 RELATION_TYPES = {
-    "linear": {"label": "Linear", "a": "translation", "b": "translation",
+    "linear": {"label": "Linear", "a": "translation", "b": "translation", "ratio_unit": "mm/mm",
                "help": "Ties one slide to another: the second moves ratio times as far"},
+    "gear": {"label": "Gear", "a": "rotation", "b": "rotation", "ratio_unit": "turns/turn",
+             "help": "Turns the driven mate ratio turns for each turn of the driving mate"},
+    "rack_pinion": {"label": "Rack and pinion", "a": "rotation", "b": "translation", "ratio_unit": "mm/rev",
+                    "help": "Moves the rack ratio mm for each turn of the pinion"},
+    "screw": {"label": "Screw", "a": "rotation", "b": "translation", "ratio_unit": "mm/rev", "same_mate": True,
+              "help": "Moves a cylindrical mate along its axis ratio mm for each turn about it"},
 }
+
+
+def relation_ratio(r):
+    """r's ratio in stored units (b's deg or mm per a's deg or mm), converted from the user's ratio by the
+    unit sizes the type's two kinds carry in DOF_KINDS."""
+    spec = RELATION_TYPES[r["type"]]
+    return float(r["ratio"]) * DOF_KINDS[spec["b"]]["per_ui_unit"] / DOF_KINDS[spec["a"]]["per_ui_unit"]
+
+
 FILE_FORMAT = "freeshape-assembly"
 
 
@@ -1252,7 +1269,10 @@ class AssemblyDoc:
             if ref.get("dof") not in MATE_VALUE_DOFS.get(m["type"], ()):
                 raise ValueError(f"Mate {m['name']!r} ({m['type']}) has no freedom {ref.get('dof')!r}")
             if dof_kind(ref["dof"]) != spec[side]:
-                raise ValueError(f"A {spec['label']} relation needs a {spec[side]} on side {side}")
+                raise ValueError(f"A {spec['label']} relation needs a {spec[side]} on side {side}, "
+                                 f"not {ref['dof']!r} of mate {m['name']!r}")
+        if spec.get("same_mate") and r["a"]["mate"] != r["b"]["mate"]:
+            raise ValueError(f"A {spec['label']} relation needs both sides on one mate")
         if (r["a"]["mate"], r["a"]["dof"]) == (r["b"]["mate"], r["b"]["dof"]):
             raise ValueError("A relation needs two different freedoms")
         ratio = float(r.get("ratio", 1.0))
@@ -1272,7 +1292,7 @@ class AssemblyDoc:
             r["phase"] = None
             return
         sign = -1.0 if r.get("reverse") else 1.0
-        r["phase"] = float(vb) - sign * float(r["ratio"]) * float(va)
+        r["phase"] = float(vb) - sign * relation_ratio(r) * float(va)
 
     def add_relation(self, r, checkpoint=True):
         """Add a relation, capturing its phase from the current values; no instance moves."""
@@ -1343,7 +1363,7 @@ class AssemblyDoc:
             sign = -1.0 if r.get("reverse") else 1.0
             va = self._relation_value(ma, da, Ts, frames)
             vb = self._relation_value(mb, db, Ts, frames)
-            out.append((vb - (sign * float(r["ratio"]) * va + float(r["phase"]))) * DOF_KINDS[dof_kind(db)]["scale"](L))
+            out.append((vb - (sign * relation_ratio(r) * va + float(r["phase"]))) * DOF_KINDS[dof_kind(db)]["scale"](L))
         return np.array(out, float)
 
     # ------------------------------------------------------------------ solving

@@ -536,7 +536,7 @@ class MateDialog(QFrame):
         if self.is_new and len(base) == 2 and base[0] in [v[0] for v in A.MATE_TYPES.values()]:
             self.title.setText(self.doc.make_mate(t)["name"] if self.is_new else self.title.text())
         self.angle_row.setVisible(t in ("fastened", "slider"))
-        self.offset_row.setVisible(t in ("fastened", "revolute", "planar", "ball"))
+        self.offset_row.setVisible(t in ("fastened", "revolute", "planar", "pin_slot", "ball"))
         self.rot.setVisible(t in ("fastened", "slider"))
         self.flip.setVisible(t != "ball")
         self._refresh_values()

@@ -474,6 +474,14 @@ def draw(name: str, p: QPainter):
         p.drawRect(QRectF(12, 10, 9, 8))
         _arrow(p, 16, 6, 26, 6, BLUE, 1.4)
         _arrow(p, 16, 6, 10, 11, BLUE, 1.4)
+    elif name == "m_pin_slot":
+        p.setPen(_pen(INK, 1.4))
+        p.setBrush(FACE_DARK)
+        p.drawRoundedRect(QRectF(3, 16, 26, 9), 4.5, 4.5)
+        p.setBrush(FACE)
+        p.drawEllipse(QRectF(9, 11, 9, 9))
+        _arrow(p, 20, 7, 28, 7, BLUE, 1.5)
+        _arrow(p, 12, 7, 4, 7, BLUE, 1.5)
     elif name == "m_ball":
         p.setPen(_pen(INK, 1.4))
         p.setBrush(FACE_DARK)

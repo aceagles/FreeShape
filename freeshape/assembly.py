@@ -28,9 +28,10 @@ MATE_TYPES = {
     "slider": ("Slider", "Slides along the Z axis without rotating"),
     "cylindrical": ("Cylindrical", "Slides along and rotates about the Z axis, like a shaft in a bearing"),
     "planar": ("Planar", "Slides and rotates on a plane, like a block on a table"),
+    "pin_slot": ("Pin slot", "A pin in a slot: slides along the first connector's X axis and rotates about Z"),
     "ball": ("Ball", "Rotates in every direction about a point"),
 }
-MATE_DOF = {"fastened": 0, "revolute": 1, "slider": 1, "cylindrical": 2, "planar": 3, "ball": 3}
+MATE_DOF = {"fastened": 0, "revolute": 1, "slider": 1, "cylindrical": 2, "pin_slot": 2, "planar": 3, "ball": 3}
 # The named free degrees of freedom of each mate type: its Mate values (translations in mm, rotations in degrees).
 MATE_VALUE_DOFS = {
     "fastened": (),
@@ -38,6 +39,7 @@ MATE_VALUE_DOFS = {
     "slider": ("tz",),
     "cylindrical": ("tz", "rz"),
     "planar": ("tx", "ty", "rz"),
+    "pin_slot": ("tx", "rz"),
     "ball": (),
 }
 FILE_FORMAT = "freeshape-assembly"
@@ -433,6 +435,10 @@ def mate_residuals(m, FA, FB, L):
         out.append(dv - (dv @ zA) * zA)
     if t == "planar":
         out.append(np.array([(oB - oA) @ zA - d]))
+    if t == "pin_slot":
+        # B's origin on the line through A's origin along A's X (offset d along Z); the slot ignores `angle`
+        dv = oB - oA
+        out.append(np.array([dv @ yA, dv @ zA - d]))
     return np.concatenate(out) if out else np.zeros(0)
 
 
@@ -447,15 +453,17 @@ def snap_transform(m, FA, FB):
     xt = np.cos(ang) * xA + np.sin(ang) * yA
     zt = s * zA
     target = frame_matrix({"o": FA["o"] + d * zA, "z": zt, "x": xt})
-    if m["type"] in ("slider", "cylindrical", "planar"):
+    if m["type"] in ("slider", "cylindrical", "planar", "pin_slot"):
         # keep B where it is along the free directions: only fix what the mate fixes
         dv = FB["o"] - FA["o"]
-        if m["type"] == "planar":
+        if m["type"] == "pin_slot":
+            o = FA["o"] + d * zA + (dv @ xA) * xA
+        elif m["type"] == "planar":
             o = FB["o"] - ((dv @ zA) - d) * zA
         else:
             o = FA["o"] + (dv @ zA) * zA
         target[:3, 3] = o
-    if m["type"] in ("revolute", "cylindrical", "planar", "ball"):
+    if m["type"] in ("revolute", "cylindrical", "planar", "pin_slot", "ball"):
         # keep B's current spin about the axis instead of forcing X onto A's X
         xb = np.asarray(FB["x"], float)
         if m["type"] == "ball":
@@ -485,6 +493,8 @@ def mate_values(m, FA, FB):
     if not names:
         return {}
     ang = np.radians(float(m.get("angle", 0.0) or 0.0))
+    if m["type"] == "pin_slot":
+        ang = 0.0                                   # the slot runs along A's X whatever `angle` says
     zA, xA = unit(FA["z"]), unit(FA["x"])
     yA = np.cross(zA, xA)
     xt = np.cos(ang) * xA + np.sin(ang) * yA

@@ -1581,41 +1581,111 @@ def sweep(profile_faces, path_wire, with_history=False):
     return (res, _chain(_chain(*steps), fused)) if with_history else res
 
 
-def loft(profile_faces, ruled=False, with_history=False):
-    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+def _wire_centre(w) -> np.ndarray:
+    g = GProp_GProps()
+    BRepGProp.LinearProperties_s(w, g)
+    return _np(g.CentreOfMass())
+
+
+def _loft_hole_sets(profile_faces):
+    """The inner wires of the profiles grouped into one list per hole, each list in profile order;
+    [] when a profile has no hole or the profiles differ in hole count (then a loft is outer only).
+
+    A hole is matched to the hole of the next profile whose centre is nearest once both are projected
+    onto the plane normal to the line between the two profiles' centres, so the sketch order of the
+    circles does not matter and an offset between the profiles does not either."""
     from OCP.BRepTools import BRepTools
-    if len(profile_faces) < 2:
-        raise KernelError("Select at least two profiles, in order")
-    mk = BRepOffsetAPI_ThruSections(True, bool(ruled), 1e-6)
+    from OCP.TopAbs import TopAbs_WIRE
+    holes = []
     for f in profile_faces:
-        mk.AddWire(BRepTools.OuterWire_s(f))
+        outer = BRepTools.OuterWire_s(f)
+        holes.append([_as_wire(w) for w in _sub_shapes(f, TopAbs_WIRE) if not w.IsSame(outer)])
+    n = len(holes[0])
+    if n == 0 or any(len(h) != n for h in holes):
+        return []
+    sets = [[w] for w in holes[0]]
+    for i in range(1, len(profile_faces)):
+        c0, c1 = face_info(profile_faces[i - 1])["c"], face_info(profile_faces[i])["c"]
+        d = np.asarray(c1, float) - np.asarray(c0, float)
+        if np.linalg.norm(d) < 1e-9:
+            d = np.asarray(face_info(profile_faces[i])["n"], float)
+        d = d / np.linalg.norm(d)
+
+        def flat(w):
+            p = _wire_centre(w)
+            return p - np.dot(p, d) * d
+        prev = [flat(s[-1]) for s in sets]
+        nxt = [flat(w) for w in holes[i]]
+        pairs = sorted((float(np.linalg.norm(a - b)), j, k) for j, a in enumerate(prev) for k, b in enumerate(nxt))
+        used_j, used_k = set(), set()
+        for _dist, j, k in pairs:          # nearest pairs first; each hole is taken once
+            if j not in used_j and k not in used_k:
+                sets[j].append(holes[i][k])
+                used_j.add(j)
+                used_k.add(k)
+    return sets
+
+
+def _thru_sections(wires, ruled):
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+    mk = BRepOffsetAPI_ThruSections(True, bool(ruled), 1e-6)
+    for w in wires:
+        mk.AddWire(w)
     try:
         mk.Build()
     except Exception as exc:
         raise KernelError("Loft failed — try profiles with similar shapes") from exc
     if not mk.IsDone():
         raise KernelError("Loft failed — try profiles with similar shapes")
-    if not with_history:
-        return mk.Shape()
-    # Each profile edge generated the loft face that runs from it; the first and last profile faces
-    # generated the two end caps (spec I1.7: FreeCAD's MapperThruSections).
+    return mk
+
+
+def _thru_sections_history(mk, wires, faces=None) -> BRepTools_History:
+    """Each profile edge generated the loft face that runs from it; with `faces`, the first and last
+    profile faces generated the two end caps (spec I1.7: FreeCAD's MapperThruSections)."""
     hist = BRepTools_History()
-    for f in profile_faces:
-        for e in _sub_shapes(BRepTools.OuterWire_s(f), TopAbs_EDGE):
+    for w in wires:
+        for e in _sub_shapes(w, TopAbs_EDGE):
             try:
                 g = mk.GeneratedFace(e)
                 if not g.IsNull():
                     hist.AddGenerated(e, g)
             except Exception:
                 pass            # an OCCT history failure degrades the names; it never fails the operation
-    for f, cap in ((profile_faces[0], mk.FirstShape), (profile_faces[-1], mk.LastShape)):
-        try:
-            c = cap()
-            if not c.IsNull() and not c.IsSame(f):
-                hist.AddGenerated(f, c)
-        except Exception:
-            pass
-    return mk.Shape(), hist
+    if faces:
+        for f, cap in ((faces[0], mk.FirstShape), (faces[-1], mk.LastShape)):
+            try:
+                c = cap()
+                if not c.IsNull() and not c.IsSame(f):
+                    hist.AddGenerated(f, c)
+            except Exception:
+                pass
+    return hist
+
+
+def loft(profile_faces, ruled=False, with_history=False):
+    """A loft through the profiles' outer wires. When every profile has the same number of holes,
+    each matched set of hole wires is lofted the same way and cut out, as sweep cuts its tunnels."""
+    from OCP.BRepTools import BRepTools
+    if len(profile_faces) < 2:
+        raise KernelError("Select at least two profiles, in order")
+    outers = [BRepTools.OuterWire_s(f) for f in profile_faces]
+    mk = _thru_sections(outers, ruled)
+    body = mk.Shape()
+    hist = _thru_sections_history(mk, outers, profile_faces) if with_history else None
+    for wires in _loft_hole_sets(profile_faces):
+        tool = _thru_sections(wires, ruled)
+        core = tool.Shape()
+        if volume(core) < 0:
+            core = core.Reversed()
+        if with_history:
+            body, cut_hist = cut(body, core, with_history=True)
+            hist = _chain(hist, _thru_sections_history(tool, wires), cut_hist)
+        else:
+            body = cut(body, core)
+        if len(solids(body)) != 1 or not is_valid(body):
+            raise KernelError("Loft failed — a hole runs out through the side of the loft")
+    return (body, hist) if with_history else body
 
 
 def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=False):

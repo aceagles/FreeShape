@@ -229,6 +229,9 @@ class Sketcher:
         if mid:
             self._acquire_source(("mid", mid[0]), anchor_uv)
             return mid[1], ("mid", mid[0])
+        edge = self._hit_part_edge(vp, x, y) if self.tool != "dimension" else None
+        if edge:
+            return edge[0], ("edge", edge[1], edge[2])
         if self.tool == "line" and anchor_uv is not None:
             tan = self._tangent_infer(vp, x, y, uv, np.asarray(anchor_uv, float), exclude)
             if tan:
@@ -364,6 +367,98 @@ class Sketcher:
                 best = (d, (eid, m))
         return best[1]
 
+    def _edge_line(self, vp, pk):
+        """The straight line a picked part edge looks like on the sketch plane, as (a, b) in sketch
+        coordinates, or None when its outline there is not straight or has no length."""
+        pid, ei = pk.key
+        shape = getattr(vp, "part_shapes", {}).get(pid)
+        if shape is None:
+            return None
+        poly = np.asarray(K.discretize_edge(K.edges(shape)[ei]), float)
+        if len(poly) < 2:
+            return None
+        uvs = np.array([self.plane.to_local(q) for q in poly])
+        ctr = uvs.mean(axis=0)
+        _u, _sv, vt = np.linalg.svd(uvs - ctr)
+        d = vt[0]
+        off = np.abs((uvs - ctr) @ np.array([-d[1], d[0]]))
+        size = max(float(np.ptp(uvs, axis=0).max()), 1e-9)
+        if float(off.max()) > 1e-4 * max(size, 1.0) + 1e-7:
+            return None
+        t = (uvs - ctr) @ d
+        a, b = ctr + d * t.min(), ctr + d * t.max()
+        return None if np.linalg.norm(b - a) < 1e-7 else (a, b)
+
+    def _hit_part_edge(self, vp, x, y):
+        """A part edge's midpoint or end point under the cursor: (uv, (a, b), "mid" | "a" | "b") or None.
+        Like Onshape, a drawing tool snaps to the model as well as to the sketch; the edge is only brought into
+        the sketch when the click lands (`_point_at`)."""
+        pick = getattr(vp, "pick", None)
+        pk = pick(x, y, kinds={"edge"}) if pick is not None else None
+        ab = self._edge_line(vp, pk) if pk is not None else None
+        if ab is None:
+            return None
+        a, b = ab
+        for uv, where in (((a + b) / 2, "mid"), (a, "a"), (b, "b")):
+            sp = self.scr(vp, uv)
+            if math.hypot(sp[0] - x, sp[1] - y) < 8.0:
+                return uv, (tuple(map(float, a)), tuple(map(float, b))), where
+        return None
+
+    def _fixed(self, pid):
+        return any(c["type"] == "fix" and c["refs"][0] == pid for c in self.sk.constraints)
+
+    def _used_line(self, a, b):
+        """The line already projected into the sketch from a part edge running a-b (both ends fixed there), or
+        None. Using or dimensioning to an edge twice returns this line instead of stacking a second one on it."""
+        sk = self.sk
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        tol = 1e-6 * max(1.0, float(np.linalg.norm(b - a)))
+        for eid, e in sk.entities.items():
+            if e["type"] != "line":
+                continue
+            p, q = sk.P(e["p1"]), sk.P(e["p2"])
+            same = (np.linalg.norm(p - a) < tol and np.linalg.norm(q - b) < tol) or \
+                   (np.linalg.norm(p - b) < tol and np.linalg.norm(q - a) < tol)
+            if same and self._fixed(e["p1"]) and self._fixed(e["p2"]):
+                return eid
+        return None
+
+    def _used_circle(self, c, r):
+        """The circle already projected from a part edge of centre c and radius r (centre fixed), or None."""
+        sk = self.sk
+        for eid, e in sk.entities.items():
+            if e["type"] == "circle" and abs(sk.radius(eid) - r) < 1e-6 * max(1.0, r) \
+                    and np.linalg.norm(sk.P(e["c"]) - np.asarray(c, float)) < 1e-6 * max(1.0, r) \
+                    and self._fixed(e["c"]):
+                return eid
+        return None
+
+    def _add_used_line(self, a, b, cons):
+        sk = self.sk
+        pa, pb = sk.add_point(*a), sk.add_point(*b)
+        eid = sk.add_line(pa, pb, cons)
+        sk.add_constraint("fix", pa, value=[float(v) for v in a])
+        sk.add_constraint("fix", pb, value=[float(v) for v in b])
+        return eid
+
+    def _edge_snap_point(self, ab, where):
+        """The sketch point for a click snapped to a part edge: the edge comes in as a fixed construction line
+        (or the one already there is reused) and the point is its end, or a point held at its midpoint."""
+        sk = self.sk
+        a, b = np.asarray(ab[0], float), np.asarray(ab[1], float)
+        eid = self._used_line(a, b) or self._add_used_line(a, b, True)
+        e = sk.entities[eid]
+        if where == "mid":
+            for c in sk.constraints:
+                if c["type"] == "midpoint" and c["refs"][1] == eid:
+                    return c["refs"][0]
+            m = sk.add_point(*((a + b) / 2))
+            sk.add_constraint("midpoint", m, eid)
+            return m
+        want = a if where == "a" else b
+        return min((e["p1"], e["p2"]), key=lambda p: float(np.linalg.norm(sk.P(p) - want)))
+
     def _source_point(self, ref):
         """The sketch point behind an inference source; a line midpoint gets a construction point."""
         sk = self.sk
@@ -401,6 +496,8 @@ class Sketcher:
         inferences (from snap) to apply to a newly created point."""
         if snap and snap[0] == "point":
             return snap[1]
+        if snap and snap[0] == "edge":
+            return self._edge_snap_point(snap[1], snap[2])
         pid = self.sk.add_point(*uv)
         if snap and snap[0] in ("on", "tan"):
             self.sk.add_constraint("point_on", pid, snap[1])
@@ -1503,8 +1600,8 @@ class Sketcher:
 
     # ------------------------------------------------------------------ use / trim
     def _use_edge(self, vp, pk, construction=None, click=None):
-        """Project a part edge into the sketch as fixed geometry. Returns the new entity (or point) id to use, or
-        None. Straight edges become lines, circles facing the sketch become circles / arcs, and any edge that is
+        """Project a part edge into the sketch as fixed geometry. Returns the entity (or point) id to use, or
+        None. An edge that is already in the sketch is not projected again: its line or circle is returned. Straight edges become lines, circles facing the sketch become circles / arcs, and any edge that is
         seen edge-on (like the rim of a cylinder from the side) becomes the straight line it looks like.
         With `click` (screen x, y) a click near either end of the result gives that end point instead."""
         pid, ei = pk.key
@@ -1520,11 +1617,19 @@ class Sketcher:
         uvs = np.array([self.plane.to_local(q) for q in poly]) if len(poly) else np.zeros((0, 2))
         self.push_undo()
         out = None
+        reused = None           # the entity already projected from this edge, when there is one
         if "r" in info and abs(abs(np.asarray(info["axis"]) @ n) - 1) < 1e-6:
             c = np.array(self.plane.to_local(info["center"]))
-            pc = sk.add_point(*c)
-            sk.add_constraint("fix", pc, value=c.tolist())
-            if len(poly) > 1 and np.linalg.norm(poly[0] - poly[-1]) > 1e-6:
+            partial = len(poly) > 1 and np.linalg.norm(poly[0] - poly[-1]) > 1e-6
+            reused = None if partial else self._used_circle(c, info["r"])
+            if reused is not None:
+                out = reused
+            else:
+                pc = sk.add_point(*c)
+                sk.add_constraint("fix", pc, value=c.tolist())
+            if reused is not None:
+                pass
+            elif partial:
                 # partial circular edge: an arc
                 p0, p1, mid = uvs[0], uvs[-1], uvs[len(uvs) // 2]
                 a, b = sk.add_point(*p0), sk.add_point(*p1)
@@ -1553,10 +1658,9 @@ class Sketcher:
                 out = sk.add_point(*a)                     # the edge points straight at you: a point
                 sk.add_constraint("fix", out, value=a.tolist())
             else:
-                pa, pb = sk.add_point(*a), sk.add_point(*b)
-                out = sk.add_line(pa, pb, cons)
-                sk.add_constraint("fix", pa, value=a.tolist())
-                sk.add_constraint("fix", pb, value=b.tolist())
+                reused = self._used_line(a, b)
+                out = reused or self._add_used_line(a, b, cons)
+                pa, pb = sk.entities[out]["p1"], sk.entities[out]["p2"]
                 if click is not None:
                     for pp in (pa, pb):
                         sp = self.scr(vp, sk.P(pp))
@@ -1565,6 +1669,14 @@ class Sketcher:
         else:
             self.undo_stack.pop()
             return None
+        if reused is not None:
+            # the edge is in the sketch already: no second copy on top of it. The Use tool gives it the current
+            # solid / construction mode; dimensioning to it leaves it as it is.
+            if construction is None and bool(sk.entities[reused].get("construction")) != bool(cons):
+                sk.entities[reused]["construction"] = bool(cons)
+            else:
+                self.undo_stack.pop()
+                return out
         self.changed(True)
         return out
 

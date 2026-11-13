@@ -122,13 +122,17 @@ class _Tab:
 
 def _file_sources(kind, d, path):
     """The link sources a .fasm / .fdwg holds, read without loading it (so its inputs can go with the load)."""
-    if kind == "studio":
+    if kind == "variables":
         return []
     try:
         d = M.migrate(kind, copy.deepcopy(d), path)
     except Exception:            # noqa: BLE001 -- the worker's own load reports a bad file
         return []
-    srcs = [i.get("source") for i in d.get("instances", [])] if kind == "assembly" else [d.get("source")]
+    if kind == "studio":
+        srcs = [f.get("params", {}).get("source") for f in d.get("features", [])
+                if f.get("type") == "variable_studio_ref"]
+    else:
+        srcs = [i.get("source") for i in d.get("instances", [])] if kind == "assembly" else [d.get("source")]
     out = []
     for src in srcs:
         if not isinstance(src, dict):
@@ -224,11 +228,13 @@ class ProcessEngine(Engine):
         if no tab has it. The rule of InProcessEngine.provide; worker._WorkerEngine.provide applies it again
         to what is sent, so both sides agree."""
         kind = src.get("kind")
-        if kind not in ("studio", "assembly"):
+        if kind not in ("studio", "assembly", "variables"):
             return None
         uid, path = src.get("uid"), src.get("path")
         tabs = [t for t in self._tabs.values() if t.kind == kind]
-        hit = next((t for t in tabs if uid and t.uid == uid), None)
+        hit = self._tabs.get(src.get("tab")) if kind == "variables" and src.get("tab") else None
+        if hit is None:
+            hit = next((t for t in tabs if uid and t.uid == uid), None)
         if hit is None and path:
             hit = self._by_path(path)
             if hit is None and os.path.exists(path):
@@ -328,6 +334,11 @@ class ProcessEngine(Engine):
         if isinstance(edit, dict) and edit.get("op") == "set_source" and isinstance(edit.get("source"), dict):
             if edit["source"] not in t.sources:
                 t.sources.append(copy.deepcopy(edit["source"]))      # so its input goes with the edit
+        if isinstance(edit, dict) and edit.get("op") in ("add_feature", "replace_feature"):
+            f = edit.get("feature")
+            src = f.get("params", {}).get("source") if isinstance(f, dict) and f.get("type") == "variable_studio_ref" else None
+            if isinstance(src, dict) and src not in t.sources:
+                t.sources.append(copy.deepcopy(src))                 # so its input goes with the edit
         logged = copy.deepcopy(edit)
         fut, out, epoch = self._submit(t, "edit", edit), Future(), t.epoch
 

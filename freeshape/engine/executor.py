@@ -17,13 +17,18 @@ import numpy as np
 from .. import assembly as A
 from .. import drawing as D
 from ..document import Document
-from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, AssemblyOutputs, ConnectorOut, DrawingOutputs,
-                       Engine, EngineError, InstanceOut, MateOut, StudioOutputs, plain)
+from ..variable_studio import FILE_FORMAT as VARIABLES_FORMAT
+from ..variable_studio import VariableStudioDoc
+from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
+                       DrawingOutputs, Engine, EngineError, InstanceOut, MateOut, StudioOutputs, VariablesOutputs,
+                       plain)
 from .encode import Encoder, sketch_out
 from .inputs import CrossTabInputs
 
-KINDS = ("studio", "assembly", "drawing")
-_FORMAT_KIND = {"freeshape": "studio", A.FILE_FORMAT: "assembly", D.FILE_FORMAT: "drawing"}
+KINDS = ("studio", "assembly", "drawing", "variables")
+_FORMAT_KIND = {"freeshape": "studio", A.FILE_FORMAT: "assembly", D.FILE_FORMAT: "drawing",
+                VARIABLES_FORMAT: "variables"}
+REF_TYPE = "variable_studio_ref"
 
 
 def file_kind(path):
@@ -96,6 +101,33 @@ class StudioTab(_Tab):
     kind = "studio"
     OPS = STUDIO_OPS
 
+    def _refs(self):
+        return [f for f in self.doc.features if f.get("type") == REF_TYPE and not f.get("suppressed")]
+
+    def _track(self):
+        """Rebuild (cheap: cached) while recording which Variable Studio tabs the references read."""
+        gen = self.engine.generation
+        if not self._refs():
+            self.consumes = ()
+        else:
+            self._syncing = True
+            try:
+                with self.engine.inputs.recording() as used:
+                    self.doc.rebuild()
+                self.consumes = tuple(used)
+            finally:
+                self._syncing = False
+        self.seen = gen
+
+    def sync(self):
+        """Re-read the Variable Studios the references consume if any tab was edited since."""
+        if not self._syncing and self.seen != self.engine.generation:
+            self._track()
+
+    def apply(self, edit):
+        super().apply(edit)
+        self._track()
+
     def _feature(self, fid):
         f = self.doc.feature(fid)
         if f is None:
@@ -142,6 +174,7 @@ class StudioTab(_Tab):
         self.doc.set_part_override(_need(edit, "part"), **kw)
 
     def outputs(self):
+        self.sync()
         doc, enc = self.doc, self.engine.encoder
         st = doc.state
         parts = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()]
@@ -152,6 +185,36 @@ class StudioTab(_Tab):
         return StudioOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
                              errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts,
                              sketches=sketches, variables=plain(dict(st.vars)))
+
+
+class VariablesTab(_Tab):
+    kind = "variables"
+    OPS = VARIABLES_OPS
+
+    def _row(self, edit):
+        i = _need(edit, "index")
+        if not isinstance(i, int) or not 0 <= i < len(self.doc.rows):
+            raise EngineError(f"no row {i!r} in “{self.doc.name}”")
+        return i
+
+    def _add_row(self, edit):
+        self.doc.add_row(str(edit.get("name", "")), str(edit.get("expression", "")), edit.get("index"))
+
+    def _set_row(self, edit):
+        self.doc.set_row(self._row(edit), name=edit.get("name"), expression=edit.get("expression"))
+
+    def _remove_row(self, edit):
+        self.doc.remove_row(self._row(edit))
+
+    def values(self):
+        return self.doc.values()[0]
+
+    def outputs(self):
+        doc = self.doc
+        values, errors = doc.values()
+        return VariablesOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
+                                errors={str(i): m for i, m in errors.items()}, consumes=(),
+                                variables=plain(dict(values)), rows=plain([dict(r) for r in doc.rows]))
 
 
 class _ConsumerTab(_Tab):
@@ -293,7 +356,7 @@ class DrawingTab(_ConsumerTab):
                               annots=plain(copy.deepcopy(doc.annots)), curves=curves, model=model)
 
 
-_TAB_CLASS = {"studio": StudioTab, "assembly": AssemblyTab, "drawing": DrawingTab}
+_TAB_CLASS = {"studio": StudioTab, "assembly": AssemblyTab, "drawing": DrawingTab, "variables": VariablesTab}
 
 
 # =========================================================================== the engine
@@ -339,6 +402,11 @@ class InProcessEngine(Engine):
         with self.inputs.recording() as used:
             if kind == "studio":
                 doc = Document.load(path)
+                doc.var_inputs = self.inputs.variables
+                if any(f.get("type") == REF_TYPE for f in doc.features):
+                    doc.rebuild()            # the load ran without the resolver
+            elif kind == "variables":
+                doc = VariableStudioDoc.load(path)
             elif kind == "assembly":
                 doc = A.AssemblyDoc.load(path, resolver=self.inputs.part)
             else:
@@ -350,6 +418,9 @@ class InProcessEngine(Engine):
             raise EngineError(f"unknown tab kind {kind!r}")
         if kind == "studio":
             doc = Document()
+            doc.var_inputs = self.inputs.variables
+        elif kind == "variables":
+            doc = VariableStudioDoc()
         elif kind == "assembly":
             doc = A.AssemblyDoc()
             doc.resolver = self.inputs.part
@@ -373,7 +444,7 @@ class InProcessEngine(Engine):
         tab of its own if no tab has it yet. None if nothing matches. The parent half of CrossTabInputs."""
         t = self._tabs.get(tab) if tab else None
         if t is None and uid:
-            t = next((x for x in self._tabs.values() if x.kind == kind and x.doc.uid == uid), None)
+            t = next((x for x in self._tabs.values() if x.kind == kind and getattr(x.doc, "uid", None) == uid), None)
         if t is None and path:
             t = self._by_path(path)
             if t is None and os.path.exists(path):

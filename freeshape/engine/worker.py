@@ -72,6 +72,18 @@ class _StudioView:
                                      vars=dict(pkg.get("vars") or {}), sheet={})
 
 
+class _VariablesView:
+    """What a Part Studio's Variable Studio reference reads of a Variable Studio: its evaluated variables."""
+    kind = "variables"
+
+    def __init__(self, pkg):
+        self.uid, self.name, self.path = pkg.get("uid"), pkg["name"], pkg["path"]
+        self._vars = dict(pkg["vars"])
+
+    def values(self):
+        return dict(self._vars), {}
+
+
 class _AssemblyView:
     """What a drawing's link reads of an Assembly: its instances' parts and placements."""
     kind = "assembly"
@@ -139,6 +151,8 @@ class _WorkerEngine(InProcessEngine):
             if pkg["kind"] == "studio":
                 views[tid] = _StudioView(pkg, {lp["id"]: self._part(lp) for lp in pkg["parts"]})
                 used |= {lp["hash"] for lp in pkg["parts"]}
+            elif pkg["kind"] == "variables":
+                views[tid] = _VariablesView(pkg)
             else:
                 views[tid] = _AssemblyView(pkg, {h: self._part(lp) for h, lp in pkg["parts"].items()})
                 used |= set(pkg["parts"])
@@ -201,6 +215,8 @@ class _Worker:
             sources = [i.get("source") for i in doc.instances]
         elif t.kind == "drawing":
             sources = [doc.source]
+        elif t.kind == "studio":
+            sources = [f["params"].get("source") for f in doc.features if f.get("type") == "variable_studio_ref"]
         else:
             sources = []
         return {"name": str(doc.name), "path": doc.path, "uid": getattr(doc, "uid", None),
@@ -212,11 +228,13 @@ class _Worker:
         t = self.engine._get(self.tab)
         t.sync()
         doc, enc = t.doc, self.engine.encoder
-        pkg = {"kind": t.kind, "uid": doc.uid, "name": str(doc.name), "path": doc.path}
+        pkg = {"kind": t.kind, "uid": getattr(doc, "uid", None), "name": str(doc.name), "path": doc.path}
         if t.kind == "studio":
             st = doc.state
             pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(st.vars)),
                        parts=[lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()])
+        elif t.kind == "variables":
+            pkg.update(vars=plain(dict(doc.values()[0])))
         elif t.kind == "assembly":
             parts, insts = {}, []
             for inst in doc.instances:

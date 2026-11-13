@@ -5,6 +5,9 @@ machine boundary unchanged.
 
 Outputs
 -------
+A Variable Studio tab ("variables") returns `VariablesOutputs`; a Part Studio holding a "variable_studio_ref"
+feature reads its variables, live and unsaved, and lists that tab in `consumes`.
+
 A part crosses as `PartOut`: its BREP (`brep`, zlib-compressed OCCT BREP text -- the same encoding as
 `kernel.shape_to_brep`, so `kernel.shape_from_brep(part.brep)` rebuilds it), a content hash of that BREP
 text, a mesh for display, and its element-name map.
@@ -78,6 +81,12 @@ DRAWING_OPS = {
     "auto_layout": "",
     "refresh": "",
     "undo": "", "redo": "",
+    "save": "path (optional)",
+}
+VARIABLES_OPS = {
+    "add_row": "name, expression, index (optional; default: at the end)",
+    "set_row": "index, plus name and / or expression",
+    "remove_row": "index",
     "save": "path (optional)",
 }
 
@@ -175,6 +184,13 @@ class AssemblyOutputs(TabOutputs):
     instances: list = field(default_factory=list)      # [InstanceOut]
     mates: list = field(default_factory=list)          # [MateOut] -- the mate connectors live here
     dof: int = 0
+
+
+@dataclass
+class VariablesOutputs(TabOutputs):
+    """A Variable Studio tab. `errors` maps a row index (as a str) to its message."""
+    variables: dict = field(default_factory=dict)      # name -> number, every row that evaluated
+    rows: list = field(default_factory=list)           # [{"name", "expression"}], in evaluation order
 
 
 @dataclass

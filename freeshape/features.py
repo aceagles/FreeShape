@@ -47,6 +47,7 @@ FEATURE_LABELS = {
     "chamfer": "Chamfer", "shell": "Shell", "plane": "Plane", "mirror": "Mirror",
     "linear_pattern": "Linear pattern", "circular_pattern": "Circular pattern",
     "boolean": "Boolean", "import": "Import", "hole": "Hole", "variable": "Variable",
+    "variable_studio_ref": "Variable Studio reference",
     "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
 }
@@ -876,6 +877,17 @@ def run_variable(state, f):
     state.vars[name] = val
 
 
+def run_variable_studio_ref(state, f):
+    """Put a Variable Studio's evaluated variables into state.vars at this point in the history. A later
+    "variable" feature of the same name overrides it. Document.compute hands the Studio's values in as
+    params["resolved"] (it also hashes them into the rebuild cache key); None means the link found nothing."""
+    values = f["params"].get("resolved")
+    if values is None:
+        src = f["params"].get("source") or {}
+        raise K.KernelError(f"Variable Studio not found: {src.get('name') or src.get('path') or src.get('tab') or '(none linked)'}")
+    state.vars.update(values)
+
+
 def run_sketch(state, f):
     p = f["params"]
     plane = resolve_plane(state, p["plane"])
@@ -1594,6 +1606,7 @@ RUNNERS = {
     "chamfer": run_chamfer, "shell": run_shell, "plane": run_plane, "mirror": run_mirror,
     "linear_pattern": run_linear_pattern, "circular_pattern": run_circular_pattern,
     "boolean": run_boolean, "import": run_import, "hole": run_hole, "variable": run_variable,
+    "variable_studio_ref": run_variable_studio_ref,
     "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
@@ -1624,6 +1637,7 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "boolean": {"op": "union", "tools": [], "targets": [], "keep_tools": False},
         "import": {"data": "", "filename": ""},
         "variable": {"name": "", "expr": "10"},
+        "variable_studio_ref": {"source": {}},
         "thread": {"faces": [], "size": "auto", "major": 6.0, "pitch": 1.0, "length_mode": "full", "length": 10.0,
                    "left_hand": False, "clearance": 0.0},
         "hole": {"sketch": None, "standard": "clearance", "size": "M4", "fit": "normal", "diameter": 5.0,

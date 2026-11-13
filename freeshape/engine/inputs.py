@@ -40,6 +40,12 @@ class CrossTabInputs:
     def drawing_shape(self, src):
         return self.resolver.resolve_drawing_source(src)
 
+    def variables(self, src):
+        """{name: value} of the Variable Studio tab a "variable_studio_ref" source names (by tab id, uid, then
+        file path), live and unsaved; None if no tab matches. A Document.var_inputs callable."""
+        doc = self._provide("variables", src.get("uid"), src.get("path"), src.get("tab"))
+        return None if doc is None else dict(doc.values()[0])
+
     def repair(self, doc):
         """Write back drifted link uid / path / names -- the save-time step MainWindow runs before saving."""
         links.repair_links(self.resolver, doc)

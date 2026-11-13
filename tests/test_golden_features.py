@@ -878,7 +878,8 @@ def import_step_block():
 
 def test_every_runner_is_characterised():
     used = {f["type"] for fn, _ in CASES.values() for f in _built(fn.__name__).features}
-    assert set(F.RUNNERS) - used == set(), sorted(set(F.RUNNERS) - used)
+    # variable_studio_ref reads another tab, so it is characterised in test_variable_studio_ref.py
+    assert set(F.RUNNERS) - used - {"variable_studio_ref"} == set(), sorted(set(F.RUNNERS) - used)
 
 
 @functools.lru_cache(maxsize=None)

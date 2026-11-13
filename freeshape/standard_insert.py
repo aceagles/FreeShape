@@ -15,6 +15,7 @@ takes, and ``centre`` is in world coordinates.
 from __future__ import annotations
 
 import math
+import re
 
 import numpy as np
 
@@ -160,3 +161,129 @@ def sizes_for(type_id, targets):
             groups.append(by_size[size])
         by_size[size]["targets"].append(t)
     return {"groups": groups, "unmatched": unmatched}
+
+
+# --------------------------------------------------------------------------------------------- plan / apply
+DEFAULT_LENGTH_FACTOR = 1.5
+
+
+def _nominal_diameter(part, size):
+    """Nominal diameter in mm of `size`, for the default-length rule. Uses the part's own
+    ``nominal_diameter(size)`` when it has one; otherwise the first number in the size name ("M3" -> 3.0,
+    "M3.5" -> 3.5). None when neither works (the default length is then the shortest listed)."""
+    fn = getattr(part, "nominal_diameter", None)
+    if callable(fn):
+        try:
+            return float(fn(size))
+        except Exception:
+            pass
+    m = re.search(r"\d+(?:\.\d+)?", str(size))
+    return float(m.group()) if m else None
+
+
+def _lengths(part, size, base_params):
+    """The type's lengths for `size`, passing the keywords (e.g. standard, point) the method accepts."""
+    import inspect
+    params = inspect.signature(part.lengths).parameters
+    kw = {k: v for k, v in (base_params or {}).items() if k in params and k != "size"}
+    try:
+        return [float(x) if not isinstance(x, int) else x for x in part.lengths(size, **kw)]
+    except Exception:
+        return []
+
+
+def _default_length(lengths, diameter):
+    """Shortest of `lengths` at least 1.5 x `diameter`; the longest when none is; None when no lengths."""
+    if not lengths:
+        return None
+    ls = sorted(lengths)
+    if diameter is not None:
+        for x in ls:
+            if x >= DEFAULT_LENGTH_FACTOR * diameter - 1e-9:
+                return x
+        return ls[-1]
+    return ls[0]
+
+
+def plan_insert(doc, type_id, picks, base_params=None):
+    """Plan inserting Standard part `type_id` into the holes `picks` point at (see hole_targets).
+
+    Returns ``{"type": type_id,
+               "groups": [{"size": str, "targets": [target, ...], "lengths": [mm, ...],
+                           "default_length": mm or None}, ...],
+               "unmatched": [target, ...]}``
+    Groups and targets are as sizes_for returns them (targets are hole_targets dicts, same objects).
+    "lengths" is the type's ordered lengths for the size (empty for a nut or washer) and "default_length" the
+    shortest of them at least 1.5 x the nominal diameter (the longest when none is; None when no lengths).
+    The nominal diameter is the part's ``nominal_diameter(size)`` when it has one, else the number in the size
+    name. `base_params` (e.g. standard, point) selects which lengths apply. Raises KeyError for an unknown
+    type id. With no matching holes both lists are empty: the caller then inserts one free instance."""
+    from .pyfeature import standard_part
+    res = sizes_for(type_id, hole_targets(doc, picks))
+    part = standard_part(type_id)()
+    groups = []
+    for g in res["groups"]:
+        ls = _lengths(part, g["size"], base_params)
+        groups.append({"size": g["size"], "targets": g["targets"], "lengths": ls,
+                       "default_length": _default_length(ls, _nominal_diameter(part, g["size"]))})
+    return {"type": type_id, "groups": groups, "unmatched": res["unmatched"]}
+
+
+def apply_insert(doc, plan, lengths_by_size=None, base_params=None):
+    """Insert one Standard part per target of `plan` (from plan_insert), seated on its hole, in ONE undo step.
+
+    Each instance gets ``{**base_params, "size": group size, "length": chosen}`` (no length for a group
+    without lengths). The length is ``lengths_by_size[size]`` or, when absent, the group's default length.
+    Each instance's insert_connector is mated with an unflipped fastened mate to the target's circular-edge
+    connector; the instance is placed with place_for_mate and the mates are solved once at the end.
+    Returns ``{"instances": [iid, ...], "mates": [mid, ...]}`` in target order, group by group. Instances are
+    plain and independent. Every group's params are validated first: a bad size or length raises KernelError
+    before anything changes, and a failure part way undoes the step. An empty plan (no targets) changes
+    nothing, makes no undo step, and returns empty lists; the caller inserts a free instance instead."""
+    import copy
+    from .pyfeature import registry
+    type_id = plan["type"]
+    cls = registry.standard_part(type_id)
+    if cls is None:
+        raise K.KernelError(f"Standard part {type_id} is not installed")
+    part = cls()
+    lengths_by_size = lengths_by_size or {}
+    jobs = []                                   # (target, params)
+    for g in plan["groups"]:
+        if not g["targets"]:
+            continue
+        p = dict(base_params or {})
+        p["size"] = g["size"]
+        p.pop("length", None)
+        if g.get("lengths"):
+            p["length"] = lengths_by_size.get(g["size"], g.get("default_length"))
+        try:
+            clean = part.validate(p)
+        except Exception as e:
+            raise K.KernelError(f"Standard part {type_id} {g['size']}: {e}")
+        jobs.extend((t, clean) for t in g["targets"])
+    if not jobs:
+        return {"instances": [], "mates": []}
+    pid = type_id.split("/")[0][len(registry.STANDARD_PREFIX):]
+    info = registry.plugin(pid)
+    conn = part.insert_connector
+    doc.checkpoint()
+    iids, mids = [], []
+    try:
+        for t, clean in jobs:
+            src = {"kind": "standard", "type": type_id, "plugin": pid,
+                   "plugin_version": info.version if info else "", "params": copy.deepcopy(clean)}
+            iid = doc.insert(src, checkpoint=False)
+            m = doc.make_mate("fastened")
+            m["a"] = doc.connector(t["inst"], "edge", t["edge"])
+            m["b"] = doc.named_connector(iid, conn)
+            doc.mates.append(m)
+            doc.place_for_mate(m)
+            iids.append(iid)
+            mids.append(m["id"])
+        doc.solve()
+        doc.notify()
+    except Exception:
+        doc.undo()
+        raise
+    return {"instances": iids, "mates": mids}

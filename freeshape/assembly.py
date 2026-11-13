@@ -2402,9 +2402,14 @@ class AssemblyDoc:
                            **({"connectors": self.connectors} if self.connectors else {}),
                            "blobs": {k: v for k, v in self.blobs.items() if k in used}}, indent=1)
 
+    def to_data(self) -> bytes:
+        """The tab's data as a Document store holds it (the bytes `save` writes). Set `path` first: relative
+        source paths are written against it."""
+        return self.to_json().encode("utf-8")
+
     def save(self, path=None):
         self.path = path or self.path
-        txt = self.to_json()
+        txt = self.to_data().decode("utf-8")
         tmp = self.path + ".tmp"
         with open(tmp, "w") as fh:
             fh.write(txt)
@@ -2413,11 +2418,19 @@ class AssemblyDoc:
 
     @staticmethod
     def load(path, resolver=None):
-        with open(path) as fh:
-            d = json.load(fh)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return AssemblyDoc.from_data(data, path=path, resolver=resolver)
+
+    @staticmethod
+    def from_data(data, path=None, resolver=None, blobs=None):
+        """An Assembly from its bytes. `path` is the file they came from, if any: it names the file in errors,
+        becomes the Assembly's `path`, and a source's `relpath` is found against its folder. `resolver` resolves
+        sources. `blobs` is unused until Assembly geometry moves into blobs."""
+        d = json.loads(bytes(data).decode("utf-8"))
         if d.get("format") != FILE_FORMAT:
             raise K.KernelError("Not a FreeShape assembly")
-        d = M.migrate("assembly", d, path)
+        d = M.migrate("assembly", d, path if path is not None else "This Assembly")
         a = AssemblyDoc()
         a.name = d.get("name", "Assembly 1")
         a.uid = d.get("uid") or a.uid
@@ -2428,10 +2441,10 @@ class AssemblyDoc:
         a.connectors = d.get("connectors", [])
         a.blobs = d.get("blobs", {})
         a.path = path
-        base = os.path.dirname(os.path.abspath(path))
+        base = os.path.dirname(os.path.abspath(path)) if path is not None else None
         for inst in a.instances:
             src = inst["source"]
-            if src.get("relpath") and not (src.get("path") and os.path.exists(src["path"])):
+            if base is not None and src.get("relpath") and not (src.get("path") and os.path.exists(src["path"])):
                 cand = os.path.normpath(os.path.join(base, src["relpath"]))
                 if os.path.exists(cand):
                     src["path"] = cand

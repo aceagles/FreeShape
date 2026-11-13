@@ -1383,9 +1383,14 @@ class DrawingDoc:
                 pass
         return json.dumps(d, indent=1)
 
+    def to_data(self) -> bytes:
+        """The tab's data as a Document store holds it (the bytes `save` writes). Set `path` first: the source's
+        relative path is written against it."""
+        return self.to_json().encode("utf-8")
+
     def save(self, path=None):
         self.path = path or self.path
-        txt = self.to_json()
+        txt = self.to_data().decode("utf-8")
         tmp = self.path + ".tmp"
         with open(tmp, "w") as fh:
             fh.write(txt)
@@ -1394,11 +1399,19 @@ class DrawingDoc:
 
     @staticmethod
     def load(path, resolver=None, hlr_async=None):
-        with open(path) as fh:
-            d = json.load(fh)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return DrawingDoc.from_data(data, path=path, resolver=resolver, hlr_async=hlr_async)
+
+    @staticmethod
+    def from_data(data, path=None, resolver=None, hlr_async=None, blobs=None):
+        """A Drawing from its bytes. `path` is the file they came from, if any: it names the file in errors,
+        becomes the Drawing's `path`, and the source's `relpath` is found against its folder. `resolver` and
+        `hlr_async` are as for `load`. `blobs` is unused until Drawing geometry moves into blobs."""
+        d = json.loads(bytes(data).decode("utf-8"))
         if d.get("format") != FILE_FORMAT:
             raise K.KernelError("Not a FreeShape drawing")
-        d = M.migrate("drawing", d, path)
+        d = M.migrate("drawing", d, path if path is not None else "This Drawing")
         g = DrawingDoc()
         g.name = d.get("name", "Drawing 1")
         g.uid = d.get("uid") or g.uid
@@ -1409,7 +1422,7 @@ class DrawingDoc:
         g.annots = d.get("annots", [])
         g.path = path
         src = g.source or {}
-        if src.get("relpath") and not (src.get("path") and os.path.exists(src["path"])):
+        if path is not None and src.get("relpath") and not (src.get("path") and os.path.exists(src["path"])):
             cand = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(path)), src["relpath"]))
             if os.path.exists(cand):
                 src["path"] = cand

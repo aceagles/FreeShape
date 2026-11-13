@@ -10,7 +10,7 @@ a key that is not 64 lowercase hex characters, a symlinked root or blob file, a 
 of the tab folder it names, a blob over `max_bytes`, and content whose sha256 is not the key. Nothing outside
 the root is opened, and bytes reach a parser (`shape_from_brep`, `load_json`) only after the hash check.
 
-Writes follow the repo's atomic-save convention (doc_folder._atomic_write): write `<path>.tmp`, `os.replace`.
+Writes follow the repo's atomic-save convention (docstore._atomic_write): write `<path>.tmp`, `os.replace`.
 No Qt.
 """
 from __future__ import annotations

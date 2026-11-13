@@ -128,6 +128,7 @@ class PartStudioDoc:
         self.hidden_parts: set = set()
         self.hidden_features: set = set()         # sketches / planes hidden in the view
         self.path = None
+        self.blob_view = None     # this tab's blobs in a Document store (docstore.DocumentStore.blobs), for no path
         self.dirty = False
         self._undo: list[str] = []
         self._redo: list[str] = []
@@ -504,7 +505,7 @@ class PartStudioDoc:
         return self.python_builds.get(f.get("id"))
 
     def _blob_store(self):
-        return blobstore.store_for(self.path) if self.path else None
+        return blobstore.store_for(self.path) if self.path else self.blob_view
 
     def _python_key(self, f):
         """What a Python feature's result depends on besides its JSON: the plugin that builds it (so
@@ -616,13 +617,18 @@ class PartStudioDoc:
             data["python_builds"] = builds
         return json.dumps(data, indent=1)
 
-    def write_blobs(self, path=None):
-        """Put the stored last build of every Python feature into the blob store beside `path` (the tab
-        file about to be written), before the JSON that names the keys. Returns the builds."""
+    def to_data(self) -> bytes:
+        """The tab's data as a Document store holds it (the bytes `save` writes)."""
+        return self.to_json().encode("utf-8")
+
+    def write_blobs(self, path=None, store=None):
+        """Put the stored last build of every Python feature into `store` (an object with `put`; by default the
+        blob store beside `path`, the tab file about to be written), before the JSON that names the keys.
+        Returns the builds."""
         builds, blobs = self._python_builds()
         blobs.update(self._context_blobs())
         if blobs:
-            store = blobstore.store_for(path or self.path)
+            store = store if store is not None else blobstore.store_for(path or self.path)
             for data in blobs.values():
                 store.put(data)
         self.python_builds = builds
@@ -631,7 +637,7 @@ class PartStudioDoc:
     def save(self, path=None):
         path = path or self.path
         self.write_blobs(path)
-        txt = self.to_json()
+        txt = self.to_data().decode("utf-8")
         tmp = str(path) + ".tmp"
         try:
             with open(tmp, "w") as fh:
@@ -648,8 +654,16 @@ class PartStudioDoc:
 
     @staticmethod
     def load(path) -> "PartStudioDoc":
-        with open(path) as fh:
-            d = json.load(fh)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return PartStudioDoc.from_data(data, path=path)
+
+    @staticmethod
+    def from_data(data, path=None, blobs=None) -> "PartStudioDoc":
+        """A Part Studio from its bytes. `path` is the file they came from, if any: it names the file in errors,
+        becomes the studio's `path` and places its blobs beside it. Without one, `blobs` (an object with
+        `get`, `has` and `put`, see docstore.DocumentStore.blobs) holds them."""
+        d = json.loads(bytes(data).decode("utf-8"))
         fmt = d.get("format") if isinstance(d, dict) else None
         kinds = {"freeshape-assembly": "an Assembly", "freeshape-drawing": "a Drawing",
                  "freeshape-variables": "a Variable Studio"}
@@ -659,7 +673,7 @@ class PartStudioDoc:
             raise K.KernelError("Not a FreeShape Part Studio")
         if not isinstance(d, dict) or not isinstance(d.get("features"), list):
             raise K.KernelError("Not a FreeShape Part Studio (no features list)")
-        d = M.migrate("document", d, path)
+        d = M.migrate("document", d, path if path is not None else "This Part Studio")
         doc = PartStudioDoc()
         doc.name = d.get("name", "Part Studio 1")
         doc.uid = d.get("uid") or doc.uid
@@ -672,6 +686,7 @@ class PartStudioDoc:
         builds = d.get("python_builds")
         doc.python_builds = {k: v for k, v in builds.items() if isinstance(k, str)} if isinstance(builds, dict) else {}
         doc.path = path
+        doc.blob_view = blobs
         nums = [int("".join(c for c in f["id"] if c.isdigit()) or 0) for f in doc.features]
         doc._counter = max(nums + [0])
         doc.rebuild()

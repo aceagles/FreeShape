@@ -1,8 +1,9 @@
 """The tab-kind registry: one record per kind of Tab (Part Studio, Assembly, Drawing, Variable Studio).
 
 A record holds what every other module used to repeat: the kind name, the file extension, the format tag the
-file carries, the migration chain name, how to load a file, how to make a new empty tab, and the display
-labels. Headless and Qt-free; it imports no document class until a loader or factory is first called, so
+file carries, the migration chain name, how to load a file, how to make a new empty tab, the display
+labels, and how to load a tab's data from bytes a Document store returns (optional: a kind without it is
+loaded from its file). Headless and Qt-free; it imports no document class until a loader or factory is first called, so
 importing it pulls in neither the CAD kernel nor `freeshape.engine`.
 
 The record holds an extension and nothing about where a file lives in a Document folder: that is the
@@ -31,6 +32,7 @@ class TabKind:
     make: Callable               # () -> a new empty document
     label: str                   # "Part Studio"
     plural: str                  # "Part Studios"
+    from_data: Callable | None = None   # (bytes, path=, blobs=) -> document; None: the kind loads only from a file
 
 
 _KINDS: dict[str, TabKind] = {}
@@ -167,5 +169,6 @@ for _kind, _ext, _tag, _chain, _mod, _cls, _label, _plural in (
         ("drawing", ".fdwg", "freeshape-drawing", "drawing", ".drawing", "DrawingDoc", "Drawing", "Drawings"),
         ("variables", ".fvars", "freeshape-variables", "variables", ".variable_studio", "VariableStudioDoc",
          "Variable Studio", "Variable Studios")):
-    register(TabKind(_kind, _ext, _tag, _chain, _lazy(_mod, _cls, "load"), _lazy(_mod, _cls), _label, _plural))
+    register(TabKind(_kind, _ext, _tag, _chain, _lazy(_mod, _cls, "load"), _lazy(_mod, _cls), _label, _plural,
+                     _lazy(_mod, _cls, "from_data")))
 del _kind, _ext, _tag, _chain, _mod, _cls, _label, _plural

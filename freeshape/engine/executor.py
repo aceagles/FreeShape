@@ -24,6 +24,8 @@ from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, Ass
                        plain)
 from .encode import Encoder, sketch_out
 from .inputs import CrossTabInputs
+from .linkgraph import live_package, package_digest, propagate
+from .. import links
 
 KINDS = ("studio", "assembly", "drawing", "variables")
 _FORMAT_KIND = {"freeshape": "studio", A.FILE_FORMAT: "assembly", D.FILE_FORMAT: "drawing",
@@ -72,6 +74,9 @@ class _Tab:
     def sync(self):
         """Bring the tab up to date with the tabs it consumes."""
 
+    def rebuild(self):
+        """Re-read the tabs it consumes now: what the Link graph asks for when a consumed output changed."""
+
     def apply(self, edit):
         if not isinstance(edit, dict):
             raise EngineError("an edit is a dict with an 'op' key")
@@ -109,15 +114,19 @@ class StudioTab(_Tab):
         gen = self.engine.generation
         if not self._refs():
             self.consumes = ()
+            self.engine.inputs.commit(self.tab, ())
         else:
             self._syncing = True
             try:
-                with self.engine.inputs.recording() as used:
+                with self.engine.inputs.recording(self.tab) as used:
                     self.doc.rebuild()
                 self.consumes = tuple(used)
             finally:
                 self._syncing = False
         self.seen = gen
+
+    def rebuild(self):
+        self._track()
 
     def sync(self):
         """Re-read the Variable Studios the references consume if any tab was edited since."""
@@ -228,12 +237,15 @@ class _ConsumerTab(_Tab):
             return
         self._syncing = True
         try:
-            with self.engine.inputs.recording() as used:
+            with self.engine.inputs.recording(self.tab) as used:
                 self._refresh()
             self.consumes = tuple(used)
             self.seen = self.engine.generation
         finally:
             self._syncing = False
+
+    def rebuild(self):
+        self.sync(force=True)
 
     def apply(self, edit):
         # the "refresh" edit is a forced sync (its name would otherwise dispatch to the _refresh hook)
@@ -362,10 +374,13 @@ _TAB_CLASS = {"studio": StudioTab, "assembly": AssemblyTab, "drawing": DrawingTa
 # =========================================================================== the engine
 
 class InProcessEngine(Engine):
+    LINKS = True         # record the Link graph and rebuild dependents (off in a worker: the parent owns the graph)
+
     def __init__(self, meshes=True):
         self.generation = 0
         self.encoder = Encoder(meshes=meshes)
         self.inputs = CrossTabInputs(self)
+        self.links = self.inputs.resolver
         self._tabs: dict[str, _Tab] = {}
         self._counter = 0
 
@@ -411,7 +426,9 @@ class InProcessEngine(Engine):
                 doc = A.AssemblyDoc.load(path, resolver=self.inputs.part)
             else:
                 doc = D.DrawingDoc.load(path, resolver=self.inputs.drawing_shape)
-        return self._register(kind, doc, tab, used)
+        tab = self._register(kind, doc, tab, used)
+        self.inputs.commit(tab, used)
+        return tab
 
     def new_tab(self, kind, name=None, tab=None):
         if kind not in KINDS:
@@ -434,6 +451,7 @@ class InProcessEngine(Engine):
     def close_tab(self, tab):
         self._get(tab)
         del self._tabs[tab]
+        self.links.forget_tab(tab)
         self.generation += 1          # whatever consumed it re-reads its inputs
 
     def tabs(self):
@@ -443,6 +461,8 @@ class InProcessEngine(Engine):
         """(tab id, live document) for a link -- by tab id, then uid, then file path -- opening the file as a
         tab of its own if no tab has it yet. None if nothing matches. The parent half of CrossTabInputs."""
         t = self._tabs.get(tab) if tab else None
+        if t is not None and t.kind != kind:
+            t = None
         if t is None and uid:
             t = next((x for x in self._tabs.values() if x.kind == kind and getattr(x.doc, "uid", None) == uid), None)
         if t is None and path:
@@ -465,7 +485,32 @@ class InProcessEngine(Engine):
         t.revision += 1
         self.generation += 1
         t.seen = self.generation
+        if self.LINKS:
+            self.rebuild_dependents(tab)
         return t.revision
+
+    # ------------------------------------------------------------------ the Link graph
+    def make_edge(self, tab, keys):
+        """The edge for a consumer that read `keys` of tab `tab` just now (None if the tab is gone)."""
+        u = self._tabs.get(tab)
+        if u is None:
+            return None
+        return links.Edge(u.kind, keys, package_digest(u.kind, live_package(u.kind, u.doc, self.encoder), keys))
+
+    def _digest_now(self, tab, edge):
+        u = self._tabs.get(tab)
+        if u is None:
+            return edge.digest                    # closed: its consumers keep the version they have
+        u.sync()
+        return package_digest(u.kind, live_package(u.kind, u.doc, self.encoder), edge.keys)
+
+    def _label(self, tab):
+        t = self._tabs.get(tab)
+        return f"{tab} “{t.doc.name}”" if t is not None else str(tab)
+
+    def rebuild_dependents(self, tab):
+        self._get(tab)
+        return propagate(self.links.graph, tab, self._digest_now, lambda x: self._tabs[x].rebuild(), self._label)
 
     def outputs(self, tab):
         return self._get(tab).outputs()

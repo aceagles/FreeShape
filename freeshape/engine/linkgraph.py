@@ -1,0 +1,97 @@
+"""Rebuilding dependents over the Link graph, shared by both executors.
+
+The edges live in `links.LinkResolver` (`graph`): the engine records one every time it hands a tab another
+tab's output, together with a digest of exactly the part of that output the tab read. When a tab changes,
+`propagate` takes the tabs that consume it, directly or not, in the order `graphlib.TopologicalSorter` gives
+(every tab after the tabs it consumes, each once -- a fan-in is one tab, not a cycle) and rebuilds those whose
+consumed digest differs from the recorded one. A rebuild that leaves its own output the same stops the walk
+there, because the next tab's digest is then unchanged too.
+
+A digest is taken over a neutral "package" of an upstream tab: what the in-process executor reads off a live
+document (`live_package`) and what the process executor holds as the worker's `upstream` output
+(`lean_package`) give the same package, so both executors agree on when an input changed.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+
+from .. import links
+from .contract import LinkCycleError, TabErrored
+
+
+def norm_key(part):
+    """The key a link source reads from a Part Studio: its part id, or "*" for all of them."""
+    return "*" if part in (None, "*") else str(part)
+
+
+def _round_T(T):
+    return [round(float(x), 9) for row in (T or ()) for x in row]
+
+
+def live_package(kind, doc, enc):
+    """What a consumer can read of a live tab document (in this process)."""
+    if kind == "studio":
+        return {"parts": {str(p.id): enc.brep(p.shape)[1] for p in doc.state.parts.values()},
+                "hidden": sorted(map(str, doc.hidden_parts)), "aliases": dict(getattr(doc, "part_aliases", {}))}
+    if kind == "variables":
+        return {"vars": dict(doc.values()[0])}
+    if kind == "assembly":
+        out = []
+        for inst in doc.instances:
+            p = doc.parts.get(inst["id"])
+            out.append([str(inst["id"]), _round_T(inst.get("T")), enc.brep(p.shape)[1] if p is not None else None,
+                        bool(inst.get("hidden"))])
+        return {"instances": out}
+    return {}
+
+
+def lean_package(pkg):
+    """The same package from a worker's `upstream` output (worker._Worker.upstream)."""
+    kind = pkg["kind"]
+    if kind == "studio":
+        return {"parts": {str(p["id"]): p["hash"] for p in pkg["parts"]},
+                "hidden": sorted(str(p["id"]) for p in pkg["parts"] if p["hidden"]),
+                "aliases": dict(pkg.get("aliases") or {})}
+    if kind == "variables":
+        return {"vars": dict(pkg["vars"])}
+    if kind == "assembly":
+        return {"instances": [[str(i["id"]), _round_T(i["T"]), i["part"], bool(i["hidden"])]
+                              for i in pkg["instances"]]}
+    return {}
+
+
+def package_digest(kind, view, keys=()):
+    """Hash of what a consumer reading `keys` (part ids, "*": all) takes from the package `view`."""
+    if kind == "studio":
+        parts, aliases = view["parts"], view["aliases"]
+        keys = {norm_key(k) for k in keys}
+        if not keys or "*" in keys:
+            body = [[pid, h, pid in view["hidden"]] for pid, h in sorted(parts.items())]
+        else:
+            body = [[k, parts.get(aliases.get(k, k))] for k in sorted(keys)]
+    else:
+        body = view
+    return hashlib.sha1(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def propagate(graph, origin, digest_now, rebuild, label=str):
+    """Rebuild what consumes `origin` and saw its input change. `digest_now(upstream, edge)` is the digest of
+    the output `edge` consumed as it is now; `rebuild(tab)` rebuilds one tab and records its new edges.
+    Returns the tabs rebuilt, in order, and counts each one in `graph.rebuilds`. A tab whose worker has died is
+    skipped; the others still rebuild."""
+    graph.last_order = []
+    try:
+        order = graph.order(origin)
+    except links.LinkCycle as e:
+        raise LinkCycleError(e.tabs, "Circular link: " + " -> ".join(label(t) for t in e.tabs)) from e
+    for tab in order:
+        if not any(digest_now(up, edge) != edge.digest for up, edge in graph.inputs(tab).items()):
+            continue
+        try:
+            rebuild(tab)
+        except TabErrored:
+            continue
+        graph.rebuilds[tab] = graph.rebuilds.get(tab, 0) + 1
+        graph.last_order.append(tab)
+    return list(graph.last_order)

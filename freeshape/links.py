@@ -93,6 +93,29 @@ class LinkResolver:
         from .assembly import AssemblyDoc
         return AssemblyDoc.load(path, resolver=self.resolve_source)
 
+    # ------------------------------------------------------------------ the Link graph (see LinkGraph, end of file)
+    @property
+    def graph(self):
+        """The edges recorded so far: which tab consumed which tab's output. Made on first use."""
+        g = self.__dict__.get("_graph")
+        if g is None:
+            g = self.__dict__["_graph"] = LinkGraph()
+        return g
+
+    def record_edge(self, consumer, upstream, kind=None, keys=(), digest=None, declared=False):
+        """`consumer` (a tab id) was handed `upstream`'s output. `keys` names what it reads of it (part ids),
+        `digest` is a hash of exactly that. `declared`: an edge the engine did not read off a document link,
+        which `record_inputs` leaves alone."""
+        self.graph.add(consumer, upstream, Edge(kind, tuple(keys), digest, declared))
+
+    def record_inputs(self, consumer, edges):
+        """Replace the edges into `consumer` ({upstream tab id: Edge}) with what it consumed this time."""
+        self.graph.set_inputs(consumer, edges)
+
+    def forget_tab(self, tab):
+        """A closed tab consumes nothing any more."""
+        self.graph.forget(tab)
+
     # ------------------------------------------------------------------ inside a Document
     def _outside_folder(self, path):
         root = os.path.realpath(self.folder.path)
@@ -501,3 +524,77 @@ def repair_links(resolver, doc):
             repair_source(resolver, inst["source"])
     elif doc.kind == "drawing" and doc.source is not None:
         repair_source(resolver, doc.source, part_name=True)
+
+
+# ------------------------------------------------------------------ the Link graph
+import graphlib  # noqa: E402
+from typing import NamedTuple  # noqa: E402
+
+
+class Edge(NamedTuple):
+    """What one tab consumed of another: the kind of the upstream tab, the part ids it read (() or "*": all),
+    and the hash of exactly that output as it was handed over."""
+    kind: str | None
+    keys: tuple
+    digest: str | None
+    declared: bool = False
+
+
+class LinkCycle(Exception):
+    """The Link graph has a cycle. `tabs` lists it, first tab repeated last (graphlib.CycleError.args[1])."""
+
+    def __init__(self, tabs):
+        super().__init__(" -> ".join(map(str, tabs)))
+        self.tabs = list(tabs)
+
+
+class LinkGraph:
+    """Which tab consumed which tab's output, by tab id. Lives in the process that owns the tabs (the parent)."""
+
+    def __init__(self):
+        self._in = {}            # consumer -> {upstream: Edge}
+        self.rebuilds = {}       # tab -> times the engine rebuilt it because an input changed
+        self.last_order = []     # the tabs the last propagation rebuilt, in order
+
+    def add(self, consumer, upstream, edge):
+        self._in.setdefault(consumer, {})[upstream] = edge
+
+    def set_inputs(self, consumer, edges):
+        new = {u: e for u, e in self._in.get(consumer, {}).items() if e.declared}
+        new.update(edges)
+        if new:
+            self._in[consumer] = new
+        else:
+            self._in.pop(consumer, None)
+
+    def forget(self, tab):
+        self._in.pop(tab, None)
+
+    def inputs(self, consumer):
+        return dict(self._in.get(consumer, {}))
+
+    def edges(self):
+        """[(consumer, upstream)], in the order they were recorded."""
+        return [(c, u) for c, ins in self._in.items() for u in ins]
+
+    def dependents(self, upstream):
+        return [c for c, ins in self._in.items() if upstream in ins]
+
+    def order(self, origin):
+        """The tabs that consume `origin`, directly or not, in an order that puts every tab after the tabs it
+        consumes, each once. A tab reached by two paths (a fan-in) is still one tab. Raises LinkCycle if
+        some of them consume each other."""
+        nodes, todo = {origin: None}, [origin]
+        while todo:
+            for c in self.dependents(todo.pop()):
+                if c not in nodes:
+                    nodes[c] = None
+                    todo.append(c)
+        if len(nodes) == 1 and origin not in self._in.get(origin, {}):
+            return []
+        preds = {n: tuple(u for u in self._in.get(n, {}) if u in nodes) for n in nodes}
+        try:
+            order = list(graphlib.TopologicalSorter(preds).static_order())
+        except graphlib.CycleError as e:
+            raise LinkCycle(e.args[1]) from e
+        return [n for n in order if n != origin]

@@ -12,8 +12,11 @@ the file, which may be stale or rewritten -- so a crash loses no edit, however l
 
 The parent also owns the Link graph. A tab that consumes others (an assembly, a drawing) gets, with each call,
 the outputs of the tabs its links name -- parts as BREP bytes with their hashes and element-name maps, a
-studio's variables, an assembly's placements -- matched to open tabs by the in-process rule (uid, then file
-path, opening a linked file as a tab of its own if no tab has it). They are sent only when they changed. The
+studio's variables, an assembly's placements -- matched to open tabs by the in-process rule (tab id, uid, then file
+path, opening a linked file as a tab of its own if no tab has it). They are sent only when they changed.
+Each hand-over is recorded as an edge in `links.graph` with a digest of what was handed; after `submit_edit`
+the tabs that consume the edited one are rebuilt, each once, in topological order, if their digest changed
+(`rebuild_dependents`). `submit` alone does not do that: call `rebuild_dependents` after it. The
 worker never resolves a link from disk: it has no view of the other open tabs, so the file would miss their
 unsaved edits.
 
@@ -36,10 +39,12 @@ import threading
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
+from .. import links
 from .. import migrations as M
 from . import worker as W
 from .contract import Engine, EngineError, TabErrored
 from .executor import KINDS, file_kind
+from .linkgraph import lean_package, norm_key, package_digest, propagate
 
 STOP_GRACE_S = 3.0           # how long a closed tab's worker gets to finish before it is killed
 
@@ -107,6 +112,7 @@ class _Tab:
         self.pid = None
         self.error = None        # why the worker stopped, while the tab is errored
         self.epoch = 0           # bumps on every (re)start
+        self.wants = {}          # upstream tab id -> part ids it reads, as of the last `_upstream`
         self.sent = None         # key of the upstream outputs the worker holds
         self.lean = None         # (state key, package): this tab's outputs as an input of other tabs
         self.lock = threading.Lock()
@@ -160,6 +166,7 @@ class ProcessEngine(Engine):
         self.meshes = meshes
         self.spares = spares
         self._ctx = multiprocessing.get_context("spawn")
+        self.links = links.LinkResolver()      # the Link graph: edges only, nothing is resolved through it
         self._tabs: dict[str, _Tab] = {}
         self._ids = itertools.count(1)
 
@@ -211,6 +218,7 @@ class ProcessEngine(Engine):
     def _submit(self, t, op, arg=None, seen=()):
         self._check_alive(t)
         upstream, key = self._upstream(t, seen)
+        self._record_inputs(t, upstream)
         try:
             fut = t.pool.submit(W.call, op, arg, upstream if key != t.sent else None, key)
         except BrokenProcessPool as e:
@@ -232,7 +240,9 @@ class ProcessEngine(Engine):
             return None
         uid, path = src.get("uid"), src.get("path")
         tabs = [t for t in self._tabs.values() if t.kind == kind]
-        hit = self._tabs.get(src.get("tab")) if kind == "variables" and src.get("tab") else None
+        hit = self._tabs.get(src.get("tab")) if src.get("tab") else None
+        if hit is not None and hit.kind != kind:
+            hit = None
         if hit is None:
             hit = next((t for t in tabs if uid and t.uid == uid), None)
         if hit is None and path:
@@ -248,16 +258,49 @@ class ProcessEngine(Engine):
     def _upstream(self, t, seen=()):
         """({tab id: package}, key) of the outputs `t` consumes. The key changes whenever any of them does."""
         seen = seen + (t,)
-        pkgs, key = {}, []
+        pkgs, key, wants = {}, [], {}
         for src in list(t.sources):
             u = self._match(src)
-            if u is None or u in seen or u.tab in pkgs:
+            if u is None or u in seen:
+                continue
+            wants.setdefault(u.tab, set()).add(norm_key(src.get("part")))
+            if u.tab in pkgs:
                 continue
             lean = self._lean(u, seen)
             if lean is not None:
                 pkgs[u.tab] = lean[1]
                 key.append((u.tab, lean[0]))
+        t.wants = {up: tuple(sorted(k)) for up, k in wants.items()}
         return pkgs, tuple(key)
+
+    def _record_inputs(self, t, pkgs):
+        """Record the edges into `t` for the outputs just handed to its worker. An upstream tab that was not
+        handed (its worker is down) keeps the edge it had."""
+        old = self.links.graph.inputs(t.tab)
+        edges = {}
+        for up, keys in t.wants.items():
+            pkg = pkgs.get(up)
+            if pkg is not None:
+                edges[up] = links.Edge(pkg["kind"], keys, package_digest(pkg["kind"], lean_package(pkg), keys))
+            elif up in old:
+                edges[up] = old[up]
+        self.links.record_inputs(t.tab, edges)
+
+    def _digest_now(self, tab, edge):
+        u = self._tabs.get(tab)
+        lean = self._lean(u, ()) if u is not None else None
+        if lean is None:                          # closed or down: its consumers keep the version they have
+            return edge.digest
+        return package_digest(u.kind, lean_package(lean[1]), edge.keys)
+
+    def _label(self, tab):
+        t = self._tabs.get(tab)
+        return f"{tab} “{t.name}”" if t is not None else str(tab)
+
+    def rebuild_dependents(self, tab):
+        self._get(tab)
+        return propagate(self.links.graph, tab, self._digest_now,
+                         lambda x: self._call(self._tabs[x], "rebuild"), self._label)
 
     def _lean(self, u, seen):
         """(state key, package) of tab `u` as an input, cached until its revision or its own inputs change.
@@ -291,7 +334,9 @@ class ProcessEngine(Engine):
         t.tab = tab
         self._tabs[tab] = t
         try:
-            self._start(t, *self._upstream(t))
+            upstream = self._upstream(t)
+            self._start(t, *upstream)
+            self._record_inputs(t, upstream[0])
         except BaseException:
             self._tabs.pop(tab, None)
             self._stop(t)
@@ -321,6 +366,7 @@ class ProcessEngine(Engine):
         """Drop the tab and end its worker (killed if it has not finished within STOP_GRACE_S)."""
         t = self._get(tab)
         del self._tabs[tab]
+        self.links.forget_tab(tab)
         self._stop(t)
 
     def tabs(self):
@@ -363,7 +409,9 @@ class ProcessEngine(Engine):
         return out
 
     def submit_edit(self, tab, edit):
-        return self.submit(tab, edit).result()
+        revision = self.submit(tab, edit).result()
+        self.rebuild_dependents(tab)
+        return revision
 
     def outputs(self, tab):
         return self._call(self._get(tab), "outputs")

@@ -49,6 +49,15 @@ class TabErrored(EngineError):
         self.reason = reason
 
 
+class LinkCycleError(EngineError):
+    """Tabs that consume each other, directly or through a chain. `tabs` lists the cycle, first tab repeated last.
+    Raised by `submit_edit` after the edit itself has been applied; nothing is rebuilt for the cycle."""
+
+    def __init__(self, tabs, message):
+        super().__init__(message)
+        self.tabs = list(tabs)
+
+
 # =========================================================================== edits
 
 STUDIO_OPS = {
@@ -261,6 +270,29 @@ class Engine(abc.ABC):
     @abc.abstractmethod
     def outputs(self, tab) -> TabOutputs:
         ...
+
+    # ------------------------------------------------------------------ the Link graph
+    def rebuild_dependents(self, tab) -> list:
+        """Rebuild the tabs that consume `tab`, each once, after the tabs they consume, and only those whose
+        consumed output changed. `submit_edit` calls this; returns the tab ids rebuilt, in order."""
+        return []
+
+    def rebuild_count(self, tab) -> int:
+        """How many times the engine rebuilt `tab` because an output it consumed changed (its own edits do
+        not count: see `revision`)."""
+        return self.links.graph.rebuilds.get(tab, 0)
+
+    def rebuild_counts(self) -> dict:
+        """{tab id: rebuild_count} for every tab rebuilt so far."""
+        return dict(self.links.graph.rebuilds)
+
+    def rebuild_order(self) -> list:
+        """The tab ids the last `rebuild_dependents` rebuilt, in the order it rebuilt them."""
+        return list(self.links.graph.last_order)
+
+    def link_edges(self) -> list:
+        """[(consumer tab id, upstream tab id)]: every output one tab has been handed from another."""
+        return self.links.graph.edges()
 
     def close(self) -> None:
         """Close every tab (and so, in the process executor, end every worker)."""

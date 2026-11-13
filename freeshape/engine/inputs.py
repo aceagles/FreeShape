@@ -7,19 +7,31 @@ engine opens it as a tab of its own; a consuming tab never opens another tab's f
 own load-from-disk fallback is therefore switched off here (its loaders refuse), leaving it only the
 open-tab lookup, the part-id alias translation and the drawing-shape assembly it already does.
 
-Links are matched by Part Studio / Assembly uid, then by file path, the way MainWindow._find_open_studio
-does. `TabSource.provide` already takes a tab id as well; when links start naming tabs by id (I2.2),
-pass the new tab-id lookup through `_provide` and nothing above this module changes.
+Links are matched by tab id (a source's "tab"), then by Part Studio / Assembly uid, then by file path. LinkResolver's
+open-tab callbacks get only (uid, path), so the source being resolved is kept in `_srcs` while it resolves and
+the callbacks read its "tab" from there.
+
+Every tab that consumes others is recorded in the Link graph (`engine.links`): `recording(consumer)` collects
+the tabs read while a block runs and, when it ends, records one edge per tab with a digest of what was read.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
 
 from .. import links
+from .linkgraph import norm_key
 
 
 def _refuse_load(path):
     raise RuntimeError("the engine opens upstream tabs itself")
+
+
+class _Used(list):
+    """The tab ids consumed in one recording, in first-use order, and the part ids read of each."""
+
+    def __init__(self):
+        super().__init__()
+        self.keys = {}
 
 
 class CrossTabInputs:
@@ -29,21 +41,36 @@ class CrossTabInputs:
     def __init__(self, tabs):
         self._tabs = tabs
         self._used = []          # one list per refresh in progress (refreshes nest: drawing -> assembly)
+        self._srcs = []          # the sources being resolved, innermost last
         self.resolver = links.LinkResolver(
-            find_open_studio=lambda uid, path: self._provide("studio", uid, path),
-            find_open_assembly=lambda uid, path: self._provide("assembly", uid, path),
+            find_open_studio=lambda uid, path: self._provide("studio", uid, path, self._cur().get("tab")),
+            find_open_assembly=lambda uid, path: self._provide("assembly", uid, path, self._cur().get("tab")),
             load_document=_refuse_load, load_assembly=_refuse_load)
 
+    def _cur(self):
+        return self._srcs[-1] if self._srcs else {}
+
+    @contextmanager
+    def _resolving(self, src):
+        self._srcs.append(src)
+        try:
+            yield
+        finally:
+            self._srcs.pop()
+
     def part(self, src):
-        return self.resolver.resolve_source(src)
+        with self._resolving(src):
+            return self.resolver.resolve_source(src)
 
     def drawing_shape(self, src):
-        return self.resolver.resolve_drawing_source(src)
+        with self._resolving(src):
+            return self.resolver.resolve_drawing_source(src)
 
     def variables(self, src):
         """{name: value} of the Variable Studio tab a "variable_studio_ref" source names (by tab id, uid, then
         file path), live and unsaved; None if no tab matches. A Document.var_inputs callable."""
-        doc = self._provide("variables", src.get("uid"), src.get("path"), src.get("tab"))
+        with self._resolving(src):
+            doc = self._provide("variables", src.get("uid"), src.get("path"), src.get("tab"))
         return None if doc is None else dict(doc.values()[0])
 
     def repair(self, doc):
@@ -51,20 +78,36 @@ class CrossTabInputs:
         links.repair_links(self.resolver, doc)
 
     @contextmanager
-    def recording(self):
-        """Collects the tab ids consumed while the block runs, in first-use order."""
-        used = []
+    def recording(self, consumer=None):
+        """Collects the tab ids consumed while the block runs, in first-use order. Given `consumer` (a tab id),
+        the edges into it are recorded when the block ends without an error; otherwise `commit` them later."""
+        used = _Used()
         self._used.append(used)
         try:
             yield used
         finally:
             self._used.pop()
+        if consumer is not None:
+            self.commit(consumer, used)
+
+    def commit(self, consumer, used):
+        """Record what `consumer` consumed (a `recording` result) as the edges into it, replacing the last ones."""
+        if not self._tabs.LINKS:
+            return
+        edges = {}
+        for tab_id in used:
+            edge = self._tabs.make_edge(tab_id, tuple(sorted(getattr(used, "keys", {}).get(tab_id, ()))))
+            if edge is not None:
+                edges[tab_id] = edge
+        self.resolver.record_inputs(consumer, edges)
 
     def _provide(self, kind, uid, path, tab=None):
         hit = self._tabs.provide(kind, uid=uid, path=path, tab=tab)
         if hit is None:
             return None
         tab_id, doc = hit
-        if self._used and tab_id not in self._used[-1]:
-            self._used[-1].append(tab_id)
+        if self._used:
+            if tab_id not in self._used[-1]:
+                self._used[-1].append(tab_id)
+            self._used[-1].keys.setdefault(tab_id, set()).add(norm_key(self._cur().get("part")))
         return doc

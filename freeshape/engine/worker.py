@@ -107,6 +107,8 @@ def lean_part(enc, part, hidden=False):
 class _WorkerEngine(InProcessEngine):
     """A one-tab engine whose links resolve only against upstream outputs the parent sent (`install`)."""
 
+    LINKS = False            # the parent owns the Link graph
+
     def __init__(self, meshes=True):
         super().__init__(meshes=meshes)
         self.upstream = {}       # parent tab id -> _StudioView / _AssemblyView
@@ -259,6 +261,9 @@ class _Worker:
             return self.engine.outputs(self.tab)
         if op == "upstream":
             return self.upstream()
+        if op == "rebuild":                       # a consumed output changed: re-read it now
+            self.engine._get(self.tab).rebuild()
+            return self.meta()
         if op == "meta":
             return self.meta()
         raise EngineError(f"unknown worker call {op!r}")

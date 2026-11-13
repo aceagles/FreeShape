@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         menu_btn.setMenu(m)
         h.addWidget(menu_btn)
         self._build_workspace_switcher(h)
+        self._build_versions_bar(h)
         view_btn = QToolButton()
         view_btn.setObjectName("menuButton")
         view_btn.setText("View")
@@ -1552,6 +1553,7 @@ class MainWindow(QMainWindow):
         if fd is None:
             return True
         self._leave_modes()
+        self.versions_ui.close_view()
         shown = [t.doc for t in fd.tabs if t.doc is not None and self._tab_index(t.doc) >= 0]
         for doc in shown:
             if doc.dirty and self._has_content(doc):
@@ -1625,6 +1627,7 @@ class MainWindow(QMainWindow):
         self._update_thumbnail()
         self._add_recent(fd.path)
         self.status.showMessage(f"Saved {fd.path}", 4000)
+        self._refresh_versions()
         return True
 
     # ================================================================== Workspaces (git branches of the Document)
@@ -1675,6 +1678,7 @@ class MainWindow(QMainWindow):
                 combo.setToolTip("Workspace: a line of work in this Document")
         finally:
             self._ws_updating = False
+        self._refresh_versions()
 
     def _note_git_problem(self, fd):
         """Tell the person, without a dialog, when a Document has no repository (git missing, or none in the folder)."""
@@ -1707,6 +1711,7 @@ class MainWindow(QMainWindow):
             if fd is None:
                 return False
             self._leave_modes()
+            self.versions_ui.close_view()
             dirty = self._workspace_dirty_choice(what)
             if dirty is None:
                 return False
@@ -1776,6 +1781,26 @@ class MainWindow(QMainWindow):
         if not ok or not name.strip():
             return False
         return self.create_workspace(name.strip(), versions[labels.index(label)]["name"])
+
+    # ================================================================== Versions (create, list, read-only view, link updates)
+    def _build_versions_bar(self, layout):
+        """Top-bar buttons next to the Workspace switcher; the dialogs and the read-only view live in versions_ui.py."""
+        from .versions_ui import VersionsUI
+        self.versions_ui = VersionsUI(self)
+        self.versions_ui.build(layout)
+
+    def _refresh_versions(self):
+        """Recompute the Versions buttons and the update badge (on open, close, save and Workspace change)."""
+        self.versions_ui.refresh()
+
+    def create_version_dialog(self):
+        return self.versions_ui.create_dialog()
+
+    def versions_dialog(self):
+        return self.versions_ui.list_dialog()
+
+    def updates_dialog(self):
+        return self.versions_ui.updates_dialog()
 
     def _recover_document_tab(self, path, meta):
         """Put an autosaved Document tab back into its Document. False if the Document is gone (the caller then
@@ -2919,6 +2944,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(60, lambda: self.viewport.set_standard_view("Isometric", animate=False))
 
     def save(self):
+        if self.versions_ui.refuse_save():
+            return False
         if self._folder_tab(self.doc) is not None:
             return self._save_document()
         if not self.doc.path:
@@ -2944,6 +2971,8 @@ class MainWindow(QMainWindow):
         return True
 
     def save_as(self):
+        if self.versions_ui.refuse_save():
+            return False
         if self._folder_tab(self.doc) is not None:       # a Document's tabs save with the Document
             return self._save_document()
         ext = ".fdwg" if self.is_dwg else ".fasm" if self.is_asm else ".fshape"

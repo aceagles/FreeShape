@@ -114,10 +114,11 @@ def test_migration_steps_run_once_in_registration_order(tmp_path):
         d["_marker"] += 1
         return d
 
+    base = len(Mig._CHAINS["document"])      # steps registered by the app itself (e.g. the I1.4 part-id step)
     Mig.register("document", step_to_2)
     Mig.register("document", step_to_3)
     try:
-        assert Mig.latest_version("document") == 3
+        assert Mig.latest_version("document") == base + 3
         path = str(tmp_path / "bracket.fshape")
         shutil.copy(os.path.join(EXAMPLES_DIR, "bracket.fshape"), path)
         doc = Document.load(path)
@@ -126,6 +127,6 @@ def test_migration_steps_run_once_in_registration_order(tmp_path):
         doc.save(resaved)
         with open(resaved) as fh:
             saved = json.load(fh)
-        assert saved["version"] == 3           # the saved file carries the latest version
+        assert saved["version"] == base + 3           # the saved file carries the latest version
     finally:
-        Mig._CHAINS["document"].clear()
+        del Mig._CHAINS["document"][base:]

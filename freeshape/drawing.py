@@ -36,6 +36,17 @@ from . import migrations as M
 
 FILE_FORMAT = "freeshape-drawing"
 
+
+def _upgrade_part_id_syntax(data):
+    """FILE_VERSION 1 -> 2 (I1.4): a studio source may still name its part with the old <fid>:<counter> id.
+    Nothing stored here needs to change for that -- LinkResolver translates it through the linked studio's
+    alias table (links.py) until the save-time repair step (links.repair_source) rewrites it to <fid>/<n>
+    -- so this step only bumps the version, the same way assembly.py's does."""
+    return data
+
+
+M.register("drawing", _upgrade_part_id_syntax)
+
 SHEETS = {"A4": (297.0, 210.0), "A3": (420.0, 297.0), "A2": (594.0, 420.0), "A1": (841.0, 594.0),
           "A0": (1189.0, 841.0)}
 SCALES = [10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01]

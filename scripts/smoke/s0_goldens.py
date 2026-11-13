@@ -66,6 +66,30 @@ def compare_golden_data(base, current, rekey_map=None):
     return problems, compared
 
 
+def compare_entries(name, base, current, rekey_map):
+    """compare_golden_data one top-level entry at a time, each with its own renames: rekey_map is
+    {"<group>/<key>": {old id: new id}} (what scripts/rekey_goldens.py writes), where <group> is the
+    file's name without .json. A flat {old id: new id} map (string values) is still accepted and applies
+    to every entry."""
+    group = name[:-len(".json")]
+    flat = {k: v for k, v in rekey_map.items() if isinstance(v, str)}
+    problems, compared = [], 0
+    if not isinstance(base, dict) or not isinstance(current, dict):
+        return compare_golden_data(base, current, flat)
+    for key, bv in base.items():
+        if key == "_meta":
+            continue
+        if key not in current:
+            problems.append(f"/{key}")
+            continue
+        table = dict(flat)
+        table.update(rekey_map.get(f"{group}/{key}", {}) if isinstance(rekey_map.get(f"{group}/{key}"), dict) else {})
+        p, c = compare_golden_data({key: bv}, {key: current[key]}, table)
+        problems += p
+        compared += c
+    return problems, compared
+
+
 def _ref_exists(ref):
     return subprocess.run(["git", "-C", ROOT, "rev-parse", "--verify", "--quiet", ref],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
@@ -113,7 +137,7 @@ def main():
         base = _at_ref(ref, f"tests/golden/{name}")
         if base is None:
             continue    # new golden file since the base commit -- allowed
-        problems, compared = compare_golden_data(base, current, rekey_map)
+        problems, compared = compare_entries(name, base, current, rekey_map)
         total_compared += compared
         all_problems += [f"{name}{p}" for p in problems]
 

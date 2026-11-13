@@ -23,6 +23,17 @@ def _no_open_doc(uid, path):
     return None
 
 
+def _translate_part(studio, pid):
+    """A part id as named by an assembly instance or drawing source, resolved against the studio's current
+    ids through its alias table (populated when a pre-I1.4 file is loaded -- see
+    document._migrate_part_ids); unchanged if it names no old id. Never mutates the caller's source dict.
+    (`studio.state.parts` would also resolve an old id directly -- see features.PartMap -- but checking
+    that here would always say "already current", since PartMap's own `in` already consults the alias.)"""
+    if pid in (None, "*"):
+        return pid
+    return getattr(studio, "part_aliases", {}).get(pid, pid)
+
+
 def _default_flat_pattern_of(state, pid):
     from . import sheetmetal as SM
     return SM.flat_pattern(state.parts[pid].shape, state.sheet[pid])
@@ -82,7 +93,7 @@ class LinkResolver:
         studio = self.studio_by_uid(src.get("uid"), src.get("path"), load=True)
         if studio is None:
             raise K.KernelError(f"Part Studio “{src.get('studio_name', '?')}” isn't open")
-        p = studio.state.parts.get(src.get("part"))
+        p = studio.state.parts.get(_translate_part(studio, src.get("part")))
         if p is None:
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         return p
@@ -122,7 +133,7 @@ class LinkResolver:
             if key not in self._shape_cache:
                 self._shape_cache[key] = K.compound([p.shape for p in parts])
             return self._shape_cache[key]
-        p = studio.state.parts.get(src["part"])
+        p = studio.state.parts.get(_translate_part(studio, src["part"]))
         if p is None:
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         if src.get("flat"):
@@ -149,6 +160,9 @@ def _repair_studio_link(resolver, src, part_name=False):
         src["path"] = os.path.abspath(studio.path)
     if studio.uid != src.get("uid"):
         src["uid"] = studio.uid
+    translated = _translate_part(studio, src.get("part"))
+    if translated != src.get("part"):
+        src["part"] = translated
     if part_name:
         p = studio.state.parts.get(src.get("part"))
         if p is not None:

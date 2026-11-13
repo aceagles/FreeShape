@@ -32,6 +32,18 @@ MATE_TYPES = {
 }
 MATE_DOF = {"fastened": 0, "revolute": 1, "slider": 1, "cylindrical": 2, "planar": 3, "ball": 3}
 FILE_FORMAT = "freeshape-assembly"
+
+
+def _upgrade_part_id_syntax(data):
+    """FILE_VERSION 1 -> 2 (I1.4): an instance's source may still name its Part Studio part with the old
+    <fid>:<counter> id. Nothing stored here needs to change for that -- LinkResolver translates it through
+    the linked studio's alias table (links.py) until the save-time repair step (links.repair_source)
+    rewrites it to <fid>/<n> -- so this step only marks the file as built by code that understands the new
+    syntax (bumping the version lets a build from before I1.4 refuse to load it instead of guessing wrong)."""
+    return data
+
+
+M.register("assembly", _upgrade_part_id_syntax)
 INSTANCE_COLORS = [(0.60, 0.74, 0.85), (0.72, 0.74, 0.78), (0.86, 0.66, 0.40), (0.56, 0.78, 0.56),
                    (0.85, 0.55, 0.55), (0.70, 0.60, 0.85), (0.50, 0.78, 0.78), (0.85, 0.78, 0.45)]
 

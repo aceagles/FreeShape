@@ -1,0 +1,318 @@
+{
+ "document_ops/fillet_retargeted_after_upstream_chamfer": {
+  "F2:1": "F2/1"
+ },
+ "examples/bracket": {
+  "F2:1": "F2/1"
+ },
+ "examples/bracket_steps": {
+  "F2:1": "F2/1"
+ },
+ "examples/hinge_parts": {
+  "F2:1": "F2/1",
+  "F4:2": "F4/1",
+  "F6:3": "F6/1"
+ },
+ "examples/hinge_parts_steps": {
+  "F2:1": "F2/1",
+  "F4:2": "F4/1",
+  "F6:3": "F6/1"
+ },
+ "features/boolean_intersect": {
+  "F2:1": "F2/1"
+ },
+ "features/boolean_subtract": {
+  "F2:1": "F2/1"
+ },
+ "features/boolean_subtract_keep_tools": {
+  "F2:1": "F2/1",
+  "F4:2": "F4/1"
+ },
+ "features/boolean_union": {
+  "F4:2": "F4/1"
+ },
+ "features/chamfer_all_edges": {
+  "F2:1": "F2/1"
+ },
+ "features/chamfer_top_loop": {
+  "F2:1": "F2/1"
+ },
+ "features/chamfer_vertical_edges": {
+  "F2:1": "F2/1"
+ },
+ "features/circular_pattern_add_overlapping": {
+  "F2:1": "F2/1"
+ },
+ "features/circular_pattern_full": {
+  "F2:1": "F2/1",
+  "F3:2": "F3/1",
+  "F3:3": "F3/2",
+  "F3:4": "F3/3",
+  "F3:5": "F3/4",
+  "F3:6": "F3/5"
+ },
+ "features/circular_pattern_partial": {
+  "F2:1": "F2/1",
+  "F3:2": "F3/1",
+  "F3:3": "F3/2"
+ },
+ "features/delete_face_cap": {
+  "F2:1": "F2/1"
+ },
+ "features/delete_face_heal_fillets": {
+  "F2:1": "F2/1"
+ },
+ "features/delete_face_heal_hole": {
+  "F2:1": "F2/1"
+ },
+ "features/delete_face_open": {
+  "F2:1": "F2/1"
+ },
+ "features/draft_four_walls": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_blind": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_cut_blind": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_cut_through": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_face_add": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_flip": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_front_plane": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_intersect": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_new_second_body": {
+  "F2:1": "F2/1",
+  "F4:2": "F4/1"
+ },
+ "features/extrude_region_with_hole": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_second_direction": {
+  "F2:1": "F2/1"
+ },
+ "features/extrude_symmetric": {
+  "F2:1": "F2/1"
+ },
+ "features/fillet_all_edges": {
+  "F2:1": "F2/1"
+ },
+ "features/fillet_top_loop": {
+  "F2:1": "F2/1"
+ },
+ "features/fillet_vertical_edges": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_clearance_fits": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_counterbore_m5": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_countersink_m4": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_custom_blind_flat": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_custom_blind_tip": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_custom_counterbore_blind": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_custom_through": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_from_sketch_circles": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_tapped_drill": {
+  "F2:1": "F2/1"
+ },
+ "features/hole_tapped_modelled_m5": {
+  "F2:1": "F2/1"
+ },
+ "features/import_step_block": {
+  "F1:1": "F1/1"
+ },
+ "features/linear_pattern_add_touching": {
+  "F2:1": "F2/1"
+ },
+ "features/linear_pattern_flip_y": {
+  "F2:1": "F2/1",
+  "F3:2": "F3/1"
+ },
+ "features/linear_pattern_new": {
+  "F2:1": "F2/1",
+  "F3:2": "F3/1",
+  "F3:3": "F3/2"
+ },
+ "features/loft_ruled_frustum": {
+  "F4:1": "F4/1"
+ },
+ "features/loft_square_to_circle": {
+  "F4:1": "F4/1"
+ },
+ "features/mirror_about_face": {
+  "F2:1": "F2/1"
+ },
+ "features/mirror_disjoint_new": {
+  "F2:1": "F2/1",
+  "F3:2": "F3/1"
+ },
+ "features/mirror_touching_fuses": {
+  "F2:1": "F2/1"
+ },
+ "features/move_face_in_flip": {
+  "F2:1": "F2/1"
+ },
+ "features/move_face_out": {
+  "F2:1": "F2/1"
+ },
+ "features/move_rotate": {
+  "F2:1": "F2/1"
+ },
+ "features/move_rotate_about_edge": {
+  "F2:1": "F2/1"
+ },
+ "features/move_translate_copy": {
+  "F2:1": "F2/1",
+  "F3:2": "F3/1"
+ },
+ "features/offset_surface_top": {
+  "F2:1": "F2/1",
+  "F3:2": "F3/1"
+ },
+ "features/plane_offset_sketch": {
+  "F3:1": "F3/1"
+ },
+ "features/plane_on_face_sketch": {
+  "F2:1": "F2/1",
+  "F5:2": "F5/1"
+ },
+ "features/revolve_angle": {
+  "F2:1": "F2/1"
+ },
+ "features/revolve_flip_angle": {
+  "F2:1": "F2/1"
+ },
+ "features/revolve_full": {
+  "F2:1": "F2/1"
+ },
+ "features/revolve_sketch_line_axis": {
+  "F2:1": "F2/1"
+ },
+ "features/revolve_symmetric": {
+  "F2:1": "F2/1"
+ },
+ "features/shell_inward_top": {
+  "F2:1": "F2/1"
+ },
+ "features/shell_outward_top": {
+  "F2:1": "F2/1"
+ },
+ "features/shell_two_faces": {
+  "F2:1": "F2/1"
+ },
+ "features/sm_base_flat": {
+  "F2:1": "F2/1"
+ },
+ "features/sm_flange_inside_45_down": {
+  "F2:1": "F2/1"
+ },
+ "features/sm_flange_outside_90": {
+  "F2:1": "F2/1"
+ },
+ "features/sm_flange_own_radius": {
+  "F2:1": "F2/1"
+ },
+ "features/split_both": {
+  "F2:1": "F2/1",
+  "F2:1.1": "F2/1.1"
+ },
+ "features/split_keep_back": {
+  "F2:1": "F2/1"
+ },
+ "features/split_keep_front": {
+  "F2:1": "F2/1"
+ },
+ "features/sweep_bent_path": {
+  "F3:1": "F3/1"
+ },
+ "features/sweep_straight": {
+  "F3:1": "F3/1"
+ },
+ "features/thread_external_length": {
+  "F2:1": "F2/1"
+ },
+ "features/thread_internal_auto": {
+  "F2:1": "F2/1"
+ },
+ "features/thread_internal_left_hand_clearance": {
+  "F2:1": "F2/1"
+ },
+ "features/variable_drives_depth": {
+  "F4:1": "F4/1"
+ },
+ "file_versions/bracket": {
+  "F2:1": "F2/1"
+ },
+ "file_versions/bracket_reloaded": {
+  "F2:1": "F2/1"
+ },
+ "file_versions/hinge_parts": {
+  "F2:1": "F2/1",
+  "F4:2": "F4/1",
+  "F6:3": "F6/1"
+ },
+ "file_versions/hinge_parts_reloaded": {
+  "F2:1": "F2/1",
+  "F4:2": "F4/1",
+  "F6:3": "F6/1"
+ },
+ "toponaming/bracket_first_dim_30": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/bracket_first_dim_45": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/bracket_first_dim_80": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/chamfer_front_top_height_25": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/chamfer_front_top_width_70": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/chamfer_suppressed_boss": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/fillet_after_upstream_pocket": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/fillet_hole_rim_hole_moved": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/fillet_right_edges_width_100_then_15": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/fillet_vertical_width_60": {
+  "F2:1": "F2/1"
+ },
+ "toponaming/shell_top_height_30_depth_35": {
+  "F2:1": "F2/1"
+ }
+}

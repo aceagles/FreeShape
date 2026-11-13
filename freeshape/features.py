@@ -111,6 +111,35 @@ class Part:
     face_colors: dict = None      # face index -> (r, g, b), e.g. from a coloured STEP file
 
 
+class PartMap(dict):
+    """Part id -> Part, that also accepts a studio's pre-I1.4 <fid>:<counter> ids through `aliases`
+    (old id -> new id): a direct lookup by a stale id -- baked into an assembly instance, a drawing source,
+    or any other code that looks a part up by id -- still finds it, with no caller needing to know about
+    the rename. Iteration (keys/values/items/len) only ever sees the current ids; aliases are consulted
+    only when a direct lookup misses."""
+    def __init__(self, *args, aliases=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.aliases = dict(aliases) if aliases else {}
+
+    def __missing__(self, key):
+        new = self.aliases.get(key)
+        if new is not None and new != key and dict.__contains__(self, new):
+            return dict.__getitem__(self, new)
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __contains__(self, key):
+        if dict.__contains__(self, key):
+            return True
+        new = self.aliases.get(key)
+        return new is not None and new != key and dict.__contains__(self, new)
+
+
 def _surface_key_match(a, b, tol):
     """Do two faces lie on the same underlying surface (same plane, or same cylinder)?"""
     if a["type"] != b["type"]:
@@ -179,16 +208,24 @@ class ModelState:
     part_counter: int = 0
     vars: dict = field(default_factory=dict)        # variable name -> value (mm / degrees / plain)
     sheet: dict = field(default_factory=dict)       # part id -> sheetmetal.SheetModel (sheet metal parts)
+    feature_part_counts: dict = field(default_factory=dict)   # feature id -> parts it has created so far
+    # new part id (<fid>/<n>) -> the <fid>:<counter> id it would have had before I1.4 (replay-wide counter).
+    # Never pruned, so it keeps every id ever assigned across a whole replay -- used to build the alias
+    # table a v1 studio is migrated with, and to rekey the part ids baked into tests/golden/.
+    old_ids: dict = field(default_factory=dict)
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
-                          dict(self.vars), dict(self.sheet))
+                          dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids))
 
     def new_part(self, shape, fid, color=None):
         self.part_counter += 1
         if color is None:
             color = palette_color(self.part_counter)
-        pid = f"{fid}:{self.part_counter}"
+        n = self.feature_part_counts.get(fid, 0) + 1
+        self.feature_part_counts[fid] = n
+        pid = f"{fid}/{n}"
+        self.old_ids[pid] = f"{fid}:{self.part_counter}"
         p = Part(pid, f"Part {self.part_counter}", shape, color)
         self.parts[pid] = p
         return p
@@ -567,8 +604,11 @@ def set_part_shape(state: ModelState, part: Part, shape):
         state.parts[part.id] = Part(part.id, part.name, pieces[0] if pieces else shape, part.color)
         return
     state.parts[part.id] = Part(part.id, part.name, pieces[0], part.color)
+    old_base = state.old_ids.get(part.id)
     for i, extra in enumerate(pieces[1:], 1):
         pid = f"{part.id}.{i}"
+        if old_base is not None:
+            state.old_ids[pid] = f"{old_base}.{i}"
         state.parts[pid] = Part(pid, f"{part.name} ({i + 1})", extra, part.color)
 
 

@@ -1,0 +1,135 @@
+{
+ "format": "freeshape-drawing",
+ "version": 1,
+ "name": "Hinge arm drawing",
+ "uid": "5a1d0c4e7b3f4c6e8d2a9f1b3c5e7a90",
+ "source": {
+  "kind": "studio",
+  "uid": "cfe3fe9831bc46a7ac03775d3245114e",
+  "part": "F4:2",
+  "path": "hinge_parts.fshape",
+  "relpath": "hinge_parts.fshape",
+  "studio_name": "Hinge parts",
+  "part_name": "Arm"
+ },
+ "sheet": {
+  "size": "A4",
+  "portrait": false,
+  "scale": 1.0,
+  "projection": "first"
+ },
+ "title": {
+  "title": "",
+  "number": "",
+  "rev": "A",
+  "drawn": "",
+  "date": "12/11/2026",
+  "company": "",
+  "material": "",
+  "tolerance": "ISO 2768-m",
+  "sheet": "1/1"
+ },
+ "views": [
+  {
+   "id": "V2",
+   "type": "base",
+   "d": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "up": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "o": [
+    60.429773899500844,
+    156.99659836075406
+   ],
+   "scale": null,
+   "hidden": true,
+   "tangent": false,
+   "centre_marks": true,
+   "parent": null,
+   "align": null,
+   "label": ""
+  },
+  {
+   "id": "V3",
+   "type": "projected",
+   "d": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "up": [
+    -0.0,
+    1.0,
+    -0.0
+   ],
+   "o": [
+    60.429773899500844,
+    84.49829913037705
+   ],
+   "scale": null,
+   "hidden": true,
+   "tangent": false,
+   "centre_marks": true,
+   "parent": "V2",
+   "align": "v",
+   "label": ""
+  },
+  {
+   "id": "V4",
+   "type": "projected",
+   "d": [
+    -1.0,
+    -0.0,
+    0.0
+   ],
+   "up": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "o": [
+    221.21488699975043,
+    156.99659836075406
+   ],
+   "scale": null,
+   "hidden": true,
+   "tangent": false,
+   "centre_marks": true,
+   "parent": "V2",
+   "align": "h",
+   "label": ""
+  },
+  {
+   "id": "V5",
+   "type": "iso",
+   "d": [
+    0.5773502691896258,
+    -0.5773502691896258,
+    0.5773502691896258
+   ],
+   "up": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "o": [
+    165.85954794042306,
+    104.49829913037705
+   ],
+   "scale": null,
+   "hidden": false,
+   "tangent": true,
+   "centre_marks": false,
+   "parent": null,
+   "align": null,
+   "label": ""
+  }
+ ],
+ "annots": []
+}

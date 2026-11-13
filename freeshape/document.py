@@ -8,7 +8,53 @@ import traceback
 
 from . import kernel as K
 from . import migrations as M
-from .features import RUNNERS, FEATURE_LABELS, ModelState, default_params, Part, prepare, carry_face_colors
+from .features import (RUNNERS, FEATURE_LABELS, ModelState, PartMap, default_params, Part, prepare,
+                       carry_face_colors)
+
+
+def _rewrite_part_ids(x, alias):
+    """Replace every occurrence of an old-syntax part id (as a dict key or a string value) with its new one,
+    recursively. `alias` only ever holds actual <fid>:<counter> ids, so this can't misfire on unrelated
+    strings (feature/sketch ids never contain ':')."""
+    if isinstance(x, str):
+        return alias.get(x, x)
+    if isinstance(x, dict):
+        return {(alias.get(k, k) if isinstance(k, str) else k): _rewrite_part_ids(v, alias) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_rewrite_part_ids(v, alias) for v in x]
+    return x
+
+
+def _migrate_part_ids(data):
+    """FILE_VERSION 1 -> 2 (I1.4): part ids become <feature id>/<output index> instead of a replay-wide
+    <feature id>:<counter>, so inserting an upstream feature no longer renumbers later parts that come
+    after it. Replays the feature list once (the same way Document.compute does), rewriting every
+    old-style id a feature's own params name as soon as its new id is known -- so later features still
+    find their inputs -- and records the whole old -> new table as "part_aliases", so a .fasm/.fdwg that
+    still names an old id can be translated by LinkResolver (see links.py) until it's next saved."""
+    alias = dict(data.get("part_aliases") or {})
+    state = ModelState()
+    features = []
+    for f in data.get("features", []):
+        f = _rewrite_part_ids(f, alias)
+        if not f.get("suppressed"):
+            state = state.copy()
+            try:
+                RUNNERS[f["type"]](state, prepare(f, state))
+            except Exception:
+                pass
+            else:
+                for new_id, old_id in state.old_ids.items():
+                    alias[old_id] = new_id
+        features.append(f)
+    data["features"] = features
+    data["overrides"] = _rewrite_part_ids(data.get("overrides", {}), alias)
+    data["hidden"] = _rewrite_part_ids(data.get("hidden", []), alias)
+    data["part_aliases"] = alias
+    return data
+
+
+M.register("document", _migrate_part_ids)
 
 
 class Document:
@@ -21,6 +67,7 @@ class Document:
         self.features: list[dict] = []
         self.rollback: int | None = None          # number of active features; None = all
         self.part_overrides: dict = {}            # part id -> {"name":..., "color":...}
+        self.part_aliases: dict = {}               # old (pre-I1.4) part id -> its new id, from a v1 load
         self.hidden_parts: set = set()
         self.hidden_features: set = set()         # sketches / planes hidden in the view
         self.path = None
@@ -272,6 +319,8 @@ class Document:
         return st
 
     def _apply_overrides(self, state):
+        if self.part_aliases and not isinstance(state.parts, PartMap):
+            state.parts = PartMap(state.parts, aliases=self.part_aliases)
         for pid, ov in self.part_overrides.items():
             p = state.parts.get(pid)
             if p:
@@ -287,7 +336,8 @@ class Document:
         return json.dumps({"format": "freeshape", "version": M.latest_version("document"), "name": self.name,
                            "uid": self.uid, "features": self.features, "rollback": self.rollback,
                            "overrides": self.part_overrides, "hidden": sorted(self.hidden_parts),
-                           "hidden_features": sorted(self.hidden_features)}, indent=1)
+                           "hidden_features": sorted(self.hidden_features),
+                           "part_aliases": self.part_aliases}, indent=1)
 
     def save(self, path=None):
         path = path or self.path
@@ -307,6 +357,7 @@ class Document:
         doc.features = d["features"]
         doc.rollback = d.get("rollback")
         doc.part_overrides = d.get("overrides", {})
+        doc.part_aliases = d.get("part_aliases", {})
         doc.hidden_parts = set(d.get("hidden", []))
         doc.hidden_features = set(d.get("hidden_features", []))
         doc.path = path

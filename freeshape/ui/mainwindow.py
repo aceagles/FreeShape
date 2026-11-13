@@ -589,6 +589,7 @@ class MainWindow(QMainWindow):
         h.addWidget(_sep())
         self._tb(h, "move", "Move / rotate the selected parts by exact amounts", lambda: a.start_move())
         self._tb(h, "fix", "Fix / unfix the selected parts", self._asm_toggle_fix)
+        self.btn_group = self._tb(h, "group", "Group the selected parts so they move as one body", self._asm_group)
         h.addWidget(_sep())
         self.btn_interf = self._tb(h, "interference", "Interference check — show where parts overlap",
                                    lambda: a.toggle_interference(), checkable=True)
@@ -635,6 +636,12 @@ class MainWindow(QMainWindow):
     @property
     def is_dwg(self):
         return getattr(self.doc, "kind", "studio") == "drawing"
+
+    def _asm_group(self):
+        if not self.asm.can_group():
+            self.status.showMessage("Select two or more parts that are not already in a group", 4000)
+            return
+        self.asm.group_selected()
 
     def _asm_toggle_fix(self):
         ids = self.asm.selected_instance_ids()

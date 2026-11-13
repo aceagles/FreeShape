@@ -493,6 +493,12 @@ def draw(name: str, p: QPainter):
         path.quadTo(24, 27, 25, 18)
         p.drawPath(path)
         _dot(p, 16, 5, INK, 2.4)
+    elif name == "group":
+        p.setPen(QPen(BLUE, 1.4, Qt.DashLine))
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(QRectF(3, 4, 26, 24), 3, 3)
+        _box(p, 6, 17, 8, 7, 3)
+        _box(p, 16, 14, 8, 7, 3)
     elif name == "interference":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(FACE)

@@ -76,6 +76,8 @@ class AssemblyPanel(QWidget):
     mateClicked = Signal(str)
     mateDouble = Signal(str)
     mateContext = Signal(str, object)
+    groupClicked = Signal(str)
+    groupContext = Signal(str, object)
 
     def __init__(self):
         super().__init__()
@@ -95,6 +97,19 @@ class AssemblyPanel(QWidget):
         self.instances.itemClicked.connect(lambda it: self.instanceClicked.emit(it.data(ROLE_ID)))
         self.instances.itemDoubleClicked.connect(lambda it: self.instanceDouble.emit(it.data(ROLE_ID)))
         lay.addWidget(self.instances, 3)
+        sep = QFrame()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background:#d5d9de;")
+        lay.addWidget(sep)
+        self.group_header = QLabel("Groups")
+        self.group_header.setObjectName("sectionHeader")
+        lay.addWidget(self.group_header)
+        self.groups = QListWidget()
+        self.groups.setIconSize(QSize(18, 18))
+        self.groups.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.groups.customContextMenuRequested.connect(lambda pos: self._ctx(self.groups, pos, self.groupContext))
+        self.groups.itemClicked.connect(lambda it: self.groupClicked.emit(it.data(ROLE_ID)))
+        lay.addWidget(self.groups, 1)
         sep = QFrame()
         sep.setFixedHeight(1)
         sep.setStyleSheet("background:#d5d9de;")
@@ -123,8 +138,9 @@ class AssemblyPanel(QWidget):
             sig.emit(it.data(ROLE_ID), lst.viewport().mapToGlobal(pos))
 
     def populate(self, doc, editing=None):
-        for lst in (self.instances, self.mates):
+        for lst in (self.instances, self.mates, self.groups):
             lst.blockSignals(True)
+        sel_g = set(self.selected_groups())
         sel_i = set(self.selected_instances())
         sel_m = set(self.selected_mates())
         self.instances.clear()
@@ -146,9 +162,23 @@ class AssemblyPanel(QWidget):
             tips.append("From " + (src.get("filename") or "STEP") if src.get("kind") == "step" else
                         "From Part Studio “%s”" % (src.get("studio_name") or "?"))
             it.setToolTip("\n".join(tips))
+            g = doc.group_of(inst["id"])
+            if g is not None:
+                tips.append("In " + g["name"])
+                it.setToolTip("\n".join(tips))
             self.instances.addItem(it)
             if inst["id"] in sel_i:
                 it.setSelected(True)
+        self.groups.clear()
+        for g in doc.groups:
+            names = [doc.instance(i)["name"] for i in g["instances"] if doc.instance(i) is not None]
+            it = QListWidgetItem(icon("group"), f"{g['name']}   ({', '.join(names)})")
+            it.setData(ROLE_ID, g["id"])
+            it.setToolTip(f"{g['name']}: " + ", ".join(names) + "\nMembers move together as one body")
+            self.groups.addItem(it)
+            if g["id"] in sel_g:
+                it.setSelected(True)
+        self.group_header.setText(f"Groups ({len(doc.groups)})")
         self.mates.clear()
         for m in doc.mates:
             it = QListWidgetItem(icon("m_" + m["type"]), m["name"])
@@ -187,8 +217,11 @@ class AssemblyPanel(QWidget):
             if bad:
                 txt += f" · {bad} mate(s) failing"
             self.status.setText(txt + "\nDrag parts to move them through their mates.")
-        for lst in (self.instances, self.mates):
+        for lst in (self.instances, self.mates, self.groups):
             lst.blockSignals(False)
+
+    def selected_groups(self):
+        return [it.data(ROLE_ID) for it in self.groups.selectedItems()]
 
     def selected_instances(self):
         return [it.data(ROLE_ID) for it in self.instances.selectedItems()]
@@ -828,6 +861,8 @@ class AssemblyController:
         p.mateClicked.connect(lambda _mid: self.update_triads())
         p.mateDouble.connect(self.edit_mate)
         p.mateContext.connect(self.mate_menu)
+        p.groupClicked.connect(self.select_group)
+        p.groupContext.connect(self.group_menu)
 
     @property
     def doc(self):
@@ -1119,16 +1154,28 @@ class AssemblyController:
     def draw_overlay(self, p):
         self.gizmo.draw(p)
 
-    def _group_has_mates(self, iid):
-        return any(not m.get("suppressed") and m.get("a") and m.get("b")
-                   and iid in (m["a"]["inst"], m["b"]["inst"]) for m in self.doc.mates)
+    def _moves_with(self, iid):
+        """The instances that move rigidly with `iid`: its mate-connected instances and its Group's members,
+        closed over both."""
+        doc = self.doc
+        group = {iid}
+        while True:
+            more = set(group)
+            for i in group:
+                more |= doc._groups()[i]
+                g = doc.group_of(i)
+                if g is not None:
+                    more |= set(g["instances"])
+            if more == group:
+                return group
+            group = more
 
     def apply_motion(self, iid, M, T0s, local_pts, exact=False, turn=False):
         """Move instance `iid` by the world motion M (from the poses T0s), as far as its mates allow:
         a part with no mates, or a mated group with nothing fixed, moves exactly (the whole group together);
         otherwise the solver moves it within its mates' freedom."""
         doc = self.doc
-        group = doc._groups()[iid] if self._group_has_mates(iid) else {iid}
+        group = self._moves_with(iid)
         if not any(doc.instance(i).get("fixed") for i in group):
             for i in group:
                 doc.instance(i)["T"] = A.orthonormalize(M @ T0s[i]).tolist()
@@ -1174,7 +1221,7 @@ class AssemblyController:
         target = o + t * dr
         d["moved"] = True
         doc = self.doc
-        group = doc._groups()[d["inst"]] if self._group_has_mates(d["inst"]) else {d["inst"]}
+        group = self._moves_with(d["inst"])
         if not any(doc.instance(i).get("fixed") for i in group):
             # nothing in this group is fixed: slide the whole group together, like Onshape — the mates
             # between them stay exactly as they are and nothing spins round
@@ -1245,6 +1292,8 @@ class AssemblyController:
             m.addAction("Use the part's colour", lambda: doc.set_color(iid, None))
         m.addSeparator()
         m.addAction("Move / rotate…", lambda: self.start_move(ids))
+        ga = m.addAction("Group", lambda: self.group_selected(ids))
+        ga.setEnabled(self.can_group(ids))
         m.addAction("Duplicate", lambda: self.duplicate(ids))
         if inst["source"].get("kind") == "studio":
             m.addAction("Open Part Studio", lambda: self.open_source(iid))
@@ -1254,6 +1303,55 @@ class AssemblyController:
         a.setEnabled(False)
         m.addSeparator()
         m.addAction("Delete", lambda: self.delete_instances(ids))
+        m.exec(gpos)
+
+    # groups ------------------------------------------------------------------
+    def can_group(self, ids=None):
+        """Group needs two or more instances, none of them already in a group (as in FreeCAD, where a part
+        belongs to one container)."""
+        ids = list(dict.fromkeys(self.selected_instance_ids() if ids is None else ids))
+        return len(ids) >= 2 and all(self.doc.group_of(i) is None for i in ids)
+
+    def group_selected(self, ids=None):
+        ids = self.selected_instance_ids() if ids is None else ids
+        if not self.can_group(ids):
+            return None
+        return self.doc.add_group(ids)
+
+    def ungroup(self, gid):
+        if any(g["id"] == gid for g in self.doc.groups):
+            self.doc.delete_group(gid)
+
+    def rename_group(self, gid, name=None):
+        from PySide6.QtWidgets import QInputDialog
+        g = next((g for g in self.doc.groups if g["id"] == gid), None)
+        if g is None:
+            return
+        if name is None:
+            name, ok = QInputDialog.getText(self.w, "Rename group", "Name:", text=g["name"])
+            if not ok:
+                return
+        name = name.strip()
+        if name and name != g["name"]:
+            self.doc.checkpoint()
+            g["name"] = name
+            self.doc.notify()
+
+    def select_group(self, gid):
+        g = next((g for g in self.doc.groups if g["id"] == gid), None)
+        if g is None:
+            return
+        self.panel.select_instances(set(g["instances"]))
+        self.vp.clear_selection()
+        self.update_triads()
+
+    def group_menu(self, gid, gpos):
+        from PySide6.QtWidgets import QMenu
+        if self.w.mode != "idle":
+            return
+        m = QMenu(self.w)
+        m.addAction("Rename…", lambda: self.rename_group(gid))
+        m.addAction("Delete (ungroup)", lambda: self.ungroup(gid))
         m.exec(gpos)
 
     def mate_menu(self, mid, gpos):

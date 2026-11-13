@@ -161,14 +161,6 @@ def opens_seen():
     return list(_OPENED)
 
 
-def new_engine_window(tmp):
-    """Like new_window, but the window's tabs build in worker processes (the real app's engine). The calling script
-    must guard its entry point with `if __name__ == "__main__":`, as a worker imports it again."""
-    app, _ = new_window(tmp)
-    from freeshape.ui import mainwindow as MW
-    return app, MW.MainWindow(engine=True)
-
-
 def spy_all_workers(w):
     """Install the open spy in every worker of the window's tabs that has one."""
     for tab in w.folder.tabs:
@@ -260,3 +252,82 @@ def refresh_workers(w, docs):
     """Make the workers of `docs` resolve their links again, as the worker's own refresh edit does."""
     for doc in docs:
         w.studio_engine.in_engine(doc, lambda eng, t: eng.submit_edit(t, {"op": "refresh"}))
+
+
+# --- added for ST1 (I1.12) ---
+def new_engine_window(tmp):
+    """Like `new_window`, but a `MainWindow(engine=True)`: one worker process per tab. Returns (QApplication,
+    MainWindow). End with `close_engine_window(w)`, or the worker processes keep the run from exiting."""
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from freeshape.ui import home as H
+    from freeshape.ui import mainwindow as MW
+    app = QApplication.instance() or QApplication([])
+    MW.MainWindow.autosave_root = staticmethod(lambda: os.path.join(tmp, "autosave"))
+    MW.MainWindow.autosave_dir = classmethod(lambda cls: os.path.join(tmp, "autosave"))
+    H.thumbs_dir = lambda: os.path.join(tmp, "thumbs")
+    for name in ("warning", "critical", "information"):
+        setattr(QMessageBox, name, staticmethod(lambda *a, **k: QMessageBox.Ok))
+    w = MW.MainWindow(engine=True)
+    w.settings = QSettings(os.path.join(tmp, "settings.ini"), QSettings.IniFormat)
+    return app, w
+
+
+def close_engine_window(w):
+    """Stop the window's engine and drop the spare workers."""
+    from freeshape.engine import process as P
+    w.studio_engine.shutdown()
+    P.SPARES.clear()
+
+
+def settle(w, timeout=120):
+    """Wait until the window's engine has answered every request."""
+    check(w.studio_engine.settle(timeout), f"the engine did not settle in {timeout} s")
+
+
+def set_dialog_values(dialog, values):
+    """Set the open FeatureDialog's rows by key, in the order given. A combo takes the item data to choose; a list
+    takes the ids to tick (others are unticked); a check box a bool; a line edit text; the Derived dialog's
+    "document" picker takes the Version of this Document to pin to (None: Follow workspace)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QListWidget
+    from freeshape.ui.document_picker import DocumentVersionPicker
+    for key, val in values.items():
+        wd = dialog.widgets.get(key)
+        check(wd is not None, f"the dialog has no row {key!r}: {sorted(dialog.widgets)}")
+        if isinstance(wd, DocumentVersionPicker):
+            wd.set_local_pin(val)
+        elif isinstance(wd, QComboBox):
+            i = wd.findData(val)
+            check(i >= 0, f"row {key!r} offers no {val!r}")
+            wd.setCurrentIndex(i)
+        elif isinstance(wd, QListWidget):
+            ids = [wd.item(i).data(Qt.UserRole) for i in range(wd.count())]
+            check(all(v in ids for v in val), f"row {key!r} lists {ids}, not {list(val)}")
+            for i in range(wd.count()):
+                wd.item(i).setCheckState(Qt.Checked if ids[i] in val else Qt.Unchecked)
+        elif isinstance(wd, QCheckBox):
+            wd.setChecked(bool(val))
+        elif isinstance(wd, QLineEdit):
+            wd.setText(str(val))
+            wd.editingFinished.emit()
+        else:
+            raise Fail(f"cannot set row {key!r} of type {type(wd).__name__}")
+
+
+def commit_open_dialog(w):
+    """Accept the window's open dialog: stop its preview timer first (it can fire after a tab switch), then
+    `commit_dialog`."""
+    check(w.dialog is not None, "no dialog is open")
+    t = getattr(w.dialog, "_timer", None)
+    if t is not None:
+        t.stop()
+    w.commit_dialog()
+
+
+def run_command_with(w, key, values):
+    """Run the command-palette command `key`, set the dialog it opens by row key (`set_dialog_values`) and commit."""
+    run_command(w, key)
+    check(w.dialog is not None, f"command {key!r} opened no dialog")
+    set_dialog_values(w.dialog, values)
+    commit_open_dialog(w)

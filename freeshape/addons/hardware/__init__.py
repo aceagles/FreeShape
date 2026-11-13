@@ -1,1 +1,1 @@
-"""Hardware tables from upstream FreeShape 2.0, waiting to be ported to StandardPart classes (see shapes.py)."""
+"""The Hardware plugin: deep groove ball bearings and heat-set threaded inserts as Standard parts."""

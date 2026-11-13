@@ -781,7 +781,7 @@ def _stamp_severed_siblings(state: ModelState, inputs, fid, op):
                 state.set_named(sib, N.stamp_all(nm, fid, op))
 
 
-def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, stamp=True):
+def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, stamp=True, roles=None):
     """The naming step of a feature runner: the NamedShape of `shape`, a kernel helper's result.
 
     How a feature runner uses naming (docs/reference/element-naming.md, "How a feature runner uses
@@ -797,7 +797,9 @@ def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, 
       op       the helper's name (`"extrude"`, `"revolve"`, `"fuse"`, `"cut"`, `"common"`, ...: a key
                of `naming.OP_FOR`) or an op code;
       part     optional part id: the result is also stored as that part's map (`state.names`);
-      stamp    False keeps an untouched element's name as it is (what `apply_body` does).
+      stamp    False keeps an untouched element's name as it is (what `apply_body` does);
+      roles    optional [(element of `shape`, input element, role)] the history cannot name, such
+               as the up-to sweep's end cap (`naming.name_result`).
 
     The map is returned either way. A result that cannot be named (a feature id that cannot go in a
     name) comes back with no names rather than failing the feature; its references then fail loudly
@@ -813,7 +815,7 @@ def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, 
         if n is not None:
             sources.append(n)
     try:
-        named = N.name_result(shape, history, sources, fid, N.OP_FOR.get(op, op), stamp)
+        named = N.name_result(shape, history, sources, fid, N.OP_FOR.get(op, op), stamp, roles)
     except N.NamingError:
         named = N.NamedShape(shape, {})
     if stamp:
@@ -1413,9 +1415,8 @@ def run_extrude(state, f):
             named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "extrude")
             apply_body(state, body, op, f["id"], p.get("scope"), named)
             return
-        # cut to shape by the target: no element names for the new faces yet (ledger p-f1-names)
-        body = K.fuse_all([_sweep_up_to(state, p, prof, "extrude", d) for prof in profs])
-        apply_body(state, body, op, f["id"], p.get("scope"))
+        body, named = _named_up_to(state, f["id"], p, profs, "extrude", d)
+        apply_body(state, body, op, f["id"], p.get("scope"), named)
         return
     body, hist = make(d)
     if cutting and end == "blind" and not p.get("second") and state.parts:
@@ -1437,9 +1438,31 @@ def _model_size(state, extra=()):
     return float(np.linalg.norm(hi - lo)) if np.all(hi >= lo) else 100.0
 
 
+def _named_up_to(state, fid, p, profs, kind, how):
+    """The up-to sweep of every profile, fused, and its element map: (body, NamedShape).
+
+    Each profile's piece is named from the profile's map through the sweep-and-trim history, as a blind
+    extrude is (op `extrude` / `revolve`); its end cap on the target takes the role `end` under the
+    profile face's name, so it keeps its name when the target moves. Several pieces are then fused and
+    named from their maps, as `apply_body` names a fuse."""
+    sources = _profile_names(state, p)
+    pieces = []
+    for prof in profs:
+        body, hist, ends = _sweep_up_to(state, p, prof, kind, how)
+        pieces.append((body, name_feature(state, fid, sources, body, hist, kind,
+                                          roles=[(e, prof, "end") for e in ends])))
+    if len(pieces) == 1:
+        return pieces[0]
+    body, hist = K.fuse_all([b for b, _ in pieces], with_history=True)
+    return body, name_feature(state, fid, [n for _, n in pieces], body, hist, "fuse_all", stamp=False)
+
+
 def _sweep_up_to(state, p, face, kind, how):
     """One profile swept (extrude: along direction `how`; revolve: about axis `how` = (point, dir)) until it
-    meets what p["up_to"] names: the next part in the way, a face (or plane), a part, or a vertex."""
+    meets what p["up_to"] names: the next part in the way, a face (or plane), a part, or a vertex.
+
+    Returns (body, history from `face`, end cap faces): the faces that lie on the target, which the
+    history does not reach. Up to a vertex is a plain sweep, so it has no such faces."""
     end = p.get("end")
     target = p.get("up_to") or {}
     offset = float(p.get("offset", 0.0) or 0.0)
@@ -1450,13 +1473,13 @@ def _sweep_up_to(state, p, face, kind, how):
         d = np.asarray(how, float) / np.linalg.norm(how)
 
         def sweep_long():
-            return K.extrude([face], d, size)
+            return K.extrude([face], d, size, with_history=True)
         seed = start + d * max(size * 1e-5, 1e-4)
     else:
         ap, ad = np.asarray(how[0], float), np.asarray(how[1], float)
 
         def sweep_long():
-            return K.revolve([face], ap, ad, 359.0)
+            return K.revolve([face], ap, ad, 359.0, with_history=True)
         step = 0.05 if np.linalg.norm(np.cross(start - ap, ad)) > 1e-9 else 0.0
         seed = K.rotate_point(start, ap, ad, step)
 
@@ -1468,11 +1491,11 @@ def _sweep_up_to(state, p, face, kind, how):
             depth = float((q - start) @ d) - offset
             if depth <= 1e-9:
                 raise K.KernelError("That vertex is behind the profile — tick Opposite direction")
-            return K.extrude([face], d, depth)
+            return (*K.extrude([face], d, depth, with_history=True), [])
         ang = K.angle_about(start, q, ap, ad)
         if ang <= 1e-6:
             raise K.KernelError("That vertex is behind the profile — tick Opposite direction")
-        return K.revolve([face], ap, ad, ang)
+        return (*K.revolve([face], ap, ad, ang, with_history=True), [])
 
     if end == "up_to_face":
         if target.get("kind") == "face":
@@ -1491,7 +1514,8 @@ def _sweep_up_to(state, p, face, kind, how):
         if not state.parts:
             raise K.KernelError("There are no parts for it to reach")
         tool = K.compound([pt.shape for pt in state.parts.values()])
-    return K.keep_piece_from(sweep_long(), tool, seed)
+    long_body, hist = sweep_long()
+    return K.keep_piece_from(long_body, tool, seed, hist)
 
 
 def run_revolve(state, f):
@@ -1503,9 +1527,8 @@ def run_revolve(state, f):
     if flip:
         d = -d
     if end in UP_TO:
-        # cut to shape by the target: no element names for the new faces yet (ledger p-f1-names)
-        body = K.fuse_all([_sweep_up_to(state, p, prof, "revolve", (a, d)) for prof in profs])
-        apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"))
+        body, named = _named_up_to(state, f["id"], p, profs, "revolve", (a, d))
+        apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
         return
     body, hist = K.revolve(profs, a, d, angle, symmetric=(end == "symmetric"), with_history=True)
     named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "revolve")

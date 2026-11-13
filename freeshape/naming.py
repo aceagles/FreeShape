@@ -544,9 +544,25 @@ class _Naming:
                 self._store(key, _encode(found[0], text, self.op, self.tag, key[0]))
         return unnamed
 
+    # ------------------------------------------------------------------ roles
+    def _from_roles(self, roles):
+        """A new element named by what it is rather than by an ordinal: `role` in the reserved-position
+        slot after the generated marker, under the name of the source element it is the role of. The
+        up-to sweep's end cap is `<profile face>;:Gend`: nothing in the profile's history reaches the
+        face on the target, and FreeCAD's MapperPrism likewise hand-names what BRepFeat_MakePrism does not
+        report. Several elements with one role are told apart by the `;D` fragment (§ 1)."""
+        for sub, source, role in roles or ():
+            if not role or role.split() != [role] or any(c in role for c in _RESERVED):
+                raise NamingError(f"role {role!r} cannot go in an element name")
+            key = self.el.key(sub)
+            name = next((n for n in (s.name_of(source) for s in self.sources) if n), None)
+            if key is not None and name is not None and key not in self.out.names:
+                self._store(key, _encode(name, GEN + role, self.op, self.tag, key[0]))
+
     # ------------------------------------------------------------------ the whole step
-    def run(self):
+    def run(self, roles=None):
         claims = self._claims()
+        self._from_roles(roles)
         self._carry_forward()
         delayed = False
         while True:
@@ -568,7 +584,7 @@ def stamp_all(named: NamedShape, tag, op) -> NamedShape:
                       (tag, named))
 
 
-def name_result(shape, history, sources, tag, op=OP_MAKER, stamp=True) -> NamedShape:
+def name_result(shape, history, sources, tag, op=OP_MAKER, stamp=True, roles=None) -> NamedShape:
     """The names of a kernel helper's result.
 
     `shape` and `history` are what the helper returned with `with_history=True`, `sources` are the
@@ -578,11 +594,14 @@ def name_result(shape, history, sources, tag, op=OP_MAKER, stamp=True) -> NamedS
     `stamp=False` is a FreeShape departure from § 2: an element the operation left alone keeps its
     name exactly, instead of gaining the new op code and tag. A part a later feature merely touches
     then keeps the names of its other faces, so they stay short and identical across the feature.
+
+    `roles` is [(element of `shape`, element of a source, role)]: elements the history cannot name,
+    named `<source element's name>;:G<role>` before any pass runs (the up-to end cap, role "end").
     """
     if shape is None:
         raise NamingError("nothing to name: the operation returned no shape")
     sources = [s for s in sources if s is not None]
-    return _Naming(shape, history, sources, tag, op, stamp).run()
+    return _Naming(shape, history, sources, tag, op, stamp).run(roles)
 
 
 # --------------------------------------------------------------------------- sketch roots (§ 4)

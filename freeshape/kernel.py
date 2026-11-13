@@ -1015,9 +1015,13 @@ def termination_plane(pl: Plane, offset=0.0, start_point=None, size=1e4):
     return BRepBuilderAPI_MakeFace(gp_Pln(p2.gp_ax3()), -size, size, -size, size).Face()
 
 
-def keep_piece_from(long_body, tool, seed) -> object:
+def keep_piece_from(long_body, tool, seed, history=None):
     """Cut `long_body` (a profile swept too far) with `tool` and keep the piece that contains `seed` (a point
-    just past the profile): the sweep up to where it first meets the tool."""
+    just past the profile): the sweep up to where it first meets the tool.
+
+    Given `history` (long_body's own, from the sweep's `with_history=True`) it returns (piece, history, ends):
+    the sweep's history chained with the Splitter's, so the piece's faces carry the profile's names, and the
+    piece's end cap -- the faces that lie on the tool, which nothing in the profile's history reaches."""
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.TopAbs import TopAbs_IN
     sp = BRepAlgoAPI_Splitter()
@@ -1033,8 +1037,24 @@ def keep_piece_from(long_body, tool, seed) -> object:
     for sol in pieces:
         cl = BRepClass3d_SolidClassifier(sol, _pnt(seed), 1e-7)
         if cl.State() == TopAbs_IN:
-            return sol
+            if history is None:
+                return sol
+            split = _maker_history(sp, [long_body, tool])
+            return sol, _chain(history, split), _faces_not_from(sol, long_body, split)
     raise KernelError("Couldn't find where the extrude meets that")
+
+
+def _faces_not_from(shape, source, history):
+    """The faces of `shape` that are neither faces of `source` nor what `history` modified them into."""
+    known = TopTools_IndexedMapOfShape()
+    for f in _sub_shapes(source, TopAbs_FACE):
+        known.Add(f)
+        try:
+            for img in history.Modified(f):
+                known.Add(img)
+        except Exception:
+            pass
+    return [f for f in _sub_shapes(shape, TopAbs_FACE) if not known.Contains(f)]
 
 
 def rotate_point(q, axis_p, axis_d, angle_deg):

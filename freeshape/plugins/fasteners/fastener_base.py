@@ -54,7 +54,7 @@ import functools
 from freeshape import kernel as K
 from freeshape.pyfeature.api import StandardPart
 
-from . import geom
+from . import geom, hole_match
 from .tables import tables
 
 
@@ -226,7 +226,8 @@ class ScrewPart(StandardPart):
         return f"{self.standard} {p['size']} x {p['length']}"
 
     def match_hole(self, diameter):
-        return None     # I3.2
+        """The size whose clearance hole or tap drill is `diameter` within 0.05 mm (see hole_match), or None."""
+        return hole_match.match_metric(self.sizes(), diameter)
 
 
 class FlatPart(StandardPart):
@@ -266,4 +267,5 @@ class FlatPart(StandardPart):
         return f"{self.standard} {self.validate(params)['size']}"
 
     def match_hole(self, diameter):
-        return None     # I3.2
+        """The size whose clearance hole or tap drill is `diameter` within 0.05 mm (see hole_match), or None."""
+        return hole_match.match_metric(self.sizes(), diameter)

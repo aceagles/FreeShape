@@ -189,6 +189,12 @@ class Iso7049(fb.ScrewPart):
     def build_solid(self, size, length):
         return self.build({"size": size, "length": length})
 
+    def match_hole(self, diameter, point="C"):
+        """The ISO size whose nominal diameter is 1.0 to 1.15 times smaller than `diameter` (the head's seat is
+        the clearance hole in the top part); a pilot hole matches nothing. The largest nominal wins a tie."""
+        from .hole_match import match_tapping
+        return match_tapping(self.sizes("iso", point), diameter, lambda s: fb.dia(s, False))
+
     def designation(self, params):
         p = self.validate(params)
         if p["standard"] == "commercial":

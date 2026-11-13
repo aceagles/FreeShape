@@ -135,3 +135,28 @@ def hole_targets(doc, picks):
             seen.append((iid, centre, dia))
             out.append({"inst": iid, "edge": ei, "diameter": dia, "centre": tuple(float(a) for a in centre)})
     return out
+
+
+def sizes_for(type_id, targets):
+    """Group hole `targets` (as hole_targets returns them) by the size of Standard part `type_id` that fits.
+
+    Returns ``{"groups": [{"size": str, "targets": [target, ...]}, ...], "unmatched": [target, ...]}``.
+    Groups come in order of first appearance of their size in `targets`; targets keep their input order within
+    a group and in "unmatched". Targets are returned as the same objects, not copies. Raises KeyError for an
+    unknown `type_id`."""
+    from .pyfeature import standard_part
+    cls = standard_part(type_id)
+    if cls is None:
+        raise KeyError(type_id)
+    part = cls()
+    groups, by_size, unmatched = [], {}, []
+    for t in targets or []:
+        size = part.match_hole(t["diameter"])
+        if size is None:
+            unmatched.append(t)
+            continue
+        if size not in by_size:
+            by_size[size] = {"size": size, "targets": []}
+            groups.append(by_size[size])
+        by_size[size]["targets"].append(t)
+    return {"groups": groups, "unmatched": unmatched}

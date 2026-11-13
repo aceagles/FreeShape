@@ -102,7 +102,7 @@ def test_resaved_studio_holds_alias_table_and_dependents_write_new_ids(tmp_path)
     Document.load(studio).save()
     with open(studio) as fh:
         saved = json.load(fh)
-    assert saved["version"] == Mig.latest_version("document") == 2
+    assert saved["version"] == Mig.latest_version("document") == 3
     assert saved["part_aliases"] == HINGE_ALIASES
     assert not OLD_ID.search(json.dumps({k: v for k, v in saved.items() if k != "part_aliases"}))
 

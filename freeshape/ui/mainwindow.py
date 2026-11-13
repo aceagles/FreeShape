@@ -20,7 +20,9 @@ from .. import features as F
 from ..document import PartStudioDoc
 from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
+from .. import blobstore
 from .. import doc_folder
+from .. import docstore
 from .. import doc_registry
 from .. import tabkinds as TK
 from .. import links
@@ -1649,14 +1651,8 @@ class MainWindow(QMainWindow):
 
     def _document_info(self, path):
         """{"id", "name", "tab"} for a recent entry that is a Document folder, else None."""
-        import json
-        manifest = os.path.join(path, doc_folder.MANIFEST_NAME)
-        if not os.path.isfile(manifest):
-            return None
-        try:
-            with open(manifest) as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
+        data = doc_folder.FolderDocument.peek_manifest(path)
+        if data is None:
             return None
         did = data.get("id")
         info = self._recent_documents().get(did, {}) if isinstance(did, str) else {}
@@ -2187,7 +2183,7 @@ class MainWindow(QMainWindow):
         recovers it as a loose file)."""
         info = meta["document"]
         folder = info.get("path")
-        if not folder or not os.path.isfile(os.path.join(folder, doc_folder.MANIFEST_NAME)):
+        if not folder or not doc_folder.FolderDocument.has_manifest_at(folder):
             return False
         if self.folder is None or self.folder.id != info.get("id"):
             self.open_document(folder)
@@ -2196,7 +2192,7 @@ class MainWindow(QMainWindow):
         kind = info.get("kind")
         if kind not in doc_folder.LOADERS:
             return False
-        doc = doc_folder.LOADERS[kind](path)
+        doc = self.folder.recover_tab(kind, os.path.basename(path), info.get("tab"), os.path.dirname(path))
         doc.name = info.get("tab_name") or meta.get("name") or doc.name
         doc.dirty = True
         old = None
@@ -2262,6 +2258,7 @@ class MainWindow(QMainWindow):
                 out.append(full)                                          # older single-folder layout
             elif os.path.isdir(full) and name.isdigit() and not self._process_alive(int(name)):
                 out += [os.path.join(full, f) for f in os.listdir(full) if f.endswith(TK.extensions())]
+                docstore.sweep_side_blobs(full)            # blobs no autosave there names
                 if not os.listdir(full):
                     try:
                         os.rmdir(full)
@@ -2287,6 +2284,8 @@ class MainWindow(QMainWindow):
                 continue
             try:
                 links.repair_links(self._resolver_for(doc), doc)
+                if hasattr(doc, "write_blobs"):         # the blobs its data names go first (I4.9)
+                    doc.write_blobs(store=self._autosave_blobs(doc))
                 d = json.loads(doc.to_json())
                 d["autosave"] = {"path": doc.path, "name": doc.name, "time": time.time()}
                 tab = self._folder_tab(doc)
@@ -2294,6 +2293,11 @@ class MainWindow(QMainWindow):
                     d["autosave"]["document"] = {"id": self.folder.id, "name": self.folder.name,
                                                  "path": self.folder.path, "tab": tab.id, "kind": tab.kind,
                                                  "file": tab.file, "tab_name": tab.name}
+                if tab is not None:
+                    doc._autosave_id = self.folder.autosave_id(tab.id)
+                    self.folder.autosave_tab(tab.id, tab.kind, json.dumps(d).encode("utf-8"),
+                                             where=self.autosave_dir())
+                    continue
                 tmp = self._autosave_path(doc) + ".tmp"
                 with open(tmp, "w") as fh:
                     json.dump(d, fh)
@@ -2301,10 +2305,23 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _autosave_blobs(self, doc):
+        """Where a doc's autosave keeps the blobs its data names, each written once: the store's side blobs for a
+        Document tab (FolderDocument.autosave_blobs), `blobs/` beside the autosave file for a loose file -- the
+        same folder for a Document in a folder. Recovery reads them there; dropping the autosave sweeps them."""
+        if self._folder_tab(doc) is not None:
+            return self.folder.autosave_blobs(self.autosave_dir())
+        return docstore.NewBlobsOnly(blobstore.store_for(self._autosave_path(doc)))
+
     def _drop_autosave(self, doc):
         if doc is not None and getattr(doc, "_autosave_id", None):
             try:
+                tab = self._folder_tab(doc)
+                if tab is not None:
+                    self.folder.drop_autosave(tab.id, tab.kind, where=self.autosave_dir())
+                    return
                 os.remove(self._autosave_path(doc))
+                docstore.sweep_side_blobs(self.autosave_dir())
             except OSError:
                 pass
 
@@ -2333,13 +2350,14 @@ class MainWindow(QMainWindow):
                     with open(f) as fh:
                         meta = json.load(fh).get("autosave", {})
                     if meta.get("document") and self._recover_document_tab(f, meta):
-                        os.remove(f)
+                        self.folder.discard_autosave(os.path.basename(f), os.path.dirname(f))
                         continue
                     kind = TK.kind_for_path(f)
                     doc = AssemblyDoc.load(f, resolver=self._resolve_source) if kind == "assembly" \
                         else DrawingDoc.load(f, resolver=self._resolve_drawing_source,
                                                       hlr_async=self.dwg.request_exact) if kind == "drawing" \
                         else TK.get(kind or "studio").load(f)
+                    doc_folder.hold_blobs(doc)                  # its blobs are beside `f`, removed below
                     doc.path = meta.get("path")
                     doc.name = (meta.get("name") or "Recovered") + " (recovered)"
                     doc.dirty = True
@@ -2349,6 +2367,7 @@ class MainWindow(QMainWindow):
             try:
                 os.remove(f)
                 folder = os.path.dirname(f)
+                docstore.sweep_side_blobs(folder)
                 if folder != self.autosave_root() and not os.listdir(folder):
                     os.rmdir(folder)
             except OSError:
@@ -3538,7 +3557,9 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(500, lambda d=doc: self._update_thumbnail(d))
 
     def _prefetch_imports(self, path, prog):
-        """Read the STEP files embedded in a .fshape in the background first (big ones only). False = cancelled."""
+        """Read the STEP files a .fshape imports in the background first (big ones only). False = cancelled. A file
+        written since I4.9 names each by blob key (`params.blob`, in `blobs/` beside the file); an older one carries
+        it inline (`params.data`)."""
         import json
         from .progress import read_step_in_background
         try:
@@ -3547,9 +3568,10 @@ class MainWindow(QMainWindow):
         except Exception:
             return True
         for f in feats:
-            if f.get("type") == "import" and not f.get("suppressed") and f.get("params", {}).get("data"):
+            p = f.get("params", {}) if f.get("type") == "import" and not f.get("suppressed") else {}
+            if p.get("blob") or p.get("data"):
                 try:
-                    raw = base64.b64decode(f["params"]["data"])
+                    raw = blobstore.store_for(path).get(p["blob"]) if p.get("blob") else base64.b64decode(p["data"])
                 except Exception:
                     continue
                 if not read_step_in_background(raw, prog, self):

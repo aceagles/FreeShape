@@ -261,13 +261,31 @@ def plain(x):
 # =========================================================================== the interface
 
 class Engine(abc.ABC):
-    """`submit_edit(tab, edit)` -> `outputs(tab)`. Tabs are opened from a file (or made new) and addressed
+    """`submit_edit(tab, edit)` -> `outputs(tab)`. Tabs are opened from bytes or a file (or made new) and addressed
     by a string tab id. The engine, not the tab, owns cross-tab inputs: a tab is handed the outputs it
     consumes and never opens another tab's file itself."""
 
     @abc.abstractmethod
     def open_tab(self, path, tab=None) -> str:
-        """Open the Part Studio / Assembly / Drawing at `path`; returns its tab id (`tab` if given)."""
+        """Open the Part Studio / Assembly / Drawing at `path`; returns its tab id (`tab` if given). A wrapper:
+        it reads the file and calls `open_tab_data` with its bytes and `path`."""
+
+    @abc.abstractmethod
+    def open_tab_data(self, kind, data, tab=None, name=None, blobs=None, path=None) -> str:
+        """Open a tab of `kind` from `data`, its bytes as a Document store holds them; returns its tab id (`tab`
+        if given). `name` (if given) replaces the name the data carries. `blobs` is the tab's blob lookup (an
+        object with `get`, `has` and `put`, see docstore.DocumentStore.blobs): every tab kind builds through it,
+        and `tab_data` puts the blobs a save names back into it. `path` is the file the bytes came from, if
+        any (what `open_tab` passes): it names the file in errors, relative link paths are found against its
+        folder, and a Part Studio with a path reads its blobs beside it. A tab opened with no path is matched
+        by tab id: a link source that names a tab id never falls back to a path or the filesystem."""
+
+    @abc.abstractmethod
+    def tab_data(self, tab, blobs=None) -> bytes:
+        """The tab's data as a Document store holds it: the bytes a "save" edit writes, without writing any
+        file. The blobs those bytes name (a Python feature's stored build, a Context capture) are put into
+        `blobs`, else into the lookup the tab was opened with, else beside the tab's file; EngineError if
+        there are blobs and none of those is there."""
 
     @abc.abstractmethod
     def new_tab(self, kind, name=None, tab=None, sources=()) -> str:

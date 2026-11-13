@@ -12,7 +12,7 @@ A Document is a folder under git ([ADR 0001](../adr/0001-document-is-a-folder-un
 | --- | --- |
 | `document.json` | The manifest. One row per Tab. |
 | `<tab file>` | One JSON file per Tab. The extension gives the kind: `.fshape` Part Studio, `.fasm` Assembly, `.fdwg` Drawing, `.fvars` Variable Studio. |
-| `blobs/` | Content-addressed binary files for Python features and Context captures. Created beside a Part Studio file by its first save that needs one. |
+| `blobs/` | Content-addressed binary files: every tab's binary data (see Where binary data lives). Created beside a tab file by its first save that needs one. |
 
 Every file is JSON written with `indent=1`. Each save writes `<path>.tmp` and moves it into place with `os.replace`. A file also exists outside a Document folder (a loose file); the same four tab formats apply.
 
@@ -49,12 +49,12 @@ On save, `FolderDocument.save` adds `_tab_id` to each Tab file. It repeats the m
 
 ## Part Studio file
 
-Written by `Document.to_json` (`freeshape/document.py`). Format tag `freeshape`. Current version: 2. Extension `.fshape`.
+Written by `Document.to_json` (`freeshape/document.py`). Format tag `freeshape`. Current version: 3. Extension `.fshape`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `format` | string | Always `freeshape`. |
-| `version` | integer | File version. Current is 2. |
+| `version` | integer | File version. Current is 3. |
 | `name` | string | Display name. |
 | `uid` | string | Id of the studio, used by loose-file Links. |
 | `features` | list | The feature list, in order. See Feature. |
@@ -89,7 +89,8 @@ Types whose `params` name something outside the feature:
 | Type | `params` key | Type | Meaning |
 | --- | --- | --- | --- |
 | `sketch` | `sketch` | object | `{points, entities, constraints}` of the sketch. Ids such as `p4` and `l7` live here. |
-| `import` | `data` | string | Base64 of the imported STEP file, inline. |
+| `import` | `blob` | string | Blob key of the imported STEP file. Since version 3. |
+| `import` | `data` | string | Before version 3: base64 of the imported STEP file, inline. Since version 3 written only as an empty string, by an import that holds no file yet. |
 | `import` | `filename` | string | Name of the imported file. |
 | `variable_studio_ref` | `source` | object | Link source of a Variable Studio Tab. See Link sources. |
 | `variable_studio_ref` | `names` | list of string | Optional. Only these variables are taken. Absent means all. |
@@ -134,12 +135,12 @@ Each entry of `parts`:
 
 ## Assembly file
 
-Written by `AssemblyDoc.to_json` (`freeshape/assembly.py`). Format tag `freeshape-assembly`. Current version: 7. Extension `.fasm`.
+Written by `AssemblyDoc.to_json` (`freeshape/assembly.py`). Format tag `freeshape-assembly`. Current version: 8. Extension `.fasm`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `format` | string | Always `freeshape-assembly`. |
-| `version` | integer | File version. Current is 7. |
+| `version` | integer | File version. Current is 8. |
 | `name` | string | Display name. |
 | `uid` | string | Id of the Assembly, used by loose-file Links. |
 | `instances` | list | The placed parts. See Instance. |
@@ -147,7 +148,6 @@ Written by `AssemblyDoc.to_json` (`freeshape/assembly.py`). Format tag `freeshap
 | `groups` | list | Rigid sets of instances. See Group. Since version 3. |
 | `relations` | list | Relations between Mate values. See Relation. Since version 6. |
 | `connectors` | list | Explicit mate connectors owned by the Assembly. See Assembly connector. Written only when the list is not empty. No migration step: a file without it reads as empty. |
-| `blobs` | object | Base64 STEP data of imported parts. Key is the first 16 hex characters of the sha1 of the base64 text. Only keys that a `step` instance uses are written. |
 
 ### Instance
 
@@ -163,7 +163,7 @@ Written by `AssemblyDoc.to_json` (`freeshape/assembly.py`). Format tag `freeshap
 | `material` | string or null | Material name taken from the part's override when inserted. |
 | `color` | list of number | Optional. Instance colour overriding the part's. |
 | `suppressed` | boolean | Optional. A suppressed instance is left out of the solve, bill of materials and export. |
-| `_brep` | string | Base64 BREP of the part, written so the file opens when its Part Studio is missing. Not written for `step` or `standard` sources. Used when the source cannot be resolved. |
+| `_brep_blob` | string | Blob key of the part's BREP (zlib-compressed `K.shape_to_brep` bytes), written so the file opens when its Part Studio is missing. Not written for `step` or `standard` sources. Used when the source cannot be resolved. Since version 8; before it, `_brep` held the same bytes in base64. |
 
 `material` is not gated by a migration step. A file without it reads as no material.
 
@@ -182,7 +182,7 @@ The `kind` key picks the form.
 | `studio` | `uid` | string | Loose-file Link: uid of the studio. Removed when the Link becomes a tab id. |
 | `studio` | `path` | string | Loose-file Link: path of the studio file. |
 | `studio` | `relpath` | string | Path relative to the Assembly file, written on save. |
-| `step` | `blob` | string | Key into the Assembly's `blobs`. |
+| `step` | `blob` | string | Blob key of the imported STEP file. Before version 8, a key into the file's own `blobs` object (the first 16 hex characters of the sha1 of the base64 text). |
 | `step` | `index` | integer | Which solid of the STEP file. |
 | `step` | `filename` | string | Name of the imported file. |
 | `standard` | `type` | string | Standard part type, `sp:<plugin>/<name>`. Since version 7. |
@@ -265,12 +265,12 @@ An entry of `connectors`.
 
 ## Drawing file
 
-Written by `DrawingDoc.to_json` (`freeshape/drawing.py`). Format tag `freeshape-drawing`. Current version: 2. Extension `.fdwg`.
+Written by `DrawingDoc.to_json` (`freeshape/drawing.py`). Format tag `freeshape-drawing`. Current version: 3. Extension `.fdwg`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `format` | string | Always `freeshape-drawing`. |
-| `version` | integer | File version. Current is 2. |
+| `version` | integer | File version. Current is 3. |
 | `name` | string | Display name. |
 | `uid` | string | Id of the Drawing. |
 | `source` | object or null | What the Drawing shows. See Drawing source. |
@@ -278,10 +278,10 @@ Written by `DrawingDoc.to_json` (`freeshape/drawing.py`). Format tag `freeshape-
 | `title` | object | Title block fields. See Title block. |
 | `views` | list | The views. See View. |
 | `annots` | list | Dimensions and notes. See Annotation. |
-| `_brep` | string | Base64 BREP of the shown shape, a fallback when the source is missing. |
-| `_views` | object | Exact hidden-line results so a reopen does not recompute them. `{"model": <sha1 of the BREP>, "views": [{"d", "up", "curves"}]}`. Used only when the model hash still matches. |
+| `_brep_blob` | string | Blob key of the shown shape's BREP (zlib-compressed `K.shape_to_brep` bytes), a fallback when the source is missing. Since version 3; before it, `_brep` held the same bytes in base64. |
+| `_views_blob` | string | Blob key of the exact hidden-line results, so a reopen does not recompute them: JSON `{"model": <sha1 of the BREP bytes>, "views": [{"d", "up", "curves"}]}`. Used only when the model hash still matches. Since version 3; before it, `_views` held the same object inline. |
 
-`_brep` and `_views` are written only when the shape is available.
+`_brep_blob` and `_views_blob` are written only when the shape is available.
 
 ### Drawing source
 
@@ -382,15 +382,16 @@ Written by `VariableStudioDoc.to_json` (`freeshape/variable_studio.py`). Format 
 
 ### Chain document
 
-Part Studio. Registered in `freeshape/document.py`. Latest version 2. 1 step.
+Part Studio. Registered in `freeshape/document.py`. Latest version 3. 2 steps.
 
 | Step | Function | Change |
 | --- | --- | --- |
 | 1 to 2 | `_migrate_part_ids` | Part ids change from `<fid>:<counter>` to `<fid>/<n>`. The step replays the features, rewrites the ids that `params`, `overrides` and `hidden` name, and records `part_aliases`. |
+| 2 to 3 | `_move_import_data_to_blobs` | An `import` feature's base64 `params.data` becomes `params.blob`, the key of the decoded bytes. The bytes are held in memory by the loaded studio and written to the blobs by its next save. |
 
 ### Chain assembly
 
-Assembly. Registered in `freeshape/assembly.py`. Latest version 7. 6 steps.
+Assembly. Registered in `freeshape/assembly.py`. Latest version 8. 7 steps.
 
 | Step | Function | Change |
 | --- | --- | --- |
@@ -400,14 +401,16 @@ Assembly. Registered in `freeshape/assembly.py`. Latest version 7. 6 steps.
 | 4 to 5 | `_add_mate_limits` | No data change. A Mate may carry `limits`. |
 | 5 to 6 | `_add_relations` | Adds an empty `relations` list. |
 | 6 to 7 | `_upgrade_standard_part_source` | No data change. An instance source may have `kind` `standard`. |
+| 7 to 8 | `_move_geometry_to_blobs` | An instance's base64 `_brep` becomes `_brep_blob`. The `blobs` object leaves the file and a `step` source's `blob` becomes the key of the decoded STEP bytes. The bytes are held in memory by the loaded Assembly and written to the blobs by its next save. |
 
 ### Chain drawing
 
-Drawing. Registered in `freeshape/drawing.py`. Latest version 2. 1 step.
+Drawing. Registered in `freeshape/drawing.py`. Latest version 3. 2 steps.
 
 | Step | Function | Change |
 | --- | --- | --- |
 | 1 to 2 | `_upgrade_part_id_syntax` | No data change. Same purpose as the Assembly step 1 to 2. |
+| 2 to 3 | `_move_geometry_to_blobs` | The base64 `_brep` becomes `_brep_blob`, and the inline `_views` object becomes `_views_blob`, the key of its JSON. Held and written as for the Assembly step 7 to 8. |
 
 ### Chain variables
 
@@ -447,14 +450,16 @@ Keys: the in-Document keys plus `document` (the other Document's id) and `versio
 
 | Data | Where | Form |
 | --- | --- | --- |
-| Part shape for an Assembly instance | `instances[]._brep` in the `.fasm` file | Base64 BREP, one copy per part shape. |
-| Imported STEP file in an Assembly | `blobs` in the `.fasm` file | Base64 text, keyed by the first 16 hex characters of its sha1. |
-| Imported STEP file in a Part Studio | `params.data` of an `import` feature | Base64 text, inline. |
-| Shown shape of a Drawing | `_brep` in the `.fdwg` file | Base64 BREP. |
-| Exact Drawing views | `_views` in the `.fdwg` file | JSON curves plus the sha1 of the BREP. |
+| Part shape for an Assembly instance | `blobs/<sha256>` beside the `.fasm` file, named by `instances[]._brep_blob` | zlib-compressed BREP, one blob per part shape. |
+| Imported STEP file in an Assembly | `blobs/<sha256>` beside the `.fasm` file, named by a `step` source's `blob` | The STEP file's bytes. |
+| Imported STEP file in a Part Studio | `blobs/<sha256>` beside the `.fshape` file, named by `params.blob` of an `import` feature | The STEP file's bytes. |
+| Shown shape of a Drawing | `blobs/<sha256>` beside the `.fdwg` file, named by `_brep_blob` | zlib-compressed BREP. |
+| Exact Drawing views | `blobs/<sha256>` beside the `.fdwg` file, named by `_views_blob` | JSON curves plus the sha1 of the BREP. |
 | Last build of a Python feature | `blobs/<sha256>` beside the `.fshape` file, named by `python_builds` | BREP bytes and a names JSON, one blob each. |
 | Context capture ([ADR 0004](../adr/0004-context-stores-captured-shapes.md)) | `blobs/<sha256>` beside the `.fshape` file, named by `params.capture` | A JSON listing `{assembly, instance, solved, neighbours}` plus a BREP blob and a names blob per neighbour. Each neighbour has `id`, `name`, `hash`, `T`, `brep`, `names`. |
 
+A tab file holds blob keys only. A Document tab's blobs go through the store (`DocumentStore.blobs(tab_id)`: the `blobs/` folder beside the tab file in a folder, a dict per tab in a `MemoryStore`). A loose file keeps them in the `blobs/` folder beside itself. An old file that carried data inline loads without any store: its migration step keeps the bytes in memory (`blobstore.HELD`) and the next save writes them. A blob that the tab cannot find leaves that instance, feature or Drawing red with an error naming the key. A blob no tab names is left where it is: nothing deletes blobs.
+
 Blob rules (`freeshape/blobstore.py`): a blob file is named by the sha256 of its bytes, in 64 lowercase hex characters. The `blobs/` folder sits beside the tab file. The store refuses a symlinked folder or file, a blob over 64 MiB, and content whose hash is not its name. Bytes reach a parser only after that check. Writes use a `.tmp` file and `os.replace`. Equal content is stored once.
 
-[ADR 0009](../adr/0009-tab-data-goes-through-a-document-store.md) records that binary data is stored in these three ways and that tab files are read and written directly by several modules.
+[ADR 0009](../adr/0009-tab-data-goes-through-a-document-store.md) records that all binary data lives in the store's blobs, addressed by hash. Before I4.9 it was stored three ways: base64 inline in Assembly and Drawing files, an inline `blobs` object for imported STEP files, and these blob folders.

@@ -70,9 +70,13 @@ class VariableStudioDoc:
         return json.dumps({"format": FILE_FORMAT, "version": M.latest_version("variables"), "name": self.name,
                             "rows": [dict(r) for r in self.rows]}, indent=1)
 
+    def to_data(self) -> bytes:
+        """The tab's data as a Document store holds it (the bytes `save` writes)."""
+        return self.to_json().encode("utf-8")
+
     def save(self, path=None):
         self.path = path or self.path
-        txt = self.to_json()
+        txt = self.to_data().decode("utf-8")
         tmp = self.path + ".tmp"
         with open(tmp, "w") as fh:
             fh.write(txt)
@@ -81,11 +85,18 @@ class VariableStudioDoc:
 
     @staticmethod
     def load(path):
-        with open(path) as fh:
-            d = json.load(fh)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return VariableStudioDoc.from_data(data, path=path)
+
+    @staticmethod
+    def from_data(data, path=None, blobs=None):
+        """A Variable Studio from its bytes. `path` is the file they came from, if any (it names the file in
+        errors and becomes the tab's `path`). `blobs` is unused: a Variable Studio keeps none."""
+        d = json.loads(bytes(data).decode("utf-8"))
         if d.get("format") != FILE_FORMAT:
             raise K.KernelError("Not a FreeShape Variable Studio")
-        d = M.migrate("variables", d, path)
+        d = M.migrate("variables", d, path if path is not None else "This Variable Studio")
         doc = VariableStudioDoc()
         doc.name = d.get("name", doc.name)
         doc.rows = [{"name": r.get("name", ""), "expression": r.get("expression", "")}

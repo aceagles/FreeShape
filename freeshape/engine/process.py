@@ -6,9 +6,11 @@ standard pool supervises the child: if it dies, the pool breaks and every pendin
 `BrokenProcessPool`, which marks the tab errored (`TabErrored`) -- the other tabs, in other processes, carry
 on. `restart(tab)` builds a new pool and brings the tab back.
 
-The parent holds the authoritative state of every tab: the bytes of the file it was opened from (read once,
-at open) and every edit applied since, saved or not. A restart replays that log onto those bytes -- not onto
-the file, which may be stale or rewritten -- so a crash loses no edit, however long ago the last save was.
+The parent holds the authoritative state of every tab: the bytes it was opened from (`open_tab_data`; `open_tab`
+reads them from the file once, at open), the blobs those bytes name (read from the caller's blob lookup and sent
+with the load), and every edit applied since, saved or not. A worker builds its tab from those bytes and never
+reads the tab file. A restart replays the log onto the bytes -- not onto the file, which may be stale or
+rewritten -- so a crash loses no edit, however long ago the last save was.
 
 The parent also owns the Link graph. A tab that consumes others (an assembly, a drawing) gets, with each call,
 the outputs of the tabs its links name -- parts as BREP bytes with their hashes and element-name maps, a
@@ -31,7 +33,6 @@ from __future__ import annotations
 
 import copy
 import itertools
-import json
 import multiprocessing
 import multiprocessing.connection
 import os
@@ -39,13 +40,14 @@ import threading
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
+from .. import blobstore
 from .. import links
 from .. import migrations as M
 from .. import tabkinds as TK
 from . import worker as W
 from .contract import Engine, EngineError, TabErrored
 from .encode import Encoder
-from .executor import KINDS, file_kind
+from .executor import KINDS, fetch_blobs, file_kind, put_blobs, read_data
 from .inputs import cross_package, external_id
 from .linkgraph import lean_package, norm_key, package_digest, propagate
 
@@ -118,6 +120,9 @@ class _Tab:
         self.wants = {}          # upstream tab id -> part ids it reads, as of the last `_upstream`
         self.sent = None         # key of the upstream outputs the worker holds
         self.lean = None         # (state key, package): this tab's outputs as an input of other tabs
+        self.open_name = None    # the name open_tab_data was given (None: the data's own)
+        self.lookup = None       # the blob lookup open_tab_data was given
+        self.blobs = {}          # {key: bytes} the worker holds: sent from `lookup`, or returned by it (`tab_data`)
         self.lock = threading.Lock()
 
     def take_meta(self, meta):
@@ -140,7 +145,8 @@ def _file_sources(kind, d, path):
     out = []
     for src in links.tab_sources(kind, d):
         src = dict(src)
-        if src.get("relpath") and not (src.get("path") and os.path.exists(src["path"])):    # as the loaders do
+        if path is not None and src.get("relpath") and not (src.get("path") and os.path.exists(src["path"])):
+            # as the loaders do
             cand = os.path.normpath(os.path.join(os.path.dirname(path), src["relpath"]))
             if os.path.exists(cand):
                 src["path"] = cand
@@ -167,6 +173,7 @@ class ProcessEngine(Engine):
         self.cross = None                      # resolves a source naming another Document, pinned to a Version
         self._pinned = {}                      # (Document, folder path, Version, tab, kind) -> (id, package, state)
         self._pin_enc = Encoder(meshes=False)
+        self.by_tab_id = False                 # a tab was opened by data with no path: tab-id sources match by id only
         self._tabs: dict[str, _Tab] = {}
         self._ids = itertools.count(1)
 
@@ -174,7 +181,9 @@ class ProcessEngine(Engine):
     def _start(self, t, upstream, key):
         spec = {"tab": t.tab, "kind": t.kind, "path": t.path, "data": t.data, "name": t.name,
                 "edits": copy.deepcopy(t.edits), "revision": t.revision, "meshes": self.meshes,
-                "upstream": upstream, "upstream_key": key, "document_id": self.document_id}
+                "upstream": upstream, "upstream_key": key, "document_id": self.document_id,
+                "open_name": t.open_name, "blobs": None if t.lookup is None else dict(t.blobs),
+                "by_tab_id": self.by_tab_id}
         t.epoch += 1
         t.error, t.lean, t.sent = None, None, key
         t.pool = SPARES.take(self._ctx, self.spares)
@@ -215,12 +224,12 @@ class ProcessEngine(Engine):
             t.sent = None           # whatever the worker holds now, resend the inputs with the next call
             raise
 
-    def _submit(self, t, op, arg=None, seen=()):
+    def _submit(self, t, op, arg=None, seen=(), blobs=None):
         self._check_alive(t)
         upstream, key = self._upstream(t, seen)
         self._record_inputs(t, upstream)
         try:
-            fut = t.pool.submit(W.call, op, arg, upstream if key != t.sent else None, key)
+            fut = t.pool.submit(W.call, op, arg, upstream if key != t.sent else None, key, blobs or None)
         except BrokenProcessPool as e:
             self._died(t, e)
             raise TabErrored(t.tab, t.error) from e
@@ -273,7 +282,7 @@ class ProcessEngine(Engine):
             hit = None
         if hit is None:
             hit = next((t for t in tabs if uid and t.uid == uid), None)
-        if hit is None and path:
+        if hit is None and path and not (src.get("tab") and self.by_tab_id):    # a tab id names it: never a path
             hit = self._by_path(path)
             if hit is None and os.path.exists(path):
                 try:
@@ -397,11 +406,38 @@ class ProcessEngine(Engine):
         path = os.path.abspath(path)
         with open(path, "rb") as fh:
             data = fh.read()
-        d = json.loads(data)
-        t = _Tab(kind, path, data, d.get("name"))
+        return self.open_tab_data(kind, data, tab, path=path)
+
+    def open_tab_data(self, kind, data, tab=None, name=None, blobs=None, path=None):
+        """The worker builds the tab from `data` (never from a file). The blobs the data names are read from
+        `blobs` here and sent with the load, once; an edit that names blobs the worker was not sent carries them."""
+        d = read_data(kind, data, path)
+        if tab is not None and tab in self._tabs:
+            raise EngineError(f"tab id {tab!r} is already open")
+        if path is None:
+            self.by_tab_id = True
+        t = _Tab(kind, path, bytes(data), name or d.get("name"))
         t.uid = d.get("uid")
+        t.open_name = name or None
+        t.lookup = blobs
+        t.blobs = fetch_blobs(d, blobs, {}) if blobs is not None else {}
         t.sources = _file_sources(kind, d, path)
         return self._register(t, tab)
+
+    def tab_data(self, tab, blobs=None):
+        """The worker returns the bytes, every blob key they name, and the bytes of the blobs this process does
+        not hold yet (a Python feature's new stored build); those are kept here and all are put into the sink."""
+        t = self._get(tab)
+        data, keys, new = self._call(t, "data")
+        t.blobs.update(new)
+        sink = blobs if blobs is not None else t.lookup
+        if sink is None and keys and t.path:
+            sink = blobstore.store_for(t.path)
+        missing = [k for k in keys if k not in t.blobs]
+        if missing:
+            raise EngineError(f"tab {tab!r}: the worker named blobs this process does not hold: {missing}")
+        put_blobs(sink, {k: t.blobs[k] for k in keys}, tab)
+        return data
 
     def new_tab(self, kind, name=None, tab=None, sources=()):
         if kind not in KINDS:
@@ -429,7 +465,9 @@ class ProcessEngine(Engine):
         if src is not None and src not in t.sources:
             t.sources.append(copy.deepcopy(src))                     # so its input goes with the edit
         logged = copy.deepcopy(edit)
-        fut, out, epoch = self._submit(t, "edit", edit), Future(), t.epoch
+        blobs = fetch_blobs(edit, t.lookup, t.blobs) if t.lookup is not None else {}
+        t.blobs.update(blobs)                                        # a restart sends them with the load
+        fut, out, epoch = self._submit(t, "edit", edit, blobs=blobs), Future(), t.epoch
 
         def done(f):
             try:

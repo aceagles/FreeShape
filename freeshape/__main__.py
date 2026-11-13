@@ -83,6 +83,10 @@ class _FileOpener:
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "serve":
+        # headless: one Document over loopback HTTP (ADR 0010); never imports Qt
+        from .serve import main as serve_main
+        sys.exit(serve_main(sys.argv[2:]))
     if len(sys.argv) >= 4 and sys.argv[1] == "--step-worker":
         # the packaged .exe runs its own STEP reader this way (there's no separate python.exe to use)
         from .step_worker import run

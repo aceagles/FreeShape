@@ -106,6 +106,7 @@ class FolderDocument:
         self.path = None
         self.tabs: list[Tab] = []
         self.errors: dict[str, str] = {}
+        self.warnings: list[dict] = []   # problems found on open: see document_warnings
         self._counter = 0
         self.resolver = LinkResolver(folder=self)    # resolves tab-id links through this manifest
         self.trusted = False      # git may run in self.path: the app created it or imported it (see open_document)
@@ -138,6 +139,58 @@ class FolderDocument:
                 tab.doc.refresh(solve=False, notify=False)
             elif tab.kind == "drawing" and tab.doc is not None:
                 tab.doc.refresh(notify=False)
+
+    def document_warnings(self):
+        """Check the Document as it stands without refusing it: the manifest against the folder (a tab file that
+        is not in the manifest, a manifest entry whose file is missing or will not open) and every link inside it
+        (a link to a tab id that is not in the manifest, judged by the resolver itself). Run on every open, since a
+        merge done with plain git never passes the app's merge preview. Returns dicts {problem, tab, tab_name,
+        target, message}; `problem` is "missing-file", "unreadable", "not-in-manifest" or "dangling-link"."""
+        out = []
+
+        def warn(problem, message, tab=None, target=None):
+            out.append({"problem": problem, "tab": tab.id if tab else None, "tab_name": tab.name if tab else None,
+                        "target": target, "message": message})
+
+        listed = set()
+        for tab in self.tabs:
+            label = f"Tab “{tab.name}” ({tab.id})"
+            try:
+                full = self._resolve_tab_path(tab.file, label)
+                listed.add(os.path.normpath(os.path.relpath(full, self.path)))
+            except K.KernelError:
+                full = None
+            if tab.doc is not None:
+                continue
+            if full is not None and not os.path.lexists(full):
+                warn("missing-file", f"{label}: its file “{tab.file}” is missing from the Document folder", tab)
+            else:
+                warn("unreadable", f"{label} could not be opened: {self.errors.get(tab.id, 'unknown error')}", tab)
+        exts = tuple(EXTENSIONS.values())
+        for root, dirs, files in os.walk(self.path or "."):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            for f in sorted(files):
+                rel = os.path.normpath(os.path.relpath(os.path.join(root, f), self.path))
+                if f.endswith(exts) and rel not in listed:
+                    warn("not-in-manifest", f"“{rel}” is a tab file in the Document folder but is not listed in "
+                                            f"{MANIFEST_NAME}", target=rel)
+        for tab in self.tabs:
+            if tab.doc is None:
+                continue
+            if tab.kind == "assembly":
+                sources = [i["source"] for i in tab.doc.instances]
+            elif tab.kind == "drawing" and tab.doc.source is not None:
+                sources = [tab.doc.source]
+            else:
+                continue
+            for src in sources:
+                if src.get("kind") not in ("studio", "assembly"):
+                    continue
+                try:
+                    self.resolver._folder_doc(src, src["kind"])
+                except K.KernelError as e:
+                    warn("dangling-link", f"“{tab.name}” ({tab.id}) has a broken link: {e}", tab, src.get("tab"))
+        return out
 
     # ------------------------------------------------------------------ ids / tabs
     def new_tab_id(self):
@@ -367,6 +420,8 @@ class FolderDocument:
                 if kind not in LOADERS:
                     raise K.KernelError(f"{label}: unknown tab kind {kind!r}")
                 full = doc._safe_tab_path(file, label)
+                if not os.path.lexists(full):
+                    raise K.KernelError(f"{label}: its file {file!r} is missing from the Document folder")
                 if os.path.islink(full):
                     raise K.KernelError(f"{label}: refusing to open a symlink ({file!r})")
                 tab.doc = LOADERS[kind](full)
@@ -379,6 +434,7 @@ class FolderDocument:
         # the uid + path -> tab id step of the link-format migration (see links.py), once every tab is loaded
         migrate_links_to_tab_ids(doc)
         doc.refresh_links()
+        doc.warnings = doc.document_warnings()
         return doc
 
     def _check_writable(self):
@@ -534,6 +590,38 @@ class FolderDocument:
         if G.has_changes(self.path):
             G.commit_all(self.path, f"Snapshot of Workspace {self.current_workspace()}")
 
+    def merge_preview(self, name, dirty="raise"):
+        """What merging Workspace `name` into the current one would do: a doc_merge.MergePreview listing the tabs
+        changed on both sides (pick ours or theirs per tab) and the problems in the merged tree. Saved but
+        uncommitted edits are committed to the current Workspace first, as a switch does; nothing else changes."""
+        from . import doc_merge
+        self._check_writable()
+        self._git_ready()
+        G.check_branch_name(name)
+        if name not in G.list_branches(self.path):
+            raise G.GitError(f"No Workspace named {name!r}")
+        ours = G.current_branch(self.path)
+        if ours is None or ours == name:
+            raise G.GitError("Switch to the Workspace to merge into, then merge another one into it")
+        unsaved = self._check_dirty(dirty)
+        if unsaved and dirty == "save":
+            self.save()
+        self._snapshot()
+        return doc_merge.preview(self, ours, name)
+
+    def merge_workspace(self, name, choices=None, dirty="raise"):
+        """Merge Workspace `name` into the current one, taking ours or theirs per conflicting tab as `choices`
+        ({key: "ours" | "theirs"}, keys from the preview's conflicts) says, and reload. Refused
+        (doc_merge.MergeRefused, nothing committed) while a conflict has no choice or the merged tree has a problem
+        such as a dangling link. Returns the merge commit, or None when there was nothing to merge."""
+        from . import doc_merge
+        p = self.merge_preview(name, dirty)
+        p.choose_all(choices or {})
+        commit = doc_merge.commit(self, p)
+        if commit is not None:
+            self.reload()
+        return commit
+
     def reload(self):
         """Re-read the manifest and every tab from disk into this object (after a checkout)."""
         fresh = FolderDocument.open(self.path)
@@ -542,6 +630,7 @@ class FolderDocument:
             self._attach(tab)
         migrate_links_to_tab_ids(self)
         self.refresh_links()
+        self.warnings = self.document_warnings()
 
     def close(self):
         """Release a version view's scratch folder."""

@@ -89,20 +89,21 @@ def _argv(args, allow_file):
     return cmd + list(args)
 
 
-def run(args, cwd=None, *, allow_file=False, check=True, text=True):
+def run(args, cwd=None, *, allow_file=False, check=True, text=True, input=None):
     """Run `git <args>` with the hardened environment and return the CompletedProcess. `allow_file` is for
-    `clone --no-local` and `push` to a local bare repository only."""
+    `clone --no-local` and `push` to a local bare repository only. `input` is fed to stdin (else stdin is empty)."""
     if not _state["checked"]:
         _check_version()
-    return _run(args, cwd, allow_file, check, text)
+    return _run(args, cwd, allow_file, check, text, input)
 
 
-def _run(args, cwd, allow_file, check, text):
+def _run(args, cwd, allow_file, check, text, input=None):
     argv, env = _argv(args, allow_file), _env()
     if _state["recorder"] is not None:
         _state["recorder"](argv, cwd, env)
+    feed = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
     try:
-        r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=text, stdin=subprocess.DEVNULL)
+        r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=text, **feed)
     except OSError as e:
         raise GitUnavailable(f"git could not be run: {e}") from e
     if check and r.returncode != 0:
@@ -283,6 +284,89 @@ def read_tree(path, commit, dest):
             os.chmod(target, 0o444)
         written.append(rel)
     return written
+
+
+# ---------------------------------------------------------------------- merge (see doc_merge.py)
+def resolve_branch(path, name):
+    """The commit Workspace (branch) `name` points at."""
+    check_branch_name(name)
+    r = run(["rev-parse", "--verify", "--quiet", f"refs/heads/{name}^{{commit}}"], path, check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        raise GitError(f"No Workspace named {name!r}")
+    return _commit_id(r.stdout.strip())
+
+
+def merge_base(path, a, b):
+    """The best common ancestor of commits `a` and `b`, or None when they share no history."""
+    r = run(["merge-base", _commit_id(a), _commit_id(b)], path, check=False)
+    return _commit_id(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+
+
+def merge_tree(path, ours, theirs):
+    """`git merge-tree --write-tree` of two commits: (tree id, conflicted paths). Touches neither the index nor the
+    work tree. In a Document the tab files and document.json are `-merge`, so a conflicted one is left whole (ours)."""
+    r = run(["merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", _commit_id(ours),
+             _commit_id(theirs)], path, check=False, text=False)
+    if r.returncode not in (0, 1):
+        raise GitError(f"git merge-tree failed: {r.stderr.decode('utf-8', 'replace').strip()}")
+    parts = r.stdout.split(b"\0")
+    paths = [p.decode("utf-8", "surrogateescape") for p in parts[1:] if p]
+    return _commit_id(parts[0].decode().strip()), list(dict.fromkeys(paths))
+
+
+def tree_entries(path, treeish):
+    """Every blob (or symlink) of a commit or tree: {path: (mode, blob id)}."""
+    listing = run(["ls-tree", "-r", "-z", "--full-tree", _commit_id(treeish)], path, text=False).stdout
+    out = {}
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        meta, _, rel = entry.partition(b"\t")
+        mode, otype, sha = meta.decode().split()
+        if otype == "blob":
+            out[rel.decode("utf-8", "surrogateescape")] = (mode, sha)
+    return out
+
+
+def read_blob(path, sha):
+    """A blob's raw bytes (no filter runs)."""
+    return run(["cat-file", "blob", _commit_id(sha)], path, text=False).stdout
+
+
+def write_blob(path, data):
+    """Store `data` (bytes) as a blob without running any filter. Returns its id."""
+    r = run(["hash-object", "-w", "--no-filters", "--stdin"], path, text=False, input=data)
+    return _commit_id(r.stdout.decode().strip())
+
+
+def write_tree(path, entries):
+    """Build a tree from {path: (mode, blob id)} with `git mktree`, one level at a time. Returns the tree id."""
+    dirs = {}
+    for rel, (mode, sha) in entries.items():
+        head_, _, rest = rel.partition("/")
+        if rest:
+            dirs.setdefault(head_, {})[rest] = (mode, sha)
+        else:
+            dirs.setdefault(None, {})[rel] = (mode, sha)
+    lines = [f"{mode} blob {_commit_id(sha)}\t{name}" for name, (mode, sha) in dirs.pop(None, {}).items()]
+    lines += [f"040000 tree {write_tree(path, sub)}\t{name}" for name, sub in dirs.items()]
+    data = "".join(line + "\0" for line in lines).encode("utf-8", "surrogateescape")
+    r = run(["mktree", "-z"], path, text=False, input=data)
+    return _commit_id(r.stdout.decode().strip())
+
+
+def commit_tree(path, tree, parents, message):
+    """A commit of `tree` with `parents` (no hooks run; nothing checked out). Returns its id."""
+    args = ["commit-tree", _commit_id(tree)]
+    for p in parents:
+        args += ["-p", _commit_id(p)]
+    return _commit_id(run(args + ["-m", message], path).stdout.strip())
+
+
+def fast_forward(path, commit):
+    """Move the current branch forward to `commit` (a descendant of HEAD) and check it out. The work tree must be
+    committed. A fast-forward merges no file contents, so no merge driver runs."""
+    run(["merge", "--ff-only", "--quiet", "--no-edit", _commit_id(commit)], path)
 
 
 # ---------------------------------------------------------------------- import / push

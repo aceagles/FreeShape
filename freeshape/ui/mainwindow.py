@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         menu_btn.setMenu(m)
         h.addWidget(menu_btn)
         self._build_workspace_switcher(h)
+        self._build_merge_button(h)
         self._build_versions_bar(h)
         view_btn = QToolButton()
         view_btn.setObjectName("menuButton")
@@ -1676,6 +1677,7 @@ class MainWindow(QMainWindow):
                 combo.setToolTip(f"Workspaces are unavailable: {problem}")
             else:
                 combo.setToolTip("Workspace: a line of work in this Document")
+            self._refresh_merge_ui()
         finally:
             self._ws_updating = False
         self._refresh_versions()
@@ -1801,6 +1803,161 @@ class MainWindow(QMainWindow):
 
     def updates_dialog(self):
         return self.versions_ui.updates_dialog()
+
+    # ================================================================== Merge (another Workspace into this one)
+    def _build_merge_button(self, layout):
+        """The top-bar Merge button, next to the Workspace switcher."""
+        self.merge_btn = QToolButton()
+        self.merge_btn.setObjectName("menuButton")
+        self.merge_btn.setText("Merge…")
+        self.merge_btn.setToolTip("Merge another Workspace into this one")
+        self.merge_btn.clicked.connect(lambda: self.merge_dialog())
+        layout.addWidget(self.merge_btn)
+        self.merge_btn.setVisible(False)
+        self._show_document_warnings(None)
+
+    def _refresh_merge_ui(self):
+        """Show the Merge button with a Document that has Workspaces, and the open Document's warnings."""
+        fd = self.folder
+        btn = getattr(self, "merge_btn", None)
+        if btn is not None:
+            btn.setVisible(fd is not None)
+            btn.setEnabled(fd is not None and not fd.read_only and fd.git_problem() is None)
+        self._show_document_warnings(fd)
+
+    def _show_document_warnings(self, fd):
+        """Put the Document's warnings (found on open: dangling links, tab files missing from the manifest or the
+        folder) in a label on the status bar; the tooltip lists them all. Hidden when there are none."""
+        lab = getattr(self, "doc_warnings", None)
+        if lab is None:
+            lab = self.doc_warnings = QLabel()
+            lab.setObjectName("documentWarnings")
+            lab.setStyleSheet(f"color: {theme.ERROR}; padding: 0 6px;")
+            lab.setMaximumWidth(720)
+            self.statusBar().addPermanentWidget(lab)
+        warns = getattr(fd, "warnings", None) or []
+        if not warns:
+            lab.clear()
+            lab.setToolTip("")
+            lab.setVisible(False)
+            return
+        lab.setText(f"⚠ {len(warns)} Document warning{'s' if len(warns) > 1 else ''}: " +
+                    "; ".join(w["message"] for w in warns))
+        lab.setToolTip("\n".join(f"• {w['message']}" for w in warns))
+        lab.setVisible(True)
+
+    def merge_dialog(self):
+        """Ask which Workspace to merge into the current one, then preview and merge it."""
+        fd = self.folder
+        if fd is None:
+            return False
+        try:
+            current = fd.current_workspace()
+            names = [n for n in fd.workspaces() if n != current]
+        except K.KernelError as e:
+            QMessageBox.warning(self, APP_NAME, f"Merging is unavailable:\n{e}")
+            return False
+        if not names:
+            QMessageBox.information(self, APP_NAME, "There is no other Workspace to merge. Make one with + Workspace.")
+            return False
+        name, ok = QInputDialog.getItem(self, APP_NAME, f"Merge into “{current}” from Workspace:", names, 0, False)
+        if not ok:
+            return False
+        return self.merge_workspace(name)
+
+    def merge_workspace(self, name, choose=None):
+        """Merge Workspace `name` into the current one: preview it, let the person pick ours or theirs for each tab
+        changed on both sides (the Merge button stays off while the merged tree has a problem such as a dangling
+        link), then commit and reload the tabs. `choose(preview)` stands in for the dialog (tests): it makes the
+        choices and returns True to merge."""
+        from .. import doc_merge
+        fd = self.folder
+        if fd is None:
+            return False
+        self._leave_modes()
+        try:
+            dirty = self._workspace_dirty_choice(f"merging Workspace “{name}”")
+            if dirty is None:
+                return False
+            try:
+                preview = fd.merge_preview(name, dirty)
+            except (K.KernelError, OSError) as e:
+                QMessageBox.warning(self, APP_NAME, f"Couldn't preview the merge:\n{e}")
+                return False
+            if preview.up_to_date:
+                QMessageBox.information(self, APP_NAME, f"“{preview.ours}” already has everything in “{name}”.")
+                return False
+            if choose is not None:
+                ok = choose(preview)
+            else:
+                ok = self._merge_preview_dialog(preview).exec() == QDialog.Accepted
+            if not ok:
+                return False
+            old = [t.doc for t in fd.tabs if t.doc is not None and self._tab_index(t.doc) >= 0]
+            cur = self._folder_tab(self.doc)
+            try:
+                fd.merge_workspace(name, preview.choices, dirty)
+            except doc_merge.MergeRefused as e:
+                QMessageBox.warning(self, APP_NAME, str(e))
+                return False
+            except (K.KernelError, OSError) as e:
+                QMessageBox.warning(self, APP_NAME, f"Couldn't merge:\n{e}")
+                return False
+            self._reload_document_tabs(old, cur.id if cur is not None else None)
+            self.status.showMessage(f"Merged Workspace “{name}” into “{preview.ours}”", 5000)
+            return True
+        finally:
+            self._refresh_workspaces()
+
+    def _merge_preview_dialog(self, preview):
+        """The merge preview: tabs taken from one side, an ours / theirs choice per tab changed on both sides, and
+        the problems that block the merge. Merge is enabled only when there are none."""
+        from PySide6.QtWidgets import QButtonGroup, QDialogButtonBox, QGridLayout, QRadioButton
+        p = preview
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Merge “{p.theirs}” into “{p.ours}”")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(f"Merge Workspace “{p.theirs}” into “{p.ours}”."))
+        if p.auto:
+            side = {"ours": f"from “{p.ours}”", "theirs": f"from “{p.theirs}”", "both": "from both"}
+            v.addWidget(QLabel("Taken without asking:\n" + "\n".join(
+                f"• {a['name']} — {a['detail']} ({side[a['side']]})" for a in p.auto)))
+        dlg.radios = {}
+        if p.conflicts:
+            v.addWidget(QLabel("Changed in both Workspaces — choose which to keep:"))
+            grid = QGridLayout()
+            for row, c in enumerate(p.conflicts):
+                grid.addWidget(QLabel(f"{c.name}  ({c.detail})"), row, 0)
+                group = QButtonGroup(dlg)
+                for col, which, text in ((1, "ours", f"Keep “{p.ours}”"), (2, "theirs", f"Take “{p.theirs}”")):
+                    rb = QRadioButton(text)
+                    rb.setChecked(p.choices.get(c.key) == which)
+                    group.addButton(rb)
+                    grid.addWidget(rb, row, col)
+                    rb.toggled.connect(lambda on, k=c.key, s=which: on and (p.choose(k, s), update()))
+                    dlg.radios[(c.key, which)] = rb
+            v.addLayout(grid)
+        problems = QLabel()
+        problems.setObjectName("mergeProblems")
+        problems.setWordWrap(True)
+        v.addWidget(problems)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        merge = buttons.button(QDialogButtonBox.Ok)
+        merge.setText("Merge")
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        v.addWidget(buttons)
+
+        def update():
+            blocking = p.blocking
+            problems.setStyleSheet(f"color: {theme.ERROR};" if blocking else "")
+            problems.setText("Can't merge yet:\n" + "\n".join(f"• {b}" for b in blocking) if blocking
+                             else "Ready to merge.")
+            merge.setEnabled(p.clean)
+
+        update()
+        dlg.preview, dlg.problems_label, dlg.merge_button = p, problems, merge
+        return dlg
 
     def _recover_document_tab(self, path, meta):
         """Put an autosaved Document tab back into its Document. False if the Document is gone (the caller then

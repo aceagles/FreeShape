@@ -310,3 +310,54 @@ def test_workspace_create_switch_and_back_in_hostile_document_fires_nothing(tmp_
     doc.switch_workspace("main")
     assert doc.current_workspace() == "main" and not doc.errors
     assert _fired(sentinels) == []
+
+
+# ---------------------------------------------------------------------- merge (I2.6)
+def test_control_plain_merge_tree_runs_the_merge_driver(tmp_path):
+    """`git merge-tree --write-tree` runs a merge driver, so the app's merge must never meet one: in the received
+    folder, plain merge-tree of the two branches that both changed the studio writes the merge sentinel."""
+    src, sentinels = build_hostile(tmp_path / "control")
+    r = plain(["merge-tree", "--write-tree", "main", "other"], str(src), tmp_path / "control")
+    assert r.returncode in (0, 1), r.stderr
+    assert "merge" in _fired(sentinels)
+
+
+def _depth(studio, depth):
+    feature = next(f for f in studio.features if f["type"] == "extrude")
+    feature["params"]["depth"] = depth
+    studio.replace_feature(feature)
+    studio.dirty = True
+
+
+def test_merge_preview_and_merge_in_hostile_document_fire_nothing(tmp_path):
+    """The imported hostile Document's tracked .gitattributes names `merge=evil_merge` for the studio and a filter
+    for the assembly. Both Workspaces change the studio, so merge-tree has a real content merge to do: no sentinel
+    is written, and the merged studio is one side's whole file."""
+    src, sentinels = build_hostile(tmp_path / "recv")
+    registry = R.DocRegistry(str(tmp_path / "app" / "documents.json"))
+    doc = DF.FolderDocument.open_document(str(src), registry=registry, managed_root=str(tmp_path / "app" / "documents"))
+    assert "merge=evil_merge" in open(os.path.join(doc.path, ".gitattributes")).read()
+    studio = next(t for t in doc.tabs if t.kind == "studio")
+    asm = next(t for t in doc.tabs if t.kind == "assembly")
+    doc.create_workspace("alt", "v1")
+    _depth(doc.tab(studio.id).doc, 30.0)
+    doc.tab(asm.id).doc.dirty = True
+    doc.save()
+    doc.switch_workspace("main")
+    _depth(doc.tab(studio.id).doc, 15.0)
+    doc.save()
+    with G.recording() as calls:
+        p = doc.merge_preview("alt")
+        assert [c.key for c in p.conflicts] == [studio.id]
+        doc.merge_workspace("alt", {studio.id: "theirs"})
+    assert any("merge-tree" in c["argv"] for c in calls)               # the vector really was exercised
+    assert _fired(sentinels) == []
+    with open(os.path.join(doc.path, studio.file)) as fh:
+        text = fh.read()
+    assert "<<<<<<<" not in text
+    feature = next(f for f in json.loads(text)["features"] if f["type"] == "extrude")
+    assert feature["params"]["depth"] == 30.0
+    assert not doc.errors and doc.current_workspace() == "main"
+    root_src = os.path.realpath(src)
+    for c in calls:
+        assert c["cwd"] is None or os.path.commonpath([root_src, os.path.realpath(c["cwd"])]) != root_src, c

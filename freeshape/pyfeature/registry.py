@@ -37,6 +37,7 @@ BUNDLED_PACKAGE = "freeshape.plugins"
 USER_PACKAGE = "freeshape_user_plugins"
 OTHER_BUNDLED_PACKAGE = "freeshape_bundled_plugins"   # a bundled root other than freeshape/plugins (tests)
 PREFIX = "py:"
+STANDARD_PREFIX = "sp:"
 STOP_FILE = "ADDON_DISABLED"
 MANIFEST = "plugin.json"
 MANIFEST_MAX_BYTES = 1 << 20
@@ -53,11 +54,13 @@ class PluginInfo:
     source: str               # "bundled" or "user"
     types: tuple = ()         # the feature types it registered
     package: str = ""         # the package its modules were imported under
+    standard_types: tuple = ()   # the Standard part types it registered ("sp:<plugin id>/<part id>")
 
 
 _LOCK = threading.RLock()
 _PLUGINS: dict[str, PluginInfo] = {}          # plugin id -> info
 _TYPES: dict[str, tuple] = {}                 # type -> (Feature subclass, PluginInfo)
+_STANDARD: dict[str, tuple] = {}              # type -> (StandardPart subclass, PluginInfo); never in _TYPES
 _PROBLEMS: list[tuple[str, str]] = []
 _USER_ROOTS_LOADED: set[str] = set()
 
@@ -122,6 +125,25 @@ def feature_types() -> list[tuple[str, type, PluginInfo]]:
     return [(t, cls, info) for t, (cls, info) in _TYPES.items()]
 
 
+def standard_type_id(plugin_id: str, part_id: str) -> str:
+    return f"{STANDARD_PREFIX}{plugin_id}/{part_id}"
+
+
+def is_standard_type(type_id) -> bool:
+    return isinstance(type_id, str) and type_id.startswith(STANDARD_PREFIX)
+
+
+def standard_part(type_id):
+    """The StandardPart subclass registered for `type_id`, or None."""
+    entry = _STANDARD.get(type_id) if isinstance(type_id, str) else None
+    return entry[0] if entry else None
+
+
+def standard_parts() -> list[tuple[str, type, PluginInfo]]:
+    """[(type id, StandardPart subclass, PluginInfo)] for every registered Standard part."""
+    return [(t, cls, info) for t, (cls, info) in _STANDARD.items()]
+
+
 def default_params(ftype) -> dict:
     """{key: default} from the declarations; KeyError for an unregistered type (as features.default_params)."""
     cls = get(ftype)
@@ -175,7 +197,16 @@ def _read_manifest(folder) -> dict:
         if not isinstance(m.get(k), str) or not m[k].strip():
             raise ValueError(f"{MANIFEST} needs a {k!r} string")
     feats = m.get("features")
-    if not isinstance(feats, list) or not feats:
+    if "standard_parts" in m:
+        sps = m["standard_parts"]
+        if not isinstance(sps, list):
+            raise ValueError(f"{MANIFEST} 'standard_parts' must be a list")
+        for ref in sps:
+            if not isinstance(ref, str) or not _FEATURE_REF.match(ref):
+                raise ValueError(f"standard part entry {_clip(ref)!r} must be '<module file stem>:<ClassName>'")
+        if feats is None:
+            feats = []
+    if not isinstance(feats, list) or (not feats and "standard_parts" not in m):
         raise ValueError(f"{MANIFEST} needs a non-empty 'features' list")
     for ref in feats:
         if not isinstance(ref, str) or not _FEATURE_REF.match(ref):
@@ -262,7 +293,7 @@ def register_plugin(path, source="user") -> PluginInfo | None:
                 _synthetic_package(package.split(".")[0])
                 _synthetic_package(package, folder)
             classes = []
-            for ref in m["features"]:
+            for ref in m.get("features", []):
                 stem, cname = ref.split(":")
                 mod = _import_module(folder, package, stem, real_bundled)
                 cls = getattr(mod, cname, None)
@@ -276,6 +307,21 @@ def register_plugin(path, source="user") -> PluginInfo | None:
             dup = {i for i in ids if ids.count(i) > 1}
             if dup:
                 raise ValueError(f"feature id {sorted(dup)[0]!r} is declared twice")
+            sp_classes = []
+            for ref in m.get("standard_parts", []):
+                stem, cname = ref.split(":")
+                mod = _import_module(folder, package, stem, real_bundled)
+                cls = getattr(mod, cname, None)
+                if cls is None:
+                    raise ImportError(f"module {stem} has no class {cname}")
+                bad = api.standard_declaration_problems(cls)
+                if bad:
+                    raise ValueError("; ".join(bad))
+                sp_classes.append(cls)
+            sp_ids = [c.id for c in sp_classes]
+            dup = {i for i in sp_ids if sp_ids.count(i) > 1}
+            if dup:
+                raise ValueError(f"standard part id {sorted(dup)[0]!r} is declared twice")
         except BaseException as e:   # a plugin may even call sys.exit; it must not stop the app
             if isinstance(e, KeyboardInterrupt):
                 raise
@@ -286,13 +332,16 @@ def register_plugin(path, source="user") -> PluginInfo | None:
         if old is not None:
             _unregister(pid, drop_modules=old.package != package)
         info = PluginInfo(pid, m["name"], m["version"], m["licence"], folder, source,
-                          tuple(type_id(pid, c.id) for c in classes), package)
+                          tuple(type_id(pid, c.id) for c in classes), package,
+                          tuple(standard_type_id(pid, c.id) for c in sp_classes))
         _PLUGINS[pid] = info
         from . import host
         for cls, t in zip(classes, info.types):
             _TYPES[t] = (cls, info)
             _features.RUNNERS[t] = host.run
             _features.FEATURE_LABELS[t] = cls.label
+        for cls, t in zip(sp_classes, info.standard_types):
+            _STANDARD[t] = (cls, info)
         return info
 
 
@@ -304,6 +353,8 @@ def _unregister(plugin_id, drop_modules=True):
         _TYPES.pop(t, None)
         _features.RUNNERS.pop(t, None)
         _features.FEATURE_LABELS.pop(t, None)
+    for t in info.standard_types:
+        _STANDARD.pop(t, None)
     if drop_modules:
         _drop_modules(info.package)
     return True

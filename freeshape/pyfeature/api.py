@@ -239,3 +239,80 @@ def declaration_problems(cls) -> list[str]:
             out.append(f"{name}: parameter key {p.key!r} is declared twice")
         keys.add(p.key)
     return out
+
+
+CATEGORIES = ("Screws", "Nuts", "Washers")
+
+
+class StandardPart:
+    """Base class of a Standard part (a screw, nut, washer...): a generated solid an Assembly holds as an
+    instance with named mate connectors. A Plugin lists these under "standard_parts"; the type is
+    "sp:<plugin id>/<id>".
+
+    id               matches [a-z][a-z0-9_]*, unique within its plugin
+    label            display name, e.g. "Hex head screw"
+    category         one of CATEGORIES
+    insert_connector name of the connector used when inserting the part onto a hole
+
+    A frame is {"o": origin, "z": axis, "x": reference direction}, as in `assembly.frame_to_json`. Every
+    connector's Z axis points out of its face.
+    """
+    id: str = ""
+    label: str = ""
+    category: str = ""
+    insert_connector: str = ""
+
+    def sizes(self) -> list:
+        """Ordered size names, e.g. ["M3", "M4"]."""
+        raise NotImplementedError
+
+    def lengths(self, size) -> list:
+        """Ordered nominal lengths in mm for `size`; empty when the type has no length."""
+        raise NotImplementedError
+
+    def default_params(self) -> dict:
+        raise NotImplementedError
+
+    def validate(self, params) -> dict:
+        """The cleaned params; raises (K.KernelError or ValueError) with a message naming the bad key."""
+        raise NotImplementedError
+
+    def build(self, params):
+        """Return one OCP solid."""
+        raise NotImplementedError
+
+    def connectors(self, params) -> dict:
+        """{connector name: frame}."""
+        raise NotImplementedError
+
+    def designation(self, params) -> str:
+        """The BOM text, e.g. "ISO 4017 M5 x 20"."""
+        raise NotImplementedError
+
+    def match_hole(self, diameter):
+        """The size name that fits a hole of `diameter` mm, or None."""
+        raise NotImplementedError
+
+
+_STANDARD_METHODS = ("sizes", "lengths", "default_params", "validate", "build", "connectors", "designation",
+                     "match_hole")
+
+
+def standard_declaration_problems(cls) -> list[str]:
+    """Why a StandardPart subclass cannot be registered (empty when it can)."""
+    name = getattr(cls, "__name__", repr(cls))
+    if not (isinstance(cls, type) and issubclass(cls, StandardPart)) or cls is StandardPart:
+        return [f"{name} is not a subclass of freeshape.pyfeature.api.StandardPart"]
+    out = []
+    if not isinstance(cls.id, str) or not ID_RE.match(cls.id):
+        out.append(f"{name}.id {cls.id!r} must match {ID_RE.pattern}")
+    if not isinstance(cls.label, str) or not cls.label.strip():
+        out.append(f"{name} needs a label")
+    if cls.category not in CATEGORIES:
+        out.append(f"{name}.category {cls.category!r} must be one of {', '.join(CATEGORIES)}")
+    if not isinstance(cls.insert_connector, str) or not cls.insert_connector.strip():
+        out.append(f"{name} needs an insert_connector")
+    for m in _STANDARD_METHODS:
+        if not callable(getattr(cls, m, None)) or getattr(cls, m) is getattr(StandardPart, m):
+            out.append(f"{name} must implement {m}()")
+    return out

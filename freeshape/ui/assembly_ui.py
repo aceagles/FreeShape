@@ -2213,10 +2213,11 @@ class AssemblyController:
         m = QMenu(self.w)
         m.addAction("Rename…", lambda: self.rename(iid))
         m.addAction("Unfix" if inst.get("fixed") else "Fix", lambda: doc.set_fixed(iid, not inst.get("fixed")))
-        m.addAction("Show" if inst.get("hidden") else "Hide", lambda: doc.set_hidden(iid, not inst.get("hidden")))
+        m.addAction("Show" if inst.get("hidden") else "Hide",
+                    lambda: self.hide_instances([iid], not inst.get("hidden")))
         m.addAction("Isolate", lambda: self.isolate(iid))
         sup = bool(inst.get("suppressed"))
-        m.addAction("Unsuppress" if sup else "Suppress", lambda: doc.set_instance_suppressed(iid, not sup))
+        m.addAction("Unsuppress" if sup else "Suppress", lambda: self.suppress_instances([iid], not sup))
         m.addAction("Change colour…", lambda: self.recolor(iid))
         if inst.get("color"):
             m.addAction("Use the part's colour", lambda: doc.set_color(iid, None))
@@ -2407,6 +2408,110 @@ class AssemblyController:
 
     def isolate(self, iid):
         self.doc.isolate(iid)
+
+    def _need_selection(self):
+        """The selected instance ids, or [] with the usual status message when nothing is selected."""
+        ids = self.selected_instance_ids()
+        if not ids:
+            self.w.status.showMessage("Select a part first (in the list or the graphics area)", 4000)
+        return ids
+
+    def suppress_instances(self, ids, flag):
+        """Suppress (flag True) or unsuppress instances; the menu and Search tools both call this."""
+        for iid in ids:
+            if self.doc.instance(iid) is not None:
+                self.doc.set_instance_suppressed(iid, flag)
+
+    def suppress_selected(self, flag=True):
+        ids = [i for i in self._need_selection() if bool(self.doc.instance(i).get("suppressed")) != flag]
+        if ids:
+            self.suppress_instances(ids, flag)
+
+    def hide_instances(self, ids, flag=True):
+        """Hide (or show) instances as one undo step; the menu and Search tools both call this."""
+        ids = [i for i in ids if self.doc.instance(i) is not None]
+        if not ids:
+            return
+        self.doc.checkpoint()
+        for iid in ids:
+            self.doc.instance(iid)["hidden"] = bool(flag)
+        self.doc.notify()
+
+    def hide_selected(self):
+        ids = self._need_selection()
+        if ids:
+            self.hide_instances(ids, True)
+
+    def isolate_selected(self):
+        ids = self._need_selection()
+        if len(ids) == 1:
+            self.isolate(ids[0])
+        elif ids:
+            self.doc.checkpoint()
+            for i in self.doc.instances:
+                i["hidden"] = i["id"] not in ids
+            self.doc.notify()
+
+    def animate_selected(self):
+        """Animate the selected mate; with none selected, the only mate that has a value to drive."""
+        doc = self.doc
+        ok = [m["id"] for m in doc.mates if A.MATE_VALUE_DOFS.get(m["type"])]
+        pick = [i for i in self.panel.selected_mates() if i in ok] or (ok if len(ok) == 1 else [])
+        if not pick:
+            self.w.status.showMessage("Select a mate that has a value to animate (in the Mates list)", 4000)
+            return
+        self.start_animate(pick[0])
+
+    def palette_commands(self, C):
+        """Search tools entries for an Assembly tab; each calls what its toolbar button or menu item calls."""
+        w = self.w
+        cmds = [C("insert", "Insert", "Add parts from your Part Studios or a file (I).", self.toggle_insert,
+                  "add part import component")]
+        kw = {"fastened": "joint rigid weld lock", "revolute": "joint hinge axle pin", "slider": "joint prismatic",
+              "cylindrical": "joint shaft bearing", "planar": "joint plane", "pin_slot": "joint pinslot pin slot",
+              "parallel": "joint axis", "ball": "joint spherical"}
+        for t, (label, tip) in A.MATE_TYPES.items():
+            cmds.append(C("m_" + t, label, f"Add a {label} mate — {tip}.", lambda tt=t: self.start_mate(tt),
+                          "mate " + kw.get(t, "joint"), "Mate"))
+        for t, spec in A.RELATION_TYPES.items():
+            cmds.append(C("r_" + t, f"{spec['label']} relation", f"{spec['help']}.",
+                          lambda tt=t: self.start_relation(tt), "relation mate connector link", "Relation"))
+        cmds += [
+            C("move", "Move", "Move or rotate the selected parts by exact amounts.", lambda: self.start_move(),
+              "translate rotate transform triad"),
+            C("fix", "Fix", "Fix or unfix the selected parts so they do not move.", w._asm_toggle_fix,
+              "unfix ground lock anchor"),
+            C("group", "Group", "Group the selected parts so they move as one body.", w._asm_group,
+              "subassembly rigid"),
+            C("animate", "Animate", "Drive the selected mate through a range and play it back.",
+              self.animate_selected, "motion drive play simulate"),
+            C("suppress", "Suppress", "Leave the selected parts out of the model without deleting them.",
+              lambda: self.suppress_selected(True), "disable deactivate exclude"),
+            C("suppress", "Unsuppress", "Put the selected suppressed parts back.",
+              lambda: self.suppress_selected(False), "enable activate include restore"),
+            C("hide", "Hide", "Hide the selected parts.", self.hide_selected, "visibility"),
+            C("hide", "Isolate", "Hide every part but the selected ones.", self.isolate_selected, "only visibility"),
+            C("hide", "Show all", "Show every hidden part.", self.show_all, "unhide visibility"),
+            C("interference", "Interference", "Show where parts overlap.", w.btn_interf.click,
+              "clash collision overlap check"),
+            C("bom", "Bill of materials", "List the parts with quantities and mass.", self.show_bom,
+              "bom parts list table"),
+            C("bom", "Mass properties", "Mass by material, total mass and centre of mass of the whole assembly.",
+              lambda: w._mass_props_assembly(self.doc), "weight centre of mass volume density"),
+            C("section", "Section view", "Cut the assembly open with a plane to see inside (Ctrl+Shift+X).",
+              w.toggle_section, "cross cut", "View"),
+            C("fit", "Zoom to fit", "Fit the whole assembly in the view (F).", lambda: self.vp.fit(), "", "View"),
+            C("iso", "Isometric view", "Look from the isometric corner (Shift+7).",
+              lambda: self.vp.set_standard_view("Isometric"), "", "View"),
+        ]
+        for i, name in enumerate(("Front", "Back", "Left", "Right", "Top", "Bottom"), 1):
+            cmds.append(C("iso", f"{name} view", f"Look at the assembly from the {name.lower()} (Shift+{i}).",
+                          lambda n=name: self.vp.set_standard_view(n), "", "View"))
+        cmds += [C("export", "Export", "Export the assembly (STEP keeps the parts, names and colours).",
+                   lambda: w.export(None, None), "save step stl", "File"),
+                 C("undo", "Undo", "Undo the last change (Ctrl+Z).", w.undo, "", "Edit"),
+                 C("redo", "Redo", "Redo what was undone (Ctrl+Y).", w.redo, "", "Edit")]
+        return cmds
 
     def show_all(self):
         self.doc.show_all()

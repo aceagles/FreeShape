@@ -408,6 +408,14 @@ class MainWindow(QMainWindow):
         from .palette import Command
         F_ = self.start_feature
         C = lambda key, name, desc, fn, kw="", grp="Feature": Command(key, name, desc, fn, kw, grp)
+        if self.var_tabs.is_variables(self.doc):
+            return self._palette_variable_commands(C)
+        if self.is_dwg:
+            return self.dwg.palette_commands(C)
+        if self.is_asm:
+            return self.asm.palette_commands(C)
+        if self.mode == "sketch":
+            return self._palette_sketch_commands(C)
         cmds = [
             C("sketch", "Sketch", "Draw 2D profiles on a plane or a flat face. With vertices, edges or faces selected "
               "that define a plane, the plane is made for you.", lambda: self.start_sketch(), "draw 2d profile"),
@@ -472,14 +480,74 @@ class MainWindow(QMainWindow):
         from . import pyfeature_ui
         return cmds + pyfeature_ui.palette_commands(self)
 
+    # the sketch toolbar's tools and constraints, in toolbar order: (key, name, extra match words)
+    SKETCH_PALETTE = (
+        ("select", "Select", "pointer arrow"), ("line", "Line", "segment"), ("rect", "Corner rectangle", "box"),
+        ("center_rect", "Center rectangle", "centre box"), ("circle", "Circle", "round"),
+        ("polygon", "Polygon", "hexagon pentagon regular sides"), ("arc3", "3-point arc", "three point"),
+        ("arc_center", "Center-point arc", "centre point"), ("point", "Point", "vertex"),
+        ("dimension", "Dimension", "smart dimension size measure"),
+        ("sk_fillet", "Sketch fillet", "round corner radius"), ("offset", "Offset", "parallel copy"),
+        ("slot", "Slot", "obround stadium"), ("sk_mirror", "Mirror", "symmetry"),
+        ("sk_lpattern", "Linear pattern", "array copies"), ("sk_cpattern", "Circular pattern", "array copies polar"),
+        ("use", "Use", "project convert intersect part edges"), ("trim", "Trim", "cut remove"),
+        ("extend", "Extend", "lengthen"))
+
+    def _palette_sketch_commands(self, C):
+        """Search tools entries while a sketch is open: the sketch toolbar's tools, constraints and view commands."""
+        from .sketcher import CONSTRAINT_TOOLS, TOOL_HINTS
+        grp = "Sketch"
+        cmds = [C("undo", "Undo", "Undo the last sketch change (Ctrl+Z).", self.undo, "", "Edit"),
+                C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.redo, "", "Edit")]
+        for key, name, kw in self.SKETCH_PALETTE:
+            cmds.append(C("point" if key == "select" else key, name,
+                          TOOL_HINTS.get(key) or f"{name} — sketch tool.", lambda k=key: self._sk_tool(k), kw, grp))
+        cmds.append(C("construction", "Construction", "Turn the selected geometry into construction geometry, or "
+                      "back (Q).", lambda: self._sk("toggle_construction"), "toggle reference helper", grp))
+        for name, tip in CONSTRAINT_TOOLS.items():
+            cmds.append(C(name, name.capitalize(), tip + ".", lambda n=name: self._sk_tool(n), "constraint relation",
+                          "Constraint"))
+        cmds += [C("delete", "Delete selected", "Delete the selected sketch geometry (Del).",
+                   lambda: self._sk("delete_selection"), "remove erase", grp),
+                 C("normal_to", "Normal to sketch", "Turn the view to look straight at the sketch plane (N).",
+                   self._normal_to_sketch, "view perpendicular plane", "View"),
+                 C("fit", "Zoom to fit", "Fit the whole model in the view (F).", lambda: self.viewport.fit(), "",
+                   "View"),
+                 C("iso", "Isometric view", "Look at the model from the isometric corner (Shift+7).",
+                   lambda: self.viewport.set_standard_view("Isometric"), "", "View")]
+        for i, name in enumerate(("Front", "Back", "Left", "Right", "Top", "Bottom"), 1):
+            cmds.append(C("iso", f"{name} view", f"Look at the model from the {name.lower()} (Shift+{i}).",
+                          lambda n=name: self.viewport.set_standard_view(n), "", "View"))
+        cmds.append(C("sketch", "Finish sketch", "Save the sketch and leave sketch mode.", self.finish_sketch,
+                      "done accept exit close ok", grp))
+        return cmds
+
+    def _palette_variable_commands(self, C):
+        """Search tools entries for a Variable Studio tab: only what needs no 3D view."""
+        return [
+            C("part", "New Part Studio", "Create a Part Studio tab (Ctrl+N).", self.new_doc, "create tab", "File"),
+            C("assembly", "New Assembly", "Create an Assembly tab (Ctrl+Shift+N).", self.new_assembly,
+              "create tab", "File"),
+            C("drawing", "New Drawing", "Create a Drawing tab.", lambda: self.new_drawing(), "create tab", "File"),
+            C("import", "Import STEP", "Open a STEP file in a new tab.", lambda: self.import_step(), "open file",
+              "File"),
+            C("export", "Save", "Save this tab (Ctrl+S).", self.save, "write store", "File"),
+            C("export", "Save as", "Save this tab under a new name (Ctrl+Shift+S).", self.save_as, "write store",
+              "File"),
+            C("export", "Keyboard shortcuts", "List the keyboard shortcuts.", self.show_shortcuts,
+              "keys help hotkeys", "Help"),
+        ]
+
     def open_command_search(self):
-        if self.is_asm or self.is_dwg or self.mode != "idle":
-            self.status.showMessage("Search tools works in a Part Studio while no tool is open — finish or cancel "
-                                    "the current one first.", 5000)
+        if self.mode == "dialog":
+            self.status.showMessage("Finish or cancel the open tool first, then search tools.", 5000)
             return
+        host = self.view_stack.currentWidget()      # the 3D view, the drawing sheet or the variables table
         if getattr(self, "_palette", None) is None:
             from .palette import CommandPalette
-            self._palette = CommandPalette(self.viewport, self._palette_commands)
+            self._palette = CommandPalette(host, self._palette_commands)
+        elif self._palette.parentWidget() is not host:
+            self._palette.setParent(host)
         self._palette.open()
 
     SELECT_DEFAULTS = {"vertex": False, "edge": True, "face": True, "part": False, "sketch": True, "plane": True}

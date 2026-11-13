@@ -1012,11 +1012,13 @@ class DrawingController:
         self.hint = "⚠ " + msg
         self.canvas.update()
 
-    def insert_view(self):
+    def insert_view(self, direction=None):
         doc = self.doc
         if doc is None:
             return
         dlg = ViewDialog(self.w, doc, None, new=True)
+        if direction is not None and dlg.dir.findData(direction) >= 0:
+            dlg.dir.setCurrentIndex(dlg.dir.findData(direction))
         if dlg.exec() != QDialog.Accepted:
             return
         name = dlg.dir.currentData() or "Front"
@@ -1025,6 +1027,31 @@ class DrawingController:
                                       "scale": dlg.scale.currentData(), "hidden": dlg.hidden.isChecked(),
                                       "tangent": dlg.tangent.isChecked(), "marks": dlg.marks.isChecked(),
                                       "label": dlg.label.text().strip()})
+
+    def palette_commands(self, C):
+        """Search tools entries for a Drawing tab; each calls what its toolbar button calls."""
+        cmds = [
+            C("base_view", "Add view", "Insert a view of a Part Studio or Assembly: front, top, side, isometric.",
+              lambda: self.insert_view(), "insert base view model"),
+            C("proj_view", "Projected view", "Pick a view, then click beside it to project a new view from it.",
+              lambda: self.set_tool("projected"), "view auxiliary"),
+            C("base_view", "Isometric view", "Insert an isometric view.", lambda: self.insert_view("Isometric"),
+              "add view 3d"),
+            C("dim", "Dimension", "Click an edge, a circle, or two points, then where the dimension goes (D).",
+              lambda: self.set_tool("dim"), "measure smart dimension size"),
+            C("note", "Note", "Click where a text note should go (N).", lambda: self.set_tool("note"),
+              "text annotation label"),
+            C("sheet", "Sheet settings", "Sheet size, scale, projection and title block.", self.sheet_setup,
+              "sheet size scale title block paper format"),
+        ]
+        for fmt_, label in (("dxf", "DXF (opens in AutoCAD)"), ("pdf", "PDF"), ("svg", "SVG"), ("png", "PNG")):
+            cmds.append(C("dxf" if fmt_ == "dxf" else "pdf", f"Export {fmt_.upper()}", f"Export the sheet as {label}.",
+                          lambda f=fmt_: self.export(f), "save drawing " + fmt_, "File"))
+        cmds += [C("fit", "Zoom to fit", "Fit the whole sheet in the view (F).", lambda: self.canvas.fit(), "",
+                   "View"),
+                 C("undo", "Undo", "Undo the last change (Ctrl+Z).", self.w.undo, "", "Edit"),
+                 C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.w.redo, "", "Edit")]
+        return cmds
 
     def sheet_setup(self):
         doc = self.doc

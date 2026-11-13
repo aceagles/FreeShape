@@ -224,6 +224,7 @@ class MainWindow(QMainWindow):
         lp = self.left
         lp.features.editRequested.connect(self.edit_feature)
         lp.features.contextRequested.connect(self._tree_context)
+        lp.features.context_status = self._context_status_of
         lp.features.orderChanged.connect(self._tree_reordered)
         lp.features.planeClicked.connect(self._tree_plane_clicked)
         lp.features.featureHovered.connect(self._feature_hovered)
@@ -452,6 +453,9 @@ class MainWindow(QMainWindow):
             C("mate_connector", "Mate connector", "Put a named frame (origin, Z and X) on a face or edge, with the "
               "same snap points as an Assembly. Assemblies can mate to it.", lambda: F_("mate_connector"),
               "mate connector frame triad origin snap mate"),
+            C("update_context", "Update context", "Recapture the selected Context feature from its Assembly, so "
+              "the neighbouring parts match the Assembly again.", lambda: self.update_context(),
+              "context assembly refresh recapture out of date"),
             C("variable", "Variable", "Define #name values to use in any dimension.", lambda: F_("variable"),
               "parameter"),
             C("variable_studio_ref", "Variable Studio reference", "Use the variables of a Variable Studio tab "
@@ -864,7 +868,7 @@ class MainWindow(QMainWindow):
             self.asm.show_scene()
             return
         parts = [(p.id, self._flat_or_folded(state, p), p.color,
-                  None if self._flat_on(state, p) else p.face_colors)
+                  None if self._flat_on(state, p) else p.face_colors, None, None, p.reference)
                  for p in state.parts.values() if p.id not in self.doc.hidden_parts]
         sketches = []
         for fid, sr in state.sketches.items():
@@ -2518,6 +2522,8 @@ class MainWindow(QMainWindow):
             return
         m.addAction("Edit…", lambda: self.edit_feature(fid))
         m.addAction("Rename…", lambda: self._rename_feature(fid))
+        if f["type"] == "context":
+            m.addAction("Update context", lambda: self.update_context(fid))
         if f["type"] in ("sketch", "plane"):
             m.addAction("Show" if fid in self.doc.hidden_features else "Hide",
                         lambda: self.doc.toggle_feature_hidden(fid))
@@ -2542,6 +2548,36 @@ class MainWindow(QMainWindow):
             a = m.addAction("⚠ " + err)
             a.setEnabled(False)
         m.exec(gpos)
+
+    # ------------------------------------------------------------------ Context features (ADR 0004)
+    def _context_status_of(self, fid):
+        """context_status of Context feature `fid` of the current studio, or None outside a Document."""
+        tab = self._folder_tab(self.doc)
+        if tab is None:
+            return None
+        try:
+            return self.folder.context_status(tab.id, fid)
+        except K.KernelError:
+            return None
+
+    def update_context(self, fid=None):
+        """Recapture a Context feature of the current studio from its Assembly (one undoable edit). Acts on `fid`,
+        else the selected Context row, else the studio's only Context feature."""
+        tab = self._folder_tab(self.doc)
+        if self.is_asm or self.is_dwg or tab is None:
+            return
+        ctxs = [f["id"] for f in self.doc.features if f["type"] == "context"]
+        if fid is None:
+            sel = [i for i in self.left.features.selected_feature_ids() if i in ctxs]
+            fid = sel[0] if sel else (ctxs[0] if len(ctxs) == 1 else None)
+        if fid is None:
+            self.status.showMessage("Select a Context feature to update", 5000)
+            return
+        try:
+            self.folder.update_context(tab.id, fid)
+        except K.KernelError as e:
+            self.status.showMessage(str(e), 6000)
+        self._populate_lists()              # the row's status text
 
     def _rename_feature(self, fid):
         f = self.doc.feature(fid)

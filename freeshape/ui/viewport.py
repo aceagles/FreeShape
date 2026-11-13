@@ -113,6 +113,7 @@ class Viewport(QOpenGLWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.cam = Camera()
         self.parts = []          # list of (pid, mesh, color)
+        self.reference_ids = set()   # ids of reference (Context) bodies among self.parts
         self.part_shapes = {}    # pid -> shape
         self.planes = []         # list of (key_tuple, Plane, label, half_size)
         self.sketches = []       # list of (fid, SketchResult, region_meshes)
@@ -226,15 +227,16 @@ class Viewport(QOpenGLWidget):
     def set_scene(self, parts, planes, sketches):
         """parts: [(pid, shape, color, face_colors, transform, local_shape)] (the last three optional);
         planes: [(key, Plane, label)]; sketches: [(fid, SketchResult)]."""
-        parts = [tuple(x) + (None,) * (6 - len(x)) for x in parts]
+        parts = [tuple(x) + (None,) * (6 - len(x)) + (False,) * (7 - max(len(x), 6)) for x in parts]
         cb = self.progress_cb if len(parts) > 15 else None
         built = []
-        for i, (pid, shape, color, _fc, M, local) in enumerate(parts):
+        for i, (pid, shape, color, _fc, M, local, _ref) in enumerate(parts):
             if cb is not None:
                 cb(i, len(parts), "Preparing the 3D view")
             built.append((pid, self.mesh_for(shape) if M is None else self.placed_mesh(local, M), color))
         self.parts = built
         self.part_shapes = {pid: shape for pid, shape, *_ in parts}
+        self.reference_ids = {x[0] for x in parts if x[6]}     # Context bodies: drawn translucent, still pickable
         self.face_colors = {pid: fc for pid, _s, _c, fc, *_ in parts if fc}
         self._build_batch(parts)
         self._part_boxes = {pid: (m.verts.min(0).astype(np.float64), m.verts.max(0).astype(np.float64))
@@ -530,9 +532,13 @@ class Viewport(QOpenGLWidget):
         ranges = {}
         nv = nt = 0
         fcols = self.face_colors
-        for pid, m, color in self.parts:
+        ref = self.reference_ids
+        nsolid = None
+        for pid, m, color in [x for x in self.parts if x[0] not in ref] + [x for x in self.parts if x[0] in ref]:
             if len(m.verts) == 0:
                 continue
+            if nsolid is None and pid in ref:
+                nsolid = nt          # reference bodies come last in the batch so they draw in a translucent pass
             col = np.empty((len(m.verts), 3), np.float32)
             col[:] = color[:3]
             fc = fcols.get(pid)
@@ -559,7 +565,8 @@ class Viewport(QOpenGLWidget):
         cat = lambda a, shape: np.ascontiguousarray(np.vstack(a), np.float32) if a else np.zeros(shape, np.float32)
         self._batch = {"V": cat(V, (0, 3)), "N": cat(N, (0, 3)), "C": cat(C, (0, 3)),
                        "T": np.ascontiguousarray(np.vstack(T), np.uint32) if T else np.zeros((0, 3), np.uint32),
-                       "E": cat(E, (0, 3)), "ranges": ranges, "ntri": nt, "nedge": sum(len(e) for e in E)}
+                       "E": cat(E, (0, 3)), "ranges": ranges, "ntri": nt,
+                       "nsolid": nt if nsolid is None else nsolid, "nedge": sum(len(e) for e in E)}
         self._batch_version += 1
 
     def _upload_batch(self):
@@ -671,6 +678,7 @@ class Viewport(QOpenGLWidget):
         return None
 
     SEE_THROUGH_FACE_ALPHA = 0.35
+    REFERENCE_FACE_ALPHA = 0.3       # Context (reference) bodies
     SEE_THROUGH_EDGE_ALPHA = 0.45
 
     def sketch_view_policy(self):
@@ -718,7 +726,21 @@ class Viewport(QOpenGLWidget):
         if b is not None and b["ntri"]:
             self._use_shiny(True)
             self._bind_batch(colors=True)
-            GL.glDrawElements(GL.GL_TRIANGLES, b["ntri"] * 3, GL.GL_UNSIGNED_INT, self._idx_ptr(0))
+            GL.glDrawElements(GL.GL_TRIANGLES, b["nsolid"] * 3, GL.GL_UNSIGNED_INT, self._idx_ptr(0))
+            if b["nsolid"] < b["ntri"]:        # reference (Context) bodies: translucent, no depth write
+                GL.glBlendColor(0.0, 0.0, 0.0, self.REFERENCE_FACE_ALPHA)
+                GL.glBlendFuncSeparate(GL.GL_CONSTANT_ALPHA, GL.GL_ONE_MINUS_CONSTANT_ALPHA,
+                                       GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+                GL.glDepthMask(GL.GL_FALSE)
+                GL.glDrawElements(GL.GL_TRIANGLES, (b["ntri"] - b["nsolid"]) * 3, GL.GL_UNSIGNED_INT,
+                                  self._idx_ptr(b["nsolid"]))
+                if face_depth:
+                    GL.glDepthMask(GL.GL_TRUE)
+                if face_alpha < 1.0:
+                    GL.glBlendColor(0.0, 0.0, 0.0, face_alpha)
+                else:
+                    GL.glBlendFuncSeparate(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA, GL.GL_ONE,
+                                           GL.GL_ONE_MINUS_SRC_ALPHA)
             GL.glDisableClientState(GL.GL_COLOR_ARRAY)
             # selected / hovered parts and faces drawn again on top in their highlight colour
             GL.glPolygonOffset(0.5, 0.5)

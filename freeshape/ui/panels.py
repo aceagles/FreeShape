@@ -146,6 +146,20 @@ def _warning_icon(size=32):
     return ic
 
 
+ROLE_STATUS = Qt.UserRole + 3     # a Context row's status: "current", "out of date" or "assembly missing"
+
+
+def _mark_context_row(it, status):
+    """A Context feature's row: the status goes after the name unless it is current."""
+    it.setData(ROLE_STATUS, status)
+    if status and status != "current":
+        it.setText(f"{it.text()} ({status})")
+        it.setToolTip(f"Context {status}: use Update context to recapture it from the Assembly"
+                      if status == "out of date" else "The Assembly or instance this Context came from is missing")
+        if it.foreground().color() != QColor("#d93025"):
+            it.setForeground(QColor("#b06000"))
+
+
 class FeatureList(_EyeMixin, QListWidget):
     eyeClicked = Signal(str)                 # "std_plane:Top" / "feature:F3"
     editRequested = Signal(str)
@@ -168,6 +182,7 @@ class FeatureList(_EyeMixin, QListWidget):
         self.itemDoubleClicked.connect(self._dbl)
         self.itemClicked.connect(self._clicked)
         self._filter = ""
+        self.context_status = None       # callable(fid) -> status text of a Context feature (the main window sets it)
         self._eye_setup()
 
     def populate(self, doc, editing_id=None):
@@ -225,6 +240,8 @@ class FeatureList(_EyeMixin, QListWidget):
             if f["id"] in notices and not it.toolTip():      # plugin notice: not errored, suppressed or rolled back
                 it.setForeground(QColor(pyfeature_ui.NOTICE_COLOR))
                 it.setToolTip(notices[f["id"]])
+            if f["type"] == "context" and self.context_status is not None and not err:
+                _mark_context_row(it, self.context_status(f["id"]))
             if f["id"] == editing_id:
                 it.setBackground(QColor(theme.SELECTED_ROW))
                 it.setFont(bold)

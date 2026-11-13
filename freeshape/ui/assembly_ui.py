@@ -892,6 +892,10 @@ class AssemblyController:
         p.mateClicked.connect(lambda _mid: self.update_triads())
         p.mateDouble.connect(self.edit_mate)
         p.mateContext.connect(self.mate_menu)
+        from PySide6.QtGui import QAction
+        self.act_edit_in_context = QAction("Edit in context", w)
+        self.act_edit_in_context.setObjectName("edit_in_context")
+        self.act_edit_in_context.triggered.connect(lambda _=False: self.edit_in_context())
 
     @property
     def doc(self):
@@ -1333,6 +1337,9 @@ class AssemblyController:
         m.addAction("Duplicate", lambda: self.duplicate(ids))
         if inst["source"].get("kind") == "studio":
             m.addAction("Open Part Studio", lambda: self.open_source(iid))
+            if ids != [iid]:
+                self.vp.set_selection([Pick("part", (iid,))])    # Edit in context acts on the selection
+            m.addAction(self.act_edit_in_context)
         m.addAction("Mass properties", lambda: self.w._mass_props_shape(inst["name"], doc.world_shape(iid)))
         dof = doc.instance_dof(iid)
         a = m.addAction(f"Degrees of freedom: {dof}" + (" (fixed)" if inst.get("fixed") else ""))
@@ -1443,6 +1450,47 @@ class AssemblyController:
         if studio is None:
             QMessageBox.information(self.w, "Open Part Studio", "The Part Studio for this part isn't open and its "
                                     "file can't be found.")
+
+    def edit_in_context(self):
+        """Edit the selected instance's Part Studio in the context of this Assembly (ADR 0004): switch to the
+        studio and add a Context feature, or update the one that already names this Assembly and instance.
+        Returns the refusal message, or None."""
+        from .. import links
+        folder, asm = self.w.folder, self.doc
+        ids = self.selected_instance_ids()
+        inst = asm.instance(ids[0]) if len(ids) == 1 else None
+        src = inst["source"] if inst is not None else {}
+        tab = folder.tab(src.get("tab")) if folder is not None and src.get("kind") == "studio" else None
+        if inst is None:
+            msg = "Select one instance to edit in context"
+        elif folder is None or src.get("kind") != "studio":
+            msg = "Edit in context needs a Part Studio in this Document"
+        elif links.is_cross_link(src, folder.id):
+            msg = "Can't edit in context: this part's Part Studio is in another Document"
+        elif folder.read_only:
+            msg = "Can't edit in context: this Document is a read-only Version"
+        elif tab is None or tab.kind != "studio" or tab.doc is None:
+            msg = "Can't edit in context: this part's Part Studio isn't in this Document"
+        else:
+            msg = None
+        if msg:
+            self.w.status.showMessage(msg, 6000)
+            return msg
+        iid, studio = inst["id"], tab.doc
+        have = next((f for f in studio.features if f["type"] == "context"
+                     and f["params"].get("assembly") == asm.uid and f["params"].get("instance") == iid), None)
+        try:
+            if have is not None:
+                folder.update_context(tab.id, have["id"])
+            else:
+                feat = studio.make_feature("context")
+                feat["params"].update(assembly=asm.uid, instance=iid, capture=studio.store_context(A.capture_context(asm, iid)))
+                studio.add_feature(feat)
+        except K.KernelError as e:
+            self.w.status.showMessage(str(e), 6000)
+            return str(e)
+        self.w.show_linked_studio(src)
+        return None
 
     # ------------------------------------------------------------------ analysis
     def toggle_interference(self, on=None):

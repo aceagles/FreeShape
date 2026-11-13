@@ -448,10 +448,13 @@ class ProcessEngine(Engine):
         put_blobs(sink, {k: t.blobs[k] for k in keys}, tab)
         return data
 
-    def new_tab(self, kind, name=None, tab=None, sources=()):
+    def new_tab(self, kind, name=None, tab=None, sources=(), blobs=None):
+        """An empty tab; with `blobs`, an edit that names blobs carries them to the worker (as for a tab opened
+        by data)."""
         if kind not in KINDS:
             raise EngineError(f"unknown tab kind {kind!r}")
         t = _Tab(kind, None, None, name)
+        t.lookup = blobs
         t.sources = [copy.deepcopy(s) for s in sources if isinstance(s, dict)]
         return self._register(t, tab)
 

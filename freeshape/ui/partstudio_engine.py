@@ -45,7 +45,8 @@ from ..document import PartStudioDoc, config_row
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
 _NO_CONFIGS = {"rows": [], "active": 0}
-_EMPTY = {"features": [], "rollback": None, "folders": {}, "overrides": {}, "configs": _NO_CONFIGS}
+_EMPTY = {"features": [], "rollback": None, "folders": {}, "overrides": {}, "configs": _NO_CONFIGS,
+          "python_builds": {}}
 _LIGHT = ("variable", "sketch", "plane")        # feature types re-run on the GUI thread (see the module doc)
 
 
@@ -53,10 +54,30 @@ _LIGHT = ("variable", "sketch", "plane")        # feature types re-run on the GU
 
 def snapshot(doc):
     """What the engine needs of a Part Studio: its features and rollback bar, folders and part colours / names,
-    and its configurations, copied."""
+    its configurations, and its stored builds, copied; "blobs" holds the bytes of the blobs those builds name
+    that the Document can read ({key: bytes}, read here on the GUI thread)."""
     return {"features": copy.deepcopy(doc.features), "rollback": doc.rollback, "name": doc.name,
             "folders": copy.deepcopy(doc.folders), "overrides": copy.deepcopy(doc.part_overrides),
-            "configs": copy.deepcopy(doc.configs)}
+            "configs": copy.deepcopy(doc.configs), "python_builds": copy.deepcopy(doc.python_builds),
+            "blobs": _build_blobs(doc)}
+
+
+def _build_blobs(doc):
+    """{key: bytes} of the BREP and name-map blobs that the Document's stored builds name (a Python feature's or
+    a Derived feature's `parts`, a plugin feature's `breps`); one it cannot read is left out (its feature is then
+    red in the worker, as it would be here)."""
+    out = {}
+    for entry in doc.python_builds.values():
+        if not isinstance(entry, dict):
+            continue
+        keys = [r.get(k) for r in entry.get("parts") or () if isinstance(r, dict) for k in ("brep", "names")]
+        for key in keys + list(entry.get("breps") or ()):
+            if isinstance(key, str) and key not in out:
+                try:
+                    out[key] = doc._blob_get(key)
+                except (blobstore.BlobError, ValueError, TypeError):
+                    pass
+    return out
 
 
 def side(doc):
@@ -71,13 +92,14 @@ def _bare(f):
 
 def plan_edits(have, want):
     """The engine edits that turn a tab holding `have` into one holding `want` (both {"features": [...],
-    "rollback": n | None, "folders": {...}, "overrides": {...}, "configs": {...}}): delete what is gone, replace
+    "rollback": n | None, "folders": {...}, "overrides": {...}, "configs": {...}, "python_builds": {...}}): set
+    the stored builds that differ, first, so a feature added next can show its own; delete what is gone, replace
     what changed, add what is new or moved, put the features into the folders `want` has, give parts their names
     and colours, set the configuration table and the active configuration, then put the rollback bar where `want`
     has it. A feature's folder is not a change of the feature: moving one between folders rebuilds nothing."""
     cur = [dict(f) for f in have["features"]]        # what the engine holds, with each feature's folder
     want_ids = {f["id"] for f in want["features"]}
-    edits, structure = [], False
+    edits, structure = _plan_builds(have, want), False
     gone = [f["id"] for f in cur if f["id"] not in want_ids]
     if gone:
         edits.append({"op": "delete_features", "ids": gone})
@@ -146,6 +168,13 @@ def _plan_configs(have, want):
     return []
 
 
+def _plan_builds(have, want):
+    """set_stored_build edits for the stored builds that differ (None: the entry is gone)."""
+    old, new = have.get("python_builds") or {}, want.get("python_builds") or {}
+    return [{"op": "set_stored_build", "feature": fid, "build": copy.deepcopy(new.get(fid))}
+            for fid in sorted(set(old) | set(new)) if old.get(fid) != new.get(fid)]
+
+
 def _plan_overrides(have, want):
     """set_part_override edits for the part names and colours that differ (None: the override is gone)."""
     old, new = have.get("overrides") or {}, want.get("overrides") or {}
@@ -209,6 +238,7 @@ class _Rec:
         self.side = None             # side(doc) as last sent: a change of it is a request
         self.have = _EMPTY           # what the engine tab holds (engine thread only)
         self.cache = {}              # part hash -> (shape, K.Mesh) (engine thread only)
+        self.blobs = docstore.HeldBlobs({})     # studio: its engine tab's blob lookup (engine thread only)
         self.want = None             # newest snapshot, not yet sent
         self.dirty = False
         self.busy = False
@@ -338,7 +368,11 @@ class StudioEngine(QObject):
             try:
                 if rec.tab is None:
                     refs = links.tab_sources("studio", snap)
-                    rec.tab, rec.have = self.live.open_new(eng, "studio", rec, str(snap["name"]), refs), _EMPTY
+                    rec.tab = self.live.open_new(eng, "studio", rec, str(snap["name"]), refs, blobs=rec.blobs)
+                    rec.have = _EMPTY
+                for key, data in snap["blobs"].items():  # put under the hash of their bytes: wrong bytes name nothing
+                    if not rec.blobs.has(key):
+                        rec.blobs.put(data)
                 for edit in plan_edits(rec.have, snap):
                     self.live.submit(eng, rec.tab, edit, rebuilt)
                 rec.have = snap
@@ -369,6 +403,8 @@ class StudioEngine(QObject):
         rec.cache = cache
         res = _Result(snap, out, parts)
         res.copies = self._plugin_copies(rec, snap)
+        if res.copies and res.copies[0]:    # the worker holds the copies it made: the window's taking them is no change
+            rec.have = dict(rec.have, python_builds=dict(rec.have.get("python_builds") or {}, **res.copies[0]))
         return res
 
     def _plugin_copies(self, rec, snap):
@@ -656,7 +692,7 @@ class LiveTabs:
         folder = self.engine.window.folder
         eng.use_document(getattr(folder, "id", None), getattr(folder, "registry", None))
 
-    def open_new(self, eng, kind, rec, name, sources=()):
+    def open_new(self, eng, kind, rec, name, sources=(), blobs=None):
         self.bind_document(eng)
         tid = rec.want_tab or f"L{next(self._ids)}"
         if any(t[0] == tid for t in eng.tabs()):          # a tab of a document that was dropped meanwhile
@@ -667,7 +703,7 @@ class LiveTabs:
                 eng.close_tab(tid)
             except Exception:                              # noqa: BLE001
                 pass
-        return eng.new_tab(kind, name=name, tab=tid, sources=sources)
+        return eng.new_tab(kind, name=name, tab=tid, sources=sources, blobs=blobs)
 
     def submit(self, eng, tab, edit, rebuilt):
         """eng.submit_edit, noting the tabs it rebuilt in `rebuilt`. A circular link is not fatal: the edit is

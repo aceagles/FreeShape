@@ -338,6 +338,18 @@ class StudioTab(_Tab):
             raise EngineError(f"no configuration {config!r} in “{self.doc.name}”")
         self.doc.set_active_config(config)
 
+    def _set_stored_build(self, edit):
+        """Keep (or drop) a feature's stored build: what it shows while its plugin or source is missing. The
+        entry names its blobs by key; the tab reads them through its blob lookup. Not a change the person made:
+        no undo step, and nothing rebuilds until the features do."""
+        fid, build = _need(edit, "feature"), _need(edit, "build")
+        if not isinstance(fid, str) or not (build is None or isinstance(build, dict)):
+            raise EngineError("set_stored_build needs feature (an id) and build (an entry or None)")
+        if build is None:
+            self.doc.python_builds.pop(fid, None)
+        else:
+            self.doc.python_builds[fid] = copy.deepcopy(build)
+
     def outputs(self):
         self.sync()
         doc, enc = self.doc, self.engine.encoder
@@ -630,13 +642,14 @@ class InProcessEngine(Engine):
         put_blobs(sink, named, tab)
         return data
 
-    def new_tab(self, kind, name=None, tab=None, sources=()):
+    def new_tab(self, kind, name=None, tab=None, sources=(), blobs=None):
         if kind not in KINDS:
             raise EngineError(f"unknown tab kind {kind!r}")
         if kind == "studio":
             doc = PartStudioDoc()
             doc.var_inputs = self.inputs.variables
             doc.link_inputs = self.inputs.studio
+            doc.blob_view = blobs
         elif kind == "variables":
             doc = VariableStudioDoc()
         elif kind == "assembly":
@@ -647,7 +660,9 @@ class InProcessEngine(Engine):
             doc.resolver = self.inputs.drawing_shape
         if name:
             doc.name = str(name)
-        return self._register(kind, doc, tab)
+        tab = self._register(kind, doc, tab)
+        self._tabs[tab].blobs = blobs
+        return tab
 
     def close_tab(self, tab):
         self._get(tab)

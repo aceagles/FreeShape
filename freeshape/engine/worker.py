@@ -239,7 +239,7 @@ class _Worker:
         self.blobs = None if sent is None else _SentBlobs(sent)
         self.known = set(sent or ())     # blob keys the parent holds the bytes of
         if spec.get("data") is None:
-            self.engine.new_tab(spec["kind"], spec.get("name"), tab=self.tab)
+            self.engine.new_tab(spec["kind"], spec.get("name"), tab=self.tab, blobs=self.blobs)
         else:
             # from the parent's bytes, never from the file: `path` only places the tab (errors, relative link
             # paths, a Part Studio's blobs folder when it has one)

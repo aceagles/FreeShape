@@ -63,10 +63,10 @@ Written by `Document.to_json` (`freeshape/document.py`). Format tag `freeshape`.
 | `hidden` | list of string | Ids of hidden parts, sorted. |
 | `hidden_features` | list of string | Ids of hidden features, sorted. |
 | `part_aliases` | object | Old part id (`<fid>:<counter>`) to new part id (`<fid>/<n>`). Written by the version 1 to 2 step; kept so older Assemblies and Drawings still resolve. |
-| `python_builds` | object | Only written when a Python feature has a stored build. Feature id to Python build entry. |
+| `python_builds` | object | Only written when a Python feature, a Derived feature or a plugin feature has a stored build. Feature id to Python build entry, or, for a plugin feature, plugin copy entry. |
 | `folders` | object | Feature-list folders: folder id to `{name, open}`. A feature in a folder carries the folder id in its `folder` key. Written only when there is a folder. Since version 4. |
 | `configs` | object | Configurations: `{rows: [{name, vars, suppress}], active}`. `vars` maps a variable name to an expression, `suppress` lists feature ids, `active` is the index of the row in use. Written only when there is a row. Since version 4. |
-| `plugin_copies` | object | Saved results of plugin features (type `plugin:<id>`), so the file opens without the plugin: feature id to `{stamp, plugin, numeric, breps}`, with `breps` a list of base64 BREP texts. Written only when there is one. Since version 4. |
+| `plugin_copies` | object | Read only: upstream FreeShape 2.0's saved results of plugin features (type `plugin:<id>`), feature id to `{stamp, plugin, numeric, breps}`, with `breps` a list of base64 zlib-compressed BREP texts. On load each becomes a plugin copy entry in `python_builds`, its BREPs held as blobs for the next save. Not written. Since version 4. |
 
 `part_aliases` is since version 2, and `folders`, `configs` and `plugin_copies` since version 4. The other keys exist in version 1. On load, a missing `overrides`, `hidden`, `hidden_features` or `part_aliases` reads as empty, and a missing `rollback` as null.
 
@@ -139,6 +139,17 @@ Each entry of `parts`:
 | `id` | string | Part id `<feature id>/<n>`. |
 | `brep` | string | Blob key (sha256 hex) of the part's BREP bytes. |
 | `names` | string | Blob key of the part's Element name map, as JSON. |
+
+### Plugin copy entry
+
+Value of `python_builds[<feature id>]` for a plugin feature (type `plugin:<id>`), written by `plugins.saved_copy` in the process that built it. The feature builds from it when its plugin is not installed and `stamp` still matches.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `stamp` | string | Hash of the feature's type and parameters, evaluated values included, when the copy was made. |
+| `plugin` | string | Name of the plugin file that made it. |
+| `numeric` | list of string | Parameter keys that take expressions, so they still evaluate without the plugin. |
+| `breps` | list of string | Blob keys of the BREP bytes of each body the plugin returned, before the boolean into existing parts. |
 
 ## Assembly file
 
@@ -476,6 +487,7 @@ Keys: the in-Document keys plus `document` (the other Document's id) and `versio
 | Shown shape of a Drawing | `blobs/<sha256>` beside the `.fdwg` file, named by `_brep_blob` | zlib-compressed BREP. |
 | Exact Drawing views | `blobs/<sha256>` beside the `.fdwg` file, named by `_views_blob` | JSON curves plus the sha1 of the BREP. |
 | Last build of a Python feature | `blobs/<sha256>` beside the `.fshape` file, named by `python_builds` | BREP bytes and a names JSON, one blob each. |
+| Saved copy of a plugin feature | `blobs/<sha256>` beside the `.fshape` file, named by `python_builds[<fid>].breps` | BREP bytes, one blob per body. |
 | Context capture ([ADR 0004](../adr/0004-context-stores-captured-shapes.md)) | `blobs/<sha256>` beside the `.fshape` file, named by `params.capture` | A JSON listing `{assembly, instance, solved, neighbours}` plus a BREP blob and a names blob per neighbour. Each neighbour has `id`, `name`, `hash`, `T`, `brep`, `names`. |
 
 A tab file holds blob keys only. A Document tab's blobs go through the store (`DocumentStore.blobs(tab_id)`: the `blobs/` folder beside the tab file in a folder, a dict per tab in a `MemoryStore`). A loose file keeps them in the `blobs/` folder beside itself. An old file that carried data inline loads without any store: its migration step keeps the bytes in memory (`blobstore.HELD`) and the next save writes them. A blob that the tab cannot find leaves that instance, feature or Drawing red with an error naming the key. A blob no tab names is left where it is: nothing deletes blobs.

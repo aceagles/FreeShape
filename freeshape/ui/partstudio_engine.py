@@ -37,6 +37,7 @@ from .. import features as F
 from .. import kernel as K
 from .. import links
 from .. import naming as N
+from .. import plugins
 from .. import tabkinds as TK
 from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
@@ -224,6 +225,7 @@ class _Result:
         self.connectors = list(getattr(out, "connectors", []))     # [MateConnectorOut]
         self.rebuilt = []            # tab ids the engine rebuilt because this tab's output changed (Link graph)
         self.extra = []              # [(rec, _Result)] for the Part Studios among them
+        self.copies = None           # saved copies of plugin features from the worker (StudioEngine._plugin_copies)
 
 
 # =========================================================================== the client
@@ -365,7 +367,40 @@ class StudioEngine(QObject):
             cache[p.hash] = hit
             parts.append((p, hit[0], hit[1]))
         rec.cache = cache
-        return _Result(snap, out, parts)
+        res = _Result(snap, out, parts)
+        res.copies = self._plugin_copies(rec, snap)
+        return res
+
+    def _plugin_copies(self, rec, snap):
+        """({feature id: entry}, {blob key: bytes}) of the saved copies of the tab's plugin features, as the worker
+        that built them writes them into its tab data; None when the tab has no plugin feature. The window's
+        Document keeps them for its next save (PartStudioDoc.take_plugin_copies)."""
+        fids = {f["id"] for f in snap["features"] if plugins.is_plugin_type(f.get("type"))}
+        if not fids or self._engine is None or rec.tab is None:
+            return None
+        held = docstore.HeldBlobs({})
+        try:
+            builds = json.loads(self._engine.tab_data(rec.tab, blobs=held)).get("python_builds") or {}
+        except Exception:           # noqa: BLE001 -- the window keeps the copies it has; the next build tries again
+            return None
+        entries = {fid: e for fid, e in builds.items() if fid in fids and plugins.is_copy(e)}
+        return entries, {k: held.held[k] for e in entries.values() for k in e["breps"] if k in held.held}
+
+    def reload_plugins(self):
+        """The window loaded the plugins folder again: each Part Studio's worker starts again (it replays the
+        tab's edits and loads the folder as it rebuilds), so plugin features rebuild with the new code."""
+        def restart():
+            for rec in list(self._recs.values()):
+                if rec.kind == "studio" and rec.alive and rec.tab is not None and self._engine is not None:
+                    try:
+                        self._engine.restart(rec.tab)
+                    except TabErrored:      # its next request opens it again from the window's copy
+                        pass
+        if not self._closed and self._recs:
+            self._pool.submit(restart)
+            for rec in list(self._recs.values()):
+                if rec.kind == "studio":
+                    self._request(rec)
 
     def in_engine(self, doc, fn):
         """fn(engine, tab id) on the engine thread; its result. For tests and diagnostics."""
@@ -428,6 +463,8 @@ class StudioEngine(QObject):
                     pass
         doc.state = st
         doc.errors = dict(res.errors)
+        if res.copies:
+            doc.take_plugin_copies(*res.copies)
         doc._apply_overrides(st)
         rec.shown = {p.id: p.hash for p, *_ in res.parts}
         rec.meshes = {}

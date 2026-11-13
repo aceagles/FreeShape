@@ -189,6 +189,9 @@ class PluginsDialog(QDialog):
 
     def reload(self):
         P.load_all()
+        engine = getattr(self.main, "studio_engine", None)
+        if engine is not None:          # the workers load the folder again too
+            engine.reload_plugins()
         self.main._after_plugin(rebuild=True)
         self._fill()
         bad = [i for i in P.PLUGINS if i.error]

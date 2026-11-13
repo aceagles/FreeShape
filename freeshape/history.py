@@ -65,7 +65,6 @@ def state_of(doc, snap):
     d.folders = copy.deepcopy(snap.get("folders") or {})
     d.part_overrides = copy.deepcopy(snap.get("overrides") or {})
     d.rollback = snap.get("rollback")
-    d.plugin_fallback = doc.plugin_fallback
     d.python_builds = doc.python_builds
     d.part_aliases = doc.part_aliases
     d.path, d.blob_view, d._blob_bytes = doc.path, doc.blob_view, doc._blob_bytes

@@ -187,7 +187,6 @@ class PartStudioDoc:
         # configurations: named rows that set variables (by name) and suppress features (by id), like Onshape's
         # configuration table: {"rows": [{"name", "vars": {name: expr}, "suppress": [fid]}], "active": index}
         self.configs: dict = {"rows": [], "active": 0}
-        self.plugin_fallback: dict = {}           # plugin feature id -> saved copy of what it made (from the file)
         self._on_copy: dict = {}                  # derived feature id -> True while its last build used the saved copy
         self.path = None
         self.blob_view = None     # this tab's blobs in a Document store (docstore.DocumentStore.blobs), for no path
@@ -629,9 +628,9 @@ class PartStudioDoc:
                 _P.ensure_loaded()                                      # an engine worker loads the folder here
                 h.update(b"P" if f["type"] in _P.FEATURES else b"-")    # rebuild once the plugin is (un)installed
                 f = dict(f, _raw_stamp=_P.stamp(f))
-                if f["id"] in self.plugin_fallback:
-                    fb = self.plugin_fallback[f["id"]]
-                    f = dict(f, _fallback=fb)
+                fb = self.python_builds.get(f["id"])
+                if _P.is_copy(fb):                        # its saved copy, read through the blob store
+                    f = dict(f, _fallback=fb, _fallback_get=self._blob_get)
                     if f["type"] not in _P.FEATURES:      # still work out its expressions without the plugin
                         from . import features as _F
                         _F.EXTRA_NUMERIC.setdefault(f["type"], set(fb.get("numeric", [])))
@@ -884,10 +883,14 @@ class PartStudioDoc:
         """({feature id: entry}, {blob key: bytes}) of the stored last build of every Python feature in the
         full feature list: each one that builds without error now, and each one locked on its stored build
         (kept as it is). A feature's parts are those with id `<fid>/...` in the (cached) state right after it."""
+        from . import plugins as _P
         builds, blobs = {}, {}
         for i, f in enumerate(self.features):
             if f.get("type") == "derived" and not f.get("suppressed"):
                 self._derived_build(f, i, builds, blobs)
+                continue
+            if _P.is_plugin_type(f.get("type")) and not f.get("suppressed"):
+                self._plugin_build(f, builds, blobs)
                 continue
             if not pyfeature.is_python_type(f.get("type")) or f.get("suppressed"):
                 continue
@@ -938,6 +941,36 @@ class PartStudioDoc:
             builds[fid] = memo[1]
             blobs.update(memo[2])
 
+    def _plugin_build(self, f, builds, blobs):
+        """Add the saved copy of the plugin feature `f` to `builds` and `blobs`: the one this process built for
+        `f` as it is now, else the one held (read from the file, or brought back from the engine worker that
+        built it, `take_plugin_copies`), kept as it is."""
+        from . import plugins as _P
+        got = _P.saved_copy(f, self.uid)
+        if got is None:
+            entry = self.python_builds.get(f["id"])
+            if not _P.is_copy(entry):
+                return
+            got = entry, {}
+        entry, new = got
+        builds[f["id"]] = entry
+        blobs.update(new)
+        for k in entry["breps"]:
+            if k not in blobs:
+                try:
+                    blobs[k] = self._blob_get(k)
+                except (blobstore.BlobError, ValueError, TypeError):
+                    pass
+
+    def take_plugin_copies(self, entries, blobs):
+        """Keep the saved copies of plugin features that another process built ({feature id: entry}, their
+        {blob key: bytes}): an engine worker, whose tab data brings them back. The next save writes them."""
+        from . import plugins as _P
+        self._blob_bytes.update(blobs)
+        for fid, entry in entries.items():
+            if _P.is_copy(entry):
+                self.python_builds[fid] = entry
+
     def _import_key(self, text):
         """The blob key of an "import" feature's inline base64 STEP file (as a feature made by the Import command
         holds it in memory), its bytes held for the next save; None when it is not base64. Decoded once."""
@@ -977,15 +1010,6 @@ class PartStudioDoc:
                     continue
         return out
 
-    def _plugin_copies(self):
-        """A copy of what each plugin feature made, saved in the file so it still opens without the plugin."""
-        from . import plugins
-        out = plugins.saved_copies(self.features, self.uid)
-        for f in self.features:                  # keep copies of features whose plugin isn't here, untouched
-            if f["id"] not in out and f["id"] in self.plugin_fallback:
-                out[f["id"]] = self.plugin_fallback[f["id"]]
-        return out
-
     def to_json(self):
         data = {"format": "freeshape", "version": M.latest_version("document"), "name": self.name,
                 "uid": self.uid, "features": [self._file_feature(f) for f in self.features],
@@ -1002,9 +1026,6 @@ class PartStudioDoc:
             data["folders"] = self.folders
         if self.configs.get("rows"):
             data["configs"] = self.configs
-        copies = self._plugin_copies()
-        if copies:
-            data["plugin_copies"] = copies
         return json.dumps(data, indent=1)
 
     def to_data(self) -> bytes:
@@ -1081,7 +1102,12 @@ class PartStudioDoc:
         doc.folders = folders if isinstance(folders, dict) else {}
         if isinstance(configs, dict) and isinstance(configs.get("rows"), list):
             doc.configs = configs
-        doc.plugin_fallback = copies if isinstance(copies, dict) else {}
+        if isinstance(copies, dict):          # upstream's inline copies: blobs held for the next save
+            from . import plugins as _P
+            for fid, fb in copies.items():
+                entry = _P.adopt_inline_copy(fb, doc._blob_bytes) if isinstance(fid, str) else None
+                if entry is not None and fid not in doc.python_builds:
+                    doc.python_builds[fid] = entry
         doc.path = path
         doc.blob_view = blobs
         nums = [int("".join(c for c in f["id"] if c.isdigit()) or 0) for f in doc.features]

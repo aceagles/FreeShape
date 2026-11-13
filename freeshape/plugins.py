@@ -21,7 +21,10 @@ A plugin is a .py file in the plugins folder (Document ▸ Plugins… ▸ Open p
         ])
 
 See PLUGINS.md for the whole API. Plugin features save a copy of what they made in the document, so a file
-still opens (unchanged) on a computer without the plugin.
+still opens (unchanged) on a computer without the plugin. The copy is a stored build: an entry in the
+document's `python_builds` naming the BREP of each body by blob key (`saved_copy`), as FreeCAD keeps a
+FeaturePython's Shape in the FCStd. Whichever process built the feature -- the window, or an engine worker,
+whose copies come back with its tab data -- makes it.
 """
 from __future__ import annotations
 
@@ -35,6 +38,7 @@ import traceback
 from dataclasses import dataclass, field
 
 from . import api as geom
+from . import blobstore as B
 from . import kernel as K
 
 API_VERSION = 1
@@ -44,6 +48,7 @@ FEATURES: dict = {}        # feature type ("plugin:<id>") -> FeatureSpec
 COMMANDS: list = []        # Command
 PLUGINS: list = []         # PluginInfo, in load order
 LAST_BODIES: dict = {}     # (document uid, feature id, raw stamp) -> (full stamp, [shape] or saved copy)
+_RECORDS: dict = {}        # (document uid, feature id) -> (the bodies of LAST_BODIES, (entry, blobs)) last written
 CURRENT_DOC = [""]         # uid of the document being rebuilt (set by Document.compute)
 _listeners: list = []      # called after (re)loading, e.g. to rebuild menus
 
@@ -429,7 +434,13 @@ def run_feature(state, f):
         fb = f.get("_fallback")
         who = plugin_of(f)
         if fb and fb.get("stamp") == st:
-            _apply(state, f, [K.shape_from_brep(base64.b64decode(b)) for b in fb["breps"]])
+            get = f.get("_fallback_get")
+            try:                   # bytes from `get` (BlobStore.get rules: key and hash checked) reach the parser
+                bodies = [B.shape_from_brep(get(k)) for k in fb["breps"]]
+            except Exception as e:      # BlobError, no getter, a malformed entry: the copy cannot be read
+                raise K.KernelError(f"The copy of this feature saved with the file is damaged, and the “{who}” "
+                                    "plugin it needs isn't installed") from e
+            _apply(state, f, bodies)
             LAST_BODIES[key] = (st, fb)
             return
         if fb:
@@ -458,27 +469,62 @@ def run_feature(state, f):
     _apply(state, f, bodies)
 
 
-def saved_copies(features, doc_uid="") -> dict:
-    """{feature id: {"stamp", "breps"}} for the document's plugin features, so it opens without the plugin."""
-    out = {}
-    for f in features:
-        if not is_plugin_type(f.get("type")):
-            continue
-        got = LAST_BODIES.get((doc_uid, f["id"], stamp(f)))
-        if got is None:
-            continue
-        st, bodies = got
-        if isinstance(bodies, dict):
-            out[f["id"]] = bodies
-            continue
+def is_copy(entry) -> bool:
+    """True if `entry` (a `python_builds` value) is a plugin feature's saved copy."""
+    return isinstance(entry, dict) and isinstance(entry.get("stamp"), str) and isinstance(entry.get("breps"), list)
+
+
+def saved_copy(f, doc_uid=""):
+    """(entry, {blob key: bytes}) of the copy of what plugin feature `f` made in this process, for the
+    document's `python_builds`: {"stamp", "plugin", "numeric", "breps"}, `breps` the blob keys of its bodies'
+    BREP. None when this process has not built `f` as it is now. A copy it built from a saved copy is that
+    entry, with no bytes (the document holds them)."""
+    key = (doc_uid, f["id"], stamp(f))
+    got = LAST_BODIES.get(key)
+    if got is None:
+        return None
+    st, bodies = got
+    if isinstance(bodies, dict):
+        return bodies, {}
+    memo = _RECORDS.get(key[:2])
+    if memo is not None and memo[0] is bodies:
+        return memo[1]
+    try:
+        spec = FEATURES.get(f["type"])
+        breps, blobs = [], {}
+        for b in bodies:
+            data = B.brep_bytes(b)
+            blobs[B.key_of(data)] = data
+            breps.append(B.key_of(data))
+    except Exception:
+        return None
+    rec = ({"stamp": st, "plugin": plugin_of(f), "numeric": sorted(spec.numeric_keys()) if spec else [],
+            "breps": breps}, blobs)
+    _RECORDS[key[:2]] = (bodies, rec)
+    return rec
+
+
+def adopt_inline_copy(fb, held):
+    """A copy as upstream FreeShape 2.0 saves it ("plugin_copies": each BREP inline, base64 of zlib-compressed
+    text) as a `saved_copy` entry: the BREP texts go into `held` ({key: bytes}) under their keys. None when it
+    is not one (it is then dropped, as an unreadable copy would be)."""
+    import binascii
+    import zlib
+    if not isinstance(fb, dict) or not isinstance(fb.get("stamp"), str) or not isinstance(fb.get("breps"), list):
+        return None
+    keys, got = [], {}
+    for text in fb["breps"]:
         try:
-            spec = FEATURES.get(f["type"])
-            out[f["id"]] = {"stamp": st, "plugin": plugin_of(f),
-                            "numeric": sorted(spec.numeric_keys()) if spec else [],
-                            "breps": [base64.b64encode(K.shape_to_brep(b)).decode() for b in bodies]}
-        except Exception:
-            pass
-    return out
+            z = zlib.decompressobj()
+            data = z.decompress(base64.b64decode(text, validate=True), B.DEFAULT_MAX_BYTES)
+        except (binascii.Error, ValueError, TypeError, zlib.error):
+            return None
+        if z.unconsumed_tail or not data:
+            return None
+        got[B.key_of(data)] = data
+        keys.append(B.key_of(data))
+    held.update(got)
+    return dict(fb, breps=keys)
 
 
 # ---------------------------------------------------------------------- commands

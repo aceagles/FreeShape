@@ -1,6 +1,11 @@
 # FreeShape revisions
 
 ## 1.8.4
+- **Component library** (menu, Ctrl+Shift+L, or "Component library" in Search tools): browse a folder of STEP
+  files with a preview of each one. Type to search names, tags and folders; pick a folder to narrow the list;
+  **Insert into this tab** (or double-click) adds the part to the Part Studio or Assembly, **Open in new tab**
+  opens it on its own. Previews are drawn in the background and kept, so a large library opens at once. The
+  folder defaults to `~/component-library`; **Change folder…** picks another.
 - **Space bar** deselects everything, in the 3D view and in the sketcher.
 - **Arrow keys turn the view** 15° per tap (Right, Left, Up, Down), animated. From the Right view, three taps
   give the edge between Right and Front, six taps give Front.

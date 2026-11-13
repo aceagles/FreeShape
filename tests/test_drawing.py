@@ -205,7 +205,7 @@ def test_cross_hole_in_a_round_hub_can_be_dimensioned():
     circ = [c for c in g.circles_in_view(front, full_only=True) if abs(c[2] - 2.5) < 1e-9]
     assert len(circ) == 1 and np.allclose(circ[0][3], (0, 10))
     marks = [it for it in g.items() if it[1] == "CENTER" and it[2] == front["id"]]
-    assert len(marks) == 2
+    assert len(marks) == 3                                  # the hole's cross, and the hub's own axis seen side-on
     a = g.add_annot({"type": "dia", "view": front["id"], "pos": [170, 170],
                      "a": {"kind": "centre", "p": [float(x) for x in circ[0][0]], "r": 2.5, "i": circ[0][4],
                            "n": len(g._snapdata()[1])}})

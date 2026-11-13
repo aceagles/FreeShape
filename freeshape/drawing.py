@@ -118,6 +118,45 @@ def _circle_elements(shape):
     return out
 
 
+def _cylinder_spans(shape):
+    """[(axis point, unit axis, z0, z1)] one per axis: the cylinder faces of `shape` grouped by the line their axis
+    lies on, with the stretches of that axis the faces cover merged (faces that touch or overlap give one span)."""
+    groups = []                                     # [point, axis, [[z0, z1], ...]]
+    for f in K.faces(shape):
+        try:
+            if K.BRepAdaptor_Surface(f).GetType() != K.GeomAbs_Cylinder:
+                continue
+            p0, d, _r, z0, z1, _hole = K.cylinder_face_frame(f)
+        except Exception:
+            continue
+        d = _unit(d)
+        for g in groups:
+            gd = g[1]
+            if np.linalg.norm(np.cross(gd, d)) > 1e-6:
+                continue
+            off = p0 - g[0]
+            if np.linalg.norm(off - gd * float(off @ gd)) > 1e-6:
+                continue
+            sgn = 1.0 if float(gd @ d) > 0 else -1.0
+            shift = float(off @ gd)
+            a, b = sorted((shift + sgn * z0, shift + sgn * z1))
+            g[2].append([a, b])
+            break
+        else:
+            groups.append([np.asarray(p0, float), d, [[z0, z1]]])
+    out = []
+    for p0, d, spans in groups:
+        spans.sort()
+        merged = [spans[0]]
+        for a, b in spans[1:]:
+            if a <= merged[-1][1] + 1e-6:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        out.extend((p0, d, a, b) for a, b in merged)
+    return out
+
+
 class DrawingDoc:
     kind = "drawing"
 
@@ -1087,6 +1126,21 @@ class DrawingDoc:
                 ext = r * s + 2.0
                 out.append(("line", "CENTER", v["id"], (C[0] - ext, C[1]), (C[0] + ext, C[1])))
                 out.append(("line", "CENTER", v["id"], (C[0], C[1] - ext), (C[0], C[1] + ext)))
+            # cylinders seen side-on: one centre line along the axis, past each end by the same overshoot
+            if self.shape is not None:
+                _r, _u, dv = self.axes(v)
+                for p0, d, z0, z1 in _cylinder_spans(self.shape):
+                    if abs(float(np.dot(d, dv))) > 1e-6:
+                        continue
+                    A = np.asarray(T(self.project(v, p0 + d * z0)), float)
+                    B = np.asarray(T(self.project(v, p0 + d * z1)), float)
+                    u = B - A
+                    n = float(np.linalg.norm(u))
+                    if n < 1e-9:
+                        continue
+                    u /= n
+                    A, B = A - u * 2.0, B + u * 2.0
+                    out.append(("line", "CENTER", v["id"], (float(A[0]), float(A[1])), (float(B[0]), float(B[1]))))
         bends = (self.source or {}).get("bends") if (self.source or {}).get("flat") else None
         if bends and self.shape is not None:
             # flat pattern: bend lines with their direction / angle / radius, where the sheet is seen face-on

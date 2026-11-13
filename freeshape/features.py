@@ -228,11 +228,29 @@ class ModelState:
     # ids of the features that found a reference only through the geometric signature matcher, because
     # the reference carries no element name (a legacy reference). Their result is a best guess.
     recovered: set = field(default_factory=set)
+    # part id -> naming.NamedShape: the element map of that part's shape (docs/reference/element-naming.md).
+    # The one place a part's names live; Part itself carries none, so a Part rebuilt with a new name or
+    # colour keeps its map. Read it through `named()`, write it through `set_named()`.
+    names: dict = field(default_factory=dict)
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
-                          set(self.recovered))
+                          set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts})
+
+    def named(self, pid):
+        """The element map of part `pid`, or None when it has none or the part's shape has since been
+        replaced by something that did not rename it (the map then describes a shape that is gone)."""
+        part, named = self.parts.get(pid), self.names.get(pid)
+        if part is None or named is None or named.shape is None or not named.shape.IsSame(part.shape):
+            return None
+        return named
+
+    def set_named(self, pid, named):
+        if named is None:
+            self.names.pop(pid, None)
+        else:
+            self.names[pid] = named
 
     def new_part(self, shape, fid, color=None):
         self.part_counter += 1
@@ -631,35 +649,84 @@ def resolve_axis(state: ModelState, ref):
 
 # --------------------------------------------------------------------------- applying a body to the part set
 
-def set_part_shape(state: ModelState, part: Part, shape):
-    """Store a new shape for a part; disjoint solids become separate parts (like Onshape)."""
+def set_part_shape(state: ModelState, part: Part, shape, named=None):
+    """Store a new shape for a part; disjoint solids become separate parts (like Onshape).
+
+    `named` is the NamedShape of `shape` (from `name_feature`): each piece keeps the names of its own
+    elements. Without it the part has no names until a feature names it."""
     pieces = K.solids(shape)
     if len(pieces) <= 1:
-        state.parts[part.id] = Part(part.id, part.name, pieces[0] if pieces else shape, part.color)
+        one = pieces[0] if pieces else shape
+        state.parts[part.id] = Part(part.id, part.name, one, part.color)
+        state.set_named(part.id, named.restrict(one) if named is not None and named.shape is not None else None)
         return
     state.parts[part.id] = Part(part.id, part.name, pieces[0], part.color)
+    state.set_named(part.id, named.restrict(pieces[0]) if named is not None else None)
     old_base = state.old_ids.get(part.id)
     for i, extra in enumerate(pieces[1:], 1):
         pid = f"{part.id}.{i}"
         if old_base is not None:
             state.old_ids[pid] = f"{old_base}.{i}"
         state.parts[pid] = Part(pid, f"{part.name} ({i + 1})", extra, part.color)
+        state.set_named(pid, named.restrict(extra) if named is not None else None)
 
 
-def apply_body(state: ModelState, body, op: str, fid: str, scope=None):
-    """Merge a tool body into the model according to op: new / add / remove / intersect."""
+def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, stamp=True):
+    """The naming step of a feature runner: the NamedShape of `shape`, a kernel helper's result.
+
+    How a feature runner uses naming (docs/reference/element-naming.md, "How a feature runner uses
+    naming"): call the kernel helper with `with_history=True`, which returns `(shape, history)`,
+    then call this once per helper call with
+
+      state    the ModelState being built;
+      fid      the feature's id, which becomes the tag of the fragment it adds to every name;
+      inputs   what the helper was given, in its order: part ids (resolved to that part's map, so
+               call this BEFORE popping or replacing the part), a sketch's `SketchResult.named`, or
+               any NamedShape. None and parts without a map are skipped;
+      shape, history   the helper's result and history;
+      op       the helper's name (`"extrude"`, `"revolve"`, `"fuse"`, `"cut"`, `"common"`, ...: a key
+               of `naming.OP_FOR`) or an op code;
+      part     optional part id: the result is also stored as that part's map (`state.names`);
+      stamp    False keeps an untouched element's name as it is (what `apply_body` does).
+
+    The map is returned either way. A result that cannot be named (a feature id that cannot go in a
+    name) comes back with no names rather than failing the feature; its references then fail loudly
+    on the next rebuild, as ADR 0003 asks. To make the result a part, pass the map on:
+    `apply_body(..., named=...)`, `set_part_shape(..., named=...)` or `state.set_named(pid, named)`.
+    """
+    sources = []
+    for i in inputs or ():
+        n = state.named(i) if isinstance(i, str) else i
+        if n is not None:
+            sources.append(n)
+    try:
+        named = N.name_result(shape, history, sources, fid, N.OP_FOR.get(op, op), stamp)
+    except N.NamingError:
+        named = N.NamedShape(shape, {})
+    if part is not None:
+        state.set_named(part, named)
+    return named
+
+
+def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=None):
+    """Merge a tool body into the model according to op: new / add / remove / intersect.
+
+    `named` is the body's NamedShape, or a list of them when the body is a compound of named parts
+    (a boolean's tools). Every part the body changes gets its element map from the boolean's history;
+    an element the body leaves alone keeps its name. With no `named` the body's own elements have no
+    names (a feature not yet routed through `name_feature`) but the part's other faces keep theirs."""
     if body is None:
         raise K.KernelError("Feature produced no geometry")
     sols = K.solids(body)
     if not sols:
         raise K.KernelError("Feature produced no solid")
+    tool = [] if named is None else list(named) if isinstance(named, (list, tuple)) else [named]
     targets = [state.parts[p] for p in (scope or state.parts) if p in state.parts]
     if op == "new" or (op == "add" and not targets):
         for s in sols:
-            state.new_part(s, fid)
+            state.set_named(state.new_part(s, fid).id, _piece(tool, s))
         return
     if op == "add":
-        merged_into = []
         remaining = []
         for s in sols:
             hit = [p for p in targets if K.touches_or_intersects(p.shape, s)]
@@ -667,32 +734,42 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None):
                 remaining.append(s)
                 continue
             keep = hit[0]
-            shape = keep.shape
+            shape, maps = keep.shape, [state.named(keep.id)]
             for p in hit[1:]:
-                shape = K.fuse(shape, p.shape)
+                shape, h = K.fuse(shape, p.shape, with_history=True)
+                maps = [name_feature(state, fid, maps + [state.named(p.id)], shape, h, "fuse", stamp=False)]
                 state.parts.pop(p.id, None)
                 targets.remove(p)
-            shape = K.fuse(shape, s)
+            shape, h = K.fuse(shape, s, with_history=True)
+            result = name_feature(state, fid, maps + tool, shape, h, "fuse", stamp=False)
             state.parts[keep.id] = Part(keep.id, keep.name, shape, keep.color)
+            state.set_named(keep.id, result)
             targets[targets.index(keep)] = state.parts[keep.id]
-            merged_into.append(keep.id)
         for s in remaining:
-            state.new_part(s, fid)
+            state.set_named(state.new_part(s, fid).id, _piece(tool, s))
         return
     hit_any = False
     for p in list(targets):
         if not K.intersects(p.shape, body):
-            if op == "intersect":
-                continue
             continue
         hit_any = True
-        res = K.cut(p.shape, body) if op == "remove" else K.common(p.shape, body)
+        make, code = (K.cut, "cut") if op == "remove" else (K.common, "common")
+        res, h = make(p.shape, body, with_history=True)
+        result = name_feature(state, fid, [state.named(p.id)] + tool, res, h, code, stamp=False)
         if not K.solids(res):
             state.parts.pop(p.id)
             continue
-        set_part_shape(state, p, res)
+        set_part_shape(state, p, res, result)
     if not hit_any:
         raise K.KernelError("Feature does not intersect any part")
+
+
+def _piece(tool, solid):
+    """The element map of one solid of a tool body: the names its sub-shapes have in the tool maps."""
+    out = N.NamedShape(solid, {})
+    for t in tool:
+        out.names.update(t.restrict(solid).names)
+    return out
 
 
 # --------------------------------------------------------------------------- feature implementations
@@ -768,6 +845,19 @@ def _profiles(state, p, fid=None):
     return profs
 
 
+def _profile_names(state, p):
+    """The NamedShapes the profile faces of `_profiles` are named in: each sketch whose regions are
+    used (its edges name the side faces, its region names the end faces, § 4) and each part a profile
+    face was picked from. Part ids are passed as such so the map is read when the step runs."""
+    out = []
+    for r in p.get("regions", []):
+        sk = state.sketches.get(r["sketch"])
+        if sk is not None and sk.named is not None and all(o is not sk.named for o in out):
+            out.append(sk.named)
+    out.extend(dict.fromkeys(fr["part"] for fr in p.get("faces", []) if fr.get("part") in state.parts))
+    return out
+
+
 def _profile_normal(state, p, profs):
     if p.get("regions"):
         return state.sketches[p["regions"][0]["sketch"]].plane.normal
@@ -808,22 +898,23 @@ def run_extrude(state, f):
                 lo, hi = np.minimum(lo, a), np.maximum(hi, b)
             dd = float(np.linalg.norm(hi - lo)) * 2 + 10 if state.parts else depth
             both = p.get("both", False) or (cutting and p.get("regions"))
-            return K.extrude(profs, direction, dd, depth2=dd if both else 0.0)
+            return K.extrude(profs, direction, dd, depth2=dd if both else 0.0, with_history=True)
         depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric else 0.0
         if depth + depth2 <= 0 and depth2:
             raise K.KernelError("The second depth cancels the first")
-        return K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2)
+        return K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
 
     d = -n if flip else n
-    body = make(d)
+    body, hist = make(d)
     if cutting and end == "blind" and not p.get("second") and state.parts:
         # like Onshape, a cut that misses everything is tried in the other direction
         targets = [state.parts[i] for i in (p.get("scope") or state.parts) if i in state.parts]
         if not any(K.intersects(t.shape, body) for t in targets):
-            alt = make(-d)
+            alt, alt_hist = make(-d)
             if any(K.intersects(t.shape, alt) for t in targets):
-                body = alt
-    apply_body(state, body, op, f["id"], p.get("scope"))
+                body, hist = alt, alt_hist
+    named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "extrude")
+    apply_body(state, body, op, f["id"], p.get("scope"), named)
 
 
 def run_revolve(state, f):
@@ -834,8 +925,9 @@ def run_revolve(state, f):
     angle, flip = signed_extent(360.0 if end == "full" else p.get("angle", 180), p.get("flip", False))
     if flip:
         d = -d
-    body = K.revolve(profs, a, d, angle, symmetric=(end == "symmetric"))
-    apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"))
+    body, hist = K.revolve(profs, a, d, angle, symmetric=(end == "symmetric"), with_history=True)
+    named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "revolve")
+    apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 
 def _group_by_part(state, refs, kind):
@@ -975,18 +1067,22 @@ def run_boolean(state, f):
         if len(allp) < 2:
             raise K.KernelError("Select at least two parts")
         keep = state.parts[allp[0]]
-        shape = keep.shape
+        shape, maps = keep.shape, [state.named(keep.id)]
         for i in allp[1:]:
-            shape = K.fuse(shape, state.parts.pop(i).shape)
-        set_part_shape(state, keep, shape)
+            other = state.named(i)
+            shape, h = K.fuse(shape, state.parts.pop(i).shape, with_history=True)
+            maps = [name_feature(state, f["id"], maps + [other], shape, h, "fuse", stamp=False)]
+        set_part_shape(state, keep, shape, maps[0])
         return
     if not tools or not targets:
         raise K.KernelError("Select tool and target parts")
     body = K.compound([state.parts[i].shape for i in tools])
+    tool_names = [state.named(i) for i in tools]
     if not p.get("keep_tools"):
         for i in tools:
             state.parts.pop(i)
-    apply_body(state, body, "remove" if op == "subtract" else "intersect", f["id"], targets)
+    apply_body(state, body, "remove" if op == "subtract" else "intersect", f["id"], targets,
+               [n for n in tool_names if n is not None])
 
 
 def run_import(state, f):

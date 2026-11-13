@@ -247,6 +247,17 @@ class NamedShape:
     def names_of(self, letter):
         return [self.names[k] for k in self.el.keys(letter) if k in self.names]
 
+    def restrict(self, sub):
+        """The map of `sub`, a solid or other part of this shape (e.g. one piece of a split result):
+        every element of `sub` keeps the name it has here, matched by sub-shape identity."""
+        out = NamedShape(sub, {})
+        for letter in KINDS:
+            for s, name in self.named(letter):
+                key = out.el.key(s)
+                if key is not None:
+                    out.names[key] = name
+        return out
+
     def unnamed(self):
         """The keys of every element no pass could name (§ 6: a name is never invented)."""
         return [k for k in self.el.keys() if k not in self.names]
@@ -313,7 +324,8 @@ class _Naming:
     anything is still unnamed the whole loop runs again with the deferred high-level names allowed
     in."""
 
-    def __init__(self, shape, history, sources, tag, op):
+    def __init__(self, shape, history, sources, tag, op, stamp=True):
+        self.stamp = stamp
         self.out = NamedShape(shape, {})
         self.el = self.out.el
         self.history = history
@@ -343,7 +355,8 @@ class _Naming:
                 for sub, name in src.named(letter):
                     key = self.el.key(sub)
                     if key is not None and key not in self.out.names:
-                        self._store(key, _encode(name, "", self.op, self.tag, key[0]))
+                        self._store(key, _encode(name, "", self.op, self.tag, key[0]) if self.stamp
+                                    else name)
 
     def _claims(self):
         """key -> [_Cand] from the history: what every named input element turned into."""
@@ -477,17 +490,21 @@ class _Naming:
             delayed = True
 
 
-def name_result(shape, history, sources, tag, op=OP_MAKER) -> NamedShape:
+def name_result(shape, history, sources, tag, op=OP_MAKER, stamp=True) -> NamedShape:
     """The names of a kernel helper's result.
 
     `shape` and `history` are what the helper returned with `with_history=True`, `sources` are the
     `NamedShape`s it was given (in the order it took them), `tag` is the feature id the operation
     belongs to and `op` its op code -- `OP_FOR[<helper name>]`.
+
+    `stamp=False` is a FreeShape departure from § 2: an element the operation left alone keeps its
+    name exactly, instead of gaining the new op code and tag. A part a later feature merely touches
+    then keeps the names of its other faces, so they stay short and identical across the feature.
     """
     if shape is None:
         raise NamingError("nothing to name: the operation returned no shape")
     sources = [s for s in sources if s is not None]
-    return _Naming(shape, history, sources, tag, op).run()
+    return _Naming(shape, history, sources, tag, op, stamp).run()
 
 
 # --------------------------------------------------------------------------- sketch roots (§ 4)

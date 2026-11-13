@@ -381,6 +381,31 @@ sketch, and none of the solid's elements keeps its raw indexed name
   port: an existing reference to the unsplit edge does not survive a split, because none of the
   pieces inherits the bare name — they all carry an index suffix.
 
+### 4.1 How a feature runner uses naming
+
+**FreeShape.** A part's element map lives in `ModelState.names` (part id to `NamedShape`), copied
+by `ModelState.copy()`; read it with `state.named(pid)`. `Part` carries no map, so a part renamed or
+recoloured keeps its names. `state.named` returns None when the part's shape is no longer the one the
+map describes, so a runner that has not been routed through naming yields an unnamed part, never a
+stale one. To name a result, a runner calls the kernel helper with `with_history=True` and then makes
+one call per helper call to `features.name_feature(state, fid, inputs, shape, history, op, part=None,
+stamp=True)`: `inputs` are the helper's inputs in order (part ids, a `SketchResult.named`, or any
+`NamedShape`), `op` is the helper's name (a key of `naming.OP_FOR`), and the returned `NamedShape` is
+passed to `apply_body(..., named=)`, `set_part_shape(..., named=)` or stored with `state.set_named`.
+Call it before popping or replacing an input part. A failure to name never fails the feature.
+
+An extrude or revolve names its body from the sketch's `named` (rules 1 and 2 above: side faces
+`;:G` from the sketch edge, end faces from the region) and passes it to `apply_body`. `apply_body`
+then runs the fuse, cut or common with history and names the result from the target part and the
+body: new parts take the body's names for their own solids, and a split result gives each piece the
+names of its own elements.
+
+**FreeShape departure from section 2.** `apply_body` and `run_boolean` name with `stamp=False`: an
+element the boolean leaves alone keeps its name exactly, where FreeCAD re-encodes it with the new op
+code and tag. A part a later feature merely touches then keeps the names of its other faces, and
+the names of long-lived faces do not grow with every feature. An element the boolean modifies or
+merges still gets the `;:M` / `;K` fragments of sections 2 and 5.
+
 ## 5. Split and merge
 
 Split and merge are the same mechanism read in two directions, so they are described together.

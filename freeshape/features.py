@@ -859,7 +859,8 @@ def _piece(tool, solid):
 NUMERIC_KEYS = {"depth", "depth2", "angle", "radius", "distance", "thickness", "offset", "count", "spacing",
                 "diameter", "counterbore_dia", "counterbore_depth", "dx", "dy", "dz", "rotate",
                 "draft", "pitch", "twist", "scale_end", "major", "length", "clearance", "thread_clearance",
-                "countersink_dia", "k", "relief_scale"}
+                "countersink_dia", "k", "relief_scale",
+                "scale"}
 
 
 def prepare(f, state):
@@ -1555,9 +1556,17 @@ def run_move(state, f):
     a, d = (np.zeros(3), np.array([0, 0, 1.0]))
     if abs(ang) > 1e-12:
         a, d = resolve_axis(state, p.get("axis") or {"kind": "std", "name": "Z"})
+    sc, c = float(p.get("scale", 1)), (0.0, 0.0, 0.0)
+    if not sc > 0:
+        raise K.KernelError("The scale must be more than 0")
+    if sc != 1.0 and p.get("center"):
+        c = tuple(resolve_point(state, p["center"], f["id"]))
     for pid in ids:
         part = state.parts[pid]
-        moved, hist = K.transform(part.shape, v, a, d, ang, with_history=True)
+        if sc == 1.0:
+            moved, hist = K.transform(part.shape, v, a, d, ang, with_history=True)
+        else:
+            moved, hist = K.transform(part.shape, v, a, d, ang, with_history=True, scale=sc, scale_center=c)
         named = name_feature(state, f["id"], [pid], moved, hist, "move")
         if p.get("copy"):
             np_ = state.new_part(moved, f["id"], part.color)

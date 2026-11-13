@@ -539,6 +539,9 @@ SCHEMAS = {
              visible=lambda p: _isnum(p.get("rotate")) is not False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")],
                 visible=lambda p: _isnum(p.get("rotate")) is not False),
+        _num("scale", "Scale", unit="", minimum=1e-6),
+        _sel("center", "Scale about (vertex, default the origin)", {"vertex"}, multi=False,
+             visible=lambda p: _isnum(p.get("scale")) is not False and p.get("scale") not in (None, "", 1, 1.0, "1")),
         _check("copy", "Keep the original (make a copy)"),
     ],
     "thread": [
@@ -612,6 +615,7 @@ def params_to_fields(ftype, p):
     if ftype == "move":
         a = p.get("axis") or {}
         f["axis_sel"] = [("axis", a)] if a and a.get("kind") != "std" else []
+        f["center"] = [("vertex", p["center"])] if p.get("center") else []
     if ftype == "revolve":
         ax = p.get("axis") or {}
         f["axis_sel"] = [("axis", ax)] if ax and ax.get("kind") != "std" else []
@@ -668,6 +672,11 @@ def fields_to_params(ftype, fields, p):
             p["axis_std"] = ""
         else:
             p["axis"] = {"kind": "std", "name": p.get("axis_std") or "Z"}
+        sel = fields.get("center", [])
+        if sel:
+            p["center"] = sel[0][1]
+        else:
+            p.pop("center", None)
     if ftype == "revolve":
         sel = fields.get("axis_sel", [])
         if sel:

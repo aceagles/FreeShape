@@ -1660,10 +1660,19 @@ def split_by_plane(shape, plane: Plane, with_history=False):
     return (pieces, _maker_history(sp, [shape, tool]), tool) if with_history else pieces
 
 
-def transform(shape, translate_v=(0, 0, 0), axis_p=(0, 0, 0), axis_d=(0, 0, 1), angle_deg=0.0, with_history=False):
+def transform(shape, translate_v=(0, 0, 0), axis_p=(0, 0, 0), axis_d=(0, 0, 1), angle_deg=0.0, with_history=False,
+              scale=1.0, scale_center=(0, 0, 0)):
+    """Scale about `scale_center` first, then rotate, then translate. A scale of 1 is the plain move."""
+    scale = float(scale)
+    if not scale > 0:
+        raise KernelError("The scale must be more than 0")
     t = gp_Trsf()
     if abs(angle_deg) > 1e-12:
         t.SetRotation(gp_Ax1(_pnt(axis_p), _dir(axis_d)), math.radians(angle_deg))
+    if scale != 1.0:
+        sc = gp_Trsf()
+        sc.SetScale(_pnt(scale_center), scale)
+        t = t.Multiplied(sc)
     m = gp_Trsf()
     m.SetTranslation(_vec(translate_v))
     t = m.Multiplied(t)

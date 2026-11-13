@@ -165,3 +165,32 @@ def write_previous_version(a, strip=("values", "limits"), version=None):
     with open(p, "w") as fh:
         json.dump(d, fh)
     return p
+
+
+def plus_x(i):
+    return i.get("n") is not None and i["n"][0] > 0.9
+
+
+def mated_blocks(*types):
+    """A fixed plate with one block per mate type, each on its own mate (top face, then +X face, alternating),
+    every mate at value zero. Returns (asm, [mates])."""
+    a = new_assembly()
+    ip = a.insert(src("plate"))
+    mates = []
+    for k, t in enumerate(types):
+        ib = a.insert(src("block"))
+        ca = a.connector(ip, "face", face(a, ip, up if k % 2 == 0 else plus_x))
+        cb = a.connector(ib, "face", face(a, ib, down))
+        m = add_mate(a, t, ca, cb)
+        for d in A.MATE_VALUE_DOFS[t]:
+            assert a.drive_mate(m["id"], d, 0.0)[1]
+        mates.append(m)
+    return a, mates
+
+
+def relate(a, rtype, m1, m2, ratio, dof1="rz", dof2="rz", reverse=False):
+    """Add a relation between a dof of m1 and a dof of m2 (m2 = m1 for a screw). Returns it."""
+    r = a.make_relation(rtype)
+    r.update(a={"mate": m1["id"], "dof": dof1}, b={"mate": m2["id"], "dof": dof2}, ratio=ratio, reverse=reverse)
+    a.add_relation(r)
+    return r

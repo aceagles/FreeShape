@@ -9,8 +9,10 @@ next edit or `outputs` if the generation moved since it last did. A Part Studio 
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
+import re
 
 import numpy as np
 
@@ -24,6 +26,7 @@ from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, Ass
 from .encode import Encoder, connector_out, sketch_out
 from .inputs import CrossTabInputs
 from .linkgraph import live_package, package_digest, propagate
+from .. import blobstore
 from .. import links
 from .. import tabkinds as TK
 
@@ -41,6 +44,70 @@ def file_kind(path):
     if kind is None:
         raise EngineError(f"{path} is not a FreeShape Part Studio, Assembly or Drawing")
     return kind
+
+
+def read_data(kind, data, path=None):
+    """The decoded JSON of a tab's bytes, checked to be a tab of `kind` (EngineError otherwise)."""
+    label = path or f"this {kind} tab's data"
+    if kind not in KINDS:
+        raise EngineError(f"unknown tab kind {kind!r}")
+    try:
+        d = json.loads(bytes(data).decode("utf-8"))
+        fmt = d.get("format")
+    except (TypeError, ValueError, AttributeError) as e:
+        raise EngineError(f"Cannot read {label}: {e}") from e
+    if TK.kind_for_format(fmt) != kind:
+        raise EngineError(f"{label} is not a FreeShape {TK.get(kind).label}")
+    return d
+
+
+_BLOB_KEY = re.compile(r"[0-9a-f]{64}")
+
+
+def fetch_blobs(obj, lookup, have):
+    """{key: bytes} of the blobs `lookup` holds that `obj` (decoded JSON: tab data or an edit) names and `have`
+    does not hold yet, followed through blobs that are JSON themselves (a Context capture's listing names its
+    neighbours' blobs). A blob key is any 64-hex string the lookup has, so a kind that adds blob keys to its data
+    needs nothing here."""
+    found, todo = {}, [obj]
+    while todo:
+        x = todo.pop()
+        if isinstance(x, dict):
+            todo.extend(x.keys())
+            todo.extend(x.values())
+        elif isinstance(x, (list, tuple)):
+            todo.extend(x)
+        elif isinstance(x, str) and len(x) == 64 and x not in have and x not in found \
+                and _BLOB_KEY.fullmatch(x) and lookup.has(x):
+            b = found[x] = bytes(lookup.get(x))
+            if b[:1] in (b"{", b"["):
+                try:
+                    todo.append(json.loads(b.decode("utf-8")))
+                except ValueError:
+                    pass
+    return found
+
+
+def put_blobs(sink, blobs, tab):
+    """Put {key: bytes} into `sink` (an object with `put`); EngineError if there are blobs and no sink."""
+    if not blobs:
+        return
+    if sink is None:
+        raise EngineError(f"tab {tab!r} has blobs to keep and no blob lookup: pass blobs= to tab_data")
+    for b in blobs.values():
+        sink.put(b)
+
+
+class _Collect:
+    """A blob sink that keeps what is put into it ({key: bytes})."""
+
+    def __init__(self):
+        self.blobs = {}
+
+    def put(self, data):
+        key = hashlib.sha256(data).hexdigest()
+        self.blobs[key] = bytes(data)
+        return key
 
 
 def _need(edit, key):
@@ -63,10 +130,19 @@ class _Tab:
         self.consumes = tuple(consumes)
         self.seen = engine.generation
         self._syncing = False
+        self.blobs = None        # the blob lookup the tab was opened with (open_tab_data)
 
     @property
     def path(self):
         return self.doc.path
+
+    def data(self):
+        """(bytes, {key: bytes}): the tab's data as `save` writes it, and the blobs it names (a Part Studio's
+        Python-feature builds and Context captures), without writing anything."""
+        sink = _Collect()
+        if hasattr(self.doc, "write_blobs"):
+            self.doc.write_blobs(store=sink)
+        return self.doc.to_data(), sink.blobs
 
     def sync(self):
         """Bring the tab up to date with the tabs it consumes."""
@@ -259,6 +335,10 @@ class _ConsumerTab(_Tab):
         self.engine.inputs.repair(self.doc)
         super()._save(edit)
 
+    def data(self):
+        self.engine.inputs.repair(self.doc)      # as `_save` does before writing
+        return super().data()
+
 
 class AssemblyTab(_ConsumerTab):
     kind = "assembly"
@@ -385,6 +465,7 @@ class InProcessEngine(Engine):
         self.links = self.inputs.resolver
         self.document_id = None        # the Document these tabs belong to (`use_document`)
         self.cross = None              # resolves a source naming another Document, pinned to a Version
+        self.by_tab_id = False         # a tab was opened by data with no path: tab-id sources match by id only
         self._tabs: dict[str, _Tab] = {}
         self._counter = 0
 
@@ -427,22 +508,44 @@ class InProcessEngine(Engine):
             return open_already.tab
         kind = file_kind(path)
         path = os.path.abspath(path)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return self.open_tab_data(kind, data, tab, path=path)
+
+    def open_tab_data(self, kind, data, tab=None, name=None, blobs=None, path=None):
+        read_data(kind, data, path)
+        if tab is not None and tab in self._tabs:
+            raise EngineError(f"tab id {tab!r} is already open")
+        if path is None:
+            self.by_tab_id = True
         with self.inputs.recording() as used:
             if kind == "studio":
-                doc = PartStudioDoc.load(path)
+                doc = PartStudioDoc.from_data(data, path=path, blobs=blobs)
                 doc.var_inputs = self.inputs.variables
                 doc.link_inputs = self.inputs.studio
                 if any(links.feature_source(f) is not None for f in doc.features):
                     doc.rebuild()            # the load ran without the resolver
             elif kind == "variables":
-                doc = VariableStudioDoc.load(path)
+                doc = VariableStudioDoc.from_data(data, path=path, blobs=blobs)
             elif kind == "assembly":
-                doc = A.AssemblyDoc.load(path, resolver=self.inputs.part)
+                doc = A.AssemblyDoc.from_data(data, path=path, resolver=self.inputs.part, blobs=blobs)
             else:
-                doc = D.DrawingDoc.load(path, resolver=self.inputs.drawing_shape)
+                doc = D.DrawingDoc.from_data(data, path=path, resolver=self.inputs.drawing_shape, blobs=blobs)
+        if name:
+            doc.name = str(name)
         tab = self._register(kind, doc, tab, used)
+        self._tabs[tab].blobs = blobs
         self.inputs.commit(tab, used)
         return tab
+
+    def tab_data(self, tab, blobs=None):
+        t = self._get(tab)
+        data, named = t.data()
+        sink = blobs if blobs is not None else t.blobs
+        if sink is None and named and t.path:
+            sink = blobstore.store_for(t.path)
+        put_blobs(sink, named, tab)
+        return data
 
     def new_tab(self, kind, name=None, tab=None, sources=()):
         if kind not in KINDS:
@@ -480,7 +583,7 @@ class InProcessEngine(Engine):
             t = None
         if t is None and uid:
             t = next((x for x in self._tabs.values() if x.kind == kind and getattr(x.doc, "uid", None) == uid), None)
-        if t is None and path:
+        if t is None and path and not (tab and self.by_tab_id):     # a tab id names it: never a path
             t = self._by_path(path)
             if t is None and os.path.exists(path):
                 try:

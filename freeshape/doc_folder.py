@@ -374,6 +374,26 @@ class FolderDocument:
         return doc
 
     @classmethod
+    def create_on(cls, store, name=None, registry=None):
+        """Make a new Document on `store` (a DocumentStore) and write its manifest there. A store that keeps a
+        folder gives the Document that `path`; a store that keeps none (docstore.MemoryStore) leaves `path` None.
+        No repository is made and the Document is not trusted, so Versions, Workspaces and merge need a folder
+        (see docstore.git_folder). `create` is the folder route: it also initialises git and registers the folder."""
+        doc = cls()
+        doc.path = store.folder
+        doc._store = store
+        doc.registry = registry
+        if name:
+            doc.name = name
+        doc._write_manifest()
+        return doc
+
+    @classmethod
+    def open_on(cls, store, registry=None):
+        """Load the Document that `store` holds: `open` for any store."""
+        return cls.open(store.folder, registry=registry, store=store)
+
+    @classmethod
     def open_document(cls, path, registry=None, managed_root=None):
         """Open a Document the way the app should: a folder the app created (or already imported) opens in place;
         anything else is first imported with `git clone --no-local` into `managed_root`, and the app works only in
@@ -517,7 +537,7 @@ class FolderDocument:
 
     def save(self):
         self._check_writable()
-        if self.path is None:
+        if self.path is None and self._store is None:
             raise K.KernelError("Document has no folder to save to")
         store = self.store
         for tab in self.tabs:
@@ -541,9 +561,9 @@ class FolderDocument:
 
     # ------------------------------------------------------------------ versions (git; see gitstore.py)
     def _git_ready(self):
+        folder = DS.git_folder(self.store)      # a store with no folder refuses first: trust is not the problem there
         if not self.trusted:
             raise K.KernelError("Versions need a Document the app created or imported: open it with open_document")
-        folder = DS.git_folder(self.store)
         if folder is None or not G.is_repo(folder):
             raise G.GitError(self.git_error or "This Document folder has no repository")
 

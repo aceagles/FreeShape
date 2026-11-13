@@ -14,6 +14,7 @@ Git is outside the interface: Versions, Workspaces and merge run git in a `Folde
 """
 from __future__ import annotations
 
+import hashlib
 import os
 from abc import ABC, abstractmethod
 
@@ -21,6 +22,17 @@ from . import blobstore
 from . import kernel as K
 
 MANIFEST_NAME = "document.json"
+
+
+def check_file_name(rel, label):
+    """The structural checks every store makes on a tab's manifest `file` entry, with no filesystem access: a
+    relative path with no '..' segment. Raises K.KernelError."""
+    if not rel or not isinstance(rel, str):
+        raise K.KernelError(f"{label}: missing a file path")
+    if os.path.isabs(rel) or (len(rel) >= 2 and rel[1] == ":"):
+        raise K.KernelError(f"{label}: an absolute path isn't allowed ({rel!r})")
+    if ".." in rel.replace("\\", "/").split("/"):
+        raise K.KernelError(f"{label}: a '..' segment isn't allowed ({rel!r})")
 
 
 def _atomic_write(path, text):
@@ -173,12 +185,7 @@ class FolderStore(DocumentStore):
     def _resolve(self, rel, label):
         """Join `rel` onto the folder after structural checks that need no filesystem access: no absolute
         path, no '..' segment."""
-        if not rel or not isinstance(rel, str):
-            raise K.KernelError(f"{label}: missing a file path")
-        if os.path.isabs(rel) or (len(rel) >= 2 and rel[1] == ":"):
-            raise K.KernelError(f"{label}: an absolute path isn't allowed ({rel!r})")
-        if ".." in rel.replace("\\", "/").split("/"):
-            raise K.KernelError(f"{label}: a '..' segment isn't allowed ({rel!r})")
+        check_file_name(rel, label)
         return os.path.normpath(os.path.join(self.folder, rel))
 
     def place_tab(self, tab_id, file):
@@ -262,3 +269,78 @@ class FolderStore(DocumentStore):
 
     def has_blob(self, key, tab_id=None):
         return self.blobs(tab_id).has(key)
+
+
+class MemoryStore(DocumentStore):
+    """A Document held in dicts: the manifest, each tab's data by tab id, blobs by content hash per tab. Nothing
+    touches disk, so it keeps no folder and Versions, Workspaces and merge refuse it (`git_folder`). It is what the
+    headless session uses in tests, and shows the interface is complete without files.
+
+    A tab's `file` name is checked as `FolderStore` checks it (`check_file_name`) and remembered for
+    `file_taken`; the data is keyed by tab id alone. Bytes pass through unchanged, as a folder would read them
+    back, and blobs are checked against their key and size as `blobstore.BlobStore` checks them."""
+
+    def __init__(self):
+        self._manifest = None
+        self._tabs = {}
+        self._files = {}
+        self._blobs = {}        # tab id (None: the Document) -> {key: bytes}
+
+    def describe(self):
+        return "an in-memory store"
+
+    def read_manifest(self, max_bytes=None):
+        if self._manifest is None:
+            raise K.KernelError(f"{MANIFEST_NAME} is missing from {self.describe()}")
+        if max_bytes is not None and len(self._manifest) > max_bytes:
+            raise K.KernelError(f"{MANIFEST_NAME} is over {max_bytes} bytes")
+        return self._manifest
+
+    def write_manifest(self, data):
+        self._manifest = bytes(data)
+
+    def place_tab(self, tab_id, file):
+        check_file_name(file, f"tab {tab_id!r}")
+        self._files[tab_id] = file
+
+    def list_tabs(self, tab_ids=None):
+        return [i for i in (self._tabs if tab_ids is None else tab_ids) if i in self._tabs]
+
+    def has_tab(self, tab_id):
+        return tab_id in self._tabs
+
+    def read_tab(self, tab_id):
+        if tab_id not in self._tabs:
+            raise K.KernelError(f"tab {tab_id!r}: its data is missing from {self.describe()}")
+        return self._tabs[tab_id]
+
+    def write_tab(self, tab_id, data):
+        self._tabs[tab_id] = bytes(data)
+
+    def delete_tab(self, tab_id):
+        self._tabs.pop(tab_id, None)
+
+    def file_taken(self, file):
+        return any(f == file and i in self._tabs for i, f in self._files.items())
+
+    def read_blob(self, key, tab_id=None, max_bytes=blobstore.DEFAULT_MAX_BYTES):
+        blobstore._check_key(key)
+        data = self._blobs.get(tab_id, {}).get(key)
+        if data is None:
+            raise blobstore.BlobError(f"no blob {key}")
+        if len(data) > max_bytes:
+            raise blobstore.BlobError(f"blob is {len(data)} bytes, over the {max_bytes} byte limit")
+        return data
+
+    def write_blob(self, data, tab_id=None):
+        data = bytes(data)
+        key = hashlib.sha256(data).hexdigest()
+        self._blobs.setdefault(tab_id, {})[key] = data
+        return key
+
+    def has_blob(self, key, tab_id=None):
+        try:
+            blobstore._check_key(key)
+        except blobstore.BlobError:
+            return False
+        return key in self._blobs.get(tab_id, {})

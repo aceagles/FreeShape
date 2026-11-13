@@ -327,6 +327,92 @@ def polygon(sk: Sketch, centre, corner, sides: int, mode: str = "inscribed", con
     return lines, circ
 
 
+# --------------------------------------------------------------------------- extend
+
+def _crossings_along(sk: Sketch, oid, a, d):
+    """Parameters t where entity `oid` crosses the infinite line a + t*d, only where the crossing lies on
+    the entity itself (a line's own span, an arc's own sweep; a whole circle)."""
+    o = sk.entities[oid]
+    out = []
+    if o["type"] == "line":
+        c, e = sk.P(o["p1"]), sk.P(o["p2"])
+        f = e - c
+        den = d[0] * f[1] - d[1] * f[0]
+        if abs(den) < 1e-12:
+            return out
+        w = c - a
+        t = (w[0] * f[1] - w[1] * f[0]) / den
+        s = (w[0] * d[1] - w[1] * d[0]) / den
+        if -1e-9 <= s <= 1 + 1e-9:
+            out.append(t)
+    elif o["type"] in ("circle", "arc"):
+        c = sk.P(o["c"])
+        r = sk.radius(oid)
+        f = a - c
+        A, B, C = d @ d, 2 * f @ d, f @ f - r * r
+        disc = B * B - 4 * A * C
+        if disc < 0 or A < 1e-12:
+            return out
+        for sgn in (-1, 1):
+            t = (-B + sgn * math.sqrt(disc)) / (2 * A)
+            if o["type"] == "arc":
+                a1, a2 = sk.arc_angles(oid)
+                pt = a + t * d
+                ang = math.atan2(pt[1] - c[1], pt[0] - c[0])
+                while ang < a1 - 1e-9:
+                    ang += 2 * math.pi
+                if ang > a2 + 1e-9:
+                    continue
+            out.append(t)
+    return out
+
+
+def extend(sk: Sketch, lid: str, end: str):
+    """Lengthen one end of line `lid` ("p1" or "p2") along its own direction to the nearest crossing with
+    another line, circle or arc. The end point moves there and gets a point_on constraint to that curve.
+    Returns {"point", "target", "from", "to"}, or None (sk untouched) when nothing lies beyond the end.
+    Raises ValueError (sk untouched) when the end point is shared with other geometry, or when the
+    constraints already on the line, such as a length dimension, would not let the end move."""
+    e = sk.entities.get(lid)
+    if e is None or e["type"] != "line":
+        raise ValueError("Extend works on a line")
+    if end not in ("p1", "p2"):
+        raise ValueError("end must be p1 or p2")
+    pid = e[end]
+    a, b = sk.P(e["p1"]), sk.P(e["p2"])
+    d = b - a
+    L = float(np.linalg.norm(d))
+    if L < TOL:
+        raise ValueError("That line has no length")
+    beyond = []                                       # (distance beyond the end, entity id)
+    for oid, o in sk.entities.items():
+        if oid == lid or o["type"] == "point":
+            continue
+        for t in _crossings_along(sk, oid, a, d):
+            if end == "p2" and (t - 1) * L > 1e-6:
+                beyond.append((t, oid))
+            elif end == "p1" and -t * L > 1e-6:
+                beyond.append((-t, oid))
+    if not beyond:
+        return None
+    best, oid = min(beyond, key=lambda x: x[0])
+    t = best if end == "p2" else -best
+    if any(o != lid and pid in sk.entity_points(o) for o in sk.entities):
+        raise ValueError("Can't extend: that end is shared with other geometry")
+    work = sk.copy()
+    old = [float(v) for v in work.points[pid]]
+    new = a + t * d
+    work.points[pid] = [float(new[0]), float(new[1])]
+    work.add_constraint("point_on", pid, oid)
+    ok = work.solve()
+    moved = np.linalg.norm(work.P(pid) - new)
+    drift = max((np.linalg.norm(work.P(q) - sk.P(q)) for q in sk.points if q != pid), default=0.0)
+    if not ok or moved > 1e-6 or drift > 1e-6:
+        raise ValueError("Can't extend: a dimension or constraint on this line holds its length")
+    sk.points, sk.constraints, sk.status = work.points, work.constraints, work.status
+    return {"point": pid, "target": oid, "from": old, "to": [float(v) for v in work.P(pid)]}
+
+
 # --------------------------------------------------------------------------- mirror & patterns
 
 def _geometry(sk: Sketch, ids):

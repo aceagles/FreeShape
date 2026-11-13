@@ -48,6 +48,7 @@ TOOL_HINTS = {
     "dimension": "Click a line, circle or two items, then click to place the dimension.",
     "use": "Click part edges to project them into the sketch.",
     "trim": "Click a segment of a line to remove it up to the nearest intersections.",
+    "extend": "Click near one end of a line to lengthen it to the nearest line, circle or arc beyond it.",
     "sk_fillet": "Click a corner where two lines meet, then type the radius.",
     "offset": "Click a line, arc or circle to offset its whole chain; type the distance (negative = other side).",
     "slot": "Click the two end centres of the slot, then type its width.",
@@ -458,6 +459,11 @@ class Sketcher:
             h = self.hit(vp, x, y, kinds=("entity",))
             if h:
                 self._trim(h[1], self.uv(vp, x, y))
+            return True
+        if t == "extend":
+            h = self.hit(vp, x, y, kinds=("entity",))
+            if h:
+                self._extend(vp, h[1], self.uv(vp, x, y))
             return True
         if t in DRAW_TOOLS:
             return self._draw_click(vp, x, y)
@@ -1598,6 +1604,28 @@ class Sketcher:
             if p2 not in sk.points:
                 p2 = sk.add_point(*b)
             sk.add_line(q, p2, cons)
+        self.changed(True)
+
+    def _extend(self, vp, eid, uv):
+        """Lengthen the end of line `eid` nearest the click to the next curve beyond it."""
+        sk = self.sk
+        e = sk.entities[eid]
+        if e["type"] != "line":
+            self._flash(vp, "Extend works on lines")
+            return
+        a, b = sk.P(e["p1"]), sk.P(e["p2"])
+        end = "p1" if np.linalg.norm(uv - a) <= np.linalg.norm(uv - b) else "p2"
+        self.push_undo()
+        try:
+            res = OPS.extend(sk, eid, end)
+        except ValueError as err:
+            self.undo_stack.pop()
+            self._flash(vp, str(err))
+            return
+        if res is None:
+            self.undo_stack.pop()
+            self._flash(vp, "Nothing to extend to")
+            return
         self.changed(True)
 
     # ================================================================== drawing

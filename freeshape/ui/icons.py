@@ -398,6 +398,14 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(RED, 1.5))
         p.drawLine(QPointF(19, 11), QPointF(27, 21))
         p.drawLine(QPointF(27, 11), QPointF(19, 21))
+    elif name == "extend":
+        p.setPen(_pen(INK, 1.8))
+        p.drawLine(QPointF(24, 4), QPointF(24, 28))
+        p.drawLine(QPointF(4, 16), QPointF(14, 16))
+        p.setPen(_pen(ORANGE, 1.8))
+        p.drawLine(QPointF(14, 16), QPointF(24, 16))
+        p.drawLine(QPointF(19, 11), QPointF(24, 16))
+        p.drawLine(QPointF(19, 21), QPointF(24, 16))
     elif name == "delete":
         p.setPen(_pen(RED, 2.2))
         p.drawLine(QPointF(8, 8), QPointF(24, 24))

@@ -718,6 +718,8 @@ class MainWindow(QMainWindow):
         self._sketch_buttons["use"] = b
         b = self._tb(h, "trim", "Trim", lambda: self._sk_tool("trim"), checkable=True)
         self._sketch_buttons["trim"] = b
+        b = self._tb(h, "extend", "Extend", lambda: self._sk_tool("extend"), checkable=True)
+        self._sketch_buttons["extend"] = b
         self._tb(h, "delete", "Delete selected (Del)", lambda: self._sk("delete_selection"))
         h.addStretch(1)
         self._tb(h, "normal_to", "Normal to sketch (N)", self._normal_to_sketch)

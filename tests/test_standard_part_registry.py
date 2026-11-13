@@ -20,7 +20,9 @@ def isolated(tmp_path, monkeypatch):
     user.mkdir()
     monkeypatch.setenv("FREESHAPE_PLUGIN_DIR", str(user))
     before = {p.id for p in pyfeature.plugins()}
+    problems_before = list(registry._PROBLEMS)
     yield user
+    registry._PROBLEMS[:] = problems_before     # a test's bad plugins must not leak into later tests
     for p in pyfeature.plugins():
         if p.id not in before:
             pyfeature.unregister_plugin(p.id)
@@ -46,8 +48,8 @@ def test_resolves_and_builds(pegs):
     cls = pyfeature.standard_part(TYPE)
     assert cls is not None and cls.id == "peg"
     assert pyfeature.is_standard_type(TYPE) and not pyfeature.is_standard_type("py:boxes/box")
-    assert [t for t, _, _ in pyfeature.standard_parts()] == [TYPE]
-    assert pyfeature.standard_parts()[0][2] is pegs
+    assert [t for t, _, _ in pyfeature.standard_parts() if t.startswith("sp:pegs/")] == [TYPE]
+    assert [i for t, _, i in pyfeature.standard_parts() if t == TYPE] == [pegs]
     peg = cls()
     assert peg.sizes() == ["P3", "P5"] and peg.lengths("P5") == [10, 20]
     assert peg.match_hole(5.0) == "P5" and peg.match_hole(4.0) is None
@@ -115,9 +117,9 @@ def test_missing_class_records_problem(tmp_path):
 def test_unregister_removes_standard_parts(pegs):
     assert pyfeature.unregister_plugin("pegs") is True
     assert pyfeature.standard_part(TYPE) is None
-    assert pyfeature.standard_parts() == []
+    assert [t for t, _, _ in pyfeature.standard_parts() if t.startswith("sp:pegs/")] == []
 
 
 def test_replacing_plugin_keeps_one_entry(pegs):
     assert pyfeature.register_plugin(PEGS) is not None
-    assert [t for t, _, _ in pyfeature.standard_parts()] == [TYPE]
+    assert [t for t, _, _ in pyfeature.standard_parts() if t.startswith("sp:pegs/")] == [TYPE]

@@ -1,2 +1,12 @@
-{"id": "fasteners", "name": "Fasteners", "version": "1.0.0", "licence": "LGPL-2.1-or-later",
- "standard_parts": []}
+{
+ "id": "fasteners",
+ "name": "Fasteners",
+ "version": "1.0.0",
+ "licence": "LGPL-2.1-or-later",
+ "standard_parts": [
+  "hex_bolt:Iso4014",
+  "hex_bolt:Iso4017",
+  "hex_nut:Iso4032",
+  "washer:Iso7089"
+ ]
+}

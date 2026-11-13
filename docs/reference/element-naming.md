@@ -78,11 +78,14 @@ oldest fragment first and the most recent operation last.
 
 * **Extra sources.** If several source elements map onto the same new element, the first in sort
   order supplies the name and the rest are appended as a parenthesised, `|`-separated list, each
-  marked `;K` plus its own index (index 1 again written as nothing). At most four extra sources are
-  recorded, to bound the name length
+  marked `;K` plus its own index. At most four extra sources are recorded, to bound the name length
   (`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1658`, the `K` marker at
   `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1684`, the cap at
-  `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1720`).
+  `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1720`). The `;K` marker is written only
+  when the extra source mapped to more than one result: at position 1 — the ordinary case of a
+  source that maps onto this element alone — the marker is left out altogether and the extra source
+  contributes just its name and a tag postfix, not the marker with an empty index
+  (`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1681`).
 
 * **Tag postfix.** Every fragment ends with the tag postfix `;:H`, then the producing object's tag
   in hex (negative tags written with a leading `-`), then `:` and the length in hex of the op-code
@@ -93,12 +96,19 @@ oldest fragment first and the most recent operation last.
   (`/opt/freecad-src/src/App/MappedName.cpp:58`,
   `/opt/freecad-src/src/App/MappedName.cpp:93`); the length field is what makes a name
   parseable backwards, see section 2. An older variant used `;:T` with decimal numbers and is still
-  read (`/opt/freecad-src/src/App/MappedName.cpp:65`).
+  read (`/opt/freecad-src/src/App/MappedName.cpp:65`). **FreeShape** identifies a feature by a short
+  string rather than a number (`F3`), so the tag field holds that id verbatim where FreeCAD writes
+  hex; an id carrying `;`, `.`, `:`, `,`, `|`, `(`, `)`, `#` or whitespace is refused rather than
+  escaped. The tag written is the id of the feature running the operation, which is what a rebuild
+  has to hand (FreeCAD records the tag of the object the *source* element came from,
+  `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1508` and
+  `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1757`).
 
 * **Duplicate suffix.** Two elements may end up with the same constructed name — the map allows an
   element to carry several names but never a name to point at two elements. Insertion is therefore
-  retried: each attempt prepends a disambiguator `;D` plus a counter in hex to the name and
-  re-encodes it, up to 100 attempts, after which the collision is logged and the undisambiguated
+  retried: each attempt re-encodes the name with a disambiguator `;D` plus a counter in hex as its
+  op code, so the `;D` lands at the end of the name like any other operation, in front of a fresh
+  tag postfix; up to 100 attempts, after which the collision is logged and the undisambiguated
   name returned (`/opt/freecad-src/src/App/ElementMap.cpp:581`, the retry cap at
   `/opt/freecad-src/src/App/ElementMap.cpp:587`, the rename itself at
   `/opt/freecad-src/src/App/ElementMap.cpp:735` and the suffix at
@@ -147,11 +157,16 @@ whole stack, not just the last step.
   modelling from inflating every name.
 
 * **Same tag twice collapses.** When an object performs several kernel steps in one recompute,
-  every step would otherwise append the same tag. FreeCAD allows exactly one extra level per tag:
-  before appending, it un-hashes the previous fragment, and if that fragment already carries the
-  same tag it is dropped and replaced rather than nested
-  (`/opt/freecad-src/src/App/ElementMap.cpp:625`). Intermediate shapes have no document object, so
-  nothing is lost by collapsing them.
+  every step would otherwise append the same tag. FreeCAD allows exactly one extra level per tag
+  (`/opt/freecad-src/src/App/ElementMap.cpp:625`). The test is one fragment further back than that
+  description suggests: before appending, it cuts the name at its last tag postfix, un-hashes what
+  is left and reads *that* fragment's tag, so the collapse fires only once a tag is about to appear
+  for the third time in a row. What is then dropped is the last tag postfix alone — the op code in
+  front of it stays and the new operation's text is appended after it
+  (`/opt/freecad-src/src/App/ElementMap.cpp:644`, the truncation at
+  `/opt/freecad-src/src/App/ElementMap.cpp:646`). So a tag settles at two levels however many steps
+  the object runs. Intermediate shapes have no document object, so nothing is lost by collapsing
+  them.
 
 * **Why the length field exists.** The `:<len>` field in the tag postfix records how many bytes of
   op-code text sit in front of that postfix, which is what lets a reader cut the last operation off
@@ -292,7 +307,15 @@ then do the following:
    detected geometrically and given the reserved fixed indices `0` and `00` rather than an OCCT
    ordinal (`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1332`,
    `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1554`,
-   `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1593`).
+   `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1593`). The first coplanar face found
+   takes `00`, the next face parallel to the source takes `0`, and the pair is looked for afresh in
+   each reported image (`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:1529`).
+   **FreeShape:** the kernel helpers also report a sweep's end cap as a generated face directly
+   (`FirstShape` / `LastShape`, which FreeCAD's `MapperMaker` does not read), so the geometric pin
+   is applied to any generated face that is parallel or coplanar with a planar source face, not only
+   to the faces reached by exploring a high-level report. Without that the cap would take an OCCT
+   ordinal counted after the solid's faces, and the top face of an extrusion would be renamed by
+   every edge added to the profile — the very thing the fixed indices exist to prevent.
 3. **Edges and vertices of those faces.** They usually have no history of their own. The reverse
    pass names each unnamed edge from the named face containing it, and each unnamed vertex from its
    edge, as `;:U<n>` where `n` is the position of the sub-element inside the parent. An element
@@ -384,6 +407,14 @@ Split and merge are the same mechanism read in two directions, so they are descr
   more fragment on its name than the same face of an unrefined one. Refine also falls back to the
   input shape wholesale, map and all, if the operation throws or changes the solid's closedness
   (`/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:4654`).
+
+  **FreeShape:** refine is not a separate naming step here. A kernel helper runs the boolean, the
+  refine and (in careful mode) the healer, and composes one `BRepTools_History` over all of them, so
+  one helper call is one operation and adds one fragment under the helper's own op code — a refined
+  result is not a fragment longer than an unrefined one, and the marker a merged face ends up with
+  is whatever the composed history reports (`;:M` for the usual boolean-then-refine path) rather
+  than refine's replayed `;:G`. The merge rule itself is unchanged: the sources are sorted, the
+  first names the face and the rest follow in the parenthesised list.
 
 * **A failure mode worth recording.** Because the resulting names differ, turning refine on or off
   changes every downstream reference. The reference tree's own topological-naming test for an

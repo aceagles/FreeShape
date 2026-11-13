@@ -137,6 +137,10 @@ class SketchOut:
     plane: dict              # {"origin", "xdir", "normal"}: 3-lists
     sketch: dict             # the solved sketch (Sketch.to_dict)
     regions: list            # per closed region: {"c", "area", "loops", "edges"}
+    names: dict = field(default_factory=dict)         # {"face": {i: name}, "edge": {...}, "vertex": {...}}, 1-based
+    #                                                   i into the sketch's region compound (SketchResult.named)
+    region_names: list = field(default_factory=list)  # regions[i]'s element name, None if it has none
+    hash: str = ""           # sha256 hex over plane, sketch, regions and names: changes when any of them does
 
 
 @dataclass

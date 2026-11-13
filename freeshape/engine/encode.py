@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import zlib
 
 import numpy as np
@@ -57,6 +58,16 @@ def element_names(part) -> dict:
     if not names or shape is None or not shape.IsSame(part.shape):
         return out
     for (letter, index), name in names.items():
+        kind = _KIND_OF_LETTER.get(letter)
+        if kind is not None:
+            out[kind][int(index)] = str(name)
+    return out
+
+
+def named_elements(named) -> dict:
+    """The element-name map of a naming.NamedShape (a sketch's regions), by kind and 1-based index."""
+    out = empty_names()
+    for (letter, index), name in (getattr(named, "names", None) or {}).items():
         kind = _KIND_OF_LETTER.get(letter)
         if kind is not None:
             out[kind][int(index)] = str(name)
@@ -126,5 +137,10 @@ def sketch_out(fid, name, result) -> SketchOut:
     plane = {"origin": [float(v) for v in pl.origin], "xdir": [float(v) for v in pl.xdir],
              "normal": [float(v) for v in pl.normal]}
     sk = result.sketch.to_dict() if hasattr(result.sketch, "to_dict") else {}
-    return SketchOut(id=str(fid), name=str(name), plane=plane, sketch=plain(sk),
-                     regions=plain(list(result.region_info or [])))
+    regions = plain(list(result.region_info or []))
+    names = named_elements(result.named)
+    region_names = [None if n is None else str(n) for n in (result.region_names or [])]
+    body = {"plane": plane, "sketch": plain(sk), "regions": regions, "names": names, "region_names": region_names}
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()
+    return SketchOut(id=str(fid), name=str(name), plane=plane, sketch=plain(sk), regions=regions,
+                     names=names, region_names=region_names, hash=digest)

@@ -19,12 +19,14 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import asdict
 from types import SimpleNamespace
 
 from .. import kernel as K
 from .. import naming as N
 from ..features import Part, PartMap
 from .contract import EngineError, plain
+from .encode import sketch_out
 from .executor import InProcessEngine
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
@@ -234,7 +236,9 @@ class _Worker:
         if t.kind == "studio":
             st = doc.state
             pkg.update(aliases=dict(doc.part_aliases), vars=plain(dict(st.vars)),
-                       parts=[lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()])
+                       parts=[lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()],
+                       sketches=[plain(asdict(sketch_out(fid, (doc.feature(fid) or {}).get("name", fid), res)))
+                                 for fid, res in st.sketches.items()])
         elif t.kind == "variables":
             pkg.update(vars=plain(dict(doc.values()[0])))
         elif t.kind == "assembly":

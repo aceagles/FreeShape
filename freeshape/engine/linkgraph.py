@@ -18,6 +18,7 @@ import json
 
 from .. import links
 from .contract import LinkCycleError, TabErrored
+from .encode import sketch_out
 
 
 def norm_key(part):
@@ -33,7 +34,8 @@ def live_package(kind, doc, enc):
     """What a consumer can read of a live tab document (in this process)."""
     if kind == "studio":
         return {"parts": {str(p.id): enc.brep(p.shape)[1] for p in doc.state.parts.values()},
-                "hidden": sorted(map(str, doc.hidden_parts)), "aliases": dict(getattr(doc, "part_aliases", {}))}
+                "hidden": sorted(map(str, doc.hidden_parts)), "aliases": dict(getattr(doc, "part_aliases", {})),
+                "sketches": {str(fid): sketch_out(fid, "", res).hash for fid, res in doc.state.sketches.items()}}
     if kind == "variables":
         return {"vars": dict(doc.values()[0])}
     if kind == "assembly":
@@ -52,7 +54,8 @@ def lean_package(pkg):
     if kind == "studio":
         return {"parts": {str(p["id"]): p["hash"] for p in pkg["parts"]},
                 "hidden": sorted(str(p["id"]) for p in pkg["parts"] if p["hidden"]),
-                "aliases": dict(pkg.get("aliases") or {})}
+                "aliases": dict(pkg.get("aliases") or {}),
+                "sketches": {str(s["id"]): s["hash"] for s in pkg.get("sketches") or []}}
     if kind == "variables":
         return {"vars": dict(pkg["vars"])}
     if kind == "assembly":
@@ -68,6 +71,8 @@ def package_digest(kind, view, keys=()):
         keys = {norm_key(k) for k in keys}
         if not keys or "*" in keys:
             body = [[pid, h, pid in view["hidden"]] for pid, h in sorted(parts.items())]
+            if view.get("sketches"):     # a consumer of the whole studio also sees its sketches
+                body = [body, sorted(view["sketches"].items())]
         else:
             body = [[k, parts.get(aliases.get(k, k))] for k in sorted(keys)]
     else:

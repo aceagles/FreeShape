@@ -20,6 +20,13 @@ from .camera import Camera, STANDARD_VIEWS, basis
 PLANE_HALF = 75.0          # the default planes are 150 x 150 mm
 
 
+def _default_popup(vp, x, y, rows, on_hover, on_choose, on_close):
+    from .select_other import SelectOtherPopup
+    p = SelectOtherPopup(rows, on_hover, on_choose, on_close, parent=vp)
+    p.popup_at(vp.mapToGlobal(QPoint(int(x), int(y))))
+    return p
+
+
 @dataclass(frozen=True)
 class Pick:
     kind: str           # face | edge | vertex | region | plane | sketch_line | part | sketch_point
@@ -27,7 +34,8 @@ class Pick:
 
     def label(self):
         names = {"face": "Face", "edge": "Edge", "vertex": "Vertex", "region": "Sketch region", "plane": "Plane",
-                 "sketch_line": "Sketch line", "part": "Part", "sketch_point": "Sketch point"}
+                 "sketch_line": "Sketch line", "part": "Part", "sketch_point": "Sketch point",
+                 "connector": "Mate connector"}
         return names.get(self.kind, self.kind)
 
 
@@ -85,6 +93,30 @@ def _ray_tris_kept(o, d, V, T, kept):
     return float(t[k]), int(k)
 
 
+def _ray_hits(o, d, V, T, kept=None):
+    """Every ray hit on the triangles (optionally only those surviving the section cut), as (t, tri_index)
+    arrays; _ray_tris and _ray_tris_kept keep just the nearest."""
+    if len(T) == 0:
+        return np.zeros(0), np.zeros(0, int)
+    v0 = V[T[:, 0]].astype(np.float64)
+    e1 = V[T[:, 1]] - v0
+    e2 = V[T[:, 2]] - v0
+    p = np.cross(d, e2)
+    det = np.einsum("ij,ij->i", e1, p)
+    ok = np.abs(det) > 1e-12
+    inv = np.zeros_like(det)
+    inv[ok] = 1.0 / det[ok]
+    s = o - v0
+    u = np.einsum("ij,ij->i", s, p) * inv
+    q = np.cross(s, e1)
+    v = (q @ d) * inv
+    t = np.einsum("ij,ij->i", e2, q) * inv
+    idx = np.where(ok & (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (t > 0))[0]
+    if kept is not None and len(idx):
+        idx = idx[kept(o + np.outer(t[idx], d))]
+    return t[idx], idx
+
+
 def _seg_dist(px, py, A, B):
     """Distance from a screen point to many screen segments (n,2). Returns (dist, param)."""
     ab = B - A
@@ -132,6 +164,12 @@ class Viewport(QOpenGLWidget):
         self._manip_hover = None
         self.selection: list[Pick] = []
         self.hover: Pick | None = None
+        self.hover_through = False                  # True only while the Select other list is open: hover ignores depth
+        self._other_popup = None
+        self.owner_name = None                      # Pick -> name of the part / sketch / plane it belongs to
+        self.label_override = None                  # Pick -> the whole Select other row label, or None for the default
+        self.popup_factory = None                   # (vp, x, y, rows, on_hover, on_choose, on_close); None = real popup
+        self._cursor_xy = None                      # last mouse position, for the backtick key
         self.select_filter: set | None = None     # None = default selectable kinds
         self.user_filter: set | None = None       # kinds the user left switched on in the selection dropdown
         self._box_start = None                    # left-drag rubber-band selection: press point
@@ -152,6 +190,7 @@ class Viewport(QOpenGLWidget):
         self._part_boxes = {}     # pid -> (lo, hi) of its mesh, to skip far-away parts when picking
         self._part_segs = {}      # pid -> (A, B, edge index) segment arrays for edge picking
         self.triads = []          # mate connectors: dicts {o, x, y, z, color, size_px}
+        self.pick_points = []     # [(Pick, world point)]: drawn, pickable, not a mesh (connector triads)
         self.ghosts = []          # translucent highlight meshes: [(Mesh, (r, g, b, a))]
         self.drag_handler = None  # assemblies: object with press(x, y, e) -> bool, move(x, y, e), release(x, y, e)
         self._part_drag = False
@@ -678,6 +717,12 @@ class Viewport(QOpenGLWidget):
             return theme.HOVER
         return None
 
+    def _depth(self, pick):
+        """Switch the depth test off while drawing the hovered pick if the Select other list is open, so the
+        highlight shows through what covers it. Call _depth(None) afterwards to switch it back on."""
+        through = pick is not None and self.hover_through and pick == self.hover and pick not in self.selection
+        (GL.glDisable if through else GL.glEnable)(GL.GL_DEPTH_TEST)
+
     SEE_THROUGH_FACE_ALPHA = 0.35
     REFERENCE_FACE_ALPHA = 0.3       # Context (reference) bodies
     SEE_THROUGH_EDGE_ALPHA = 0.45
@@ -763,8 +808,10 @@ class Viewport(QOpenGLWidget):
                     a_, b_ = m.face_ranges[pk.key[1]]
                     col = self._sel_color(pk)
                 if b_ > a_ and col:
+                    self._depth(pk)
                     GL.glColor4f(*col, 1.0)
                     GL.glDrawElements(GL.GL_TRIANGLES, (b_ - a_) * 3, GL.GL_UNSIGNED_INT, self._idx_ptr(base + a_))
+                    self._depth(None)
             self._unbind_batch()
             self._use_shiny(False)
         GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
@@ -790,7 +837,9 @@ class Viewport(QOpenGLWidget):
                 GL.glLineWidth(4.0)
                 GL.glColor3f(*col)
                 GL.glDepthRange(0, 0.99999)
+                self._depth(pk)
                 self._draw_polyline(m.edge_polys[pk.key[1]])
+                self._depth(None)
                 GL.glDepthRange(0, 1)
         GL.glLineWidth(1.4)
 
@@ -902,7 +951,9 @@ class Viewport(QOpenGLWidget):
                     GL.glVertex3f(*sr.plane.to_world(*pts[0]))
                     GL.glEnd()
                 else:
+                    self._depth(pk)
                     self._draw_polyline([sr.plane.to_world(u, v) for u, v in pts])
+                    self._depth(None)
                 GL.glDisable(GL.GL_LINE_STIPPLE)
         GL.glDepthRange(0, 1)
 
@@ -942,7 +993,9 @@ class Viewport(QOpenGLWidget):
                 else:
                     GL.glColor4f(*theme.REGION, 0.42 if (self.sketcher and self.sketcher.fid == fid) else 0.32)
                 GL.glDepthRange(0, 0.9993)
+                self._depth(pk)
                 self._draw_mesh(m)
+                self._depth(None)
                 GL.glDepthRange(0, 1)
         if self.preview_tool is not None:
             GL.glColor4f(0.9, 0.25, 0.2, 0.25)
@@ -953,6 +1006,7 @@ class Viewport(QOpenGLWidget):
                 col = self._sel_color(pk)
                 corners = [pl.to_world(u, v) for u, v in ((-half, -half), (half, -half), (half, half), (-half, half))]
                 GL.glColor4f(*(col or theme.PLANE), 0.45 if col else 0.14)
+                self._depth(pk)
                 GL.glBegin(GL.GL_QUADS)
                 for c in corners:
                     GL.glVertex3f(*c)
@@ -960,6 +1014,7 @@ class Viewport(QOpenGLWidget):
                 GL.glColor4f(*(col or (0.35, 0.55, 0.85)), 0.9)
                 GL.glLineWidth(2.5 if col else 1.0)
                 self._draw_polyline(corners, closed=True)
+                self._depth(None)
         GL.glDepthMask(GL.GL_TRUE)
 
         # ---- measured distance
@@ -1440,6 +1495,107 @@ class Viewport(QOpenGLWidget):
             return best_face[1]
         return plane_hit[1]
 
+    def pick_all(self, x, y, kinds=None) -> list[Pick]:
+        """Everything under the cursor, front to back, including what other geometry hides. Same kinds, filter,
+        section and tolerances as pick(); the pick_points (mate connector triads) join them, at their depth, as overlays
+        do for pick(). Each element appears once. Ordered by
+        depth; pick()'s own result comes first when it is level with the front-most element (it ignores depth for
+        edges when faces are not asked for, so a hidden edge it happens to choose must not lead)."""
+        allowed = (lambda k: k in kinds) if kinds is not None else self._allowed
+        o, d = self.cam.ray(x, y)
+        found = {}                                  # Pick -> view z (larger is nearer the eye)
+
+        def add(pk, z):
+            if pk not in found or z > found[pk]:
+                found[pk] = z
+
+        part_ok, face_ok = allowed("part"), allowed("face")
+        if face_ok or part_ok:
+            kept = self._kept if self.section is not None else None
+            for pid, m in self._ray_parts(o, d):
+                ts, ti = _ray_hits(o, d, m.verts, m.tris, kept)
+                if part_ok and not face_ok:
+                    if len(ts):
+                        add(Pick("part", (pid,)), self.cam.view_z_of_t(ts.min()))
+                    continue
+                for t, i in zip(ts, ti):
+                    add(Pick("face", (pid, int(m.tri_face[i]))), self.cam.view_z_of_t(t))
+
+        if allowed("vertex"):
+            for pid, m in self._ray_parts(o, d, self.cam.scale * 10):
+                V = getattr(m, "vertices", None)
+                if V is None or len(V) == 0:
+                    continue
+                V = np.asarray(V, float)
+                S = self.cam.to_screen(V)
+                near = np.nonzero(np.hypot(S[:, 0] - x, S[:, 1] - y) < 9.0)[0]
+                if self.section is not None:
+                    near = near[self._kept(V[near])]
+                for i in near:
+                    add(Pick("vertex", (pid, int(i))), float(S[i, 2]))
+
+        if allowed("sketch_point"):
+            for fid, sr, _ in self.sketches:
+                if self.sketcher and self.sketcher.fid == fid:
+                    continue
+                for eid, e in sr.sketch.entities.items():
+                    if e["type"] != "point" or e["p"] not in sr.sketch.points:
+                        continue
+                    s = self.cam.to_screen(np.asarray(sr.plane.to_world(*sr.sketch.points[e["p"]]), float))
+                    if np.hypot(s[0] - x, s[1] - y) < 9.0:
+                        add(Pick("sketch_point", (fid, eid)), float(s[2]))
+
+        want_edge, want_sl = allowed("edge"), allowed("sketch_line")
+        if want_edge or want_sl:
+            A, B, owner = self._segments_near(o, d)
+            if len(owner):
+                sa = self.cam.to_screen(A)
+                sb = self.cam.to_screen(B)
+                dist, t = _seg_dist(x, y, sa[:, :2], sb[:, :2])
+                z = sa[:, 2] + t * (sb[:, 2] - sa[:, 2])
+                kept_a = self._kept(A) if self.section is not None else None
+                for i in np.nonzero(dist <= 7)[0]:
+                    kind, key = owner[i]
+                    if (kind == "edge" and not want_edge) or (kind == "sketch_line" and not want_sl):
+                        continue
+                    if kept_a is not None and kind == "edge" and not kept_a[i]:
+                        continue
+                    add(Pick(kind, key), float(z[i]))
+
+        if allowed("region"):
+            for fid, sr, meshes in self.sketches:
+                if self.sketcher and self.sketcher.fid == fid:
+                    continue
+                for ri, m in enumerate(meshes):
+                    ts, _ = _ray_hits(o, d, m.verts, m.tris)
+                    if len(ts):
+                        add(Pick("region", (fid, ri)), self.cam.view_z_of_t(ts.min()))
+
+        if allowed("plane") and self.show_planes and self.sketcher is None:
+            for key, pl, label, half in self.planes:
+                denom = d @ pl.normal
+                if abs(denom) < 1e-9:
+                    continue
+                tt = ((pl.origin - o) @ pl.normal) / denom
+                if tt <= 0:
+                    continue
+                u, v = pl.to_local(o + tt * d)
+                if abs(u) <= half and abs(v) <= half:
+                    add(Pick("plane", key), self.cam.view_z_of_t(tt))
+
+        if kinds is None:
+            for pk, pw in self.pick_points:
+                s = self.cam.to_screen(np.asarray(pw, float))
+                if np.hypot(s[0] - x, s[1] - y) <= 12.0:        # the tolerance the mate dialog's own triad pick uses
+                    add(pk, float(s[2]))
+
+        out = sorted(found, key=lambda pk: -found[pk])       # stable: equal depths keep discovery order
+        head = self.pick(x, y, kinds)
+        if head in found and found[head] >= found[out[0]] - self.cam.scale * 12 - 1e-6:    # pick's tie-break only
+            out.remove(head)
+            out.insert(0, head)
+        return out
+
     def _pick_overlay(self, x, y, o, d):
         best_poly = (6.0, None)
         best_mesh = (np.inf, None)
@@ -1600,6 +1756,7 @@ class Viewport(QOpenGLWidget):
     def mouseMoveEvent(self, e):
         pos = e.position()
         x, y = pos.x(), pos.y()
+        self._cursor_xy = (x, y)
         if self._last is not None and self._press is not None:
             dx, dy = x - self._last[0], y - self._last[1]
             if abs(x - self._press[0]) + abs(y - self._press[1]) > 3:
@@ -1718,7 +1875,7 @@ class Viewport(QOpenGLWidget):
     def _do_hover(self):
         self._hover_pending = False
         xy = getattr(self, "_hover_xy", None)
-        if xy is None or self._press is not None or self.sketcher:
+        if xy is None or self._press is not None or self.sketcher or self.hover_through:
             return
         if self.snap_provider is not None and self.snap_points and self._snap_near(*xy) is not None:
             # a dot is under the cursor: keep the hovered face/edge so the dots do not vanish at its boundary
@@ -1914,7 +2071,13 @@ class Viewport(QOpenGLWidget):
         if self._moved:
             return
         self.last_click = (pos.x(), pos.y())
-        pk = self.pick(pos.x(), pos.y())
+        self.click_pick(self.pick(pos.x(), pos.y()), e.modifiers())
+
+    def click_pick(self, pk, mods=Qt.NoModifier):
+        """What a left click on `pk` (None = empty space) does: an open feature dialog takes it, else it toggles in
+        the selection. Select other calls this too, so a chosen row can't behave differently from a click."""
+        if pk is not None and pk.kind == "connector" and self.pick_handler is None:
+            return                                  # a connector is only ever picked as a mate end, never selected
         if self.pick_handler is not None:
             if pk is not None:
                 self.pick_handler(pk)
@@ -1923,10 +2086,70 @@ class Viewport(QOpenGLWidget):
             self.update()
             return
         if pk is None:
-            if not (e.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)) and self.select_filter is None:
+            if not (mods & (Qt.ShiftModifier | Qt.ControlModifier)) and self.select_filter is None:
                 self.clear_selection()
             return
         self.toggle(pk)
+
+    # ================================================================== select other
+    def other_label(self, pk):
+        """'Face of Part 1', 'Sketch region of Sketch 2', 'Plane Top': kind, then the owner as the left panel names
+        it (owner_name is set by the main window)."""
+        text = self.label_override(pk) if self.label_override else None
+        if text:
+            return text
+        owner = self.owner_name(pk) if self.owner_name else None
+        if pk.kind == "plane":
+            return f"Plane {owner}" if owner else "Plane"
+        return f"{pk.label()} of {owner}" if owner else pk.label()
+
+    def select_other_rows(self, x, y):
+        """[(label, Pick)] for everything under (x, y), front to back, filter honoured. Labels that repeat get a
+        running number (Face of Part 1 (1), Face of Part 1 (2))."""
+        picks = self.pick_all(x, y)
+        labels = [self.other_label(pk) for pk in picks]
+        total = {t: labels.count(t) for t in labels}
+        seen = {}
+        rows = []
+        for pk, t in zip(picks, labels):
+            if total[t] > 1:
+                seen[t] = seen.get(t, 0) + 1
+                t = f"{t} ({seen[t]})"
+            rows.append((t, pk))
+        return rows
+
+    def open_select_other(self, x, y):
+        """Pop up the list for (x, y); a list of fewer than two rows is not worth showing and returns None."""
+        rows = self.select_other_rows(x, y)
+        if len(rows) < 2:
+            return None
+        self._close_select_other()
+        factory = self.popup_factory or _default_popup
+        self._other_popup = factory(self, x, y, rows, self._other_hover, self._other_choose, self._other_closed)
+        return self._other_popup
+
+    def _close_select_other(self):
+        p, self._other_popup = self._other_popup, None
+        if p is not None and hasattr(p, "close"):
+            p.close()
+
+    def _other_hover(self, pk):
+        self.hover_through = True
+        if pk != self.hover:
+            self.hover = pk
+            self.hoverChanged.emit(pk)
+        self.update()
+
+    def _other_choose(self, pk, mods=Qt.NoModifier):
+        self.last_click = None              # no pointer belongs to this pick: a triad under the cursor must not win
+        self.click_pick(pk, mods)
+
+    def _other_closed(self):
+        """Runs before the choice when a row is chosen, so the highlight is already back to normal."""
+        self._other_popup = None
+        self.hover_through = False
+        self.set_hover_none()
+        self.update()
 
     def mouseDoubleClickEvent(self, e):
         pos = e.position()
@@ -2027,6 +2250,9 @@ class Viewport(QOpenGLWidget):
             self.pan_step(h, -v)       # Onshape: the model moves with the arrow (camera moves the other way)
             return
         plain = not (e.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+        if k == Qt.Key_QuoteLeft and not self.sketcher and self._cursor_xy:      # Onshape's Select other key
+            self.open_select_other(*self._cursor_xy)
+            return
         if k == Qt.Key_Space and plain and not e.isAutoRepeat():
             self.clear_selection()                       # Space: deselect all, even what is off-screen
             self.set_hover_none()

@@ -251,6 +251,8 @@ class MainWindow(QMainWindow):
         lp.parts.contextRequested.connect(self._part_context)
         self.viewport.selectionChanged.connect(self._selection_changed)
         self.viewport.contextRequested.connect(self._viewport_context)
+        self.viewport.owner_name = self._pick_owner_name
+        self.viewport.label_override = lambda pk: self.asm.row_label(pk) if self.is_asm else None
         self.viewport.doubleClicked.connect(self._viewport_double)
         self.viewport.hoverChanged.connect(self._hover_changed)
 
@@ -2885,6 +2887,24 @@ class MainWindow(QMainWindow):
         elif pk.kind == "plane" and pk.key[0] == "plane":
             self.edit_feature(pk.key[1])
 
+    def _pick_owner_name(self, pk):
+        """The name the left panel shows for what a pick belongs to: its part, its sketch, or the plane itself."""
+        if self.is_asm and self.doc is not None and pk.kind in ("face", "edge", "vertex", "part"):
+            inst = self.doc.instance(pk.key[0])         # the name the Instances list shows
+            return inst["name"] if inst else None
+        if self.doc is None or not hasattr(self.doc, "state"):
+            return None
+        if pk.kind in ("face", "edge", "vertex", "part"):
+            p = self.doc.state.parts.get(pk.key[0])
+            return p.name if p is not None else None
+        if pk.kind == "plane":
+            if pk.key[0] == "std":
+                return pk.key[1]
+            f = self.doc.feature(pk.key[1])
+            return f["name"] if f else None
+        f = self.doc.feature(pk.key[0])            # region, sketch_line, sketch_point: the sketch
+        return f["name"] if f else None
+
     def _viewport_context(self, pk, gpos):
         if self.is_asm:
             if self.mode == "idle":
@@ -2906,6 +2926,9 @@ class MainWindow(QMainWindow):
         osp = self.viewport.cam.to_screen(np.zeros(3))
         if abs(osp[0] - lp.x()) <= 10 and abs(osp[1] - lp.y()) <= 10:      # right-click on the Origin
             self._add_origin_connector_action(m)
+            m.addSeparator()
+        if len(self.viewport.pick_all(lp.x(), lp.y())) >= 2:
+            m.addAction("Select other\u2026", lambda: self.viewport.open_select_other(lp.x(), lp.y()))
             m.addSeparator()
         if pk is not None:
             if pk.kind in ("plane", "face"):

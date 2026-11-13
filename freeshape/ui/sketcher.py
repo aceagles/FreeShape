@@ -59,6 +59,14 @@ TOOL_HINTS = {
 PICK_FIRST_TOOLS = {"sk_mirror", "sk_lpattern", "sk_cpattern"}   # keep the selection when chosen
 
 
+def _default_popup(vp, x, y, rows, on_hover, on_choose, on_close):
+    from PySide6.QtCore import QPoint
+    from .select_other import SelectOtherPopup
+    p = SelectOtherPopup(rows, on_hover, on_choose, on_close, parent=vp)
+    p.popup_at(vp.mapToGlobal(QPoint(int(x), int(y))))
+    return p
+
+
 class Sketcher:
     def __init__(self, plane: K.Plane, sketch: Sketch, fid: str, on_change, on_tool_changed=None):
         self.plane = plane
@@ -70,6 +78,9 @@ class Sketcher:
         self.construction = False
         self.selection: list = []          # ids of points / entities / constraints
         self.hover = None
+        self.popup_factory = _default_popup      # (vp, x, y, rows, on_hover, on_choose, on_close); tests swap it
+        self._popup = None
+        self._last_xy = None
         self.show_regions = True
         self.show_constraints = True
         self.variables = {}          # #name -> value, from the features before this sketch
@@ -168,28 +179,34 @@ class Sketcher:
         return np.array([s[0], s[1]])
 
     def hit(self, vp, x, y, kinds=("point", "entity", "constraint"), exclude=()):
+        h = self.hits(vp, x, y, kinds, exclude)
+        return h[0] if h else None
+
+    def hits(self, vp, x, y, kinds=("point", "entity", "constraint"), exclude=()):
+        """Everything within hit()'s tolerances, as (kind, id): constraints, then points, then entities, each nearest
+        first. hit() is the first of these, so a click and the Select other list agree on the default pick."""
+        out = []
         if "constraint" in kinds:
             for cid, r in self._dim_rects.items():
                 if r.contains(QPointF(x, y)) and cid not in exclude:
-                    return ("constraint", cid)
+                    out.append(("constraint", cid))
             # a point under a constraint glyph (e.g. the "M" badge beside a midpoint) wins over the glyph
             if "point" not in kinds or self.hit(vp, x, y, kinds=("point",), exclude=exclude) is None:
                 for r, cid in self._glyph_rects:
-                    if r.contains(QPointF(x, y)) and cid not in exclude:
-                        return ("constraint", cid)
+                    if r.contains(QPointF(x, y)) and cid not in exclude and ("constraint", cid) not in out:
+                        out.append(("constraint", cid))
         if "point" in kinds:
-            best = (8.0, None)
+            found = []
             for pid, p in self.sk.points.items():
                 if pid in exclude:
                     continue
                 s = self.scr(vp, p)
                 d = math.hypot(s[0] - x, s[1] - y)
-                if d < best[0]:
-                    best = (d, pid)
-            if best[1]:
-                return ("point", best[1])
+                if d < 8.0:
+                    found.append((d, pid))
+            out += [("point", pid) for _d, pid in sorted(found, key=lambda f: f[0])]
         if "entity" in kinds:
-            best = (7.0, None)
+            found = []
             for eid in self.sk.entities:
                 if eid in exclude:
                     continue
@@ -202,11 +219,10 @@ class Sketcher:
                 L2 = np.maximum((ab ** 2).sum(1), 1e-12)
                 t = np.clip(((x - A[:, 0]) * ab[:, 0] + (y - A[:, 1]) * ab[:, 1]) / L2, 0, 1)
                 d = np.hypot(A[:, 0] + t * ab[:, 0] - x, A[:, 1] + t * ab[:, 1] - y).min()
-                if d < best[0]:
-                    best = (d, eid)
-            if best[1]:
-                return ("entity", best[1])
-        return None
+                if d < 7.0:
+                    found.append((d, eid))
+            out += [("entity", eid) for _d, eid in sorted(found, key=lambda f: f[0])]
+        return out
 
     def _id_of(self, h):
         return h[1] if h else None
@@ -675,6 +691,7 @@ class Sketcher:
             self._draw_click(vp, x, y)
 
     def mouse_move(self, vp, x, y, e):
+        self._last_xy = (x, y)
         anchor = None
         if self.tool == "line" and self.chain_anchor is not None:
             anchor = self.sk.P(self.chain_anchor) if isinstance(self.chain_anchor, str) else self.chain_anchor
@@ -736,6 +753,11 @@ class Sketcher:
         k = e.key()
         if k == Qt.Key_Escape:
             self.escape()
+            return True
+        if k == Qt.Key_QuoteLeft:                # Onshape's shortcut for Select other
+            if self.tool != "select" or not self._last_xy:
+                return False
+            self.open_select_other(vp, *self._last_xy)
             return True
         if k in (Qt.Key_Delete, Qt.Key_Backspace):
             self.delete_selection()
@@ -941,6 +963,52 @@ class Sketcher:
         if c and c["type"] in ("radius", "diameter"):
             label = "Show as diameter" if c["type"] == "radius" else "Show as radius"
             menu.addAction(label, lambda cid=c["id"]: (self.toggle_radius_diameter(cid), vp.update()))
+        if self.tool == "select" and len(self.hits(vp, x, y)) >= 2:
+            menu.addAction("Select other\u2026", lambda: self.open_select_other(vp, x, y))
+
+    def _hit_label(self, h):
+        kind, i = h
+        if kind == "constraint":
+            c = self._constraint(i)
+            t = c["type"] if c else ""
+            return f"{'Dimension' if t in DIMENSIONS else CONSTRAINT_LABELS.get(t, 'Constraint')} {i}"
+        if kind == "point":
+            return f"Point {i}"
+        e = self.sk.entities[i]
+        name = e["type"].capitalize()
+        return f"{name} {i}" + (" (construction)" if e.get("construction") and e["type"] != "point" else "")
+
+    def select_other_rows(self, vp, x, y):
+        """(label, id) for everything under (x, y), in hits() order."""
+        return [(self._hit_label(h), h[1]) for h in self.hits(vp, x, y)]
+
+    def open_select_other(self, vp, x, y):
+        """Pop up the list of everything under (x, y); needs two or more rows to be worth showing."""
+        rows = self.select_other_rows(vp, x, y)
+        if len(rows) < 2:
+            return None
+        self._close_select_other()
+        self._popup = self.popup_factory(vp, x, y, rows, self._other_hover, self._other_choose, self._other_closed)
+        return self._popup
+
+    def _close_select_other(self):
+        p, self._popup = self._popup, None
+        if p is not None and hasattr(p, "close"):
+            p.close()
+
+    def _other_hover(self, i):
+        self.hover = i
+
+    def _other_choose(self, i, mods=Qt.NoModifier):
+        if mods & Qt.ShiftModifier:
+            if i not in self.selection:
+                self.selection.append(i)
+        else:
+            self.selection = [i]
+
+    def _other_closed(self):
+        self.hover = None
+        self._popup = None
 
     # ------------------------------------------------------------------ drawing tools
     def _polygon_mode(self):

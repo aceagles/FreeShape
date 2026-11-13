@@ -15,10 +15,10 @@ import json
 import os
 
 from . import kernel as K
+from . import migrations as M
 from .expr import ExprError, parse_number
 
 FILE_FORMAT = "freeshape-variables"
-FORMAT_VERSION = 1
 
 
 class VariableStudioDoc:
@@ -67,7 +67,7 @@ class VariableStudioDoc:
 
     # ------------------------------------------------------------------ files
     def to_json(self):
-        return json.dumps({"format": FILE_FORMAT, "version": FORMAT_VERSION, "name": self.name,
+        return json.dumps({"format": FILE_FORMAT, "version": M.latest_version("variables"), "name": self.name,
                             "rows": [dict(r) for r in self.rows]}, indent=1)
 
     def save(self, path=None):
@@ -85,11 +85,7 @@ class VariableStudioDoc:
             d = json.load(fh)
         if d.get("format") != FILE_FORMAT:
             raise K.KernelError("Not a FreeShape Variable Studio")
-        version = d.get("version", 1)
-        if version > FORMAT_VERSION:
-            raise K.KernelError(f"{path} was saved with file version {version}, but this build of "
-                                f"FreeShape only supports up to version {FORMAT_VERSION}. Update "
-                                f"FreeShape to open it.")
+        d = M.migrate("variables", d, path)
         doc = VariableStudioDoc()
         doc.name = d.get("name", doc.name)
         doc.rows = [{"name": r.get("name", ""), "expression": r.get("expression", "")}

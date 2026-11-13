@@ -8,8 +8,8 @@ see freeshape/migrations.py); this module's class is called `FolderDocument` to 
 
 document.json is `{format, version, id, name, tabs: [{id, kind, file, name}, ...]}`. A tab's `id` is
 generated once and never changes; it is also stamped into the tab's own file (as `_tab_id`) so it
-survives a rename of that file on disk, even though this card doesn't yet reconcile a drifted `file`
-entry back to its tab (that is I2.2's job, per freeshape/migrations.py).
+survives a rename of that file on disk. Open does not reconcile a drifted `file` entry back to its tab; it
+only adds a warning when a tab file's `_tab_id` differs from its manifest id (see document_warnings).
 
 A Document folder may have come from someone else, so document.json is untrusted input: every tab's
 `file` is checked to resolve to a real path inside the folder (no absolute path, no `..` segment, and no
@@ -145,12 +145,23 @@ class FolderDocument:
             elif tab.kind == "drawing" and tab.doc is not None:
                 tab.doc.refresh(notify=False)
 
+    @staticmethod
+    def _stamped_tab_id(full):
+        """The `_tab_id` a tab file carries, or None when it has none or cannot be read."""
+        try:
+            with open(full) as fh:
+                v = json.load(fh).get("_tab_id")
+        except (OSError, ValueError, AttributeError):
+            return None
+        return v if isinstance(v, str) else None
+
     def document_warnings(self):
         """Check the Document as it stands without refusing it: the manifest against the folder (a tab file that
         is not in the manifest, a manifest entry whose file is missing or will not open) and every link inside it
         (a link to a tab id that is not in the manifest, judged by the resolver itself). Run on every open, since a
         merge done with plain git never passes the app's merge preview. Returns dicts {problem, tab, tab_name,
-        target, message}; `problem` is "missing-file", "unreadable", "not-in-manifest" or "dangling-link"."""
+        target, message}; `problem` is "missing-file", "unreadable", "not-in-manifest", "tab-id-mismatch" (a tab file stamped with a
+        different tab's id than its manifest entry) or "dangling-link"."""
         out = []
 
         def warn(problem, message, tab=None, target=None):
@@ -166,6 +177,10 @@ class FolderDocument:
             except K.KernelError:
                 full = None
             if tab.doc is not None:
+                stamped = self._stamped_tab_id(full)
+                if stamped is not None and stamped != tab.id:
+                    warn("tab-id-mismatch", f"{label}: its file “{tab.file}” is stamped with another tab's id "
+                                            f"({stamped}), not {tab.id}", tab, stamped)
                 continue
             if full is not None and not os.path.lexists(full):
                 warn("missing-file", f"{label}: its file “{tab.file}” is missing from the Document folder", tab)

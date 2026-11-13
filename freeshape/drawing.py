@@ -1083,13 +1083,45 @@ class DrawingDoc:
             out.append(("centre", c, xy, {"r": r, "axis": ax, "facing": facing, "i": i, "n": nc}))
         return out
 
+    def _view_snaps(self, v):
+        """`_snapdata` of what the view shows: the model's own for an ordinary view, the cut shape's for a
+        section view (cached with the shape)."""
+        shp = self.view_shape(v) if v is not None else self.shape
+        if shp is None or shp is self.shape:
+            return self._snapdata()
+        cache = self.__dict__.setdefault("_view_snap_cache", {})
+        hit = cache.get(id(shp))
+        if hit is None or hit[0] is not shp:
+            if len(cache) > 16:
+                cache.clear()
+            hit = cache[id(shp)] = (shp, K.snap_features(shp))
+        return hit[1]
+
+    def _shown_in_view(self, v, circle=None, vertex=None):
+        """Whether the view's shape still has this circle (centre, radius, from_face) or vertex point: False
+        for an element a section's cut took away. Always True for a view that shows the whole model."""
+        if v is None or self.view_shape(v) is self.shape:
+            return True
+        verts, circles = self._view_snaps(v)
+        if vertex is not None:
+            if not len(verts):
+                return False
+            d = np.linalg.norm(np.nan_to_num(verts, nan=1e30) - np.asarray(vertex, float), axis=1)
+            return bool(d.min() <= 1e-6 * (1 + self._size()))
+        c, r, ff = circle
+        return any(f2 == ff and np.linalg.norm(c2 - c) < 1e-6 * (1 + r) and abs(r2 - r) < 1e-6 * (1 + r)
+                   for c2, _ax, r2, _full, f2 in circles)
+
     def circles_in_view(self, v, full_only=False):
-        """Circles that look round in this view (their axis points at the viewer)."""
+        """Circles that look round in this view (their axis points at the viewer) and that the view shows (a
+        section view's cut can take a hole away). Indices are into `_snapdata`."""
         _verts, circles = self._snapdata()
         _r, _u, d = self.axes(v)
         out, seen = [], set()
         for ci, (c, ax, r, full, _ff) in enumerate(circles):
             if full_only and not full:
+                continue
+            if not self._shown_in_view(v, circle=(c, r, _ff)):
                 continue
             if abs(abs(float(np.dot(_unit(ax), d))) - 1) > 1e-6:
                 continue
@@ -1142,9 +1174,10 @@ class DrawingDoc:
         if name:
             end["name"], end["nkind"] = name, kind
 
-    def _resolve_named(self, a, named):
+    def _resolve_named(self, a, named, v=None):
         """The end a name points at, as `resolve` returns it, through features.resolve / resolve_point;
-        raises KernelError (naming the element) when it is gone or no longer a vertex / circle."""
+        raises KernelError (naming the element) when it is gone, no longer a vertex / circle, or (given the
+        view `v`) cut away in that view."""
         from .features import resolve, resolve_point
         state = self._name_state(named)
         ref = {"name": a["name"], "part": "part"}
@@ -1156,6 +1189,8 @@ class DrawingDoc:
                 d = np.linalg.norm(np.nan_to_num(verts, nan=1e30) - P, axis=1)
                 j = int(np.argmin(d))
                 if d[j] <= 1e-6 * (1 + self._size()):
+                    if not self._shown_in_view(v, vertex=verts[j]):
+                        raise K.KernelError(f"Vertex {a['name']} is cut away in this view")
                     return verts[j], None, j, len(verts)
             raise K.KernelError(f"Vertex {a['name']} is no longer a corner of the model")
         kind = a.get("nkind", "edge")
@@ -1165,18 +1200,21 @@ class DrawingDoc:
                 continue
             for j, (c3, _ax, r3, _full, from_face) in enumerate(circles):
                 if from_face == (k == "face") and np.linalg.norm(c3 - c) < 1e-6 * (1 + r) and abs(r3 - r) < 1e-6 * (1 + r):
+                    if not self._shown_in_view(v, circle=(c3, r3, from_face)):
+                        raise K.KernelError(f"{kind.capitalize()} {a['name']} is cut away in this view")
                     return c3, r3, j, len(circles)
         raise K.KernelError(f"{kind.capitalize()} {a['name']} is no longer round")
 
-    def _resolve_end(self, a):
+    def _resolve_end(self, a, v=None):
         """(hit, error, recovered) for a stored dimension end. A named end goes through the reference policy
         (ADR 0003): found by name or an error naming the element, never the nearest. A nameless end (a drawing
         from before elements were named) is matched by position and is flagged recovered when the model has
-        names it could have used; so is a named end on a model with no element map."""
+        names it could have used; so is a named end on a model with no element map. Given the view `v` the end
+        is on, a named end must also be in what that view shows: one a section's cut removed is an error."""
         named = self._named()
         if a.get("name") and named is not None:
             try:
-                return self._resolve_named(a, named), None, False
+                return self._resolve_named(a, named, v), None, False
             except K.KernelError as e:
                 return None, str(e), False
         hit = self.resolve(a)
@@ -1248,7 +1286,7 @@ class DrawingDoc:
                             continue
                     end["lost"] = True
                     continue
-                hit, err, rec = self._resolve_end(end)
+                hit, err, rec = self._resolve_end(end, self.view(a.get("view")))
                 if rec:
                     self._recovered.add(a.get("id"))
                 if err:

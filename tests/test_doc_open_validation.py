@@ -126,7 +126,7 @@ def test_mainwindow_shows_the_warning_for_the_plain_git_merge(tmp_path, monkeypa
         app.processEvents()
         assert w.doc_warnings.isVisibleTo(w)
         assert "Asm" in w.doc_warnings.text() and "Bracket" in w.doc_warnings.text()
-        assert w.merge_btn.isVisibleTo(w)
+        assert w.merge_action.isVisible() and w.merge_action.isEnabled()
         assert boxes == []                                    # a warning, not a refusal or a dialog
     finally:
         w.folder = None

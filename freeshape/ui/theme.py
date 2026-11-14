@@ -80,6 +80,15 @@ QToolButton:hover {{ background: {g['ACCENT_LIGHT']}; border-color: {g['ACCENT_B
 QToolButton:checked {{ background: {g['ACCENT_SOFT']}; border-color: {g['ACCENT']}; }}
 QToolButton:disabled {{ color: {g['TEXT_MUTED']}; }}
 QToolButton#menuButton {{ padding: 4px 8px; font-weight: 600; }}
+QWidget#topbar QToolButton#menuButton {{ font-weight: 500; }}
+QToolButton#logoButton {{ font-weight: 600; font-size: 19px; color: {g['LOGO_TEXT']}; padding: 2px 8px 2px 2px; }}
+QToolButton#docChip {{ font-size: 14px; font-weight: 600; padding: 4px 10px; border: 1px solid {g['BORDER']}; border-radius: 6px; background: {g['PANEL']}; }}
+QToolButton#docChip:hover {{ background: {g['ACCENT_LIGHT']}; border-color: {g['ACCENT_BORDER']}; }}
+QToolButton#docChip[plain="true"] {{ border-color: transparent; background: transparent; }}
+QToolButton#outlineButton {{ padding: 4px 10px; font-weight: 500; border: 1px solid {g['BORDER']}; border-radius: 6px; background: {g['PANEL']}; }}
+QToolButton#outlineButton:hover {{ background: {g['ACCENT_LIGHT']}; border-color: {g['ACCENT_BORDER']}; }}
+QPushButton#searchField {{ text-align: left; padding: 4px 8px; border-radius: 6px; background: {g['PANEL_ALT']}; color: {g['TEXT_MUTED']}; }}
+QLabel#kbd {{ font-size: 11px; color: {g['TEXT_MUTED']}; border: 1px solid {g['BORDER']}; border-radius: 4px; padding: 0 4px; background: {g['PANEL']}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
 QFrame#sep {{ background: {g['BORDER']}; max-width: 1px; min-width: 1px; margin: 6px 4px; }}
 

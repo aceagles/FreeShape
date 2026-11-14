@@ -171,8 +171,9 @@ def make_window(tmp_path, monkeypatch):
         w.deleteLater()
 
 
-def _items(combo):
-    return [combo.itemText(i) for i in range(combo.count())]
+def _items(w):
+    """The Workspaces listed in the Document chip's menu, in order."""
+    return list(w.workspace_actions)
 
 
 def _ui_doc(w, tmp_path):
@@ -189,15 +190,16 @@ def _ui_doc(w, tmp_path):
 
 def test_switcher_lists_workspaces_and_switch_reloads_tabs(make_window, tmp_path):
     w = make_window()
-    assert not w.workspace_combo.isVisibleTo(w)             # no Document, no switcher
+    assert _items(w) == [] and w.doc_label.workspace() is None      # no Document, no switcher
     fd = _ui_doc(w, tmp_path)
-    assert w.workspace_combo.isVisibleTo(w) or w.workspace_combo.isEnabled()
-    assert _items(w.workspace_combo) == ["main"]
+    assert w.workspace_new.isEnabled()
+    assert _items(w) == ["main"] and w.doc_label.workspace() == "main"
     assert w.create_workspace("alt", "v1")
-    assert _items(w.workspace_combo) == ["main", "alt"] and w.workspace_combo.currentText() == "alt"
+    assert _items(w) == ["main", "alt"] and w.doc_label.workspace() == "alt"
+    assert w.workspace_actions["alt"].isChecked() and not w.workspace_actions["main"].isChecked()
     assert fd.current_workspace() == "alt" and w.tabs.count() == 1
     assert w.doc is fd.tabs[0].doc                          # the tab shows the reloaded Document
-    w.workspace_combo.setCurrentIndex(0)                    # choose main in the switcher
+    w.workspace_actions["main"].trigger()                   # choose main in the switcher
     assert fd.current_workspace() == "main" and w.doc is fd.tabs[0].doc and w.tabs.count() == 1
 
 
@@ -209,17 +211,18 @@ def test_dirty_tab_prompts_and_cancel_keeps_workspace(make_window, tmp_path, mon
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: seen.append(a[2]) or QMessageBox.Cancel)
     w.doc.dirty = True
     before = _disk(fd.path)
-    w.workspace_combo.setCurrentIndex(0)                    # try to go to main
+    w.workspace_actions["main"].trigger()                   # try to go to main
     assert len(seen) == 1 and "before switching to Workspace" in seen[0]
-    assert fd.current_workspace() == "alt" and w.workspace_combo.currentText() == "alt"
+    assert fd.current_workspace() == "alt" and w.doc_label.workspace() == "alt"
+    assert w.workspace_actions["alt"].isChecked() and not w.workspace_actions["main"].isChecked()
     assert w.doc.dirty and _disk(fd.path) == before
     # Discard goes through, Save saves first
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Discard)
-    w.workspace_combo.setCurrentIndex(0)
+    w.workspace_actions["main"].trigger()
     assert fd.current_workspace() == "main" and not w.doc.dirty
     w.doc.dirty = True
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Save)
-    w.workspace_combo.setCurrentIndex(1)
+    w.workspace_actions["alt"].trigger()
     assert fd.current_workspace() == "alt" and not w.doc.dirty
 
 
@@ -255,5 +258,5 @@ def test_git_error_is_shown_in_the_status_bar_without_a_dialog(make_window, tmp_
     w.home.newDocument.emit()
     assert w.folder is not None and w.folder.git_error
     assert "git is not installed" in w.status.currentMessage()
-    assert not w.workspace_combo.isEnabled() and "git is not installed" in w.workspace_combo.toolTip()
+    assert not w.workspace_new.isEnabled() and "git is not installed" in w.doc_label.toolTip()
     assert boxes == []

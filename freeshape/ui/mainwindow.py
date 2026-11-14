@@ -12,6 +12,7 @@ from PySide6.QtGui import QAction, QKeySequence, QShortcut, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolButton, QLabel, QFrame, QSplitter, QMenu,
     QStackedWidget, QFileDialog, QMessageBox, QInputDialog, QColorDialog, QTabBar, QSizePolicy, QApplication, QDialog,
+    QComboBox,
 )
 
 from .. import kernel as K
@@ -28,6 +29,7 @@ from .. import tabkinds as TK
 from .. import links
 from ..sketch import Sketch
 from . import theme, navstyles
+from . import filedlg
 from .icons import icon
 from .viewport import Viewport, Pick
 from .panels import LeftPanel, STD_PLANES, DocTabBar, DependenciesPanel
@@ -35,8 +37,8 @@ from .dialogs import FeatureDialog, SketchDialog, pick_to_item
 from .section import SectionPanel
 from .sketcher import Sketcher, CONSTRAINT_TOOLS
 from .numparse import fmt
-from .filedirs import start_dir, remember_dir
 from .assembly_ui import AssemblyController
+from ..engine.executor import apply_part_override
 from .partstudio_engine import StudioEngine, element_index
 from .variable_panel import VariableTabs, DefinedVariables
 
@@ -93,12 +95,16 @@ class MainWindow(QMainWindow):
                                            find_open_assembly=self._find_open_assembly,
                                            flat_pattern_of=self.flat_pattern_of)
         self.studio_engine = StudioEngine(self) if engine else None    # Part Studio tabs rebuild in the engine
+        if not os.environ.get("FREESHAPE_NO_PLUGINS"):
+            from .. import plugins as _plugins
+            _plugins.load_all()
         self._build_ui()
         self.var_tabs = VariableTabs(self)      # Variable Studio tabs (I3.8)
         self._bind_shortcuts()
         self.set_theme(str(self.settings.value("theme", "light")), save=False)
         self.set_orbit_mode(str(self.settings.value("orbit", "cursor")), save=False)
-        self.set_nav_style(str(self.settings.value("mouse_style", self.settings.value("nav_style", "onshape"))),
+        # "mouse_style" is the name this setting had before the mouse styles came from upstream
+        self.set_nav_style(str(self.settings.value("nav_style", self.settings.value("mouse_style", "onshape"))),
                            save=False)
         self.set_zoom_speed(str(self.settings.value("zoom_speed", "normal")), save=False)
         self.set_shiny(str(self.settings.value("shiny", "true")).lower() != "false", save=False)
@@ -246,6 +252,8 @@ class MainWindow(QMainWindow):
         self._hl_cache = {}
         lp.filter.textChanged.connect(lambda t: (lp.features.set_filter(t), self._populate_lists()))
         lp.features.eyeClicked.connect(self._tree_eye)
+        lp.features.folderToggled.connect(self._toggle_folder)
+        lp.new_folder_btn.clicked.connect(lambda: self._new_folder(self.left.features.selected_feature_ids()))
         lp.parts.eyeClicked.connect(lambda pid: self.doc.toggle_part_hidden(pid) if self.doc is not None else None)
         lp.parts.partClicked.connect(self._part_clicked)
         lp.parts.contextRequested.connect(self._part_context)
@@ -296,11 +304,17 @@ class MainWindow(QMainWindow):
         self._add_action(m, "Save", self.save, "Ctrl+S")
         self._add_action(m, "Save as…", self.save_as, "Ctrl+Shift+S")
         m.addSeparator()
-        self._add_action(m, "Import STEP (new tab)…", self.import_step)
-        self._add_action(m, "Import STEP into this tab…", lambda: self.import_step(into_current=True))
+        self._add_action(m, "Import STEP / BREP (new tab)…", self.import_step)
+        self._add_action(m, "Import STEP / BREP into this tab…", lambda: self.import_step(into_current=True))
         self._add_action(m, "Component library…", self.open_step_library, "Ctrl+Shift+L")
         self._add_action(m, "Export STEP…", lambda: self.export(None, "step"))
         self._add_action(m, "Export STL…", lambda: self.export(None, "stl"))
+        self._add_action(m, "Export BREP…", lambda: self.export(None, "brep"))
+        self._add_action(m, "Nest sheet metal for cutting…", self.nest_for_cutting)
+        m.addSeparator()
+        plm = m.addMenu("Plugins")
+        from . import plugin_ui as _pui
+        plm.aboutToShow.connect(lambda mm=plm: _pui.fill_menu(mm, self))
         m.addSeparator()
         rm = m.addMenu("Add relation (Assembly)")
         from ..assembly import RELATION_TYPES as _RT
@@ -345,29 +359,29 @@ class MainWindow(QMainWindow):
             rgrp.addAction(a)
             rm.addAction(a)
             self.orbit_actions[mode] = a
-        nm = vm.addMenu("Mouse style")
-        nm.setToolTipsVisible(True)
-        ngrp = _AG(self)
+        mm = vm.addMenu("Mouse style")
+        mm.setToolTipsVisible(True)
+        mgrp = _AG(self)
         self.nav_actions = {}
-        for mode, st in navstyles.STYLES.items():
-            a = QAction(st.label, self)
-            a.setToolTip(st.help_line())
-            a.setStatusTip(st.help_line())
+        for key, st in navstyles.STYLES.items():
+            a = QAction(st["label"], self)
+            a.setToolTip(navstyles.help_line(key))          # how this style orbits, pans and zooms
+            a.setStatusTip(navstyles.help_line(key))
             a.setCheckable(True)
-            a.triggered.connect(lambda _=False, md=mode: self.set_nav_style(md))
-            ngrp.addAction(a)
-            nm.addAction(a)
-            self.nav_actions[mode] = a
+            a.triggered.connect(lambda _=False, k=key: self.set_nav_style(k))
+            mgrp.addAction(a)
+            mm.addAction(a)
+            self.nav_actions[key] = a
         zm = vm.addMenu("Zoom speed")
         zgrp = _AG(self)
         self.zoom_actions = {}
-        for mode, label in (("slow", "Slow"), ("normal", "Normal"), ("fast", "Fast")):
+        for key, label, _v in navstyles.ZOOM_SPEEDS:
             a = QAction(label, self)
             a.setCheckable(True)
-            a.triggered.connect(lambda _=False, md=mode: self.set_zoom_speed(md))
+            a.triggered.connect(lambda _=False, k=key: self.set_zoom_speed(k))
             zgrp.addAction(a)
             zm.addAction(a)
-            self.zoom_actions[mode] = a
+            self.zoom_actions[key] = a
         vm.addSeparator()
         tm = vm.addMenu("Theme")
         from PySide6.QtGui import QActionGroup
@@ -393,7 +407,8 @@ class MainWindow(QMainWindow):
         for key, label, kinds, on in (
                 ("vertex", "Vertices", ("vertex",), False), ("edge", "Edges", ("edge",), True),
                 ("face", "Faces", ("face",), True), ("part", "Solids (whole parts)", ("part",), False),
-                ("sketch", "Sketches", ("sketch_line", "region"), True), ("plane", "Planes", ("plane",), True)):
+                ("sketch", "Sketches", ("sketch_line", "region"), True), ("plane", "Planes", ("plane",), True),
+                ("axis", "Axes", ("axis",), True)):
             a = QAction(label, self)
             a.setCheckable(True)
             a.setChecked(on)
@@ -471,8 +486,16 @@ class MainWindow(QMainWindow):
             C("sm_base", "Sheet metal", "A flat sheet from a sketch with thickness, bend radius and K-factor.",
               lambda: F_("sm_base"), "bracket enclosure"),
             C("sm_flange", "Flange", "Bend the sheet up along edges.", lambda: F_("sm_flange"), "sheet metal bend"),
+            C("sm_hem", "Hem", "Fold sheet metal edges right back (180°).", lambda: F_("sm_hem"), "sheet metal fold"),
+            C("sm_jog", "Jog", "Step sheet metal up or down from an edge.", lambda: F_("sm_jog"),
+              "sheet metal joggle offset step"),
+            C("sm_tab", "Tab", "Add sheet in a panel's plane from a sketch.", lambda: F_("sm_tab"), "sheet metal extend"),
+            C("sm_convert", "Convert to sheet metal", "Make a flat plate into sheet metal.", lambda: F_("sm_convert"),
+              "sheet metal plate import"),
             C("plane", "Plane", "Make a datum plane: offset, through a point, line and angle, three points, mid "
               "plane, normal to a curve or tangent to a surface.", lambda: F_("plane"), "datum"),
+            C("axis", "Axis", "Make a construction axis: through an edge, a cylinder, two points or two planes, "
+              "or perpendicular to a face.", lambda: F_("axis"), "datum construction centreline"),
             C("mirror", "Mirror", "Copy parts across a plane.", lambda: F_("mirror"), "symmetry"),
             C("linear_pattern", "Linear pattern", "Repeat parts along a direction.", lambda: F_("linear_pattern"),
               "array copies"),
@@ -480,7 +503,7 @@ class MainWindow(QMainWindow):
               lambda: F_("circular_pattern"), "array copies polar"),
             C("boolean", "Boolean", "Add, subtract or intersect parts.", lambda: F_("boolean"),
               "union subtract intersect combine merge"),
-            C("split", "Split", "Cut a part in two with a plane or a flat face.", lambda: F_("split"), "cut"),
+            C("split", "Split", "Cut parts with planes, faces (flat or curved) or sketch curves; keep both sides or one.", lambda: F_("split"), "cut"),
             C("move", "Move", "Move, rotate or copy parts by exact amounts.", lambda: F_("move"), "translate"),
             C("mate_connector", "Mate connector", "Put a named frame (origin, Z and X) on a face or edge, with the "
               "same snap points as an Assembly. Assemblies can mate to it.", lambda: F_("mate_connector"),
@@ -496,12 +519,24 @@ class MainWindow(QMainWindow):
             Command("derived", "Derived", "Bring parts and sketches from another Part Studio of this Document into "
                     "this one; they follow the source when it changes.", self._start_derived,
                     "link import reference skeleton master", "Feature", self._derived_blocked() or ""),
-            C("import", "Import STEP", "Open a STEP file in a new tab.", lambda: self.import_step(), "open file",
-              "File"),
+            C("configs", "Configurations", "Sizes or versions of this Part Studio from a table of variable values.",
+              self.edit_configs, "configuration family table sizes variants"),
+            C("new_folder", "New folder", "Put the features selected in the feature list into a folder.",
+              lambda: self._new_folder(self.left.features.selected_feature_ids()), "group organise collapse"),
+            C("nest", "Nest for cutting", "Lay several flat patterns out on stock sheets and export one DXF.",
+              self.nest_for_cutting, "sheet metal dxf laser plasma layout stock", "File"),
+            C("import", "Import STEP or BREP", "Open a STEP or BREP file in a new tab.", lambda: self.import_step(),
+              "open file", "File"),
             C("import", "Component library", "Search a folder of STEP parts, see their previews and insert one.",
               self.open_step_library, "step parts browse servo motor bearing standard catalogue insert", "File"),
-            C("export", "Export", "Export the model as STEP or STL.", lambda: self.export(None, None),
-              "save stl step", "File"),
+            C("export", "Export", "Export the model as STEP, STL, 3MF, OBJ or BREP.",
+              lambda: self.export(None, None), "save stl step 3mf obj brep", "File"),
+            Command("history", "Compare Versions", "What changed between two Versions of this Document, or since "
+                    "one: the features added, removed and changed in each Part Studio.",
+                    lambda: self.versions_ui.compare(), "version history what changed diff", "File",
+                    self.versions_ui.compare_blocked()),
+            C("part", "Auto colour all parts", "Give each part a different colour; again for a different set.",
+              lambda: self._auto_color(list(self.doc.state.parts)), "color colours appearance", "View"),
             C("undo", "Undo", "Undo the last change (Ctrl+Z).", self.undo, "", "Edit"),
             C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.redo, "", "Edit"),
             C("section", "Section view", "Cut the model open with a plane to see inside (Ctrl+Shift+X).",
@@ -513,15 +548,16 @@ class MainWindow(QMainWindow):
         for i, name in enumerate(("Front", "Back", "Left", "Right", "Top", "Bottom"), 1):
             cmds.append(C("iso", f"{name} view", f"Look at the model from the {name.lower()} (Shift+{i}).",
                           lambda n=name: self.viewport.set_standard_view(n), "", "View"))
-        from . import pyfeature_ui
-        return cmds + pyfeature_ui.palette_commands(self)
+        from . import pyfeature_ui, plugin_ui
+        return cmds + pyfeature_ui.palette_commands(self) + plugin_ui.palette_commands(self, C)
 
     # the sketch toolbar's tools and constraints, in toolbar order: (key, name, extra match words)
     SKETCH_PALETTE = (
         ("select", "Select", "pointer arrow"), ("line", "Line", "segment"), ("rect", "Corner rectangle", "box"),
         ("center_rect", "Center rectangle", "centre box"), ("circle", "Circle", "round"),
         ("polygon", "Polygon", "hexagon pentagon regular sides"), ("arc3", "3-point arc", "three point"),
-        ("arc_center", "Center-point arc", "centre point"), ("point", "Point", "vertex"),
+        ("arc_center", "Center-point arc", "centre point"), ("spline", "Spline", "curve through points"),
+        ("ellipse", "Ellipse", "oval"), ("text", "Text", "letters font engrave"), ("point", "Point", "vertex"),
         ("dimension", "Dimension", "smart dimension size measure"),
         ("sk_fillet", "Sketch fillet", "round corner radius"), ("offset", "Offset", "parallel copy"),
         ("slot", "Slot", "obround stadium"), ("sk_mirror", "Mirror", "symmetry"),
@@ -536,7 +572,7 @@ class MainWindow(QMainWindow):
         cmds = [C("undo", "Undo", "Undo the last sketch change (Ctrl+Z).", self.undo, "", "Edit"),
                 C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.redo, "", "Edit")]
         for key, name, kw in self.SKETCH_PALETTE:
-            cmds.append(C("point" if key == "select" else key, name,
+            cmds.append(C({"select": "point", "text": "sk_text"}.get(key, key), name,
                           TOOL_HINTS.get(key) or f"{name} — sketch tool.", lambda k=key: self._sk_tool(k), kw, grp))
         cmds.append(C("construction", "Construction", "Turn the selected geometry into construction geometry, or "
                       "back (Q).", lambda: self._sk("toggle_construction"), "toggle reference helper", grp))
@@ -602,7 +638,7 @@ class MainWindow(QMainWindow):
             self._palette.setParent(host)
         self._palette.open()
 
-    SELECT_DEFAULTS = {"vertex": False, "edge": True, "face": True, "part": False, "sketch": True, "plane": True}
+    SELECT_DEFAULTS = {"vertex": False, "edge": True, "face": True, "part": False, "sketch": True, "plane": True, "axis": True}
 
     def _selection_filter_changed(self, _checked=None):
         kinds = set()
@@ -660,7 +696,25 @@ class MainWindow(QMainWindow):
         h.addWidget(_sep())
         self._tb(h, "variable", "Variable — define #name values to use in any dimension", lambda: self.start_feature("variable"))
         self._tb(h, "variable_studio_ref", "Variable Studio reference — use the variables of a Variable Studio tab", lambda: self.start_feature("variable_studio_ref"))
+        self._tb(h, "configs", "Configurations — sizes / versions of this part from a table of variable values",
+                 self.edit_configs)
         self._tb(h, "derived", "Derived — parts and sketches from another Part Studio of this Document", self._start_derived)
+        self._tb(h, "history", "Compare Versions — what changed between two Versions of this Document",
+                 lambda: self.versions_ui.compare())
+        self.plugin_btn = self._tb(h, "plugin", "Plugins — features and commands added by Python plugins",
+                                   lambda: None)
+        self.plugin_btn.setPopupMode(QToolButton.InstantPopup)
+        pm = QMenu(self.plugin_btn)
+        from . import plugin_ui
+        pm.aboutToShow.connect(lambda m=pm: plugin_ui.fill_menu(m, self))
+        self.plugin_btn.setMenu(pm)
+        self.config_box = QComboBox()
+        self.config_box.setToolTip("The configuration shown")
+        self.config_box.setMinimumWidth(110)
+        self.config_box.activated.connect(lambda i: self.doc.set_active_config(i) if self.doc is not None and
+                                          hasattr(self.doc, "set_active_config") else None)
+        self.config_box.hide()
+        h.addWidget(self.config_box)
         h.addWidget(_sep())
         self._tb(h, "sketch", "Sketch (Shift+S)", lambda: self.start_sketch())
         h.addWidget(_sep())
@@ -679,6 +733,13 @@ class MainWindow(QMainWindow):
         self._tb(h, "sm_base", "Sheet metal — a flat sheet from a sketch (thickness, bend radius, K-factor)",
                  lambda: self.start_feature("sm_base"))
         self._tb(h, "sm_flange", "Flange — bend the sheet up along edges", lambda: self.start_feature("sm_flange"))
+        self._tb(h, "sm_hem", "Hem — fold edges right back over the sheet", lambda: self.start_feature("sm_hem"))
+        self._tb(h, "sm_jog", "Jog — step the sheet up or down from an edge and carry on",
+                 lambda: self.start_feature("sm_jog"))
+        self._tb(h, "sm_tab", "Tab — more sheet in a panel's plane, from a sketch on its face",
+                 lambda: self.start_feature("sm_tab"))
+        self._tb(h, "sm_convert", "Convert — make a flat plate (an imported one, say) into sheet metal",
+                 lambda: self.start_feature("sm_convert"))
         self.btn_flat = self._tb(h, "flat", "Flat pattern — show sheet metal parts unfolded", self.toggle_flat,
                                  checkable=True)
         self._tb(h, "flat_dxf", "Export the flat pattern as DXF (for laser / plasma cutting)",
@@ -686,18 +747,21 @@ class MainWindow(QMainWindow):
         from . import pyfeature_ui
         pyfeature_ui.install()
         pyfeature_ui.toolbar_button(self, h)
+        self._tb(h, "nest", "Nest for cutting — lay several flat patterns out on stock sheets, one DXF",
+                 self.nest_for_cutting)
         h.addWidget(_sep())
         self._tb(h, "plane", "Plane", lambda: self.start_feature("plane"))
+        self._tb(h, "axis", "Axis", lambda: self.start_feature("axis"))
         h.addWidget(_sep())
         for name, tip in (("mirror", "Mirror"), ("linear_pattern", "Linear pattern"),
                           ("circular_pattern", "Circular pattern"), ("boolean", "Boolean"),
-                          ("split", "Split a part with a plane"), ("move", "Move / rotate / copy parts"),
+                          ("split", "Split parts with planes, faces or sketch curves"), ("move", "Move / rotate / copy parts"),
                           ("mate_connector", "Mate connector — a named frame on a face or edge, for Assemblies "
                                              "to mate to")):
             self._tb(h, name, tip, lambda _=False, n=name: self.start_feature(n))
         h.addWidget(_sep())
         self._tb(h, "import", "Import STEP (opens in a new tab)", lambda: self.import_step())
-        self._tb(h, "export", "Export STEP / STL", lambda: self.export(None, None))
+        self._tb(h, "export", "Export STEP / STL / 3MF / OBJ / BREP", lambda: self.export(None, None))
         h.addStretch(1)
         self.btn_section = self._tb(h, "section", "Section view (Ctrl+Shift+X) — select a face or plane first to cut there",
                                     self.toggle_section, checkable=True)
@@ -731,7 +795,10 @@ class MainWindow(QMainWindow):
         h.addWidget(_sep())
         self.btn_interf = self._tb(h, "interference", "Interference check — show where parts overlap",
                                    lambda: a.toggle_interference(), checkable=True)
+        self._tb(h, "linear_pattern", "Linear pattern of the selected parts", lambda: a.pattern_dialog("linear"))
+        self._tb(h, "circular_pattern", "Circular pattern of the selected parts", lambda: a.pattern_dialog("circular"))
         self._tb(h, "bom", "Bill of materials", a.show_bom)
+        self._tb(h, "explode", "Exploded view — slide the parts apart for pictures and drawings", a.toggle_explode)
         self._tb(h, "export", "Export the assembly (STEP keeps the parts, names and colours)",
                  lambda: self.export(None, None))
         h.addStretch(1)
@@ -754,10 +821,20 @@ class MainWindow(QMainWindow):
         self._dwg_buttons["projected"] = self._tb(h, "proj_view", "Projected view — pick a view, then click beside "
                                                   "it (off a corner for an isometric)", lambda: d.set_tool("projected"),
                                                   checkable=True)
+        self._dwg_buttons["section"] = self._tb(h, "section_view", "Section view — draw the cutting line across a "
+                                                "view, then place the section", lambda: d.set_tool("section"),
+                                                checkable=True)
+        self._dwg_buttons["detail"] = self._tb(h, "detail_view", "Detail view — circle an area to show it larger",
+                                               lambda: d.set_tool("detail"), checkable=True)
         h.addWidget(_sep())
         self._dwg_buttons["dim"] = self._tb(h, "dim", "Dimension (D) — click an edge, a circle, or two points, then "
                                             "where it goes", lambda: d.set_tool("dim"), checkable=True)
         self._dwg_buttons["note"] = self._tb(h, "note", "Note (N)", lambda: d.set_tool("note"), checkable=True)
+        h.addWidget(_sep())
+        self._tb(h, "bom", "Parts list — the bill of materials as a table on the sheet", d.add_parts_list)
+        self._dwg_buttons["balloon"] = self._tb(h, "balloon", "Balloon — click a part, then where its number goes",
+                                                lambda: d.set_tool("balloon"), checkable=True)
+        self._tb(h, "auto_balloon", "Auto balloon — number every part in the selected view", lambda: d.auto_balloon())
         h.addWidget(_sep())
         self._tb(h, "sheet", "Sheet size, scale, projection and title block", d.sheet_setup)
         h.addWidget(_sep())
@@ -810,6 +887,8 @@ class MainWindow(QMainWindow):
                  ("center_rect", "Center rectangle", None), ("circle", "Circle (C)", None),
                  ("polygon", "Polygon — centre, corner, then sides (Shift: circumscribed)", None),
                  ("arc3", "3-point arc (A)", None), ("arc_center", "Center-point arc", None),
+                 ("spline", "Spline — click points, double-click or Enter to finish", None),
+                 ("ellipse", "Ellipse", None), ("text", "Text", "sk_text"),
                  ("point", "Point (P)", None)]
         for name, tip, ic in tools:
             b = self._tb(h, ic or name, tip, lambda _=False, n=name: self._sk_tool(n), checkable=True)
@@ -885,13 +964,11 @@ class MainWindow(QMainWindow):
         sc("Ctrl+Y", self.redo)
         sc("Ctrl+Shift+Z", self.redo)
         sc("Shift+S", lambda: self.start_sketch() if self.mode == "idle" and not self.is_dwg else None)
-        sc("Shift+E", lambda: self.finish_sketch_and_start("extrude") if self.mode == "sketch"
-           else self.start_feature("extrude"))
-        sc("Shift+W", lambda: self.finish_sketch_and_start("revolve") if self.mode == "sketch"
-           else self.start_feature("revolve"))
+        sc("Shift+E", lambda: self._feature_from_sketch("extrude"))
+        sc("Shift+W", lambda: self._feature_from_sketch("revolve"))
         sc("Shift+F", lambda: self.asm.start_mate("fastened") if self.is_asm else self.start_feature("fillet"))
 
-        sc("N", lambda: self.dwg.set_tool("note") if self.is_dwg else self._normal_to_sketch())
+        sc("N", lambda: self.dwg.set_tool("note") if self.is_dwg else self._normal_key())
         sc("Delete", self._delete_key)
         sc("Escape", self._escape)
 
@@ -942,8 +1019,11 @@ class MainWindow(QMainWindow):
         if self.mode == "idle":
             self._show_state(self.doc.state)
         elif self.mode == "dialog" and hasattr(self.dialog, "schedule_preview"):
-            # e.g. a sketch shown/hidden from the feature list while a feature is open: redraw its preview
+            # e.g. a sketch or part shown/hidden from the lists while a feature dialog is open: redraw the preview
+            # so a hidden part leaves the view (and stops catching clicks meant for what is behind it)
             self.dialog.schedule_preview()
+        elif self.mode == "sketch" and self.sk_ctx and self.sketcher:
+            self._sketch_changed(True)
         self._update_feature_hl()
         self.btn_undo.setEnabled(self.doc.can_undo())
         self.btn_redo.setEnabled(self.doc.can_redo())
@@ -953,6 +1033,7 @@ class MainWindow(QMainWindow):
         self._refresh_tab_title(self.doc)
         n = len(self.doc.state.parts)
         self.left.parts_header.setText(f"Parts ({n})")
+        self._refresh_config_box()
         self.left.feat_header.setText(f"Features ({len(self.doc.features)})")
         errs = len(self.doc.errors)
         if errs:
@@ -1012,6 +1093,15 @@ class MainWindow(QMainWindow):
                 planes.append((("plane", fid), pl, f["name"] if f else "", half * 0.6))
         return planes
 
+    def _axes_for(self, state):
+        axes = []
+        for fid, ax in getattr(state, "axes", {}).items():
+            if fid not in self.doc.hidden_features:
+                f = self.doc.feature(fid)
+                axes.append((("axis", fid), np.asarray(ax["o"], float), np.asarray(ax["d"], float), ax.get("span"),
+                             f["name"] if f else ""))
+        return axes
+
     def _show_state(self, state, active_sketch=None, also_show=()):
         if self.is_dwg:
             return
@@ -1026,22 +1116,10 @@ class MainWindow(QMainWindow):
             if fid in self.doc.hidden_features and fid != active_sketch and fid not in also_show:
                 continue
             sketches.append((fid, sr))
-        self.viewport.set_scene(parts, self._planes_for(state), sketches)
+        self.viewport.set_scene(parts, self._planes_for(state), sketches, self._axes_for(state))
         self.viewport.triads = self._connector_triads(state)
 
     # ================================================================== feature dialogs
-    def finish_sketch_and_start(self, ftype):
-        """Shift+E / Shift+W while sketching: save the sketch, then open the feature with its regions selected."""
-        if self.mode != "sketch":
-            return
-        if self.sketcher is not None and self.sketcher._editor is not None:
-            return                                   # typing in the dimension box
-        fid = self.sk_ctx["feature"]["id"]
-        self.finish_sketch()
-        if self.mode != "idle":
-            return
-        self.start_feature(ftype, preselect=regions_of_sketch(self.doc.state, fid))
-
     def start_feature(self, ftype, edit_fid=None, preselect=None):
         if self.is_asm or self.is_dwg:
             return
@@ -1082,7 +1160,7 @@ class MainWindow(QMainWindow):
         ax = p.get("axis") or {}
         if ax.get("kind") == "sketch_line":
             show.add(ax["sketch"])
-        if feature["type"] == "mate_connector":      # every sketch below it, so its geometry can be picked (I1.6)
+        if feature["type"] in ("mate_connector", "axis"):      # every sketch below it, so its geometry can be picked (I1.6)
             show |= set(st.sketches)
         # ...and stay visible after their reference is cleared, so a lost region can be picked again
         self._dialog_sketches = show = getattr(self, "_dialog_sketches", set()) | show
@@ -1137,9 +1215,27 @@ class MainWindow(QMainWindow):
         vp.clear_selection()
         self._populate_lists()
 
+    def _after_plugin(self, rebuild=False):
+        """After a plugin command / script ran, or plugins were reloaded: show what changed."""
+        doc = self.doc
+        if doc is None:
+            return
+        if rebuild and hasattr(doc, "features"):
+            doc._cache.clear()
+            doc.rebuild()
+        if hasattr(doc, "notify"):
+            doc.notify()
+        self._populate_lists()
+
     def edit_feature(self, fid):
         f = self.doc.feature(fid)
         if f is None or self.mode != "idle":
+            return
+        from .. import plugins as _plugins
+        if _plugins.is_plugin_type(f["type"]) and f["type"] not in _plugins.FEATURES:
+            QMessageBox.information(self, APP_NAME, f"“{f['name']}” was made with the "
+                                    f"“{_plugins.plugin_of(f)}” plugin, which isn't installed. It keeps the shape "
+                                    "saved in the file; install the plugin (Document ▸ Plugins) to change it.")
             return
         if f["type"] == "sketch":
             self.start_sketch(fid)
@@ -1370,6 +1466,96 @@ class MainWindow(QMainWindow):
         self.tool_stack.setCurrentIndex(0)
         self._populate_lists()
 
+    def edit_configs(self):
+        if self.doc is None or self.is_asm or self.is_dwg:
+            return
+        self._leave_modes()
+        from .config_ui import ConfigDialog
+        ConfigDialog(self, self.doc).exec()
+
+    def _refresh_config_box(self):
+        box = getattr(self, "config_box", None)
+        if box is None:
+            return
+        names = self.doc.config_names() if hasattr(self.doc, "config_names") else []
+        box.blockSignals(True)
+        box.clear()
+        box.addItems(names)
+        if names:
+            box.setCurrentIndex(names.index(self.doc.active_config()))
+        box.setVisible(bool(names))
+        box.blockSignals(False)
+
+    def _feature_from_sketch(self, ftype):
+        """Shift+E / Shift+W: in a sketch, finish it and open Extrude / Revolve with its areas picked; otherwise
+        just open the feature. Ignored while a dimension is being typed, so the letter goes to the box."""
+        if self.mode == "sketch" and self.sk_ctx:
+            if self.sketcher is not None and getattr(self.sketcher, "_editor", None) is not None:
+                return
+            fid = self.sk_ctx["feature"]["id"]
+            self.finish_sketch()
+            if self.mode != "idle" or self.doc.feature(fid) is None:
+                return
+            self.start_feature(ftype, preselect=regions_of_sketch(self.doc.state, fid))
+            return
+        self.start_feature(ftype)
+
+    def _normal_key(self):
+        """N: inside a sketch, look straight at it (as before). In the 3D view: look straight at the flat face,
+        plane or sketch under the mouse (or else the selected one) from the nearer side — again for the other
+        side; with nothing flat there, look from the opposite side. A curved face under the mouse: nothing."""
+        if self.mode == "sketch" and self.sketcher:
+            self._normal_to_sketch()
+            return
+        vp = self.viewport
+        kinds = {"face", "plane", "region", "sketch_line"}
+        pk = None
+        xy = getattr(vp, "_cursor_xy", None)
+        if xy is not None:
+            pk = vp.pick(xy[0], xy[1], kinds=kinds)
+        if pk is None:
+            pk = next((q for q in vp.selection if q.kind in kinds), None)
+        if pk is None:
+            vp.look_along(None)
+            return
+        try:
+            plane = self._flat_plane_of(pk)
+        except Exception:
+            plane = None
+        if plane is None:
+            return                                         # curved: nothing to square up to
+        vp.look_along(plane[0], plane[1], axes=plane[2] if len(plane) > 2 else ())
+
+    def _flat_plane_of(self, pk):
+        """(normal, a point on it) for a flat face, a plane or a sketch; None if it isn't flat."""
+        if pk.kind == "face":
+            shape = self.viewport.part_shapes.get(pk.key[0])
+            if shape is None:
+                return None
+            face = K.faces(shape)[pk.key[1]]
+            pl = K.planar_face_plane(face)
+            if pl is None:
+                return None
+            # the face's straight edges, longest first: the view lines up with them
+            dirs = []
+            for e in K.edges(face):
+                info = K.edge_info(e)
+                if "p0" in info and "p1" in info:
+                    d = np.subtract(info["p1"], info["p0"])
+                    if np.linalg.norm(d) > 1e-9:
+                        dirs.append((float(np.linalg.norm(d)), d / np.linalg.norm(d)))
+            dirs.sort(key=lambda t: -t[0])
+            return pl.normal, K.interior_point(face), [d for _l, d in dirs[:1]]
+        if pk.kind in ("region", "sketch_line"):
+            sr = self.doc.state.sketches.get(pk.key[0]) if not self.is_asm else None
+            return None if sr is None else (sr.plane.normal, None, [sr.plane.xdir])
+        if pk.kind == "plane":
+            item = pick_to_item(self.viewport, pk, {"plane"})
+            if item:
+                pl = F.resolve_plane(self.doc.state, item[1])
+                return pl.normal, None, [pl.xdir]
+        return None
+
     def _normal_to_sketch(self):
         if self.sketcher:
             self.viewport.normal_to(self.sketcher.plane)
@@ -1392,6 +1578,26 @@ class MainWindow(QMainWindow):
         if save:
             self.settings.setValue("shiny", "true" if on else "false")
 
+    def set_nav_style(self, key, save=True):
+        NS = navstyles
+        key = key if key in NS.STYLES else NS.DEFAULT
+        self.viewport.nav_style = key
+        for k, a in getattr(self, "nav_actions", {}).items():
+            a.setChecked(k == key)
+        if save:
+            self.settings.setValue("nav_style", key)
+            self.status.showMessage(f"Mouse style: {NS.STYLES[key]['label']}", 4000)
+
+    def set_zoom_speed(self, key, save=True):
+        NS = navstyles
+        speeds = {k: v for k, _l, v in NS.ZOOM_SPEEDS}
+        key = key if key in speeds else "normal"
+        self.viewport.zoom_speed = speeds[key]
+        for k, a in getattr(self, "zoom_actions", {}).items():
+            a.setChecked(k == key)
+        if save:
+            self.settings.setValue("zoom_speed", key)
+
     def set_orbit_mode(self, mode, save=True):
         mode = mode if mode in ("cursor", "centre", "origin") else "cursor"
         self.viewport.orbit_mode = mode
@@ -1399,22 +1605,6 @@ class MainWindow(QMainWindow):
             a.setChecked(m_ == mode)
         if save:
             self.settings.setValue("orbit", mode)
-
-    def set_nav_style(self, mode, save=True):
-        mode = mode if mode in navstyles.STYLES else navstyles.DEFAULT_STYLE
-        self.viewport.nav_style = mode
-        for m_, a in self.nav_actions.items():
-            a.setChecked(m_ == mode)
-        if save:
-            self.settings.setValue("mouse_style", mode)
-
-    def set_zoom_speed(self, name, save=True):
-        name = name if name in self.viewport.ZOOM_SPEEDS else "normal"
-        self.viewport.zoom_speed = self.viewport.ZOOM_SPEEDS[name]
-        for m_, a in self.zoom_actions.items():
-            a.setChecked(m_ == name)
-        if save:
-            self.settings.setValue("zoom_speed", name)
 
     # ================================================================== theme
     def set_theme(self, mode, save=True):
@@ -1536,15 +1726,17 @@ class MainWindow(QMainWindow):
             if self.open_document(path):
                 self.show_workspace()
             return
+        from .home import IMPORT_EXTS
         ext = os.path.splitext(path)[1].lower()
-        if ext in (".step", ".stp"):
+        if ext in IMPORT_EXTS:
             if self.mode != "idle":
                 self._leave_modes()
             self.import_step_file(path)
         elif TK.kind_for_ext(ext) is not None or ext == ".fcad":
             self.open_file(path)
         else:
-            QMessageBox.information(self, APP_NAME, f"FreeShape opens {TK.extension_list()} documents and STEP files.")
+            QMessageBox.information(self, APP_NAME, f"FreeShape opens {TK.extension_list()} documents, STEP files "
+                                    "and BREP files.")
             return
         self.show_workspace()
 
@@ -1681,16 +1873,17 @@ class MainWindow(QMainWindow):
         self.settings.setValue("recent_documents", json.dumps(docs))
 
     def _pick_new_document_path(self):
-        path, _ = QFileDialog.getSaveFileName(self, "New Document (a folder)",
-                                              self._dialog_dir("doc", "Document 1"), "Document folder")
+        path, _ = filedlg.getSaveFileName(self, "New Document (a folder)", "Document 1", "Document folder",
+                                          doc_path=self._doc_path())
         return path
 
     def _pick_document_path(self):
-        return QFileDialog.getExistingDirectory(self, "Open Document folder", self._dialog_dir("doc"))
+        return filedlg.getExistingDirectory(self, "Open Document folder", doc_path=self._doc_path())
 
     def _pick_files_to_add(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Add to Document", self._dialog_dir("doc"),
-                                                "FreeShape files (" + " ".join(TK.glob(k) for k in TK.kinds()) + ")")
+        paths, _ = filedlg.getOpenFileNames(self, "Add to Document", "",
+                                            "FreeShape files (" + " ".join(TK.glob(k) for k in TK.kinds()) + ")",
+                                            doc_path=self._doc_path())
         return paths
 
     def _home_new_document(self):
@@ -2458,6 +2651,18 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Showing sheet metal parts flat" if self._flat_view else
                                     "Showing parts folded", 3000)
 
+    def nest_for_cutting(self):
+        if self.is_asm or self.is_dwg or self.doc is None:
+            return
+        state = self.doc.state
+        if not [i for i in getattr(state, "sheet", {}) if i in state.parts]:
+            QMessageBox.information(self, APP_NAME, "There are no sheet metal parts to nest — make one with the Sheet "
+                                    "metal tool first.")
+            return
+        from .nest_ui import NestDialog
+        self._leave_modes()
+        NestDialog(self, self.doc).exec()
+
     def export_flat_dxf(self, pid=None):
         from .. import sheetmetal as SM
         if self.is_asm or self.is_dwg:
@@ -2479,12 +2684,10 @@ class MainWindow(QMainWindow):
                 return
             pid = ids[names.index(name)]
         part = state.parts[pid]
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export flat pattern", self._dialog_dir("export", part.name.replace(" ", "_") + "_flat.dxf"),
-            "DXF (*.dxf)")
+        path, _ = filedlg.getSaveFileName(self, "Export flat pattern", part.name.replace(" ", "_") + "_flat.dxf",
+                                          "DXF (*.dxf)", kind="export", doc_path=self._doc_path())
         if not path:
             return
-        remember_dir(self.settings, "export", path)
         if not path.lower().endswith(".dxf"):
             path += ".dxf"
         try:
@@ -2541,26 +2744,101 @@ class MainWindow(QMainWindow):
         ids = self.left.features.selected_feature_ids()
         if ids:
             self._delete_features(ids)
+            return
+        pids = [pk.key[0] for pk in self.viewport.selection if pk.kind == "part"]
+        if pids:
+            self._delete_parts(pids)
+
+    def _delete_parts(self, pids):
+        """Open the Delete part dialog with these parts picked: a part is removed by a feature, not erased."""
+        self.start_feature("delete_part", preselect=[Pick("part", (pid,)) for pid in pids])
 
     def _delete_features(self, ids):
         names = ", ".join(self.doc.feature(i)["name"] for i in ids)
+        if len(ids) > 4:
+            names = f"these {len(ids)} features"
         if QMessageBox.question(self, APP_NAME, f"Delete {names}?") == QMessageBox.Yes:
             self.doc.delete_features(ids)
 
     # ================================================================== tree interactions
-    def _tree_reordered(self, ids, rollback):
+    def _tree_reordered(self, ids, rollback, folders=None):
         if self.mode != "idle":
             self._populate_lists()
             return
+        folders = folders or {}
         order = {fid: i for i, fid in enumerate(ids)}
         new = sorted(self.doc.features, key=lambda f: order.get(f["id"], 1e9))
-        if [f["id"] for f in new] != [f["id"] for f in self.doc.features] or rollback != self.doc.active_count():
+        moved_folders = any(f.get("folder") != folders[f["id"]] for f in new if f["id"] in folders)
+        if [f["id"] for f in new] != [f["id"] for f in self.doc.features] or rollback != self.doc.active_count() \
+                or moved_folders:
             self.doc.checkpoint()
+            for f in new:
+                if f["id"] in folders:
+                    if folders[f["id"]]:
+                        f["folder"] = folders[f["id"]]
+                    else:
+                        f.pop("folder", None)
             self.doc.features = new
             self.doc.set_rollback(rollback if rollback < len(new) else None)
             self.doc.rebuild()
         else:
             self._populate_lists()
+
+    # ------------------------------------------------------------------ feature-list folders
+    def _toggle_folder(self, fo):
+        info = self.doc.folders.get(fo) if self.doc is not None else None
+        if info is not None:
+            self.doc.set_folder_open(fo, not info.get("open", True))
+
+    def _new_folder(self, ids):
+        if self.doc is None or self.is_asm or self.is_dwg or self.mode != "idle":
+            return
+        if not ids:
+            self.status.showMessage("Select the features to put in a folder first (Shift- or Ctrl-click to "
+                                    "select several), then click New folder.", 8000)
+            return
+        try:
+            fo = self.doc.make_folder(ids)
+        except ValueError as e:
+            QMessageBox.information(self, APP_NAME, str(e))
+            return
+        self._rename_folder(fo, first=True)
+
+    def _rename_folder(self, fo, first=False):
+        info = self.doc.folders.get(fo)
+        if info is None:
+            return
+        name, ok = QInputDialog.getText(self, "Name folder" if first else "Rename folder", "Name:",
+                                        text=info["name"])
+        if ok and name.strip() and name.strip() != info["name"]:
+            if first:                    # naming a new folder is part of making it: one undo step
+                info["name"] = name.strip()
+                self.doc.notify()
+            else:
+                self.doc.rename_folder(fo, name.strip())
+
+    def _remove_from_folder(self, ids):
+        try:
+            self.doc.remove_from_folder(ids)
+        except ValueError as e:
+            QMessageBox.information(self, APP_NAME, str(e))
+
+    def _folder_context(self, fo, gpos):
+        info = self.doc.folders.get(fo)
+        if info is None or self.mode != "idle":
+            return
+        members = self.doc.folder_members(fo)
+        m = QMenu(self)
+        m.addAction("Collapse" if info.get("open", True) else "Expand", lambda: self._toggle_folder(fo))
+        m.addAction("Rename…", lambda: self._rename_folder(fo))
+        m.addSeparator()
+        all_sup = all((self.doc.feature(i) or {}).get("suppressed") for i in members)
+        m.addAction("Unsuppress all" if all_sup else "Suppress all",
+                    lambda: self.doc.set_folder_suppressed(fo, not all_sup))
+        m.addAction("Ungroup (keep the features)", lambda: self.doc.ungroup_folder(fo))
+        m.addSeparator()
+        m.addAction(f"Delete folder and its {len(members)} feature(s)", lambda: self._delete_features(members))
+        m.exec(gpos)
 
     # ------------------------------------------------------------------ feature-list highlighting (like Onshape)
     def _feature_hovered(self, fid):
@@ -2617,12 +2895,17 @@ class MainWindow(QMainWindow):
                 for eid, e in sr.sketch.entities.items():
                     if e["type"] == "point":
                         continue
-                    polys.append(np.array([sr.plane.to_world(u, v) for u, v in sr.sketch.polyline(eid, 48)]))
+                    for poly in sr.sketch.polylines(eid, 48):
+                        polys.append(np.array([sr.plane.to_world(u, v) for u, v in poly]))
         elif f["type"] == "plane":
             pl = doc.state.planes.get(fid)
             if pl is not None:
                 h = self.viewport.plane_half() * 0.6
                 polys.append(np.array([pl.to_world(u, v) for u, v in ((-h, -h), (h, -h), (h, h), (-h, h), (-h, -h))]))
+        elif f["type"] == "axis":
+            ax = doc.state.axes.get(fid)
+            if ax is not None:
+                polys.append(np.array(self.viewport.axis_ends(ax["o"], ax["d"], ax.get("span"))))
         elif f["type"] == "mate_connector":
             pass                              # its triad is drawn by _connector_triads
         elif f["type"] != "variable":
@@ -2641,16 +2924,37 @@ class MainWindow(QMainWindow):
             pick = Pick("plane", ("std", ident))
         else:
             f = self.doc.feature(ident)
+            if f is not None and self._tree_feature_to_dialog(ident):
+                return
             if f is not None and f["type"] == "sketch" and self._tree_sketch_to_dialog(ident):
                 return
-            if f is None or f["type"] != "plane" or ident not in self.doc.state.planes:
+            if f is not None and f["type"] == "axis" and ident in self.doc.state.axes:
+                pick = Pick("axis", (ident,))
+            elif f is None or f["type"] != "plane" or ident not in self.doc.state.planes:
                 return
-            pick = Pick("plane", ("plane", ident))
+            else:
+                pick = Pick("plane", ("plane", ident))
         if self.mode == "idle":
             self.viewport.set_selection([pick])
         elif self.viewport.pick_handler is not None:
             # an open dialog (e.g. a new sketch waiting for its plane) takes the plane
             self.viewport.pick_handler(pick)
+
+    def _tree_feature_to_dialog(self, fid):
+        """A feature clicked in the list while a dialog wants features (feature pattern / mirror): add it, or
+        take it out again. Returns True if the click was used."""
+        d = self.dialog
+        fld = getattr(d, "active_field", None) if d is not None else None
+        if fld is None or "feature" not in fld.want or self.mode != "dialog":
+            return False
+        if fid == d.feature.get("id"):
+            return True
+        idx = self.doc.feature_index(fid)
+        if idx is None or idx >= d.index:
+            self.status.showMessage("Pick a feature from above this one in the list.", 6000)
+            return True
+        fld.toggle(("feature", fid))
+        return True
 
     def _tree_sketch_to_dialog(self, fid):
         """A sketch clicked in the feature list while a feature dialog wants sketch areas (Extrude, Loft …): use the
@@ -2682,6 +2986,9 @@ class MainWindow(QMainWindow):
 
     def _tree_context(self, key, gpos):
         kind, fid = key.split(":", 1)
+        if kind == "folder":
+            self._folder_context(fid, gpos)
+            return
         m = QMenu(self)
         if kind == "origin":
             if self.mode == "idle":
@@ -2703,9 +3010,13 @@ class MainWindow(QMainWindow):
         m.addAction("Rename…", lambda: self._rename_feature(fid))
         if f["type"] == "context":
             m.addAction("Update context", lambda: self.update_context(fid))
-        if f["type"] in ("sketch", "plane"):
-            m.addAction("Show" if fid in self.doc.hidden_features else "Hide",
-                        lambda: self.doc.toggle_feature_hidden(fid))
+        if f["type"] in ("sketch", "plane", "axis"):
+            sel = [i for i in self.left.features.selected_feature_ids()
+                   if (self.doc.feature(i) or {}).get("type") in ("sketch", "plane", "axis")]
+            vis = sel if fid in sel and len(sel) > 1 else [fid]
+            hide = any(i not in self.doc.hidden_features for i in vis)
+            n = f" {len(vis)} items" if len(vis) > 1 else ""
+            m.addAction(("Hide" if hide else "Show") + n, lambda: self.doc.set_features_hidden(vis, hide))
         if f["type"] == "plane":
             m.addAction("New sketch on plane", lambda: (self.viewport.set_selection([Pick("plane", ("plane", fid))]),
                                                         self.start_sketch()))
@@ -2720,6 +3031,11 @@ class MainWindow(QMainWindow):
         ids = self.left.features.selected_feature_ids() or [fid]
         if fid not in ids:
             ids = [fid]
+        n = f" {len(ids)} features" if len(ids) > 1 else ""
+        m.addAction(icon("new_folder", 16), f"Add{n} to new folder", lambda: self._new_folder(ids))
+        if any((self.doc.feature(i) or {}).get("folder") for i in ids):
+            m.addAction(f"Remove{n} from folder", lambda: self._remove_from_folder(ids))
+        m.addSeparator()
         m.addAction("Delete", lambda: self._delete_features(ids))
         err = self.doc.errors.get(fid)
         if err:
@@ -2787,6 +3103,18 @@ class MainWindow(QMainWindow):
         if p is None:
             return
         m = QMenu(self)
+        ids = self._menu_parts(pid, self.left.parts.selected_part_ids())
+        if len(ids) > 1:
+            # several parts selected and one of them right-clicked: the menu acts on all of them, like Onshape
+            self._add_hide_actions(m, ids)
+            m.addAction(f"Isolate {len(ids)} parts", lambda: self._isolate(ids))
+            m.addAction(f"Auto colour {len(ids)} parts", lambda: self._auto_color(ids))
+            m.addSeparator()
+            m.addAction(f"Export {len(ids)} parts as STEP…", lambda: self.export(ids, "step"))
+            m.addAction(f"Export {len(ids)} parts as STL…", lambda: self.export(ids, "stl"))
+            m.addAction(f"Export {len(ids)} parts as BREP…", lambda: self.export(ids, "brep"))
+            m.exec(gpos)
+            return
         m.addAction("Rename…", lambda: self._rename_part(pid))
         m.addAction("Change colour…", lambda: self._recolor_part(pid))
         m.addAction("Material…", lambda: self._set_part_material(pid))
@@ -2798,10 +3126,14 @@ class MainWindow(QMainWindow):
             self.studio_link(self.doc, pid)))
         if pid in getattr(self.doc.state, "sheet", {}):
             m.addAction(icon("flat_dxf", 16), "Export flat pattern (DXF)…", lambda: self.export_flat_dxf(pid))
+            m.addAction(icon("nest", 16), "Nest for cutting…", self.nest_for_cutting)
             m.addAction(icon("drawing", 16), "Create drawing of the flat pattern…", lambda: self.new_drawing(
                 self.studio_link(self.doc, pid, flat=True)))
         m.addAction("Export STEP…", lambda: self.export([pid], "step"))
         m.addAction("Export STL…", lambda: self.export([pid], "stl"))
+        m.addAction("Export BREP…", lambda: self.export([pid], "brep"))
+        m.addSeparator()
+        m.addAction(icon("delete_part", 16), "Delete part…", lambda: self._delete_parts([pid]))
         m.exec(gpos)
 
     def _rename_part(self, pid):
@@ -2816,9 +3148,54 @@ class MainWindow(QMainWindow):
         if c.isValid():
             self.doc.set_part_override(pid, color=[c.redF(), c.greenF(), c.blueF()])
 
-    def _isolate(self, pid):
-        self.doc.hidden_parts = {p for p in self.doc.state.parts if p != pid}
+    def _auto_color(self, pids):
+        """Give each part a different colour. Doing it again moves along the palette, so a second go gives a
+        new set of colours."""
+        pids = [p for p in pids if p in self.doc.state.parts]
+        if not pids:
+            return
+        self._auto_color_turn = getattr(self, "_auto_color_turn", -1) + 1
+        cols = F.auto_colors(len(pids), shift=self._auto_color_turn * 5)
+        apply_part_override(self.doc, {"op": "set_part_override", "colors": dict(zip(pids, cols))})
+        self.status.showMessage(f"Coloured {len(pids)} parts — choose Auto colour again for a different "
+                                "set, or Undo to go back", 6000)
+
+    def _isolate(self, pids):
+        keep = {pids} if isinstance(pids, str) else set(pids)
+        self.doc.hidden_parts = {p for p in self.doc.state.parts if p not in keep}
         self.doc.notify()
+
+    def _menu_parts(self, pid, list_sel=()):
+        """The parts a context menu opened on part `pid` should act on: the whole selection (in the parts list
+        or the graphics area) when pid is part of it, otherwise just pid."""
+        list_sel = [p for p in list_sel if p in self.doc.state.parts]
+        if pid in list_sel and len(list_sel) > 1:
+            return list_sel
+        view_sel = []
+        for pk in self.viewport.selection:
+            if pk.kind in ("face", "edge", "part", "vertex") and pk.key[0] not in view_sel \
+                    and pk.key[0] in self.doc.state.parts:
+                view_sel.append(pk.key[0])
+        return view_sel if pid in view_sel else [pid]
+
+    def _menu_features(self, fid, kinds):
+        """Sketches / planes a viewport context menu on `fid` acts on: all the selected ones if fid is selected."""
+        sel = []
+        for pk in self.viewport.selection:
+            if pk.kind in kinds:
+                f = pk.key[1] if pk.kind == "plane" else pk.key[0]
+                if f not in sel:
+                    sel.append(f)
+        return sel if fid in sel else [fid]
+
+    def _add_hide_actions(self, m, pids):
+        """Hide / show for several parts: Hide if any of them is showing, Show if they are all hidden."""
+        n = len(pids)
+        what = f"{n} parts" if n > 1 else "part"
+        if any(p not in self.doc.hidden_parts for p in pids):
+            m.addAction(f"Hide {what}", lambda: self.doc.set_parts_hidden(pids, True))
+        else:
+            m.addAction(f"Show {what}", lambda: self.doc.set_parts_hidden(pids, False))
 
     def _show_all_parts(self):
         self.doc.hidden_parts = set()
@@ -2902,6 +3279,9 @@ class MainWindow(QMainWindow):
         if pk.kind in ("face", "edge", "vertex", "part"):
             p = self.doc.state.parts.get(pk.key[0])
             return p.name if p is not None else None
+        if pk.kind == "axis":
+            f = self.doc.feature(pk.key[0])
+            return f["name"] if f else None
         if pk.kind == "plane":
             if pk.key[0] == "std":
                 return pk.key[1]
@@ -2947,20 +3327,32 @@ class MainWindow(QMainWindow):
                         except K.KernelError:
                             pass
                     m.addAction("Normal to", nt)
-            if pk.kind in ("face", "edge"):
+            if pk.kind in ("face", "edge", "part", "vertex"):
                 pid = pk.key[0]
-                m.addAction("Hide part", lambda: self.doc.toggle_part_hidden(pid))
-                m.addAction("Isolate part", lambda: self._isolate(pid))
-                m.addAction("Select part", lambda: self.viewport.set_selection([Pick("part", (pid,))]))
-                m.addAction("Mass properties", lambda: self._mass_props(pid))
+                ids = self._menu_parts(pid)
+                self._add_hide_actions(m, ids)
+                if len(ids) > 1:
+                    m.addAction(f"Isolate {len(ids)} parts", lambda: self._isolate(ids))
+                    m.addAction(f"Auto colour {len(ids)} parts", lambda: self._auto_color(ids))
+                else:
+                    m.addAction("Isolate part", lambda: self._isolate(pid))
+                    m.addAction("Select part", lambda: self.viewport.set_selection([Pick("part", (pid,))]))
+                    m.addAction("Mass properties", lambda: self._mass_props(pid))
+                    m.addAction(icon("delete_part", 16), "Delete part…", lambda: self._delete_parts([pid]))
             if pk.kind in ("region", "sketch_line"):
                 fid = pk.key[0]
                 m.addAction("Edit sketch", lambda: self.edit_feature(fid))
-                m.addAction("Hide sketch", lambda: self.doc.toggle_feature_hidden(fid))
+                fids = self._menu_features(fid, ("region", "sketch_line"))
+                m.addAction(f"Hide {len(fids)} sketches" if len(fids) > 1 else "Hide sketch",
+                            lambda: self.doc.set_features_hidden(fids, True))
             if pk.kind == "plane":
-                key = pk.key
-                hid = key[1]
-                m.addAction("Hide plane", lambda: self.doc.toggle_feature_hidden(hid))
+                hid = pk.key[1]
+                fids = self._menu_features(hid, ("plane",))
+                m.addAction(f"Hide {len(fids)} planes" if len(fids) > 1 else "Hide plane",
+                            lambda: self.doc.set_features_hidden(fids, True))
+            if pk.kind == "axis":
+                aid = pk.key[0]
+                m.addAction("Hide axis", lambda: self.doc.toggle_feature_hidden(aid))
             m.addSeparator()
         m.addAction("Zoom to fit", lambda: self.viewport.fit())
         vm = m.addMenu("Views")
@@ -2968,6 +3360,8 @@ class MainWindow(QMainWindow):
             vm.addAction(name, lambda n=name: self.viewport.set_standard_view(n))
         if self.doc.hidden_parts:
             m.addAction("Show all parts", self._show_all_parts)
+        if len(self.doc.state.parts) > 1:
+            m.addAction("Auto colour all parts", lambda: self._auto_color(list(self.doc.state.parts)))
         m.exec(gpos)
 
     def _selection_changed(self):
@@ -3096,6 +3490,9 @@ class MainWindow(QMainWindow):
             if self._folder_tab(doc) is None:
                 doc.resolver = self._resolve_drawing_source
             doc.hlr_async = self.dwg.request_exact
+            doc.bom_resolver = self._resolver_for(doc).resolve_drawing_bom
+            doc._update_bom()
+            doc.changed(notify=False)
         i = self.tabs.addTab(icon({"assembly": "assembly", "drawing": "drawing"}.get(doc.kind, "part"), 16), doc.name)
         self.tabs.setTabData(i, key)
         if not switch:
@@ -3270,16 +3667,22 @@ class MainWindow(QMainWindow):
             if d is None:
                 continue
             if d.kind == "studio" and any(not p.reference for p in d.state.parts.values()):
-                base = self.studio_link(d)
-                entries = []
-                if sum(not p.reference for p in d.state.parts.values()) > 1:
-                    entries.append(("All parts", {**base, "part": "*"}))
-                for p in (p for p in d.state.parts.values() if not p.reference):
-                    entries.append((p.name, {**base, "part": p.id, "part_name": p.name}))
-                    if p.id in getattr(d.state, "sheet", {}):
-                        entries.append((p.name + " — flat pattern", {**base, "part": p.id, "part_name": p.name,
-                                                                      "flat": True}))
-                out.append((d.name, "part", entries))
+                # one group per configuration (as the Assembly insert panel lists them), or just the studio
+                for cfg in (d.config_names() or [None]):
+                    st = d.state_for(cfg) if cfg else d.state
+                    own = [p for p in st.parts.values() if not p.reference]
+                    if not own:
+                        continue
+                    base = self.studio_link(d, **({"config": cfg} if cfg else {}))
+                    entries = []
+                    if len(own) > 1:
+                        entries.append(("All parts", {**base, "part": "*"}))
+                    for p in own:
+                        entries.append((p.name, {**base, "part": p.id, "part_name": p.name}))
+                        if p.id in getattr(st, "sheet", {}):
+                            entries.append((p.name + " — flat pattern", {**base, "part": p.id, "part_name": p.name,
+                                                                          "flat": True}))
+                    out.append((d.name + (f" · {cfg}" if cfg else ""), "configs" if cfg else "part", entries))
             elif d.kind == "assembly" and d.instances:
                 out.append((d.name, "assembly", [("Whole assembly", self.assembly_link(d))]))
         return out
@@ -3297,7 +3700,8 @@ class MainWindow(QMainWindow):
             if self.doc.kind == "studio":
                 own = [i for i, p in self.doc.state.parts.items() if not p.reference]
                 only = own[0] if len(own) == 1 else "*"
-                preselect = self.studio_link(self.doc, only)
+                preselect = self.studio_link(self.doc, only, **(
+                    {"config": self.doc.active_config()} if self.doc.config_names() else {}))
             else:
                 preselect = self.assembly_link(self.doc)
         dlg = NewDrawingDialog(self, sources, preselect, self.settings)
@@ -3306,9 +3710,15 @@ class MainWindow(QMainWindow):
         src = dlg.chosen()
         if src is None:
             return
+        if preselect and preselect.get("exploded") and src.get("kind") == "assembly":
+            src = dict(src, exploded=True)
         g = DrawingDoc()
         self._dwg_counter = getattr(self, "_dwg_counter", 0) + 1
         g.name = (src.get("part_name") or src.get("name") or src.get("studio_name") or f"Drawing {self._dwg_counter}")
+        if src.get("config"):
+            g.name += f" · {src['config']}"
+        if src.get("exploded"):
+            g.name += " exploded"
         if src.get("flat"):
             g.name += " flat pattern"
         g.source = dict(src)
@@ -3404,15 +3814,13 @@ class MainWindow(QMainWindow):
     def open_dialog(self):
         self._leave_modes()
         from .home import open_dialog_filter
-        path, _ = QFileDialog.getOpenFileName(self, "Open", self._dialog_dir("doc"), open_dialog_filter())
+        path, _ = filedlg.getOpenFileName(self, "Open", "", open_dialog_filter(), doc_path=self._doc_path())
         if path:
-            remember_dir(self.settings, "doc", path)
             self.open_any(path)
 
-    def _dialog_dir(self, kind, name=""):
-        """Start folder (joined with a default file name) for a file dialog."""
-        d = start_dir(self.settings, kind, getattr(self.doc, "path", None))
-        return os.path.join(d, name) if name else d
+    def _doc_path(self):
+        """The open tab's file, so a file dialog with no folder remembered starts beside it."""
+        return getattr(self.doc, "path", None)
 
     def open_file(self, path):
         # already open? just switch to it
@@ -3500,11 +3908,9 @@ class MainWindow(QMainWindow):
         rec = TK.find(getattr(self.doc, "kind", "studio")) or TK.get("studio")
         ext = rec.ext
         filt = f"FreeShape {rec.plural.lower() if rec.kind != 'studio' else 'documents'} (*{ext})"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save as", self.doc.path or self._dialog_dir("doc", f"{self.doc.name}{ext}"), filt)
+        path, _ = filedlg.getSaveFileName(self, "Save as", self.doc.path or f"{self.doc.name}{ext}", filt)
         if not path:
             return False
-        remember_dir(self.settings, "doc", path)
         if not path.lower().endswith(ext):
             path += ext
         self.doc.path = path
@@ -3513,10 +3919,10 @@ class MainWindow(QMainWindow):
     def import_step(self, into_current=False):
         if self.mode != "idle":
             self._leave_modes()
-        path, _ = QFileDialog.getOpenFileName(self, "Import STEP", self._dialog_dir("doc"),
-                                              "STEP files (*.step *.stp);;All files (*)")
+        path, _ = filedlg.getOpenFileName(self, "Import", "", "STEP or BREP files (*.step *.stp *.brep *.brp);;"
+                                          "STEP files (*.step *.stp);;BREP files (*.brep *.brp);;All files (*)",
+                                          doc_path=self._doc_path())
         if path:
-            remember_dir(self.settings, "doc", path)
             self.import_step_file(path, into_current)
 
     def open_step_library(self):
@@ -3548,7 +3954,7 @@ class MainWindow(QMainWindow):
             raw = fh.read()
         prog = ImportProgress(self, f"Importing {fname}")
         try:
-            if not read_step_in_background(raw, prog, self):
+            if not F.is_brep_name(fname) and not read_step_in_background(raw, prog, self):
                 self.status.showMessage("Import cancelled", 5000)
                 return
             data = base64.b64encode(raw).decode()
@@ -3592,7 +3998,7 @@ class MainWindow(QMainWindow):
             return True
         for f in feats:
             p = f.get("params", {}) if f.get("type") == "import" and not f.get("suppressed") else {}
-            if p.get("blob") or p.get("data"):
+            if (p.get("blob") or p.get("data")) and not F.is_brep_name(p.get("filename", "")):
                 try:
                     raw = blobstore.store_for(path).get(p["blob"]) if p.get("blob") else base64.b64decode(p["data"])
                 except Exception:
@@ -3610,6 +4016,24 @@ class MainWindow(QMainWindow):
         from .export_dialog import StlOptionsDialog
         return StlOptionsDialog.ask(self, self.settings, ext[1:].upper())
 
+    EXPORT_FORMATS = (("step", "STEP (*.step *.stp)", ".step"), ("stl", "STL (*.stl)", ".stl"),
+                      ("3mf", "3MF (*.3mf)", ".3mf"), ("obj", "OBJ (*.obj)", ".obj"),
+                      ("brep", "BREP — OpenCascade, exact (*.brep *.brp)", ".brep"))
+
+    def _export_path(self, title, base, fmt_):
+        """Ask where to save; returns a path with the chosen format's extension, or None."""
+        fmt_ = fmt_ if fmt_ in [k for k, _f, _e in self.EXPORT_FORMATS] else "step"
+        filters = ";;".join(f for _k, f, _e in self.EXPORT_FORMATS)
+        sel = next(f for k, f, _e in self.EXPORT_FORMATS if k == fmt_)
+        ext = next(e for k, _f, e in self.EXPORT_FORMATS if k == fmt_)
+        path, chosen = filedlg.getSaveFileName(self, title, base + ext, filters, sel, kind="export",
+                                               doc_path=self._doc_path())
+        if not path:
+            return None
+        if not os.path.splitext(path)[1]:
+            path += next((e for _k, f, e in self.EXPORT_FORMATS if f == chosen), ".step")
+        return path
+
     def export(self, part_ids, fmt_=None):
         if self.is_dwg:
             self.dwg.export(fmt_ if fmt_ in ("dxf", "pdf", "svg", "png") else None)
@@ -3618,15 +4042,9 @@ class MainWindow(QMainWindow):
             if not self.doc.instances:
                 QMessageBox.information(self, APP_NAME, "Insert some parts first.")
                 return
-            sel = "STL (*.stl)" if fmt_ == "stl" else "STEP (*.step *.stp)"
-            default = self.doc.name.replace(" ", "_") + (".stl" if fmt_ == "stl" else ".step")
-            path, chosen = QFileDialog.getSaveFileName(self, "Export assembly", self._dialog_dir("export", default),
-                                                       "STEP (*.step *.stp);;STL (*.stl);;3MF (*.3mf);;OBJ (*.obj)", sel)
+            path = self._export_path("Export assembly", self.doc.name.replace(" ", "_"), fmt_)
             if not path:
                 return
-            remember_dir(self.settings, "export", path)
-            if not os.path.splitext(path)[1]:
-                path += ".stl" if "STL" in chosen else ".3mf" if "3MF" in chosen else ".obj" if "OBJ" in chosen else ".step"
             opts = self._stl_options(path)
             if opts is False:
                 return
@@ -3639,17 +4057,12 @@ class MainWindow(QMainWindow):
         if not self.doc.state.parts:
             QMessageBox.information(self, APP_NAME, "There are no parts to export yet.")
             return
-        filters = "STEP (*.step *.stp);;STL (*.stl);;3MF (*.3mf);;OBJ (*.obj)"
-        default = "part.stl" if fmt_ == "stl" else "part.step"
+        base = "part"
         if part_ids and len(part_ids) == 1:
-            default = self.doc.state.parts[part_ids[0]].name.replace(" ", "_") + (".stl" if fmt_ == "stl" else ".step")
-        sel = "STL (*.stl)" if fmt_ == "stl" else "STEP (*.step *.stp)"
-        path, chosen = QFileDialog.getSaveFileName(self, "Export", self._dialog_dir("export", default), filters, sel)
+            base = self.doc.state.parts[part_ids[0]].name.replace(" ", "_")
+        path = self._export_path("Export", base, fmt_)
         if not path:
             return
-        remember_dir(self.settings, "export", path)
-        if not os.path.splitext(path)[1]:
-            path += ".stl" if "STL" in chosen else ".3mf" if "3MF" in chosen else ".obj" if "OBJ" in chosen else ".step"
         opts = self._stl_options(path)
         if opts is False:
             return

@@ -24,6 +24,13 @@ class _Status:
         self.msgs.append(text)
 
 
+# Closing a mate dialog schedules its deletion (deleteLater), which runs the next time an event loop spins. The
+# dialog is a child of the stand-in viewport made here; if that viewport has been garbage-collected by then, the
+# deferred delete reaches a freed object and the process dies in a later test that waits on the event loop.
+# In the app the viewport outlives every dialog, so the stand-ins are kept alive for the whole run.
+_KEEP = []
+
+
 def _ctl(a):
     """A controller with just enough around it to open the dialog, accept it and show the mate menu."""
     from freeshape.ui.assembly_ui import AssemblyController, AssemblyPanel
@@ -39,6 +46,7 @@ def _ctl(a):
     ctl.update_triads = lambda: None
     ctl.show_scene = lambda: None
     ctl.on_changed = lambda: None
+    _KEEP.append((vp, w, ctl))
     return ctl
 
 

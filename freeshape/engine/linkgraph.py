@@ -26,18 +26,46 @@ def norm_key(part):
     return "*" if part in (None, "*") else str(part)
 
 
+def link_key(src):
+    """The key a link source reads: `norm_key` of its part, and for a source that names a configuration
+    ("config") that part in that configuration, as "<part>@<configuration>" (a part id never holds an "@")."""
+    key = norm_key(src.get("part"))
+    return f"{key}@{src['config']}" if src.get("config") else key
+
+
+def split_key(key):
+    """(part key, configuration name or None) of a `link_key` (or of a bare part id, None for the whole studio)."""
+    if key is None:
+        return None, None
+    part, at, config = str(key).partition("@")
+    return part, (config if at else None)
+
+
+def key_configs(keys):
+    """The configuration names `keys` read, sorted, each once: what a studio's package has to carry."""
+    return tuple(sorted({c for c in (split_key(k)[1] for k in keys) if c}))
+
+
 def _round_T(T):
     return [round(float(x), 9) for row in (T or ()) for x in row]
 
 
-def live_package(kind, doc, enc):
-    """What a consumer can read of a live tab document (in this process)."""
+def _live_studio(doc, st, enc):
+    return {"parts": {str(p.id): enc.brep(p.shape)[1] for p in st.parts.values()
+                      if not p.reference},      # I5.3: Context bodies are reference only
+            "hidden": sorted(map(str, doc.hidden_parts)), "aliases": dict(getattr(doc, "part_aliases", {})),
+            "sketches": {str(fid): sketch_out(fid, "", res).hash for fid, res in st.sketches.items()},
+            "connectors": {str(fid): connector_out(fid, c).hash for fid, c in st.connectors.items()}}
+
+
+def live_package(kind, doc, enc, keys=()):
+    """What a consumer can read of a live tab document (in this process). `keys` (link keys) name the
+    configurations it reads besides the active one: each is under "configs"."""
     if kind == "studio":
-        view = {"parts": {str(p.id): enc.brep(p.shape)[1] for p in doc.state.parts.values()
-                          if not p.reference},      # I5.3: Context bodies are reference only
-                "hidden": sorted(map(str, doc.hidden_parts)), "aliases": dict(getattr(doc, "part_aliases", {})),
-                "sketches": {str(fid): sketch_out(fid, "", res).hash for fid, res in doc.state.sketches.items()},
-                "connectors": {str(fid): connector_out(fid, c).hash for fid, c in doc.state.connectors.items()}}
+        view = _live_studio(doc, doc.state, enc)
+        configs = key_configs(keys)
+        if configs:
+            view["configs"] = {c: _live_studio(doc, doc.state_for(c), enc) for c in configs}
         error = links._studio_error(doc)
         if error:                    # I1.8: a source that turns red rekeys its consumers (clean: digest unchanged)
             view["error"] = error
@@ -54,15 +82,21 @@ def live_package(kind, doc, enc):
     return {}
 
 
+def _lean_studio(pkg, aliases):
+    return {"parts": {str(p["id"]): p["hash"] for p in pkg["parts"]},
+            "hidden": sorted(str(p["id"]) for p in pkg["parts"] if p["hidden"]),
+            "aliases": dict(aliases or {}),
+            "sketches": {str(s["id"]): s["hash"] for s in pkg.get("sketches") or []},
+            "connectors": {str(c["id"]): c["hash"] for c in pkg.get("connectors") or []}}
+
+
 def lean_package(pkg):
     """The same package from a worker's `upstream` output (worker._Worker.upstream)."""
     kind = pkg["kind"]
     if kind == "studio":
-        view = {"parts": {str(p["id"]): p["hash"] for p in pkg["parts"]},
-                "hidden": sorted(str(p["id"]) for p in pkg["parts"] if p["hidden"]),
-                "aliases": dict(pkg.get("aliases") or {}),
-                "sketches": {str(s["id"]): s["hash"] for s in pkg.get("sketches") or []},
-                "connectors": {str(c["id"]): c["hash"] for c in pkg.get("connectors") or []}}
+        view = _lean_studio(pkg, pkg.get("aliases"))
+        if pkg.get("configs"):
+            view["configs"] = {c: _lean_studio(sub, pkg.get("aliases")) for c, sub in pkg["configs"].items()}
         if pkg.get("error"):
             view["error"] = pkg["error"]
         return view
@@ -74,19 +108,35 @@ def lean_package(pkg):
     return {}
 
 
+def _studio_body(view, keys):
+    parts, aliases = view["parts"], view["aliases"]
+    if not keys or "*" in keys:
+        body = [[pid, h, pid in view["hidden"]] for pid, h in sorted(parts.items())]
+        if view.get("sketches"):     # a consumer of the whole studio also sees its sketches
+            body = [body, sorted(view["sketches"].items())]
+        if view.get("connectors"):   # ... and its mate connectors
+            body = [body, ["connectors", sorted(view["connectors"].items())]]
+        return body
+    return [[k, parts.get(aliases.get(k, k))] for k in sorted(keys)]
+
+
 def package_digest(kind, view, keys=()):
-    """Hash of what a consumer reading `keys` (part ids, "*": all) takes from the package `view`."""
+    """Hash of what a consumer reading `keys` (link keys: part ids, "*": all, "<part>@<configuration>") takes
+    from the package `view`. Keys that name no configuration hash exactly as they did before configurations."""
     if kind == "studio":
-        parts, aliases = view["parts"], view["aliases"]
-        keys = {norm_key(k) for k in keys}
-        if not keys or "*" in keys:
-            body = [[pid, h, pid in view["hidden"]] for pid, h in sorted(parts.items())]
-            if view.get("sketches"):     # a consumer of the whole studio also sees its sketches
-                body = [body, sorted(view["sketches"].items())]
-            if view.get("connectors"):   # ... and its mate connectors
-                body = [body, ["connectors", sorted(view["connectors"].items())]]
-        else:
-            body = [[k, parts.get(aliases.get(k, k))] for k in sorted(keys)]
+        plain, by_config = set(), {}
+        for k in keys:
+            part, config = split_key(k)
+            if config:
+                by_config.setdefault(config, set()).add(norm_key(part))
+            else:
+                plain.add(norm_key(part))
+        body = _studio_body(view, plain) if plain or not by_config else None
+        if by_config:                # each configuration read is a package of its own
+            configs = view.get("configs") or {}
+            empty = {"parts": {}, "hidden": [], "aliases": {}}
+            body = [body, ["configs", [[c, _studio_body(configs.get(c) or empty, ks)]
+                                       for c, ks in sorted(by_config.items())]]]
     else:
         body = view
     digest = hashlib.sha1(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()

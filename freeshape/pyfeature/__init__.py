@@ -1,7 +1,7 @@
 """Python features: user-written parametric features supplied by Plugins (see registry.py for the rules).
 
 Headless: nothing here imports Qt. Importing this package registers the bundled plugins
-(freeshape/plugins/); `load_user_plugins()` adds the user's. Plugin modules import from
+(freeshape/addons/); `load_user_plugins()` adds the user's. Plugin modules import from
 `freeshape.pyfeature.api`, never from this package.
 """
 from __future__ import annotations

@@ -34,7 +34,7 @@ from freeshape import pyfeature  # noqa: E402
 from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.pyfeature import host  # noqa: E402
 
-GEARS = os.path.join(ROOT, "freeshape", "plugins", "gears")
+GEARS = os.path.join(ROOT, "freeshape", "addons", "gears")
 _T0 = time.time()
 
 

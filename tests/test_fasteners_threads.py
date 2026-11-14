@@ -8,7 +8,7 @@ from OCP.BRepBndLib import BRepBndLib
 from freeshape import kernel as K
 from freeshape import pyfeature
 from freeshape.pyfeature import registry  # noqa: F401  (loads the bundled plugins)
-from freeshape.plugins.fasteners import hex_bolt
+from freeshape.addons.fasteners import hex_bolt
 
 pytestmark = pytest.mark.slow
 

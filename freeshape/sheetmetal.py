@@ -320,6 +320,120 @@ def _seeded(tool, fid, role):
         return N.NamedShape(tool, {})
 
 
+def add_hem(shape, model, panel, a, b, o, length, radius=None, down=False, fid="F", with_history=False):
+    """A hem: the edge folded right back (180°) over the sheet. `length` is measured from the outside of the
+    fold; a small radius (default half the thickness) gives a tight, rounded hem. with_history: as add_flange."""
+    R = float(radius) if radius is not None else max(model.thickness * 0.5, 0.1)
+    return add_flange(shape, model, panel, a, b, o, length, 180.0, R, not down, "outside", fid, with_history)
+
+
+def add_jog(shape, model, panel, a, b, o, offset, length, radius=None, down=False, fid="F", with_history=False):
+    """A jog (joggle): from an edge the sheet steps up (or down) by `offset` and carries on parallel to where it
+    was for `length` — two opposite 90° bends. `offset` is the step between the two parallel panels' matching
+    faces; `length` runs from the outside of the second bend.
+
+    Returns (new shape, new model). With with_history it returns (new shape, new model, steps): one
+    (shape, history, seeds) per flange, in order, each as add_flange gives them, for naming."""
+    t = model.thickness
+    R = float(radius) if radius is not None else model.radius
+    first = float(offset) - t                                  # the step's flange, to the outside of its bends
+    if first - 2 * (R + t) <= 1e-6:
+        raise K.KernelError(f"The jog is too small for this bend radius — make the offset more than "
+                            f"{2 * (R + t) + t:.2f} mm, or use a smaller radius")
+    shape, m, h1, seeds1 = add_flange(shape, model, panel, a, b, o, first, 90.0, R, not down, "outside", fid, True)
+    step1 = (shape, h1, seeds1)
+    child = m.panels[-1]
+    far = [(p, q, oo) for p, q, oo in m.panel_edges(child)
+           if abs(p[1] - _panel_len(child)) < 1e-6 and abs(q[1] - _panel_len(child)) < 1e-6]
+    if not far:
+        raise K.KernelError("Couldn't find the edge for the second bend of the jog")
+    p2, q2, o2 = far[0]
+    shape, m, h2, seeds2 = add_flange(shape, m, child, p2, q2, o2, length, 90.0, R, down, "outside", fid + "j", True)
+    return (shape, m, [step1, (shape, h2, seeds2)]) if with_history else (shape, m)
+
+
+def _panel_len(panel):
+    lo, hi = K.bbox(panel["face"])
+    return float(hi[1])
+
+
+def add_tab(shape, model, region_world, fid="F", with_history=False):
+    """A tab: more sheet in the plane of an existing panel (from a sketch region on its face, touching it).
+    Flanges can then go on the tab's edges, and it unfolds with its panel."""
+    m = model.copy()
+    t = m.thickness
+    pl = K.planar_face_plane(region_world)
+    if pl is None:
+        raise K.KernelError("A tab comes from a flat sketch region")
+    target = None
+    for p in m.panels:
+        Minv = np.linalg.inv(p["fold"])
+        n_loc = Minv[:3, :3] @ pl.normal
+        z = apply(Minv, pl.origin)[2]
+        if abs(abs(n_loc[2]) - 1) < 1e-7 and (abs(z) < 1e-5 or abs(z - t) < 1e-5):
+            local = _moved(region_world, Minv)
+            if abs(z) > 1e-5:
+                local = K.translate(local, (0, 0, -t))
+            grown = _merge_faces(p["face"], K.faces(local)[0])
+            if grown is not None:
+                target = (p, local, grown)
+                break
+    if target is None:
+        raise K.KernelError("Draw the tab on the face of a sheet metal panel, touching its edge")
+    p, local, grown = target
+    before = K.face_info(p["face"])["area"]
+    if K.face_info(grown)["area"] - before <= 1e-6 * max(before, 1.0):
+        raise K.KernelError("The tab is inside the sheet, so it adds nothing — a tab sticks out past the panel's "
+                            "edge: draw it touching the edge and reaching outside the sheet")
+    p["face"] = grown
+    tool = _moved(_prism(K.faces(local)[0], (0, 0, t)), p["fold"])
+    new, h = K.fuse(shape, tool, with_history=True)
+    steps = [h]
+    sols = K.solids(new)
+    if len(sols) == 1:
+        new, h = _unify(sols[0], True)
+        steps.append(h)
+    if with_history:        # (shape, model, history, seeds) as add_flange: the tab's prism is the one seeded tool
+        return new, m, K._chain(*steps), [_seeded(tool, fid, f"t{p['id']}")]
+    return new, m
+
+
+def _merge_faces(f1, f2):
+    """Two touching flat faces in z = 0 as one face (None if they don't touch)."""
+    a, b = _prism(f1, (0, 0, 1.0)), _prism(f2, (0, 0, 1.0))
+    if not K.touches_or_intersects(a, b):
+        return None
+    u = _unify(K.fuse(a, b))
+    if len(K.solids(u)) != 1:
+        return None
+    for f in K.faces(u):
+        pl = K.planar_face_plane(f)
+        if pl is not None and abs(abs(pl.normal[2]) - 1) < 1e-9 and abs(pl.origin[2]) < 1e-9:
+            return f
+    return None
+
+
+def convert_plate(shape, face, radius, k, relief="rect", relief_scale=1.5, with_history=False):
+    """A flat plate (any outline, with holes) made into a sheet metal part, so flanges can be added and it can be
+    unfolded and nested. `face` is one of its two big flat faces. Returns (solid, model); with_history returns
+    (solid, model, history) as make_base does, the history starting at `face`."""
+    pl = K.planar_face_plane(face)
+    if pl is None:
+        raise K.KernelError("Pick one of the plate's big flat faces")
+    n = np.asarray(pl.normal, float)
+    lo, hi = K.bbox(shape)
+    c = K.mass_props(shape)["centroid"]
+    into = n if float((c - pl.origin) @ n) > 0 else -n            # from the picked face into the material
+    pts = np.array(K._vertices_np(shape))
+    t = float(np.max((pts - pl.origin) @ into))
+    area = K.face_info(face)["area"]
+    if t <= 1e-6 or abs(K.volume(shape) - area * t) > 1e-3 * K.volume(shape) + 1e-6:
+        raise K.KernelError("This part isn't a flat plate of even thickness (its volume isn't the face area × "
+                            "the thickness), so it can't be made sheet metal")
+    plane = K.Plane(np.asarray(pl.origin, float), np.asarray(pl.xdir, float), into)
+    return make_base(face, plane, t, radius, k, False, relief, relief_scale, with_history)
+
+
 def _line_hit(a1, d1, a2, d2):
     """Where two 2D lines meet (None if parallel)."""
     den = d1[0] * d2[1] - d1[1] * d2[0]
@@ -543,11 +657,11 @@ def flat_pattern(shape, m: SheetModel, named=None):
     return fp
 
 
-def flat_dxf(fp: FlatPattern, path, name=""):
-    """The flat pattern as a DXF for laser / plasma / waterjet cutting: the outline (layer CUT), bend lines
-    (layer BEND, dashed) with their direction, angle and radius."""
+def flat_entities(fp: FlatPattern, face=None):
+    """The flat pattern's cut outline as 2D drawing entities: (lines, circles, arcs, polylines, bends).
+    `face` replaces the outline (e.g. one grown for kerf); bend lines stay where they are."""
     lines, circles, arcs, polys = [], [], [], []
-    for e in K.edges(fp.face):
+    for e in K.edges(face if face is not None else fp.face):
         info = K.edge_info(e)
         if "p0" in info:
             lines.append((fp.to2d(info["p0"]), fp.to2d(info["p1"])))
@@ -570,6 +684,13 @@ def flat_dxf(fp: FlatPattern, path, name=""):
             continue
         polys.append([fp.to2d(q) for q in pts])
     bends = [(fp.to2d(p0), fp.to2d(p1), lab) for p0, p1, lab in fp.bend_lines]
+    return lines, circles, arcs, polys, bends
+
+
+def flat_dxf(fp: FlatPattern, path, name=""):
+    """The flat pattern as a DXF for laser / plasma / waterjet cutting: the outline (layer CUT), bend lines
+    (layer BEND, dashed) with their direction, angle and radius."""
+    lines, circles, arcs, polys, bends = flat_entities(fp)
     try:
         import ezdxf
         doc = ezdxf.new("R2010", setup=False)

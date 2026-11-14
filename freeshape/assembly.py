@@ -171,6 +171,17 @@ def _move_geometry_to_blobs(data):
 M.register("assembly", _move_geometry_to_blobs)
 
 
+def _add_explode_and_patterns(data):
+    """Assembly file version 8 -> 9 (upstream 2.0 merge): an Assembly may carry "explode" ({"steps", "amount"},
+    the exploded view) and "patterns" (instance patterns; a copy is an instance with "pattern": <pattern id>).
+    Both are written only when used and read with defaults, so nothing stored changes; bumping the version
+    makes a build from before them refuse the file instead of dropping them on its next save."""
+    return data
+
+
+M.register("assembly", _add_explode_and_patterns)
+
+
 INSTANCE_COLORS = [(0.60, 0.74, 0.85), (0.72, 0.74, 0.78), (0.86, 0.66, 0.40), (0.56, 0.78, 0.56),
                    (0.85, 0.55, 0.55), (0.70, 0.60, 0.85), (0.50, 0.78, 0.78), (0.85, 0.78, 0.45)]
 
@@ -690,6 +701,10 @@ class AssemblyDoc:
         self.blob_view = None                    # this tab's blobs in a Document store (docstore.BlobView), if any
         self._breps: dict[int, tuple] = {}       # id(shape) -> (shape, key, bytes) of a part copy; memory only
         self._copy_geometry: dict = {}           # sha256 of a saved part copy -> its blobstore.geometry_key
+        # exploded view: steps that slide instances apart (display only; mates and positions are untouched)
+        self.explode: dict = {"steps": [], "amount": 1.0}
+        # patterns of instances: {"id", "type", "name", "seeds", "count", "spacing", "angle", "axis", "copies"}
+        self.patterns: list[dict] = []
         self.path = None
         self.dirty = False
         self.listeners = []
@@ -729,6 +744,7 @@ class AssemblyDoc:
         self._counter += 1
         used = {i["id"] for i in self.instances} | {m["id"] for m in self.mates} | {g["id"] for g in self.groups}
         used |= {r["id"] for r in self.relations} | {c["id"] for c in self.connectors}
+        used |= {p_["id"] for p_ in self.patterns}
         while f"{prefix}{self._counter}" in used:
             self._counter += 1
         return f"{prefix}{self._counter}"
@@ -745,7 +761,8 @@ class AssemblyDoc:
     # ------------------------------------------------------------------ undo / redo
     def _snapshot(self):
         return json.dumps({"instances": self.instances, "mates": self.mates, "name": self.name,
-                           "groups": self.groups, "relations": self.relations, "connectors": self.connectors})
+                           "groups": self.groups, "relations": self.relations, "connectors": self.connectors,
+                           "explode": self.explode, "patterns": self.patterns})
 
     def _restore(self, snap):
         d = json.loads(snap)
@@ -753,6 +770,14 @@ class AssemblyDoc:
         self.groups = d.get("groups", [])
         self.relations = d.get("relations", [])
         self.connectors = d.get("connectors", [])
+        self.explode = d.get("explode", {"steps": [], "amount": 1.0})
+        self.patterns = d.get("patterns", [])
+        for i in self.instances:                 # copies made by a pattern that was undone
+            if i["id"] not in self.parts:
+                try:
+                    self.parts[i["id"]] = self._resolve(i)
+                except Exception:
+                    pass
 
     def checkpoint(self):
         self._undo.append(self._snapshot())
@@ -1126,6 +1151,104 @@ class AssemblyDoc:
         p = self.parts.get(iid)
         return None if p is None else K.located(p.shape, self.T(iid))
 
+    # ------------------------------------------------------------------ exploded view
+    def explode_offsets(self, amount=None):
+        """How far each instance is moved in the exploded view: iid -> vector (steps add up in order)."""
+        k = float(self.explode.get("amount", 1.0) if amount is None else amount)
+        out = {}
+        for st in self.explode.get("steps", []):
+            v = unit(np.asarray(st["dir"], float)) * float(st["dist"]) * k
+            for iid in st["ids"]:
+                out[iid] = out.get(iid, np.zeros(3)) + v
+        return out
+
+    def display_T(self, iid, exploded=False, amount=None):
+        """Where an instance is drawn: its placement, moved by the exploded view when that is shown."""
+        T = self.T(iid)
+        if exploded:
+            off = self.explode_offsets(amount).get(iid)
+            if off is not None:
+                T = translation(off) @ T
+        return T
+
+    def add_explode_step(self, ids, direction, dist, checkpoint=True):
+        if not ids:
+            raise K.KernelError("Select the parts to move apart")
+        if checkpoint:
+            self.checkpoint()
+        self.explode.setdefault("steps", []).append({"ids": list(ids), "dir": [float(x) for x in unit(direction)],
+                                                     "dist": float(dist)})
+        self.notify()
+
+    def clear_explode(self):
+        self.checkpoint()
+        self.explode["steps"] = []
+        self.notify()
+
+    def _has_head(self, inst):
+        """Whether an instance is a Standard part with a head (a bolt or a screw): its type publishes an
+        `under_head` connector, and its head is on its own +Z side."""
+        from .pyfeature import registry
+        src = inst["source"]
+        if src.get("kind") != "standard":
+            return False
+        cls = registry.standard_part(src.get("type"))
+        if cls is None:
+            return False
+        try:
+            part = cls()
+            return "under_head" in (part.connectors(part.validate(dict(src.get("params") or {}))) or {})
+        except Exception:
+            return False
+
+    def auto_explode(self):
+        """Move every part out from the fixed one(s). Screws and bolts from the library come out towards their
+        heads; other parts go along whichever main axis they sit out on. Parts going the same way are spaced in
+        order (washer, then nut further out), so stacks come apart readably."""
+        insts = [i for i in self.visible_instances() if i["id"] in self.parts]
+        if len(insts) < 2:
+            raise K.KernelError("Insert at least two parts first")
+        base = [i for i in insts if i.get("fixed")] or [max(insts, key=lambda i: K.volume(self.world_shape(i["id"])))]
+        lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
+        for i in base:
+            a, b = K.bbox(self.world_shape(i["id"]))
+            lo, hi = np.minimum(lo, a), np.maximum(hi, b)
+        C = (lo + hi) / 2
+        alo, ahi = self.bounds()
+        size = float(np.linalg.norm(ahi - alo)) or 50.0
+        blo, bhi = lo, hi
+        groups = {}
+        for inst in insts:
+            if inst in base:
+                continue
+            a, b = K.bbox(self.world_shape(inst["id"]))
+            c = (a + b) / 2
+            if self._has_head(inst):
+                v = self.T(inst["id"])[:3, :3] @ np.array([0, 0, 1.0])          # towards the head
+            else:
+                v = c - C
+            if np.linalg.norm(v) < 1e-6 * size:
+                v = np.array([0, 0, 1.0])
+            ax = int(np.argmax(np.abs(v)))
+            sgn = 1.0 if v[ax] >= 0 else -1.0
+            groups.setdefault((ax, sgn), []).append((float(c[ax] * sgn), inst["id"], a, b))
+        self.checkpoint()
+        steps = []
+        gap = size * 0.12
+        for (ax, sgn), items in groups.items():
+            d = np.zeros(3)
+            d[ax] = sgn
+            edge = float(bhi[ax] if sgn > 0 else -blo[ax])          # the base's outside face, that way
+            for _pos, iid, a, b in sorted(items, key=lambda t: t[0]):   # nearest the base first
+                near = float(a[ax] if sgn > 0 else -b[ax])         # the part's side facing the base
+                far = float(b[ax] if sgn > 0 else -a[ax])
+                dist = max(edge + gap - near, gap)                 # clear the base (and the part before it)
+                steps.append({"ids": [iid], "dir": d.tolist(), "dist": dist})
+                edge = far + dist                                  # the next one goes beyond this one
+        self.explode = {"steps": steps, "amount": 1.0}
+        self.notify()
+        return len(steps)
+
     def visible_instances(self):
         return [i for i in self.instances if not i.get("hidden") and not i.get("suppressed") and i["id"] in self.parts]
 
@@ -1136,7 +1259,8 @@ class AssemblyDoc:
             return ("sketch", src.get("tab") or src.get("uid"), src.get("sketch"))
         if src.get("kind") == "standard":
             return ("standard", src.get("type"), json.dumps(src.get("params") or {}, sort_keys=True, default=str))
-        return ("studio", src.get("tab") or src.get("uid"), src.get("part"))
+        key = ("studio", src.get("tab") or src.get("uid"), src.get("part"))
+        return key + (src["config"],) if src.get("config") else key     # a configuration is its own part
 
     def instance_color(self, inst):
         """The instance's own colour, else its part's — except plain default-grey parts, which get a colour
@@ -1288,6 +1412,19 @@ class AssemblyDoc:
         self.instances = [i for i in self.instances if i["id"] not in ids]
         self.mates = [m for m in self.mates if m["a"]["inst"] not in ids and m["b"]["inst"] not in ids]
         self.connectors = [c for c in self.connectors if c["inst"] not in ids]
+        # a deleted seed takes its pattern copies with it; a deleted copy is just skipped
+        for pat in list(self.patterns):
+            if any(s_ in ids for s_ in pat["seeds"]):
+                self._drop_instances([c for row in pat["copies"] for c in row])
+                self.patterns.remove(pat)
+            else:
+                pat["copies"] = [[c if c not in ids else None for c in row] for row in pat["copies"]]
+        steps = []
+        for st in self.explode.get("steps", []):        # deleted parts leave the exploded view too
+            st = dict(st, ids=[i for i in st["ids"] if i not in ids])
+            if st["ids"]:
+                steps.append(st)
+        self.explode["steps"] = steps
         for i in ids:
             self.parts.pop(i, None)
         for g in self.groups:
@@ -1311,6 +1448,8 @@ class AssemblyDoc:
             g = self.group_of(iid)
             if g is not None:
                 raise ValueError(f"{self.instance(iid)['name']} is already in {g['name']}")
+            if self.instance(iid).get("pattern"):
+                raise ValueError(f"{self.instance(iid)['name']} is a pattern copy; it is placed by its pattern")
         self.checkpoint()
         used = {int("".join(c for c in g["name"] if c.isdigit()) or 0) for g in self.groups}
         n = 1
@@ -1333,14 +1472,20 @@ class AssemblyDoc:
 
     def delete_mates(self, ids):
         self.checkpoint()
-        self.mates = [m for m in self.mates if m["id"] not in set(ids)]
+        ids = set(ids)
+        self.mates = [m for m in self.mates if m["id"] not in ids]
         for r in self.relations:                  # a relation stays, inert, when one of its mates goes (I2.3/I2.5)
-            if r["a"]["mate"] in set(ids) or r["b"]["mate"] in set(ids):
+            if r["a"]["mate"] in ids or r["b"]["mate"] in ids:
                 r["phase"] = None
+        for pat in [p_ for p_ in self.patterns if p_["id"] in ids]:     # a pattern listed with the mates
+            self._drop_instances([c for row in pat["copies"] for c in row])
+        self.patterns = [p_ for p_ in self.patterns if p_["id"] not in ids]
         self._update_status()
         self.notify()
 
     def set_fixed(self, iid, value):
+        if (self.instance(iid) or {}).get("pattern"):
+            return                                   # a pattern copy is placed by its pattern
         self.checkpoint()
         self.instance(iid)["fixed"] = bool(value)
         self.solve()
@@ -1373,6 +1518,8 @@ class AssemblyDoc:
             raise ValueError(f"No instance {iid!r}")
         self.checkpoint()
         inst["suppressed"] = bool(flag)
+        for cid in self.pattern_copies(iid):          # a pattern's copies follow their seed
+            self.instance(cid)["suppressed"] = bool(flag)
         if not flag:
             # mates that come back take their values from the current pose and their relations recapture the
             # phase from it (ADR 0005), before the solve, so nothing moves through a relation
@@ -1399,7 +1546,7 @@ class AssemblyDoc:
 
     def rename(self, obj_id, name):
         self.checkpoint()
-        o = self.instance(obj_id) or self.mate(obj_id)
+        o = self.instance(obj_id) or self.mate(obj_id) or self.pattern(obj_id)
         if o is not None:
             o["name"] = name
         self.notify()
@@ -2034,6 +2181,149 @@ class AssemblyDoc:
         out.append(self._relation_residuals(mates, Ts, frames, L))
         return np.concatenate(out) if out else np.zeros(0)
 
+    # ------------------------------------------------------------------ patterns
+    def _pattern_axis(self, pat):
+        ax = pat.get("axis") or {"kind": "world", "name": "Z"}
+        if ax.get("kind") == "mate":
+            m = self.mate(ax.get("mate"))
+            if m is None:
+                raise K.KernelError("The mate the pattern goes round has gone")
+            fa = transform_frame(self.T(m["a"]["inst"]), frame_from_json(m["a"]["frame"]))
+            return np.asarray(fa["o"], float), unit(fa["z"])
+        d = {"X": (1, 0, 0), "Y": (0, 1, 0), "Z": (0, 0, 1)}[ax.get("name", "Z")]
+        return np.zeros(3), np.array(d, float) * (-1.0 if ax.get("flip") else 1.0)
+
+    def _pattern_moves(self, pat):
+        o, d = self._pattern_axis(pat)
+        n = int(pat.get("count", 2))
+        out = []
+        for k in range(1, n):
+            if pat["type"] == "linear":
+                out.append(translation(d * float(pat.get("spacing", 20.0)) * k))
+            else:
+                total = float(pat.get("angle", 360.0))
+                step = total / n if abs(total - 360) < 1e-9 else total / max(n - 1, 1)
+                out.append(rot_about(d, np.radians(step * k), o))
+        return out
+
+    def _apply_patterns(self):
+        """Put every pattern copy where it belongs relative to its seed (after the seeds moved)."""
+        for pat in self.patterns:
+            try:
+                moves = self._pattern_moves(pat)
+            except K.KernelError as e:
+                self.errors[pat["id"]] = str(e)
+                continue
+            self.errors.pop(pat["id"], None)
+            for k, row in enumerate(pat["copies"]):
+                if k >= len(moves):
+                    break
+                for seed, cid in zip(pat["seeds"], row):
+                    if cid and self.instance(cid) is not None and self.instance(seed) is not None:
+                        self.instance(cid)["T"] = (moves[k] @ self.T(seed)).tolist()
+
+    def add_pattern(self, ptype, seeds, count, spacing=20.0, angle=360.0, axis=None, checkpoint=True):
+        """Copies of the seed instances in a row (linear) or round an axis (circular). The copies follow the
+        seeds; edit the pattern to change how many or how far apart."""
+        seeds = [s_ for s_ in seeds if self.instance(s_) is not None and not self.instance(s_).get("pattern")]
+        if any(is_sketch_source(self.instance(s_)["source"]) for s_ in seeds):
+            raise K.KernelError("A Sketch instance can't be patterned; pattern parts")
+        if not seeds:
+            raise K.KernelError("Select the parts to pattern")
+        if int(count) < 2:
+            raise K.KernelError("The count must be at least 2")
+        if checkpoint:
+            self.checkpoint()
+        n = sum(1 for p_ in self.patterns if p_["type"] == ptype) + 1
+        pat = {"id": self.new_id("P"), "type": ptype, "name": f"{'Linear' if ptype == 'linear' else 'Circular'} "
+               f"pattern {n}", "seeds": list(seeds), "count": int(count), "spacing": float(spacing),
+               "angle": float(angle), "axis": axis or {"kind": "world", "name": "X" if ptype == "linear" else "Z"},
+               "copies": []}
+        self.patterns.append(pat)
+        try:
+            self._make_copies(pat)
+        except Exception:
+            self._drop_instances([c for row in pat.get("copies", []) for c in row])
+            self.patterns.remove(pat)
+            raise
+        self._update_status()
+        self.notify()
+        return pat
+
+    def _make_copies(self, pat):
+        """Make the pattern's copies. Each copy shares its seed's part (no need to load it again), so this works
+        for parts from Part Studios, files, STEP and the standard library alike."""
+        moves = self._pattern_moves(pat)
+        pat["copies"] = []
+        for M in moves:
+            row = []
+            for seed in pat["seeds"]:
+                s_inst = self.instance(seed)
+                cid = self.new_id("I")
+                c = {"id": cid, "name": self._unique_name(s_inst["name"].split(" <")[0]),
+                     "source": copy.deepcopy(s_inst["source"]), "T": (M @ self.T(seed)).tolist(),
+                     "fixed": True, "hidden": bool(s_inst.get("hidden")), "pattern": pat["id"],
+                     "part_name": s_inst.get("part_name", "")}
+                for k in ("suppressed", "material"):         # a copy starts out as its seed is
+                    if s_inst.get(k):
+                        c[k] = copy.deepcopy(s_inst[k])
+                if s_inst.get("color"):
+                    c["color"] = list(s_inst["color"])
+                self.instances.append(c)
+                if seed in self.parts:
+                    self.parts[cid] = self.parts[seed]
+                row.append(cid)
+            pat["copies"].append(row)
+
+    def edit_pattern(self, pid, **changes):
+        pat = next((p_ for p_ in self.patterns if p_["id"] == pid), None)
+        if pat is None:
+            return
+        self.checkpoint()
+        old = [c for row in pat["copies"] for c in row]
+        pat.update({k: v for k, v in changes.items() if v is not None})
+        self._drop_instances(old)
+        self._make_copies(pat)
+        self._update_status()
+        self.notify()
+
+    def delete_patterns(self, ids):
+        self.checkpoint()
+        for pat in [p_ for p_ in self.patterns if p_["id"] in set(ids)]:
+            self._drop_instances([c for row in pat["copies"] for c in row])
+        self.patterns = [p_ for p_ in self.patterns if p_["id"] not in set(ids)]
+        self._update_status()
+        self.notify()
+
+    def _drop_instances(self, ids):
+        """Remove instances without a checkpoint (a pattern's copies), with everything that hangs on them: their
+        mates (a relation on such a mate stays, inert, as in delete_mates), connectors and group membership."""
+        ids = set(i for i in ids if i)
+        gone = {m["id"] for m in self.mates if m["a"]["inst"] in ids or m["b"]["inst"] in ids}
+        self.instances = [i for i in self.instances if i["id"] not in ids]
+        self.mates = [m for m in self.mates if m["id"] not in gone]
+        for r in self.relations:
+            if r["a"]["mate"] in gone or r["b"]["mate"] in gone:
+                r["phase"] = None
+        self.connectors = [c for c in self.connectors if c["inst"] not in ids]
+        for g in self.groups:
+            g["instances"] = [i for i in g["instances"] if i not in ids]
+        self.groups = [g for g in self.groups if len(g["instances"]) >= 2]
+        for i in ids:
+            self.parts.pop(i, None)
+
+    def pattern(self, pid):
+        return next((p_ for p_ in self.patterns if p_["id"] == pid), None)
+
+    def pattern_copies(self, seed):
+        """The ids of the pattern copies made from instance `seed`."""
+        out = []
+        for pat in self.patterns:
+            if seed in pat["seeds"]:
+                k = pat["seeds"].index(seed)
+                out += [row[k] for row in pat["copies"] if k < len(row) and row[k]]
+        return out
+
     def solve(self, drag=None, iters=40, keep=None):
         """Satisfy the mates by moving free instances as little as possible.
         drag: {"inst", "local" point, "target" world point, "P" 2x3 screen-plane projector} — the dragged part
@@ -2056,6 +2346,7 @@ class AssemblyDoc:
                 self._enforce_limits(live, iters, keep, drag)      # limit rounds use the same relation set
             finally:
                 self._rel_filter = None
+            self._apply_patterns()
             self._update_status()
             return True
         before = {i["id"]: list(i["T"]) for i in self.instances}
@@ -2101,6 +2392,7 @@ class AssemblyDoc:
         for mid in self._limit_failed:         # a limit that cannot be met with the other mates (I5.2)
             self._conflicts.add(mid)
             self.errors[mid] = "Limit can't be met together with the other mates"
+        self._apply_patterns()                     # (also when nothing needed solving)
         self._update_status()
         self._rel_filter = None
         return not self._conflicts and not bad
@@ -2255,6 +2547,7 @@ class AssemblyDoc:
         for key in free:
             for iid in members[key]:
                 self.instance(iid)["T"] = orthonormalize(cur[iid]).tolist()
+        self._apply_patterns()
         Ts = {i["id"]: np.array(i["T"], float) for i in self.instances}
         return self._failing(mates, Ts, frames, L)
 
@@ -2441,7 +2734,10 @@ class AssemblyDoc:
             else:
                 where = src.get("studio_name") or os.path.basename(src.get("path") or "") or "Part Studio"
             p = self.parts.get(inst["id"])
-            r = rows.setdefault(key, {"name": inst.get("part_name") or inst["name"], "source": where, "qty": 0,
+            nm = inst.get("part_name") or inst["name"]
+            if src.get("config"):
+                nm += f" ({src['config']})"
+            r = rows.setdefault(key, {"name": nm, "source": where, "qty": 0,
                                       "volume": None, "instances": [],
                                       "material": MS.material_name(inst.get("material")), "mass": None})
             r["qty"] += 1
@@ -2492,6 +2788,8 @@ class AssemblyDoc:
             ME.export_instances([(first.setdefault(self._source_key(i["source"]), self.parts[i["id"]].shape),
                                   np.array(i["T"], float), i["name"], self.instance_color(i)) for i in insts],
                                 path, **(options or {}))
+        elif str(path).lower().endswith((".brep", ".brp")):
+            K.export_brep([self.world_shape(i["id"]) for i in insts], path)
         else:
             K.export_step_named([(self.parts[i["id"]].shape, np.array(i["T"], float), i["name"],
                                   self.instance_color(i)) for i in insts], path, self.name)
@@ -2591,7 +2889,9 @@ class AssemblyDoc:
         return json.dumps({"format": FILE_FORMAT, "version": M.latest_version("assembly"), "name": self.name,
                            "uid": self.uid, "instances": insts, "mates": self.mates, "groups": self.groups,
                            "relations": self.relations,
-                           **({"connectors": self.connectors} if self.connectors else {})}, indent=1)
+                           **({"connectors": self.connectors} if self.connectors else {}),
+                           **({"explode": self.explode} if self.explode.get("steps") else {}),
+                           **({"patterns": self.patterns} if self.patterns else {})}, indent=1)
 
     def to_data(self) -> bytes:
         """The tab's data as a Document store holds it (the bytes `save` writes). Set `path` first: relative
@@ -2638,6 +2938,8 @@ class AssemblyDoc:
         a.groups = d.get("groups", [])
         a.relations = d.get("relations", [])
         a.connectors = d.get("connectors", [])
+        a.explode = d.get("explode") or {"steps": [], "amount": 1.0}
+        a.patterns = d.get("patterns", [])
         a.path = path
         base = os.path.dirname(os.path.abspath(path)) if path is not None else None
         for inst in a.instances:
@@ -2647,7 +2949,7 @@ class AssemblyDoc:
                 if os.path.exists(cand):
                     src["path"] = cand
         nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0)
-                for x in a.instances + a.mates + a.groups + a.relations + a.connectors]
+                for x in a.instances + a.mates + a.groups + a.relations + a.connectors + a.patterns]
         a._counter = max(nums + [0])
         a.resolver = resolver
         a.refresh(solve=False, notify=False)

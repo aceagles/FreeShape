@@ -78,7 +78,7 @@ def test_bolt_connectors(type_key):
 
 @pytest.mark.parametrize("type_key,thick_col", (("ISO4032", 5), ("ISO7089", 2)))
 def test_flat_connectors(type_key, thick_col):
-    from freeshape.plugins.fasteners import fastener_base as fb
+    from freeshape.addons.fasteners import fastener_base as fb
     p = part(type_key)
     for size in ("M3", "M6", "M20"):
         c = p.connectors({"size": size})
@@ -92,7 +92,7 @@ def test_flat_connectors(type_key, thick_col):
 
 
 def test_shared_rules_follow_screwmaker():
-    from freeshape.plugins.fasteners import fastener_base as fb
+    from freeshape.addons.fasteners import fastener_base as fb
     assert fb.all_diams("ISO4017")[:3] == ["M1.6", "M2", "M2.5"]
     assert fb.all_lengths("ISO4014", "M1.6") == ["12", "16"]          # range table limits the length table
     assert fb.nominal_lengths("ISO4017", "M1.6")[0] == 2

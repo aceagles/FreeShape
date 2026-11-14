@@ -45,7 +45,7 @@ def palette_color(n):
 
 FEATURE_LABELS = {
     "sketch": "Sketch", "extrude": "Extrude", "revolve": "Revolve", "fillet": "Fillet",
-    "chamfer": "Chamfer", "shell": "Shell", "plane": "Plane", "mirror": "Mirror",
+    "chamfer": "Chamfer", "shell": "Shell", "plane": "Plane", "axis": "Axis", "mirror": "Mirror",
     "linear_pattern": "Linear pattern", "circular_pattern": "Circular pattern",
     "boolean": "Boolean", "import": "Import", "hole": "Hole", "variable": "Variable",
     "variable_studio_ref": "Variable Studio reference",
@@ -53,7 +53,8 @@ FEATURE_LABELS = {
     "mate_connector": "Mate connector",
     "context": "Context",
     "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
-    "sm_base": "Sheet metal", "sm_flange": "Flange", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
+    "sm_base": "Sheet metal", "sm_flange": "Flange", "sm_hem": "Hem", "sm_jog": "Jog", "sm_tab": "Tab",
+    "sm_convert": "Convert to sheet metal", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
     "delete_part": "Delete part",
 }
 
@@ -249,12 +250,16 @@ class ModelState:
     # mate_connector feature id -> {name, part, frame {o, z, x}}: the connectors a Part Studio publishes,
     # in the coordinates of the studio (the frames are plain lists, so the mapping is JSON-ready).
     connectors: dict = field(default_factory=dict)
+    # feature id -> (state before it, state after it): what a "features" pattern or mirror repeats (upstream 2.0)
+    history: dict = field(default_factory=dict)
+    # axis feature id -> {o, d, span}: a construction axis (origin, unit direction, stretch of the source along d).
+    axes: dict = field(default_factory=dict)
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
                           set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts},
-                          dict(self.connectors))
+                          dict(self.connectors), dict(self.history), dict(self.axes))
 
     def named(self, pid):
         """The element map of part `pid`, or None when it has none or the part's shape has since been
@@ -500,6 +505,8 @@ def plane_role(kind, ref):
         return "point"
     if kind == "plane":
         return "plane"
+    if kind == "axis":              # an axis feature stands where a straight edge does
+        return "line"
     if kind == "face":
         return "plane" if ref.get("type") == int(K.GeomAbs_Plane) else "surface"
     if kind == "edge":
@@ -589,8 +596,10 @@ def build_plane(state, p):
         pt = resolve_point(state, one("point", "a vertex for the plane to pass through")[0][1])
         return done(K.Plane(pt, base.xdir, base.normal))
     if typ in ("point_normal", "curve_point"):
-        _, eref = one(("line", "curve"), "an edge")[0]
+        ek, eref = one(("line", "curve"), "an edge")[0]
         pt = resolve_point(state, one("point", "a vertex")[0][1])
+        if ek == "axis":                                       # perpendicular to the axis, through the point
+            return done(_frame(pt, resolve_axis(state, eref)[1]))
         _, e = resolve(state, eref, "edge")
         if typ == "point_normal" and eref.get("type") == int(K.GeomAbs_Line):
             n = np.array(K.edge_info(e)["d"], float)          # perpendicular to a straight edge, through the point
@@ -616,10 +625,13 @@ def build_plane(state, p):
         o = np.linalg.solve(M, np.array([na @ a.origin, nb @ b.origin, 0.0]))
         return done(_frame(o, nm))
     if typ == "line_angle":
-        _, eref = one("line", "a straight edge")[0]
-        _, e = resolve(state, eref, "edge")
-        info = K.edge_info(e)
-        a, d = np.array(info["p0"], float), np.array(info["d"], float)
+        ek, eref = one("line", "a straight edge")[0]
+        if ek == "axis":
+            a, d = resolve_axis(state, eref)
+        else:
+            _, e = resolve(state, eref, "edge")
+            info = K.edge_info(e)
+            a, d = np.array(info["p0"], float), np.array(info["d"], float)
         d = d / np.linalg.norm(d)
         u0 = None
         if by["plane"]:                                       # zero degrees: parallel to the chosen plane
@@ -642,6 +654,232 @@ def build_plane(state, p):
         on, n = K.surface_point_normal(face, pt)
         return done(_frame(on, n))
     raise K.KernelError("Unknown plane type")
+
+
+# --------------------------------------------------------------------------- axes
+# An axis feature copies the plane feature's shape: a list of selected items, a type chosen or detected from
+# them ("auto"), and a result kept in ModelState.axes. Its types follow FreeCAD's datum line attachment modes
+# (Part/App/AttachExtension: Axis, Line / TwoPointLine / ObjectXY / Normal to surface...).
+
+AXIS_TYPES = [
+    ("auto", "Automatic"), ("edge", "Through edge"), ("round_face", "Through cylinder / cone / torus"),
+    ("two_points", "Through two points"), ("two_planes", "Two planes"),
+    ("point_normal", "Perpendicular to face through point"), ("face_point", "Perpendicular to face at click"),
+    ("point_parallel", "Parallel to line through point"), ("connector", "Mate connector axis"),
+]
+AXIS_TYPE_NAMES = dict(AXIS_TYPES)
+
+
+def axis_items(p):
+    """[(kind, ref)] an axis feature was built from: kind is face | edge | vertex | plane | axis | sketch_line |
+    sketch | connector."""
+    return [(r["k"], r["ref"]) for r in p.get("refs") or []]
+
+
+def axis_role(kind, ref):
+    if kind in ("vertex", "sketch"):
+        return "point"
+    if kind in ("plane", "axis", "connector"):
+        return kind
+    if kind == "sketch_line":
+        return "line"
+    if kind == "face":
+        t = ref.get("type")
+        if t == int(K.GeomAbs_Plane):
+            return "plane"
+        return "round" if t in (int(K.GeomAbs_Cylinder), int(K.GeomAbs_Cone), int(K.GeomAbs_Torus)) else "surface"
+    if kind == "edge":
+        t = ref.get("type")
+        return "line" if t == int(K.GeomAbs_Line) else "circle" if t == int(K.GeomAbs_Circle) else "curve"
+    return "?"
+
+
+def detect_axis_type(roles, click=False):
+    """The axis type that fits a selection (a list of roles from axis_role; `click` says the feature has a click
+    point), or None. The order matters: a point and a plane is point_normal, not face_point."""
+    n = {r: roles.count(r) for r in ("point", "plane", "round", "surface", "line", "axis", "circle", "curve",
+                                      "connector")}
+    total = len(roles)
+    if total == 2 and n["point"] == 2:
+        return "two_points"
+    if total == 2 and n["plane"] == 2:
+        return "two_planes"
+    if total == 2 and n["point"] == 1 and n["line"] + n["axis"] == 1:
+        return "point_parallel"
+    if total == 2 and n["point"] == 1 and n["plane"] + n["round"] + n["surface"] == 1:
+        return "point_normal"
+    if total == 1 and n["connector"] == 1:
+        return "connector"
+    if total == 1 and n["round"] == 1:
+        return "round_face"
+    if total == 1 and n["line"] + n["circle"] + n["curve"] == 1:
+        return "edge"
+    if total == 1 and click and n["plane"] + n["surface"] == 1:
+        return "face_point"
+    return None
+
+
+def axis_type(p):
+    """The effective type of an axis feature's params (resolves 'auto'); None when the selection fits nothing."""
+    t = p.get("type") or "auto"
+    if t == "auto":
+        return detect_axis_type([axis_role(k, r) for k, r in axis_items(p)], bool(p.get("click")))
+    return t
+
+
+def _axis_span(o, d, ends):
+    ts = sorted(float((np.asarray(e, float) - o) @ d) for e in ends)
+    return None if ts[1] - ts[0] < 1e-9 else [ts[0], ts[1]]
+
+
+def _axis_point(state, kind, ref):
+    if kind == "vertex":
+        return resolve_point(state, ref)
+    from . import sketchref
+    res = state.sketches.get(ref["sketch"])
+    if res is None:
+        raise K.KernelError(f"Sketch {ref['sketch']} is gone: the axis has no point to pass through")
+    sk = res.sketch.to_dict() if hasattr(res.sketch, "to_dict") else res.sketch
+    sketchref.check(sk, ref)
+    plane = {"origin": res.plane.origin, "xdir": res.plane.xdir, "normal": res.plane.normal}
+    return np.array(sketchref.frame(plane, sk, ref["entity"], ref["role"])["o"], float)
+
+
+def _axis_plane(state, kind, ref):
+    return resolve_plane(state, ref if kind == "plane" else {"kind": "face", "face": ref})
+
+
+def _axis_surface_normal(state, kind, ref, pt):
+    """(point on the face or plane nearest `pt`, unit normal there): a plane gives its own normal, a curved face
+    the normal where `pt` projects onto it (for a cylinder that line crosses the centre line)."""
+    if kind == "plane" or (kind == "face" and ref.get("type") == int(K.GeomAbs_Plane)):
+        pl = _axis_plane(state, kind, ref)
+        return pt - ((pt - pl.origin) @ pl.normal) * pl.normal, pl.normal
+    _, face = resolve(state, ref, "face")
+    return K.surface_point_normal(face, pt)
+
+
+def _axis_line(state, kind, ref):
+    """(point, unit direction) of a straight edge, sketch line or axis feature."""
+    if kind == "edge":
+        _, e = resolve(state, ref, "edge")
+        ln = K.edge_line(e)
+        if ln is None:
+            raise K.KernelError("Pick a straight edge")
+        o, d = ln
+    else:
+        o, d = resolve_axis(state, ref)
+    d = np.asarray(d, float)
+    return np.asarray(o, float), d / np.linalg.norm(d)
+
+
+def _connector_axis(state, fid, which="z"):
+    """(origin, unit direction) of one axis of a mate connector's frame: z, x, or y = z cross x."""
+    c = state.connectors.get(fid)
+    if c is None or "frame" not in c:
+        raise K.KernelError("Missing mate connector")
+    if which not in ("z", "x", "y"):
+        raise K.KernelError("Unknown connector axis")
+    fr = c["frame"]
+    z, x = np.asarray(fr["z"], float), np.asarray(fr["x"], float)
+    d = {"z": z, "x": x, "y": np.cross(z, x)}[which]
+    return np.asarray(fr["o"], float), d / np.linalg.norm(d)
+
+
+def build_axis(state, p):
+    """The construction axis an axis feature describes: {o, d, span}."""
+    t = axis_type(p)
+    if t is None:
+        raise K.KernelError("That selection does not fit an axis type")
+    if t not in AXIS_TYPE_NAMES or t == "auto":
+        raise K.KernelError("Unknown axis type")
+    items = axis_items(p)
+    if t == "two_planes":
+        if len(items) != 2 or any(axis_role(k, r) != "plane" for k, r in items):
+            raise K.KernelError("Pick two planes or planar faces")
+        a, b = (_axis_plane(state, k, r) for k, r in items)
+        d = np.cross(a.normal, b.normal)
+        if np.linalg.norm(d) < 1e-9:
+            raise K.KernelError("Those planes are parallel")
+        d = d / np.linalg.norm(d)
+        M = np.array([a.normal, b.normal, d])               # the point of the line nearest the first plane's origin
+        o = np.linalg.solve(M, np.array([a.normal @ a.origin, b.normal @ b.origin, d @ a.origin]))
+        span = None
+    elif t == "point_normal":
+        pts = [(k, r) for k, r in items if axis_role(k, r) == "point"]
+        rest = [(k, r) for k, r in items if axis_role(k, r) in ("plane", "round", "surface")]
+        if len(items) != 2 or len(pts) != 1 or len(rest) != 1:
+            raise K.KernelError("Pick one point and one face or plane")
+        o = _axis_point(state, *pts[0])
+        o_on, d = _axis_surface_normal(state, rest[0][0], rest[0][1], o)
+        span = None
+    elif t == "face_point":
+        if len(items) != 1 or items[0][0] not in ("face", "plane"):
+            raise K.KernelError("Pick one face")
+        if not p.get("click"):
+            raise K.KernelError("Click the face where the axis should be")
+        o, d = _axis_surface_normal(state, items[0][0], items[0][1], np.asarray(p["click"], float))
+        span = None
+    elif t == "point_parallel":
+        pts = [(k, r) for k, r in items if axis_role(k, r) == "point"]
+        lines = [(k, r) for k, r in items if axis_role(k, r) in ("line", "axis")]
+        if len(items) != 2 or len(pts) != 1 or len(lines) != 1:
+            raise K.KernelError("Pick one point and one straight line")
+        o = _axis_point(state, *pts[0])
+        d = _axis_line(state, *lines[0])[1]
+        span = None
+    elif t == "connector":
+        if len(items) != 1 or items[0][0] != "connector":
+            raise K.KernelError("Pick one mate connector")
+        ref = items[0][1]
+        o, d = _connector_axis(state, ref.get("fid"), p.get("connector_axis") or ref.get("axis") or "z")
+        span = None
+    elif t == "edge":
+        if len(items) != 1:
+            raise K.KernelError("Pick one edge")
+        kind, ref = items[0]
+        if kind == "sketch_line":
+            o, d = resolve_axis(state, ref)
+            sk = state.sketches[ref["sketch"]]
+            e = sk.sketch.entities[ref["line"]]
+            ends = [sk.plane.to_world(*sk.sketch.points[e[k]]) for k in ("p1", "p2")]
+        elif kind == "edge":
+            _, e = resolve(state, ref, "edge")
+            ln = K.edge_line(e)
+            info = K.edge_info(e)
+            if ln is not None:
+                o, d = ln
+                ends = [info["p0"], info["p1"]]
+            elif "axis" in info:
+                o, d, ends = np.array(info["center"]), np.array(info["axis"]), []
+            else:
+                raise K.KernelError("Pick a straight or circular edge")
+        else:
+            raise K.KernelError("Pick a straight or circular edge")
+        span = _axis_span(o, d, ends) if ends else None
+    elif t == "round_face":
+        if len(items) != 1 or items[0][0] != "face":
+            raise K.KernelError("Pick one cylindrical, conical or toroidal face")
+        _, face = resolve(state, items[0][1], "face")
+        hit = K.face_axis(face)
+        if hit is None:
+            raise K.KernelError("Pick a cylindrical, conical or toroidal face")
+        o, d, (t0, t1) = hit
+        span = None if t1 - t0 < 1e-9 else [t0, t1]
+    else:
+        if len(items) != 2 or any(k not in ("vertex", "sketch") for k, _ in items):
+            raise K.KernelError("Pick two points")
+        a, b = (_axis_point(state, k, r) for k, r in items)
+        if np.linalg.norm(b - a) < 1e-7:
+            raise K.KernelError("Those two points are in the same place")
+        o, d = a, (b - a) / np.linalg.norm(b - a)
+        span = [0.0, float(np.linalg.norm(b - a))]
+    o, d = np.asarray(o, float), np.asarray(d, float)
+    d = d / np.linalg.norm(d)
+    if p.get("flip"):
+        d = -d
+        span = None if span is None else [-span[1], -span[0]]
+    return {"o": [float(x) for x in o], "d": [float(x) for x in d], "span": span}
 
 
 def region_signature(face):
@@ -732,6 +970,13 @@ def resolve_axis(state: ModelState, ref):
                 return np.array(info["center"]), np.array(info["axis"])
             raise K.KernelError("Axis edge must be straight or circular")
         return ln
+    if kind == "axis":
+        ax = state.axes.get(ref.get("fid"))
+        if ax is None:
+            raise K.KernelError("Missing axis")
+        return np.array(ax["o"], float), np.array(ax["d"], float)
+    if kind == "connector":
+        return _connector_axis(state, ref.get("fid"), ref.get("axis") or "z")
     raise K.KernelError("Select an axis")
 
 
@@ -778,7 +1023,7 @@ def _stamp_severed_siblings(state: ModelState, inputs, fid, op):
                 state.set_named(sib, N.stamp_all(nm, fid, op))
 
 
-def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, stamp=True):
+def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, stamp=True, roles=None):
     """The naming step of a feature runner: the NamedShape of `shape`, a kernel helper's result.
 
     How a feature runner uses naming (docs/reference/element-naming.md, "How a feature runner uses
@@ -794,7 +1039,9 @@ def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, 
       op       the helper's name (`"extrude"`, `"revolve"`, `"fuse"`, `"cut"`, `"common"`, ...: a key
                of `naming.OP_FOR`) or an op code;
       part     optional part id: the result is also stored as that part's map (`state.names`);
-      stamp    False keeps an untouched element's name as it is (what `apply_body` does).
+      stamp    False keeps an untouched element's name as it is (what `apply_body` does);
+      roles    optional [(element of `shape`, input element, role)] the history cannot name, such
+               as the up-to sweep's end cap (`naming.name_result`).
 
     The map is returned either way. A result that cannot be named (a feature id that cannot go in a
     name) comes back with no names rather than failing the feature; its references then fail loudly
@@ -810,7 +1057,7 @@ def name_feature(state: ModelState, fid, inputs, shape, history, op, part=None, 
         if n is not None:
             sources.append(n)
     try:
-        named = N.name_result(shape, history, sources, fid, N.OP_FOR.get(op, op), stamp)
+        named = N.name_result(shape, history, sources, fid, N.OP_FOR.get(op, op), stamp, roles)
     except N.NamingError:
         named = N.NamedShape(shape, {})
     if stamp:
@@ -914,15 +1161,20 @@ NUMERIC_KEYS = {"depth", "depth2", "angle", "radius", "distance", "thickness", "
                 "distance2"}
 
 
+# numeric params of plugin features: feature type -> set of keys (filled in by freeshape.plugins)
+EXTRA_NUMERIC: dict = {}
+
+
 def prepare(f, state):
     """A copy of feature f with every expression evaluated against the variables defined so far.
     Also records which feature is about to run, so `resolve` can flag it recovered."""
     state.current_fid = f.get("id")
     p = f.get("params", {})
-    if not any(isinstance(p.get(k), str) for k in NUMERIC_KEYS):
+    keys = NUMERIC_KEYS | EXTRA_NUMERIC.get(f.get("type"), set())
+    if not any(isinstance(p.get(k), str) for k in keys):
         return f
     p2 = dict(p)
-    for k in NUMERIC_KEYS:
+    for k in keys:
         v = p2.get(k)
         if isinstance(v, str):
             val = parse_number(v, angle=(k in ("angle", "rotate", "draft", "twist")), variables=state.vars)
@@ -969,6 +1221,59 @@ def run_variable_studio_ref(state, f):
     state.vars.update(values)
 
 
+# ---- saved copy of a Derived feature (I1.3): what it built, kept as blobs so the part stays when its source is gone
+_COPY_PARAMS = ("resolved", "saved", "saved_get")      # params the document hands a feature, never saved
+
+
+def saved_copy_key(f):
+    """What a saved copy was made for: the feature's own params (source with its configuration, ticked parts,
+    placement). A copy is shown only while this still matches, so editing the feature drops a stale copy."""
+    import hashlib
+    import json
+    p = {k: v for k, v in (f.get("params") or {}).items() if k not in _COPY_PARAMS}
+    return hashlib.sha256(json.dumps(p, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def saved_copy_record(state, fid, key):
+    """(entry, blobs) of the parts feature `fid` made in `state`, for a document's `python_builds`: per part its
+    BREP and name map as blobs (pyfeature.host.build_record) plus its name and colour; `key` is saved_copy_key.
+    None when a part is not one solid (restoring takes one solid per part) or the feature made no part."""
+    from .pyfeature import host
+    entry, blobs = host.build_record(state, fid, {})
+    if not entry["parts"] or any(len(K.solids(state.parts[r["id"]].shape)) != 1 for r in entry["parts"]):
+        return None
+    del entry["plugin"]
+    entry["key"] = key
+    for rec in entry["parts"]:
+        part = state.parts[rec["id"]]
+        rec["name"], rec["color"] = part.name, list(part.color)
+    return entry, blobs
+
+
+def restore_saved_copy(state, f, entry, get):
+    """Put the parts of a saved copy into `state` as run_derived does: part `<fid>/<k>` with its saved name map,
+    name and colour. `get(key)` returns a blob's bytes (hash-checked). Raises K.KernelError when it is damaged."""
+    from .pyfeature import host
+
+    class _Blobs:
+        @staticmethod
+        def get(key, max_bytes=None):
+            return get(key)
+    host.restore(state, f, entry, _Blobs)
+    for rec in entry["parts"]:
+        part = state.parts[rec["id"]]
+        color = tuple(rec["color"]) if isinstance(rec.get("color"), list) else part.color
+        state.parts[part.id] = Part(part.id, rec.get("name") or part.name, part.shape, color)
+        state.old_ids.pop(part.id, None)
+    state.feature_part_counts.pop(f["id"], None)
+
+
+def saved_copy_notice(f):
+    src = (f.get("params") or {}).get("source") or {}
+    label = src.get("studio_name") or src.get("tab") or "(none linked)"
+    return f"Derived source “{label}” is missing: showing the copy saved with this file, which may be stale"
+
+
 def run_derived(state, f):
     """Bring parts and sketches of another Part Studio into this one, with their element names (ADR 0003).
     PartStudioDoc.compute hands in the source's links.StudioPackage as params["resolved"] (None: the link found
@@ -984,6 +1289,13 @@ def run_derived(state, f):
     label = src.get("studio_name") or src.get("tab") or "(none linked)"
     if src.get("document") and not src.get("version"):         # another Document is only ever linked at a Version
         raise K.KernelError(f"Derived source “{label}”: the link to Document “{src['document']}” has no Version pinned")
+    if pkg is None and p.get("saved"):                          # the source is missing: show the saved copy (I1.3)
+        try:
+            restore_saved_copy(state, f, p["saved"], p["saved_get"])
+        except K.KernelError as e:
+            raise K.KernelError(f"Derived source “{label}” is missing, and the copy saved with this file "
+                                f"cannot be read") from e
+        return                                                  # saved after placement: nothing moves again
     if pkg is None and src.get("document"):
         raise K.KernelError(f"Derived source “{label}”: Document not found: “{src['document']}” (or its Version "
                             f"“{src.get('version')}” or the Part Studio in it is not there)")
@@ -1303,32 +1615,63 @@ def signed_extent(value, flip=False):
     return v, flip
 
 
-def _upto_distance(state, p, profs, n):
-    """Signed distance from the profile plane to the `upto` target along the profile normal `n`. The
-    target is a vertex reference (`resolve_point`) or a plane / planar-face reference (`resolve_plane`);
-    a plane that is not parallel to the profile is refused."""
+UP_TO = ("up_to_face", "up_to_vertex", "up_to_part", "up_to_next")
+UP_TO_LABELS = [("up_to_next", "Up to next"), ("up_to_face", "Up to face"), ("up_to_part", "Up to part"),
+                ("up_to_vertex", "Up to vertex")]
+
+
+def legacy_up_to(p):
+    """Extrude params in the up-to shape of upstream 2.0. Before the 2.0 merge this fork saved an up-to end
+    as end "upto" with the target in p["upto"] (a vertex reference, or a plane / planar-face reference); that
+    becomes end "up_to_vertex" / "up_to_face" with p["up_to"] = {"kind", "ref"}. Other params are returned
+    unchanged (the same dict). Used by the document migration and by run_extrude, so a feature dict built in
+    the old shape still runs."""
+    if p.get("end") != "upto":
+        return p
+    q = {k: v for k, v in p.items() if k != "upto"}
     ref = p.get("upto")
-    if not ref:
-        raise K.KernelError("Select a vertex, or a face or plane parallel to the sketch")
+    if ref and ref.get("kind") == "vertex":
+        q["end"], q["up_to"] = "up_to_vertex", {"kind": "vertex", "ref": ref}
+    else:
+        q["end"], q["up_to"] = "up_to_face", ({"kind": "plane", "ref": ref} if ref else {})
+    return q
+
+
+def _up_to_blind(state, p, profs, n):
+    """The signed distance along the profile normal `n` when an up-to end is the same as a blind extrude:
+    up to a vertex, or up to a plane or planar face parallel to the profile. None for every other target
+    (a curved or slanted face, a part, the next part), which `_sweep_up_to` cuts to shape. The blind case
+    is built by K.extrude with its history, so its faces get the names of a blind extrude, and the sign
+    picks the direction: the target decides which way, not Flip."""
+    end, target = p.get("end"), p.get("up_to") or {}
+    kind = target.get("kind")
     if p.get("regions"):
         origin = state.sketches[p["regions"][0]["sketch"]].plane.origin
     else:
         origin = K.planar_face_plane(profs[0]).origin
-    if ref.get("kind") == "vertex":
-        target = resolve_point(state, ref)
+    if end == "up_to_vertex" and kind == "vertex":
+        q = resolve_point(state, target["ref"])
+    elif end == "up_to_face" and kind in ("plane", "face"):
+        if kind == "plane":
+            pl = resolve_plane(state, target["ref"])
+        else:
+            pl = K.planar_face_plane(resolve(state, target["ref"], "face")[1])
+        if pl is None or abs(float(np.dot(pl.normal, n))) < 1 - 1e-9:
+            return None
+        q = pl.origin
     else:
-        pl = resolve_plane(state, ref)
-        if abs(float(np.dot(pl.normal, n))) < 1 - 1e-9:
-            raise K.KernelError("Up to needs a vertex, or a face or plane parallel to the sketch")
-        target = pl.origin
-    dist = float(np.dot(np.asarray(target, float) - np.asarray(origin, float), n))
+        return None
+    dist = float(np.dot(np.asarray(q, float) - np.asarray(origin, float), n))
+    offset = float(p.get("offset", 0.0) or 0.0)
     if abs(dist) < 1e-9:
         raise K.KernelError("Up to target is in the sketch plane: the distance is zero")
-    return dist
+    if abs(dist) - offset <= 1e-9:
+        raise K.KernelError("The offset is more than the distance to the target")
+    return dist - offset if dist > 0 else dist + offset
 
 
 def run_extrude(state, f):
-    p = f["params"]
+    p = legacy_up_to(f["params"])
     profs = _profiles(state, p, f["id"])
     if not profs:
         raise K.KernelError("Select sketch regions or a planar face")
@@ -1338,13 +1681,7 @@ def run_extrude(state, f):
     depth, flip = signed_extent(p.get("depth", 10), p.get("flip", False))
     symmetric = end == "symmetric"
     cutting = op in ("remove", "intersect")
-    upto = end == "upto"
-    if upto:
-        # up to a target is a blind extrude of the signed distance; Flip, symmetric and second depth do not apply
-        dist = _upto_distance(state, p, profs, n)
-        depth, flip = abs(dist), dist < 0
-        end = "blind"
-    elif cutting and not p.get("regions"):
+    if cutting and not p.get("regions"):
         # cutting from a face goes into the part by default
         flip = not flip
 
@@ -1367,14 +1704,24 @@ def run_extrude(state, f):
             dd = float(np.linalg.norm(hi - lo)) * 2 + 10 if state.parts else depth
             both = p.get("both", False) or (cutting and p.get("regions"))
             return K.extrude(profs, direction, dd, depth2=dd if both else 0.0, with_history=True)
-        depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric and not upto else 0.0
+        depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric else 0.0
         if depth + depth2 <= 0 and depth2:
             raise K.KernelError("The second depth cancels the first")
         return K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
 
     d = -n if flip else n
+    if end in UP_TO:
+        dist = _up_to_blind(state, p, profs, n)
+        if dist is not None:
+            body, hist = K.extrude(profs, n if dist > 0 else -n, abs(dist), with_history=True)
+            named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "extrude")
+            apply_body(state, body, op, f["id"], p.get("scope"), named)
+            return
+        body, named = _named_up_to(state, f["id"], p, profs, "extrude", d)
+        apply_body(state, body, op, f["id"], p.get("scope"), named)
+        return
     body, hist = make(d)
-    if cutting and end == "blind" and not upto and not p.get("second") and state.parts:
+    if cutting and end == "blind" and not p.get("second") and state.parts:
         # like Onshape, a cut that misses everything is tried in the other direction
         targets = [state.parts[i] for i in (p.get("scope") or state.parts) if i in state.parts]
         if not any(K.intersects(t.shape, body) for t in targets):
@@ -1385,6 +1732,94 @@ def run_extrude(state, f):
     apply_body(state, body, op, f["id"], p.get("scope"), named)
 
 
+def _model_size(state, extra=()):
+    lo, hi = np.full(3, 1e18), np.full(3, -1e18)
+    for shp in [pt.shape for pt in state.parts.values()] + list(extra):
+        a, b = K.bbox(shp)
+        lo, hi = np.minimum(lo, a), np.maximum(hi, b)
+    return float(np.linalg.norm(hi - lo)) if np.all(hi >= lo) else 100.0
+
+
+def _named_up_to(state, fid, p, profs, kind, how):
+    """The up-to sweep of every profile, fused, and its element map: (body, NamedShape).
+
+    Each profile's piece is named from the profile's map through the sweep-and-trim history, as a blind
+    extrude is (op `extrude` / `revolve`); its end cap on the target takes the role `end` under the
+    profile face's name, so it keeps its name when the target moves. Several pieces are then fused and
+    named from their maps, as `apply_body` names a fuse."""
+    sources = _profile_names(state, p)
+    pieces = []
+    for prof in profs:
+        body, hist, ends = _sweep_up_to(state, p, prof, kind, how)
+        pieces.append((body, name_feature(state, fid, sources, body, hist, kind,
+                                          roles=[(e, prof, "end") for e in ends])))
+    if len(pieces) == 1:
+        return pieces[0]
+    body, hist = K.fuse_all([b for b, _ in pieces], with_history=True)
+    return body, name_feature(state, fid, [n for _, n in pieces], body, hist, "fuse_all", stamp=False)
+
+
+def _sweep_up_to(state, p, face, kind, how):
+    """One profile swept (extrude: along direction `how`; revolve: about axis `how` = (point, dir)) until it
+    meets what p["up_to"] names: the next part in the way, a face (or plane), a part, or a vertex.
+
+    Returns (body, history from `face`, end cap faces): the faces that lie on the target, which the
+    history does not reach. Up to a vertex is a plain sweep, so it has no such faces."""
+    end = p.get("end")
+    target = p.get("up_to") or {}
+    offset = float(p.get("offset", 0.0) or 0.0)
+    start = K.interior_point(face)
+    size = _model_size(state, [face]) * 2 + 10
+
+    if kind == "extrude":
+        d = np.asarray(how, float) / np.linalg.norm(how)
+
+        def sweep_long():
+            return K.extrude([face], d, size, with_history=True)
+        seed = start + d * max(size * 1e-5, 1e-4)
+    else:
+        ap, ad = np.asarray(how[0], float), np.asarray(how[1], float)
+
+        def sweep_long():
+            return K.revolve([face], ap, ad, 359.0, with_history=True)
+        step = 0.05 if np.linalg.norm(np.cross(start - ap, ad)) > 1e-9 else 0.0
+        seed = K.rotate_point(start, ap, ad, step)
+
+    if end == "up_to_vertex":
+        if target.get("kind") != "vertex":
+            raise K.KernelError("Pick the vertex to go up to")
+        q = resolve_point(state, target["ref"])
+        if kind == "extrude":
+            depth = float((q - start) @ d) - offset
+            if depth <= 1e-9:
+                raise K.KernelError("That vertex is behind the profile — tick Opposite direction")
+            return (*K.extrude([face], d, depth, with_history=True), [])
+        ang = K.angle_about(start, q, ap, ad)
+        if ang <= 1e-6:
+            raise K.KernelError("That vertex is behind the profile — tick Opposite direction")
+        return (*K.revolve([face], ap, ad, ang, with_history=True), [])
+
+    if end == "up_to_face":
+        if target.get("kind") == "face":
+            _pid, tf = resolve(state, target["ref"], "face")
+            tool = K.termination_face(tf, offset, start)
+        elif target.get("kind") == "plane":
+            tool = K.termination_plane(resolve_plane(state, target["ref"]), offset, start)
+        else:
+            raise K.KernelError("Pick the face or plane to go up to")
+    elif end == "up_to_part":
+        pid = target.get("id") if target.get("kind") == "part" else None
+        if pid not in state.parts:
+            raise K.KernelError("Pick the part to go up to")
+        tool = state.parts[pid].shape
+    else:                                                   # up to next: whatever part is in the way first
+        if not state.parts:
+            raise K.KernelError("There are no parts for it to reach")
+        tool = K.compound([pt.shape for pt in state.parts.values()])
+    long_body, hist = sweep_long()
+    return K.keep_piece_from(long_body, tool, seed, hist)
+
+
 def run_revolve(state, f):
     p = f["params"]
     profs = _profiles(state, p, f["id"])
@@ -1393,6 +1828,10 @@ def run_revolve(state, f):
     angle, flip = signed_extent(360.0 if end == "full" else p.get("angle", 180), p.get("flip", False))
     if flip:
         d = -d
+    if end in UP_TO:
+        body, named = _named_up_to(state, f["id"], p, profs, "revolve", (a, d))
+        apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
+        return
     body, hist = K.revolve(profs, a, d, angle, symmetric=(end == "symmetric"), with_history=True)
     named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "revolve")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
@@ -1531,6 +1970,10 @@ def run_plane(state, f):
     state.planes[f["id"]] = build_plane(state, f["params"])
 
 
+def run_axis(state, f):
+    state.axes[f["id"]] = build_axis(state, f["params"])
+
+
 def _selected_parts(state, p):
     ids = [i for i in p.get("parts", []) if i in state.parts]
     if not ids:
@@ -1538,8 +1981,86 @@ def _selected_parts(state, p):
     return ids
 
 
+# --------------------------------------------------------------------------- feature patterns
+def _feature_changes(state, fid, fids):
+    """What each feature did to the model, part by part:
+    [(part id, material added, its names, material removed, its names)].
+    Used to repeat features (a hole, a boss, a pocket) in a pattern or mirror. The names of each piece
+    come from the part's maps before and after the feature, through the history of the cut that
+    isolates the piece, so its faces keep the names the feature gave them."""
+    out = []
+    for fi in fids:
+        h = state.history.get(fi)
+        if h is None:
+            raise K.KernelError("Pick features that come before this one (and aren't suppressed)")
+        before, after = h
+        for pid, part in after.parts.items():
+            old = before.parts.get(pid)
+            now = after.named(pid)
+            if old is None:
+                out.append((pid, part.shape, now, None, None))
+                continue
+            if old.shape is part.shape:
+                continue
+            was = before.named(pid)
+            add, ha = K.cut(part.shape, old.shape, with_history=True)
+            rem, hr = K.cut(old.shape, part.shape, with_history=True)
+            tiny = 1e-9 * max(K.volume(old.shape), 1.0)
+            has_add, has_rem = K.volume(add) > tiny, K.volume(rem) > tiny
+            out.append((pid,
+                        add if has_add else None,
+                        name_feature(state, fid, [now, was], add, ha, "cut", stamp=False) if has_add else None,
+                        rem if has_rem else None,
+                        name_feature(state, fid, [was, now], rem, hr, "cut", stamp=False) if has_rem else None))
+    if not out:
+        raise K.KernelError("Those features don't change any part, so there's nothing to repeat")
+    return out
+
+
+def _repeat_features(state, f, copies, op):
+    """Apply what the chosen features did again at each copy. `copies` is [(k, move)]: k is the copy's
+    index (an int, a pair for a grid, or None for the single copy of a mirror), move(shape) is
+    (moved shape, its history). Each copy of a piece is named from the piece's map under the tag
+    `<feature id>_<k>` (`_pattern_instance_name`), as a whole-part pattern's copies are, so the faces
+    of copy 3 keep their names when the count changes."""
+    changes = _feature_changes(state, f["id"], f["params"].get("features", []))
+    adds, rems = {}, {}            # part id -> [(shape, names)] of every copy of what was added / removed
+    for k, move in copies:
+        for pid, add, add_n, rem, rem_n in changes:
+            for piece, piece_n, into in ((add, add_n, adds), (rem, rem_n, rems)):
+                if piece is not None:
+                    c, h = move(piece)
+                    into.setdefault(pid, []).append(
+                        (c, _pattern_instance_name(state, f["id"], piece_n, c, h, op, k)))
+    for pid in list(adds) + [q for q in rems if q not in adds]:
+        part = state.parts.get(pid)
+        if part is None:                      # the feature made a part that has since gone: new parts
+            for s_, _ in adds.get(pid, []):
+                for sol in K.solids(s_):
+                    state.new_part(sol, f["id"])
+            continue
+        # through the named boolean helpers, so the part keeps its element names (as apply_body does)
+        shape, named = part.shape, state.named(pid)
+        for pieces, how, boolean in ((adds.get(pid), "fuse", K.fuse), (rems.get(pid), "cut", K.cut)):
+            if not pieces:
+                continue
+            tool, h = K.fuse_all([c for c, _ in pieces], with_history=True)
+            tool_n = name_feature(state, f["id"], [n for _, n in pieces], tool, h, "fuse_all", stamp=False)
+            shape, h = boolean(shape, tool, with_history=True)
+            named = name_feature(state, f["id"], [named, tool_n], shape, h, how, stamp=False)
+        set_part_shape(state, part, shape, named)
+
+
+def _features_mode(p):
+    return p.get("type") == "features"
+
+
 def run_mirror(state, f):
     p = f["params"]
+    if _features_mode(p):
+        plane = resolve_plane(state, p["plane"])
+        _repeat_features(state, f, [(None, lambda s_: K.mirror(s_, plane, with_history=True))], "mirror")
+        return
     ids = _selected_parts(state, p)
     plane = resolve_plane(state, p["plane"])
     bodies, named = [], []
@@ -1557,14 +2078,16 @@ def _pattern_instance_name(state, fid, pid, copy, history, op, k):
     other instances' names alone. FreeCAD's `;:C<n>` disambiguator (spec section 7) is not an index
     to read back; this keeps the same one-name-per-instance effect with an index that is stable.
     k may be a pair (k1, k2) for a two-direction grid: the tag is then "F5_1_2". A single index
-    keeps the tag exactly as before."""
+    keeps the tag exactly as before. k None (a mirror's one copy) keeps the feature's own tag."""
+    if k is None:
+        return name_feature(state, fid, [pid], copy, history, op)
     tag = "_".join(str(i) for i in k) if isinstance(k, tuple) else str(k)
     return name_feature(state, f"{fid}_{tag}", [pid], copy, history, op)
 
 
 def run_linear_pattern(state, f):
     p = f["params"]
-    ids = _selected_parts(state, p)
+    ids = [] if _features_mode(p) else _selected_parts(state, p)
     dref = p.get("direction", {"kind": "std", "name": "X"})
     _, d = resolve_axis(state, dref)
     if p.get("flip"):
@@ -1572,11 +2095,27 @@ def run_linear_pattern(state, f):
     n = int(p.get("count", 3))
     sp = float(p.get("spacing", 20))
     n2 = int(p.get("count2", 1))
-    if n2 > 1 and p.get("dir2_on", True):
+    grid = n2 > 1 and p.get("dir2_on", True)
+    if grid:
         _, d2 = resolve_axis(state, p.get("dir2") or {"kind": "std", "name": "Y"})
         if p.get("flip2"):
             d2 = -d2
         sp2 = float(p.get("spacing2", sp))
+    if _features_mode(p):
+        if grid:        # the second direction applies to repeated features as it does to parts
+            if n * n2 < 2:
+                raise K.KernelError("Count must be at least 2")
+            _repeat_features(state, f, [((k1, k2), lambda s_, v=d * sp * k1 + d2 * sp2 * k2:
+                                         K.pattern_translate(s_, v, with_history=True))
+                                        for k1 in range(n) for k2 in range(n2) if (k1, k2) != (0, 0)],
+                             "linear_pattern")
+            return
+        if n < 2:
+            raise K.KernelError("Count must be at least 2")
+        _repeat_features(state, f, [(k, lambda s_, k=k: K.pattern_translate(s_, d * sp * k, with_history=True))
+                                    for k in range(1, n)], "linear_pattern")
+        return
+    if grid:
         copies, named = [], []
         for i in ids:
             for k1 in range(n):
@@ -1602,11 +2141,17 @@ def run_linear_pattern(state, f):
 
 def run_circular_pattern(state, f):
     p = f["params"]
-    ids = _selected_parts(state, p)
+    ids = [] if _features_mode(p) else _selected_parts(state, p)
     a, d = resolve_axis(state, p.get("axis", {"kind": "std", "name": "Z"}))
     n = int(p.get("count", 4))
     total = float(p.get("angle", 360))
     step = total / n if abs(total - 360) < 1e-9 else total / max(n - 1, 1)
+    if _features_mode(p):
+        if n < 2:
+            raise K.KernelError("Count must be at least 2")
+        _repeat_features(state, f, [(k, lambda s_, k=k: K.pattern_rotate(s_, a, d, step * k, with_history=True))
+                                    for k in range(1, n)], "circular_pattern")
+        return
     copies, named = [], []
     for i in ids:
         for k in range(1, n):
@@ -1646,24 +2191,56 @@ def run_boolean(state, f):
                [n for n in tool_names if n is not None])
 
 
+# Auto colour: distinct colours that read well under the 3D view's lighting, on light and dark backgrounds.
+# Oranges and yellows are left out: those are the selection and hover highlight colours.
+AUTO_COLORS = ["#4e79a7", "#59a14f", "#e15759", "#76b7b2", "#b07aa1", "#6b5b95", "#2a9d8f", "#ff9da7",
+               "#c06c84", "#86bcb6", "#d37295", "#8cd17d", "#a0cbe8", "#5c7cfa", "#bab0ac", "#499894"]
+
+
+def auto_colors(n, shift=0):
+    """n clearly different colours as (r, g, b) in 0..1. Up to 16 come from the palette above (starting `shift`
+    places along it, so asking again gives a fresh set); beyond that, evenly spread extra hues are added."""
+    import colorsys
+    k = len(AUTO_COLORS)
+    out = []
+    for i in range(n):
+        if i < k:
+            h = AUTO_COLORS[(i + shift) % k].lstrip("#")
+            out.append(tuple(int(h[j:j + 2], 16) / 255 for j in (0, 2, 4)))
+        else:
+            hue = ((i - k) * 0.618033988749895 + 0.11) % 1.0      # golden-ratio steps
+            if 0.04 < hue < 0.18:                                  # skip the highlight oranges / yellows
+                hue += 0.16
+            out.append(colorsys.hsv_to_rgb(hue, 0.55, 0.82))
+    return out
+
+
+def is_brep_name(name) -> bool:
+    return str(name).lower().endswith((".brep", ".brp"))
+
+
 def run_import(state, f):
     p = f["params"]
-    if p.get("blob"):           # the STEP file in the blobs (I4.9): PartStudioDoc.compute hands in `get`
+    if p.get("blob"):           # the imported file in the blobs (I4.9): PartStudioDoc.compute hands in `get`
         try:
             data = p["resolved"](p["blob"])
         except Exception as e:  # BlobError, or no `get` handed in
-            raise K.KernelError(f"The imported STEP file {p.get('filename') or ''} is missing: blob {p['blob']} "
+            raise K.KernelError(f"The imported file {p.get('filename') or ''} is missing: blob {p['blob']} "
                                 f"({e})") from e
     else:
         data = base64.b64decode(p["data"])
-    with tempfile.NamedTemporaryFile(suffix=".step", delete=False) as tmp:
+    brep = is_brep_name(p.get("filename", ""))
+    with tempfile.NamedTemporaryFile(suffix=".brep" if brep else ".step", delete=False) as tmp:
         tmp.write(data)
         path = tmp.name
     try:
-        try:
-            items = K.import_step_with_colors(path)
-        except Exception:
-            items = [(s, None, None, {}) for s in K.import_step(path)]   # plain geometry as a fallback
+        if brep:
+            items = [(s, None, None, {}) for s in K.import_brep(path)]     # BREP holds no names or colours
+        else:
+            try:
+                items = K.import_step_with_colors(path)
+            except Exception:
+                items = [(s, None, None, {}) for s in K.import_step(path)]   # plain geometry as a fallback
         for shape, name, color, fcols in items:
             part = state.new_part(shape, f["id"], tuple(color) if color else None)
             state.parts[part.id] = Part(part.id, name or part.name, part.shape, part.color, fcols or None)
@@ -1896,8 +2473,11 @@ def _path_wire(state, refs):
             if e0["type"] == "circle":
                 curves = [{"type": "circle", "c": sk.points[e0["c"]], "r": e0["r"]}]
             else:
-                chain, _closed = sketch_ops._chain(sk, r["entity"])
-                ids = {k for k, _ in chain}
+                if sketch_ops._ends(e0) is None:          # a closed curve on its own (ellipse, closed spline)
+                    ids = {r["entity"]}
+                else:
+                    chain, _closed = sketch_ops._chain(sk, r["entity"], splines=True)
+                    ids = {k for k, _ in chain}
                 tmp = Sketch.from_dict(sk.to_dict())
                 tmp.entities = {k: dict(v, construction=False) for k, v in tmp.entities.items() if k in ids}
                 curves = tmp.curves()
@@ -1958,22 +2538,70 @@ def run_draft(state, f):
         state.set_named(pid, named)
 
 
+def split_tools(p):
+    """The Split feature's cutting tools: [{"kind": plane|face|path, "ref", "both", "flip"}]. Splits made before
+    2.0 had one plane and a "keep" choice; they read as one tool."""
+    tools = p.get("tools")
+    if tools:
+        return tools
+    if p.get("plane") is not None:
+        keep = p.get("keep", "both")
+        return [{"kind": "plane", "ref": p["plane"], "both": keep == "both", "flip": keep == "back"}]
+    return []
+
+
+def split_tool_shape(state, tool, around, size):
+    """The surface a Split tool cuts with, made big enough to go right through."""
+    kind, ref = tool["kind"], tool["ref"]
+    if kind == "plane":
+        return K.plane_face(resolve_plane(state, ref), around, size)
+    if kind == "face":
+        return K.extended_face(resolve(state, ref, "face")[1], size)
+    if kind == "path":
+        if ref.get("kind") != "sketch_chain":
+            raise K.KernelError("To split along a curve, pick a sketch curve (it is pushed out both ways "
+                                "into a cutting surface)")
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+        wire = _path_wire(state, [ref])
+        n = np.asarray(state.sketches[ref["sketch"]].plane.normal, float)
+        wire = K.translate(wire, -n * size)
+        return BRepPrimAPI_MakePrism(wire, K._vec(n * 2 * size)).Shape()
+    raise K.KernelError("Pick planes, faces or sketch curves to split with")
+
+
 def run_split(state, f):
+    """Cut parts with any number of planes, faces (flat or curved — extended to cut right through) or sketch
+    curves (pushed out into a surface). Each tool keeps both sides, or only the side its arrow points to."""
     p = f["params"]
     ids = _selected_parts(state, p)
-    plane = resolve_plane(state, p.get("plane") or {"kind": "std", "name": "Right"})
+    tools = split_tools(p)
+    if not tools:
+        raise K.KernelError("Pick planes, faces or sketch curves to split with")
+    lo, hi = np.full(3, 1e18), np.full(3, -1e18)
+    for pid in ids:
+        a, b = K.bbox(state.parts[pid].shape)
+        lo, hi = np.minimum(lo, a), np.maximum(hi, b)
+    size = float(np.linalg.norm(hi - lo)) * 2 + 10
+    around = (lo + hi) / 2
+    shapes = [split_tool_shape(state, t, around, size) for t in tools]
     for pid in ids:
         part = state.parts[pid]
-        pieces, hist, tool = K.split_by_plane(part.shape, plane, with_history=True)
-        if p.get("keep") == "front":
-            pieces = [s_ for s_ in pieces if (K.mass_props(s_)["centroid"] - plane.origin) @ plane.normal > 0]
-        elif p.get("keep") == "back":
-            pieces = [s_ for s_ in pieces if (K.mass_props(s_)["centroid"] - plane.origin) @ plane.normal < 0]
+        pieces, hist = K.split_with(part.shape, shapes, with_history=True)
+        if len(pieces) < 2 and all(t.get("both", True) for t in tools):
+            raise K.KernelError("The splitting surfaces don't cut through the part")
+        for t, sh in zip(tools, shapes):
+            if t.get("both", True):
+                continue
+            want = -1.0 if t.get("flip") else 1.0
+            pieces = [pc for pc in pieces if K.piece_side(pc, sh) * want > 0]
         if not pieces:
-            raise K.KernelError("Nothing left on that side of the plane")
+            raise K.KernelError("Nothing is left — every piece is on a side that isn't kept (flip an arrow)")
         whole = K.compound(pieces) if len(pieces) > 1 else pieces[0]
-        # the splitter's pieces are named together; set_part_shape gives each piece the names of its own elements
-        named = name_feature(state, f["id"], [pid, _tool_names(state, f["id"], tool, "cut")], whole, hist, "split")
+        # the splitter's pieces are named together; set_part_shape gives each piece the names of its own
+        # elements. The first tool keeps the label "cut" a one-plane split always had; the rest are numbered.
+        tool_names = [_tool_names(state, f["id"], sh, "cut" if i == 0 else f"cut{i + 1}")
+                      for i, sh in enumerate(shapes)]
+        named = name_feature(state, f["id"], [pid] + tool_names, whole, hist, "split")
         set_part_shape(state, part, whole, named)
 
 
@@ -2030,6 +2658,105 @@ def run_sm_base(state, f):
         state.sheet[part.id] = model
 
 
+def _sheet_edges(state, refs, what):
+    """For each picked edge: (part id, its sheet model, panel, a, b, outward) — the panel edge it is."""
+    if not refs:
+        raise K.KernelError(f"Pick the edges to put {what} on")
+    lo, hi = np.full(3, 1e18), np.full(3, -1e18)
+    for part in state.parts.values():
+        a, b = K.bbox(part.shape)
+        lo, hi = np.minimum(lo, a), np.maximum(hi, b)
+    scale = max(float(np.linalg.norm(hi - lo)), 1e-6)
+    for ref in refs:
+        pid = ref.get("part")
+        if pid not in state.sheet:
+            pid = next(iter(state.sheet), None) if len(state.sheet) == 1 else pid
+        model = state.sheet.get(pid)
+        if model is None or pid not in state.parts:
+            raise K.KernelError(f"{what.capitalize()} go on sheet metal parts — make the part with Sheet metal first")
+        panel, a, b, o = model.find_edge(ref, scale)
+        yield pid, model, panel, a, b, o
+
+
+def run_sm_hem(state, f):
+    """Hems: fold the chosen edges right back over the sheet (180°)."""
+    from . import sheetmetal as SM
+    p = f["params"]
+    for pid, model, panel, a, b, o in list(_sheet_edges(state, p.get("edges", []), "hems")):
+        part = state.parts[pid]
+        shape, model, hist, seeds = SM.add_hem(part.shape, state.sheet[pid], panel, a, b, o,
+                                               float(p.get("length", 10)),
+                                               float(p["radius"]) if p.get("own_radius") else None,
+                                               bool(p.get("down")), f["id"], with_history=True)
+        named = name_feature(state, f["id"], [pid] + seeds, shape, hist, "fuse", stamp=False)   # as run_sm_flange
+        state.parts[pid] = Part(pid, part.name, shape, part.color)
+        state.set_named(pid, named)
+        state.sheet[pid] = model
+
+
+def run_sm_jog(state, f):
+    """Jogs: from the chosen edges the sheet steps up (or down) and carries on parallel."""
+    from . import sheetmetal as SM
+    p = f["params"]
+    for pid, model, panel, a, b, o in list(_sheet_edges(state, p.get("edges", []), "jogs")):
+        part = state.parts[pid]
+        shape, model, steps = SM.add_jog(part.shape, state.sheet[pid], panel, a, b, o, float(p.get("offset", 10)),
+                                         float(p.get("length", 20)),
+                                         float(p["radius"]) if p.get("own_radius") else None,
+                                         bool(p.get("down")), f["id"], with_history=True)
+        named = state.named(pid)
+        for step_shape, hist, seeds in steps:      # two flanges, named one after the other (as run_sm_flange)
+            named = name_feature(state, f["id"], [named] + seeds, step_shape, hist, "fuse", stamp=False)
+        state.parts[pid] = Part(pid, part.name, shape, part.color)
+        state.set_named(pid, named)
+        state.sheet[pid] = model
+
+
+def run_sm_tab(state, f):
+    """Tabs: more sheet in a panel's plane, from sketch regions drawn on its face."""
+    from . import sheetmetal as SM
+    p = f["params"]
+    regions = resolve_regions(state, p.get("regions", []))
+    if not regions:
+        raise K.KernelError("Pick the sketch region(s) for the tab, drawn on a sheet metal face")
+    for face in regions:
+        done = False
+        for pid, model in list(state.sheet.items()):
+            try:
+                shape, model, hist, seeds = SM.add_tab(state.parts[pid].shape, model, face, f["id"],
+                                                       with_history=True)
+            except K.KernelError:
+                continue
+            part = state.parts[pid]
+            named = name_feature(state, f["id"], [pid] + seeds, shape, hist, "fuse", stamp=False)
+            state.parts[pid] = Part(pid, part.name, shape, part.color)
+            state.set_named(pid, named)
+            state.sheet[pid] = model
+            done = True
+            break
+        if not done:
+            raise K.KernelError("Draw the tab on the face of a sheet metal panel, touching its edge")
+
+
+def run_sm_convert(state, f):
+    """Make a flat plate (an imported one, say) into sheet metal, so it can get flanges and be unfolded."""
+    from . import sheetmetal as SM
+    p = f["params"]
+    refs = p.get("faces", [])
+    if not refs:
+        raise K.KernelError("Pick one of the plate's big flat faces")
+    pid, face = resolve(state, refs[0], "face")
+    part = state.parts[pid]
+    shape, model, hist = SM.convert_plate(part.shape, face, float(p.get("radius", 1.5)), float(p.get("k", 0.44)),
+                                          "rect" if p.get("relief", True) else "none",
+                                          float(p.get("relief_scale", 1.5)), with_history=True)
+    # the sheet is a prism of the picked face: named like an extrude from the plate's own names (as run_sm_base)
+    named = name_feature(state, f["id"], [pid], shape, hist, "extrude")
+    state.parts[pid] = Part(pid, part.name, shape, part.color)
+    state.set_named(pid, named)
+    state.sheet[pid] = model
+
+
 def run_sm_flange(state, f):
     """Flanges: bend the sheet up (or down) along the chosen edges."""
     from . import sheetmetal as SM
@@ -2065,7 +2792,7 @@ def run_sm_flange(state, f):
 
 RUNNERS = {
     "sketch": run_sketch, "extrude": run_extrude, "revolve": run_revolve, "fillet": run_fillet,
-    "chamfer": run_chamfer, "shell": run_shell, "plane": run_plane, "mirror": run_mirror,
+    "chamfer": run_chamfer, "shell": run_shell, "plane": run_plane, "axis": run_axis, "mirror": run_mirror,
     "linear_pattern": run_linear_pattern, "circular_pattern": run_circular_pattern,
     "boolean": run_boolean, "import": run_import, "hole": run_hole, "variable": run_variable,
     "variable_studio_ref": run_variable_studio_ref,
@@ -2074,6 +2801,7 @@ RUNNERS = {
     "context": run_context,
     "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
+    "sm_hem": run_sm_hem, "sm_jog": run_sm_jog, "sm_tab": run_sm_tab, "sm_convert": run_sm_convert,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
     "delete_part": run_delete_part,
 }
@@ -2082,6 +2810,9 @@ RUNNERS = {
 def default_params(ftype: str, state: ModelState | None = None) -> dict:
     has_parts = bool(state and state.parts)
     op = "add" if has_parts else "new"
+    if ftype.startswith("plugin:"):
+        from . import plugins
+        return plugins.default_params(ftype, has_parts)
     return {
         "sketch": {"plane": {"kind": "std", "name": "Top"}, "sketch": Sketch().to_dict()},
         "extrude": {"regions": [], "faces": [], "end": "blind", "depth": 25.0, "depth2": 10.0,
@@ -2096,6 +2827,7 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "offset_surface": {"faces": [], "distance": 2.0, "flip": False},
         "delete_part": {"parts": []},
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
+        "axis": {"type": "auto", "refs": [], "click": None, "flip": False, "connector_axis": "z"},
         "mirror": {"parts": [], "plane": {"kind": "std", "name": "Right"}, "op": "add"},
         "linear_pattern": {"parts": [], "direction": {"kind": "std", "name": "X"}, "count": 3,
                            "spacing": 30.0, "flip": False, "op": "new",
@@ -2119,11 +2851,15 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "sweep": {"regions": [], "faces": [], "path": [], "op": op},
         "loft": {"profiles": [], "ruled": False, "op": op},
         "draft": {"faces": [], "neutral": {"kind": "std", "name": "Top"}, "angle": 3.0, "flip": False},
-        "split": {"parts": [], "plane": {"kind": "std", "name": "Right"}, "keep": "both"},
+        "split": {"parts": [], "tools": []},
         "move": {"parts": [], "dx": 0.0, "dy": 0.0, "dz": 0.0, "axis": {"kind": "std", "name": "Z"},
                  "axis_std": "Z", "rotate": 0.0, "copy": False},
         "sm_base": {"regions": [], "thickness": 1.5, "radius": 1.5, "k": 0.44, "flip": False, "relief": True,
                     "relief_scale": 1.5},
+        "sm_hem": {"edges": [], "length": 10.0, "down": False, "own_radius": False, "radius": 0.75},
+        "sm_jog": {"edges": [], "offset": 10.0, "length": 20.0, "down": False, "own_radius": False, "radius": 1.5},
+        "sm_tab": {"regions": []},
+        "sm_convert": {"faces": [], "radius": 1.5, "k": 0.44, "relief": True, "relief_scale": 1.5},
         "sm_flange": {"edges": [], "length": 20.0, "angle": 90.0, "position": "outside", "down": False,
                       "own_radius": False, "radius": 1.5},
     }[ftype]

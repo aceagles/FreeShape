@@ -105,7 +105,8 @@ def fingerprint(case: Case):
 
 @functools.lru_cache(maxsize=None)
 def mesh(case: Case):
-    return K.tessellate(load(case))
+    # The stored triangle counts were taken at the old 0.3 angular deflection; the display default is now 0.2.
+    return K.tessellate(load(case), ang_defl=0.3)
 
 
 # --------------------------------------------------------------------------- mesh checks

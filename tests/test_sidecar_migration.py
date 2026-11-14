@@ -182,11 +182,14 @@ def _saved(tmp_path, kind):
 def test_a_file_written_now_is_refused_by_the_previous_loader(fmt, kind, step, tmp_path, monkeypatch):
     data = _saved(tmp_path, kind)
     latest = M.latest_version(fmt)
-    assert data["version"] == latest and M._CHAINS[fmt][-1].__name__ == step
-    # the build before this card: the same chain without its last step
-    monkeypatch.setitem(M._CHAINS, fmt, M._CHAINS[fmt][:-1])
+    names = [s.__name__ for s in M._CHAINS[fmt]]
+    assert data["version"] == latest and step in names
+    # the build before this card: the chain up to, and without, the step that moved the data to blobs (later
+    # steps, such as the upstream 2.0 merge's, did not exist either)
+    cut = names.index(step)
+    monkeypatch.setitem(M._CHAINS, fmt, M._CHAINS[fmt][:cut])
     with pytest.raises(K.KernelError, match=f"saved with file version {latest}, but this build of FreeShape only "
-                                            f"supports up to version {latest - 1}. Update FreeShape to open it."):
+                                            f"supports up to version {cut + 1}. Update FreeShape to open it."):
         M.migrate(fmt, data, "x")
 
 

@@ -1,0 +1,10 @@
+{
+ "id": "hardware",
+ "name": "Hardware",
+ "version": "1.0.0",
+ "licence": "LGPL-2.1-or-later",
+ "standard_parts": [
+  "bearing:DeepGrooveBearing",
+  "heat_insert:HeatSetInsert"
+ ]
+}

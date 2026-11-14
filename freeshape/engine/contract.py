@@ -68,7 +68,19 @@ STUDIO_OPS = {
     "set_suppressed": "feature, value",
     "set_rollback": "index (None = all features)",
     "rename_feature": "feature, name",
-    "set_part_override": "part, plus any of name / color",
+    "set_part_override": "part, plus any of name / color (None puts it back); or colors ({part: color}) for "
+                         "several parts in one undo step",
+    "make_folder": "ids (a run of features), name (optional), folder (optional id to give it)",
+    "ungroup_folder": "folder",
+    "remove_from_folder": "ids",
+    "rename_folder": "folder, name",
+    "set_folder_open": "folder, value (a view setting: no undo step)",
+    "set_folder_suppressed": "folder, value",
+    "set_configs": "rows ([{name, vars: {variable name: expression}, suppress: [feature id]}]), active (index, "
+                   "optional, default 0): the configuration table, replaced in one undo step",
+    "set_active_config": "config (a row's name or index)",
+    "set_stored_build": "feature (id), build (its `python_builds` entry, naming blobs by key; None drops it): "
+                        "the stored build the feature shows where it cannot build. No undo step, no rebuild",
     "undo": "", "redo": "",
     "save": "path (optional)",
 }
@@ -288,9 +300,11 @@ class Engine(abc.ABC):
         there are blobs and none of those is there."""
 
     @abc.abstractmethod
-    def new_tab(self, kind, name=None, tab=None, sources=()) -> str:
+    def new_tab(self, kind, name=None, tab=None, sources=(), blobs=None) -> str:
         """A new empty tab of `kind` ("studio" | "assembly" | "drawing"). `sources` are the link sources it
-        already consumes (a reopened tab): the process executor records their edges at once, before any edit."""
+        already consumes (a reopened tab): the process executor records their edges at once, before any edit.
+        `blobs` is the tab's blob lookup, as `open_tab_data` takes it: a Part Studio reads the blobs its edits
+        name (a `set_stored_build`) through it."""
 
     @abc.abstractmethod
     def close_tab(self, tab) -> None:

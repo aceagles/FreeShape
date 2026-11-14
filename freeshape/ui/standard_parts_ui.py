@@ -11,7 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFormLayout, QHeaderView, QLabel, QPushButton, QTableWidget,
-    QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QHBoxLayout, QWidget,
+    QSpinBox, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QHBoxLayout, QWidget,
 )
 
 from .. import pyfeature
@@ -325,6 +325,16 @@ class StandardPartsPane(QWidget):
         ff.addRow(self.length_label, self.length)
         lay.addWidget(self.free_box)
 
+        self.quantity = QSpinBox()
+        self.quantity.setObjectName("sp_quantity")
+        self.quantity.setRange(1, 999)
+        self.quantity.setToolTip("How many to insert. With holes picked, the hole count decides.")
+        self.quantity_row = QWidget()
+        qf = QFormLayout(self.quantity_row)
+        qf.setContentsMargins(0, 0, 0, 0)
+        qf.addRow("Quantity", self.quantity)
+        lay.addWidget(self.quantity_row)
+
         self.insert_btn = QPushButton("Insert")
         self.insert_btn.setObjectName("sp_insert")
         self.insert_btn.setDefault(True)
@@ -615,6 +625,11 @@ class StandardPartsPane(QWidget):
             self.length.setHidden(not has)
             self.length_label.setHidden(not has)
         self.insert_btn.setEnabled(chosen and (not self.free or self.size.count() > 0))
+        # holes picked: the hole count decides, so the field shows it and cannot be edited
+        self.quantity_row.setHidden(not chosen)
+        self.quantity.setEnabled(chosen and self.free)
+        if chosen and not self.free:
+            self.quantity.setValue(sum(len(g["targets"]) for g in self.plan["groups"]))
 
     # ------------------------------------------------------------------ insert
     def insert(self):
@@ -639,9 +654,9 @@ class StandardPartsPane(QWidget):
                 params = dict(base, size=size)
                 if self.length.count():
                     params["length"] = self.length.currentData()
-                iid = doc.insert_standard_part(self.type_id, params)
-                res = {"instances": [iid], "mates": []}
-                msg = f"Inserted 1 {label}"
+                from ..standard_insert import insert_free
+                res = insert_free(doc, self.type_id, params, self.quantity.value())
+                msg = f"Inserted {len(res['instances'])} {label}"
         except K.KernelError as e:
             self.status.setText(f"Not inserted: {e}")
             return None

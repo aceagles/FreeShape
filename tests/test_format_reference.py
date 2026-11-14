@@ -90,7 +90,7 @@ def _studio():
     assert doc.errors == {}
     tab = DF.Tab("T9", "studio", "other.fshape", "Other")
     extra = []
-    for ftype in ("derived", "variable_studio_ref", "mate_connector", "context", "delete_part", "import"):
+    for ftype in ("derived", "variable_studio_ref", "mate_connector", "context", "delete_part", "import", "axis"):
         extra.append(doc.make_feature(ftype))
     extra[0]["params"]["source"] = L.studio_source(tab, "F1/1", document="doc-id", version="v1")
     extra[1]["params"].update(source={"kind": "variables", "tab": "T3", "name": "V"}, names=["w"])

@@ -5,7 +5,7 @@ from freeshape import kernel as K
 from freeshape import pyfeature
 from freeshape.features import CLEARANCE, TAP_DRILL
 from freeshape.pyfeature import registry  # noqa: F401  (loads the bundled plugins)
-from freeshape.plugins.fasteners import hole_match
+from freeshape.addons.fasteners import hole_match
 
 METRIC = ("iso4014", "iso4017", "iso4762", "iso4032", "iso7089")
 
@@ -140,7 +140,7 @@ def test_iso7049_overlap_picks_largest_nominal():
 
 
 def test_iso7049_nominal_is_the_generator_diameter():
-    from freeshape.plugins.fasteners import fastener_base as fb
+    from freeshape.addons.fasteners import fastener_base as fb
     p = part("iso7049")
     for s in p.sizes():
         assert p.match_hole(fb.dia(s, False)) is not None

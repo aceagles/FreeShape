@@ -98,8 +98,9 @@ def test_load_then_save_bytes_unchanged(rel, tmp_path):
     doc.save(out)
     with open(out, "rb") as fh:
         data = fh.read()
-    # I4.9 bumped the Part Studio file version from 2 to 3 (import data moves to blobs; these files have none):
+    # I4.9 bumped the Part Studio file version from 2 to 3 (import data moves to blobs; these files have none)
+    # and the upstream 2.0 merge from 3 to 4 (new optional keys, written only when used; these files use none):
     # apart from that number the bytes are the ones recorded before the rename
-    assert data.count(b'\n "version": 3,\n') == 1
-    data = data.replace(b'\n "version": 3,\n', b'\n "version": 2,\n')
+    assert data.count(b'\n "version": 4,\n') == 1
+    data = data.replace(b'\n "version": 4,\n', b'\n "version": 2,\n')
     assert hashlib.sha256(data).hexdigest() == SAVED_SHA256[rel]

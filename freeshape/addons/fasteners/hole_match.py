@@ -13,6 +13,9 @@ Rules for `match_metric`:
 Tapping screws (ISO 7049) seat their head on the clearance hole of the top part: `match_tapping` matches a hole
 of 1.0 to 1.15 times the nominal diameter (the number in the size name, as `fastener_base.dia`); a pilot hole
 does not match. When a hole fits two ST sizes, the largest nominal diameter wins.
+
+Countersunk screws (ISO 10642) and dowel pins (ISO 8734) use `match_nearest`: the hole matches when a diameter the
+size fits (the countersink rim, the pin diameter) is within TOL mm; the smallest difference wins, then the larger size.
 """
 from __future__ import annotations
 
@@ -68,3 +71,16 @@ def match_tapping(sizes, diameter, nominal):
         if n > 0 and RATIO_LO - _EPS <= d / n <= RATIO_HI + _EPS and (best is None or n > best[0]):
             best = (n, s)
     return best[1] if best else None
+
+
+def match_nearest(sizes, diameter, candidates, nominal):
+    """The size in `sizes` with a candidate diameter within TOL mm of `diameter`, or None.
+
+    `candidates(size)` lists the hole diameters that size fits (a pin's own diameter, a countersink's rim).
+    The smallest absolute difference wins, then the larger `nominal(size)`."""
+    d = _diameter(diameter)
+    if d is None:
+        return None
+    best = [(round(abs(c - d), 6), -nominal(s), i, s)
+            for i, s in enumerate(sizes) for c in candidates(s) if abs(c - d) <= TOL + _EPS]
+    return min(best)[-1] if best else None

@@ -7,9 +7,13 @@ in the home folder."""
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
 
-from PySide6.QtCore import QSettings, QStandardPaths
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtCore import QSettings, QStandardPaths, QUrl
+from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 _KEY = "last_folder"
 # per kind: the setting written, then older names still read so a remembered folder survives an update
@@ -84,3 +88,48 @@ def getSaveFileName(parent, caption="", path="", filt="", selected="", kind="doc
 def getExistingDirectory(parent, caption="", path="", kind="doc", doc_path=None):
     """Pick a folder. The folder chosen is not remembered: a Document folder is opened, not browsed into."""
     return QFileDialog.getExistingDirectory(parent, caption, start_path(path, kind, doc_path))
+
+
+# ---------------------------------------------------------------------- opening a folder in the file manager
+def can_open_folders(platform=None, which=shutil.which, run=subprocess.run) -> bool:
+    """Whether the desktop has something that opens folders. Windows and macOS always do. On Linux Qt hands the
+    folder to xdg-open and reports success as soon as xdg-open starts, even when no file manager is installed
+    (a bare container desktop), so ask xdg-mime which program handles folders instead."""
+    if not (platform or sys.platform).startswith("linux"):
+        return True
+    if not which("xdg-open"):
+        return False
+    if not which("xdg-mime"):
+        return True                       # can't tell: let xdg-open try
+    try:
+        out = run(["xdg-mime", "query", "default", "inode/directory"], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return bool((out.stdout or "").strip())
+
+
+def _tell_folder(parent, folder):
+    """No file manager: show where the folder is, with a button that copies the path."""
+    box = QMessageBox(parent)
+    box.setWindowTitle("Folder")
+    box.setIcon(QMessageBox.Information)
+    box.setText("There is no file manager here to open the folder with. It is at:")
+    box.setInformativeText(folder)
+    copy = box.addButton("Copy path", QMessageBox.ActionRole)
+    box.addButton(QMessageBox.Ok)
+    box.exec()
+    if box.clickedButton() is copy:
+        QGuiApplication.clipboard().setText(folder)
+
+
+def open_folder(parent, folder, can_open=None, launch=None, tell=None) -> bool:
+    """Open `folder` in the file manager. Where there is none, or it will not start, say where the folder is
+    instead of doing nothing. Returns whether a file manager was started."""
+    folder = os.path.normpath(folder)
+    ok = can_open_folders() if can_open is None else can_open
+    if ok:
+        launch = launch or (lambda f: QDesktopServices.openUrl(QUrl.fromLocalFile(f)))
+        if launch(folder):
+            return True
+    (tell or _tell_folder)(parent, folder)
+    return False

@@ -344,19 +344,20 @@ class HomePage(QWidget):
         m.addAction("Remove from list", lambda: self.removeRecent.emit(path))
         m.exec(gpos)
 
-    @staticmethod
-    def _show_in_folder(path):
+    def _show_in_folder(self, path):
         import subprocess
         import sys
+        from . import filedlg
         try:
             if sys.platform == "win32":
                 subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-            elif sys.platform == "darwin":
+                return
+            if sys.platform == "darwin":
                 subprocess.Popen(["open", "-R", path])
-            else:
-                subprocess.Popen(["xdg-open", os.path.dirname(path)])
+                return
         except OSError:
             pass
+        filedlg.open_folder(self, os.path.dirname(path))
 
     # ------------------------------------------------------------------ drag & drop
     def dragEnterEvent(self, e):

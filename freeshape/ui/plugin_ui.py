@@ -5,8 +5,7 @@ import os
 import shutil
 import traceback
 
-from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget, QListWidgetItem, QTextBrowser,
     QMessageBox, QSplitter,
@@ -164,8 +163,9 @@ class PluginsDialog(QDialog):
         self.info.setHtml("".join(h))
 
     def open_folder(self):
+        from . import filedlg
         os.makedirs(P.user_dir(), exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(P.user_dir()))
+        filedlg.open_folder(self, P.user_dir())
 
     def install(self):
         from PySide6.QtWidgets import QFileDialog

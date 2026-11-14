@@ -291,6 +291,13 @@ class _Worker:
         pkg = {"kind": t.kind, "uid": getattr(doc, "uid", None), "name": str(doc.name), "path": doc.path}
         if t.kind == "studio":
             def body(st):
+                # hand each part its element-name map first, as outputs() does: encode.element_names reads it
+                # from the part. Without this a tab that derives from this one gets nameless parts whenever
+                # this tab was rebuilt since its own outputs were last read (any live edit), and every
+                # reference it holds to a derived face or edge then fails with "is gone".
+                for p in st.parts.values():
+                    if getattr(p, "named", None) is None:
+                        p.named = st.named(p.id)
                 return {"parts": [lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
                                   if not p.reference],      # I5.3: Context bodies are reference only
                         "sketches": [plain(asdict(sketch_out(fid, (doc.feature(fid) or {}).get("name", fid), res)))

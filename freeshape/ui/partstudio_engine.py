@@ -253,6 +253,8 @@ class _Result:
         self.snap, self.errors, self.variables, self.revision = snap, dict(out.errors), dict(out.variables), out.revision
         self.parts = parts           # [(PartOut, shape, K.Mesh)]
         self.connectors = list(getattr(out, "connectors", []))     # [MateConnectorOut]
+        self.planes = dict(getattr(out, "planes", None) or {})     # plane feature id -> Plane.to_dict()
+        self.axes = dict(getattr(out, "axes", None) or {})         # axis feature id -> {"o", "d", "span"}
         self.rebuilt = []            # tab ids the engine rebuilt because this tab's output changed (Link graph)
         self.extra = []              # [(rec, _Result)] for the Part Studios among them
         self.copies = None           # saved copies of plugin features from the worker (StudioEngine._plugin_copies)
@@ -490,9 +492,21 @@ class StudioEngine(QObject):
         n = len(res.snap["features"]) if res.snap["rollback"] is None else min(res.snap["rollback"],
                                                                                  len(res.snap["features"]))
         row = config_row(res.snap.get("configs"))        # the variables the engine built with, not the raw ones
+        # Planes and axes come from the engine, which built each one against the model as it was at that feature.
+        # Re-running them here would resolve their faces and edges in the finished parts, where a later feature
+        # may have changed (and so renamed) the face: the plane or axis would then silently vanish.
+        planes, axes = getattr(res, "planes", None) or {}, getattr(res, "axes", None) or {}
         for f in res.snap["features"][:n]:
             f = PartStudioDoc._configured(f, row)
             if f["type"] in _LIGHT and not f.get("suppressed"):
+                if f["type"] == "plane" and f["id"] in planes:
+                    st.planes[f["id"]] = K.Plane.from_dict(planes[f["id"]])
+                    continue
+                if f["type"] == "axis" and f["id"] in axes:
+                    ax = axes[f["id"]]
+                    st.axes[f["id"]] = {"o": [float(x) for x in ax["o"]], "d": [float(x) for x in ax["d"]],
+                                        "span": None if ax.get("span") is None else [float(x) for x in ax["span"]]}
+                    continue
                 try:
                     F.RUNNERS[f["type"]](st, F.prepare(f, st))
                 except Exception:       # noqa: BLE001 -- the engine's `errors` already say why it failed

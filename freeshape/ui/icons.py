@@ -383,6 +383,17 @@ def draw(name: str, p: QPainter):
         p.drawLine(QPointF(17, 17), QPointF(17, 10))
         p.drawLine(QPointF(17, 17), QPointF(22, 20))
         _arrow(p, 9, 9, 5, 5, INK, 1.4)
+    elif name == "versions":
+        p.setPen(_pen(INK, 2.2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(16, 16), 10.5, 10.5)
+        p.drawLine(QPointF(16, 16), QPointF(16, 9.5))
+        p.drawLine(QPointF(16, 16), QPointF(20.5, 19))
+    elif name == "tag":
+        p.setPen(_pen(INK, 2.2))
+        p.setBrush(Qt.NoBrush)
+        p.drawPolygon(QPolygonF([QPointF(5, 5), QPointF(15, 5), QPointF(27, 17), QPointF(17, 27), QPointF(5, 15)]))
+        p.drawEllipse(QPointF(11, 11), 1.8, 1.8)
     elif name == "derived":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(FACE)

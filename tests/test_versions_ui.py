@@ -134,7 +134,7 @@ def test_new_workspace_from_version(make_window, tmp_path, monkeypatch):
     monkeypatch.setattr(V.QInputDialog, "getText", staticmethod(lambda *a, **k: ("alt", True)))
     dlg = V.VersionsDialog(w.versions_ui)
     dlg.new_workspace_selected()
-    assert fd.current_workspace() == "alt" and w.workspace_combo.currentText() == "alt"
+    assert fd.current_workspace() == "alt" and w.doc_label.workspace() == "alt"
 
 
 def _make_b_pinned_to_a(tmp_path):

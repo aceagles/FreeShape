@@ -12,7 +12,7 @@ from PySide6.QtGui import QAction, QKeySequence, QShortcut, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolButton, QLabel, QFrame, QSplitter, QMenu,
     QStackedWidget, QFileDialog, QMessageBox, QInputDialog, QColorDialog, QTabBar, QSizePolicy, QApplication, QDialog,
-    QComboBox,
+    QComboBox, QPushButton, QScrollArea,
 )
 
 from .. import kernel as K
@@ -61,6 +61,76 @@ def regions_of_sketch(state, fid):
     """Region picks for every closed region of sketch `fid` (empty if it has none)."""
     sr = state.sketches.get(fid)
     return [Pick("region", (fid, i)) for i in range(len(sr.regions))] if sr is not None else []
+
+
+class _TopBar(QWidget):
+    """The top bar. It reports its width, so wide controls can shrink to icons in a narrow window."""
+
+    def __init__(self, on_resize):
+        super().__init__()
+        self._on_resize = on_resize
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._on_resize(e.size().width())
+
+
+class _ToolScroll(QScrollArea):
+    """Holds the toolbar row, so its many buttons do not set the window's minimum width. In a window too narrow for
+    all of them the row scrolls sideways with the mouse wheel."""
+
+    def __init__(self, inner, height):
+        super().__init__()
+        self.setWidget(inner)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFixedHeight(height)
+
+    def wheelEvent(self, e):
+        bar, d = self.horizontalScrollBar(), e.angleDelta()
+        bar.setValue(bar.value() - (d.x() or d.y()))
+        e.accept()
+
+
+class _DocChip(QToolButton):
+    """The top bar's Document chip: the Document name, then the current Workspace when the Document has Workspaces.
+    setText() takes the name alone, as the label it replaced did. The menu (switch, new, merge) is attached only
+    while there is a Document and the chip is not `plain` (Home is showing)."""
+
+    def __init__(self):
+        super().__init__()
+        self._name, self._workspace, self._menu, self._plain = "", None, None, False
+        self.setPopupMode(QToolButton.InstantPopup)
+
+    def setText(self, name):
+        self._name = name
+        self._compose()
+
+    def name(self):
+        return self._name
+
+    def workspace(self):
+        return self._workspace
+
+    def set_workspace(self, workspace, menu):
+        self._workspace, self._menu = workspace, menu
+        self._compose()
+
+    def set_plain(self, plain):
+        self._plain = bool(plain)
+        self._compose()
+
+    def _compose(self):
+        live = self._menu is not None and not self._plain
+        ws = self._workspace if live else None
+        super().setText(f"{self._name}   /   {ws}  ▾" if ws else self._name)
+        self.setMenu(self._menu if live else None)
+        if self.property("plain") != (not live):
+            self.setProperty("plain", not live)
+            self.style().unpolish(self)
+            self.style().polish(self)
 
 
 def _sep():
@@ -132,6 +202,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
         root.addWidget(self._build_topbar())
         self.main_stack = QStackedWidget()
+        self.main_stack.currentChanged.connect(lambda i: self.doc_label.set_plain(i != 0))   # Home: the name alone
         work = QWidget()
         root_outer = root
         root = QVBoxLayout(work)
@@ -143,8 +214,7 @@ class MainWindow(QMainWindow):
         self.tool_stack.addWidget(self._build_sketch_toolbar())
         self.tool_stack.addWidget(self._build_assembly_toolbar())
         self.tool_stack.addWidget(self._build_drawing_toolbar())
-        self.tool_stack.setFixedHeight(44)
-        root.addWidget(self.tool_stack)
+        root.addWidget(_ToolScroll(self.tool_stack, 44))
 
         split = QSplitter(Qt.Horizontal)
         split.setHandleWidth(1)
@@ -265,29 +335,27 @@ class MainWindow(QMainWindow):
         self.viewport.hoverChanged.connect(self._hover_changed)
 
     def _build_topbar(self):
-        bar = QWidget()
+        # left: the logo (Home) and the menus; centre: the Document chip; right: versions, Search tools, help
+        bar = _TopBar(self._topbar_resized)
         bar.setObjectName("topbar")
         bar.setFixedHeight(44)
         h = QHBoxLayout(bar)
-        h.setContentsMargins(12, 0, 12, 0)
-        mark = QLabel()
-        mark.setPixmap(app_icon().pixmap(28, 28))
-        h.addWidget(mark)
-        h.addSpacing(6)
-        logo = QLabel("freeshape")
-        logo.setObjectName("logo")
-        h.addWidget(logo)
-        h.addSpacing(10)
+        h.setContentsMargins(8, 0, 12, 0)
+        h.setSpacing(2)
         home_btn = QToolButton()
-        home_btn.setObjectName("menuButton")
-        home_btn.setText("⌂  Home")
+        home_btn.setObjectName("logoButton")
+        home_btn.setIcon(app_icon())
+        home_btn.setIconSize(QSize(28, 28))
+        home_btn.setText("freeshape")
+        home_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         home_btn.setToolTip("Home — new projects and recent files")
         home_btn.clicked.connect(lambda: self.show_home() if self.main_stack.currentIndex() == 0 else self.show_workspace())
         self.home_btn = home_btn
         h.addWidget(home_btn)
+        h.addSpacing(8)
         menu_btn = QToolButton()
         menu_btn.setObjectName("menuButton")
-        menu_btn.setText("☰  Document")
+        menu_btn.setText("Document")
         menu_btn.setPopupMode(QToolButton.InstantPopup)
         m = QMenu(menu_btn)
         self._add_action(m, "New Part Studio", self.new_doc, "Ctrl+N")
@@ -328,9 +396,6 @@ class MainWindow(QMainWindow):
         self._add_action(m, "Quit", self.close, "Ctrl+Q")
         menu_btn.setMenu(m)
         h.addWidget(menu_btn)
-        self._build_workspace_switcher(h)
-        self._build_merge_button(h)
-        self._build_versions_bar(h)
         view_btn = QToolButton()
         view_btn.setObjectName("menuButton")
         view_btn.setText("View")
@@ -423,23 +488,51 @@ class MainWindow(QMainWindow):
         selm.addAction(ra)
         self.sel_btn.setMenu(selm)
         h.addWidget(self.sel_btn)
-        search_btn = QToolButton()
-        search_btn.setObjectName("menuButton")
-        search_btn.setText("Search tools…")
-        search_btn.setIcon(icon("search"))
-        search_btn.setToolTip("Find a tool by name (Alt+C or Ctrl+Space)")
-        search_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        search_btn.clicked.connect(self.open_command_search)
-        h.addWidget(search_btn)
-        h.addSpacing(16)
-        self.doc_label = QLabel("Untitled document")
-        self.doc_label.setObjectName("docname")
-        h.addWidget(self.doc_label)
         h.addStretch(1)
-        hint = QLabel("Right-drag: rotate · Middle-drag: pan · Wheel: zoom")
-        hint.setObjectName("muted")
-        h.addWidget(hint)
+        self._build_workspace_switcher(h)
+        h.addStretch(1)
+        self._build_versions_bar(h)
+        h.addSpacing(6)
+        h.addWidget(_sep())
+        h.addSpacing(6)
+        search_btn = QPushButton("Search tools")
+        search_btn.setObjectName("searchField")
+        search_btn.setIcon(icon("search"))
+        search_btn.setIconSize(QSize(16, 16))
+        search_btn.setToolTip("Find a tool by name (Alt+C or Ctrl+Space)")
+        search_btn.setFocusPolicy(Qt.NoFocus)
+        search_btn.clicked.connect(self.open_command_search)
+        sl = QHBoxLayout(search_btn)
+        sl.setContentsMargins(0, 0, 8, 0)
+        sl.addStretch(1)
+        self.search_kbd = QLabel("Ctrl+Space")
+        self.search_kbd.setObjectName("kbd")
+        self.search_kbd.setAttribute(Qt.WA_TransparentForMouseEvents)
+        sl.addWidget(self.search_kbd)
+        self.search_btn = search_btn
+        h.addWidget(search_btn)
+        help_btn = QToolButton()
+        help_btn.setObjectName("menuButton")
+        help_btn.setText("?")
+        help_btn.setToolTip("Right-drag: rotate · Middle-drag: pan · Wheel: zoom\nClick for all mouse and keyboard shortcuts")
+        help_btn.clicked.connect(self.show_shortcuts)
+        h.addWidget(help_btn)
+        self._topbar_narrow = None
+        self._topbar_resized(bar.width())
         return bar
+
+    def _topbar_resized(self, width):
+        """Below 1180 px the logo, Create version and Search tools show their icons only, so nothing is cut off."""
+        narrow = width < 1180
+        if narrow == self._topbar_narrow:
+            return
+        self._topbar_narrow = narrow
+        style = Qt.ToolButtonIconOnly if narrow else Qt.ToolButtonTextBesideIcon
+        self.home_btn.setToolButtonStyle(style)
+        self.versions_ui.create_btn.setToolButtonStyle(style)
+        self.search_btn.setText("" if narrow else "Search tools")
+        self.search_kbd.setVisible(not narrow)
+        self.search_btn.setFixedWidth(34 if narrow else 230)
 
     # ------------------------------------------------------------------ command search
     def _palette_commands(self):
@@ -2052,53 +2145,53 @@ class MainWindow(QMainWindow):
 
     # ================================================================== Workspaces (git branches of the Document)
     def _build_workspace_switcher(self, layout):
-        """The top-bar switcher: a combo box of the Document's Workspaces and a button to start a new one from a version."""
-        from PySide6.QtWidgets import QComboBox
-        self.workspace_label = QLabel("Workspace")
-        self.workspace_label.setObjectName("muted")
-        self.workspace_combo = QComboBox()
-        self.workspace_combo.setObjectName("workspaceSwitcher")
-        self.workspace_combo.setMinimumWidth(120)
-        self.workspace_combo.setToolTip("Workspace: a line of work in this Document")
-        self.workspace_combo.currentIndexChanged.connect(self._workspace_chosen)
-        self.workspace_new = QToolButton()
-        self.workspace_new.setObjectName("menuButton")
-        self.workspace_new.setText("+ Workspace")
-        self.workspace_new.setToolTip("New Workspace from a version")
-        self.workspace_new.clicked.connect(lambda: self.new_workspace_dialog())
-        self._ws_updating = False
-        self._ws_widgets = (self.workspace_label, self.workspace_combo, self.workspace_new)
-        layout.addSpacing(8)
-        for wdg in self._ws_widgets:
-            layout.addWidget(wdg)
-            wdg.setVisible(False)
+        """The top-bar Document chip: the Document's name and current Workspace. Its menu switches Workspace, starts
+        a new one from a version and merges another one in."""
+        self.doc_label = _DocChip()
+        self.doc_label.setObjectName("docChip")
+        self.doc_label.setText("Untitled document")
+        self.workspace_menu = QMenu(self.doc_label)
+        self.workspace_actions = {}                 # Workspace name -> its checkable menu entry
+        self.workspace_new = QAction("New Workspace from a version…", self)
+        self.workspace_new.triggered.connect(lambda: self.new_workspace_dialog())
+        self._build_merge_button()
+        layout.addWidget(self.doc_label)
 
     def _refresh_workspaces(self):
-        """Fill the switcher from the open Document (hidden when there is none)."""
+        """Fill the Document chip and its menu from the open Document (a bare name, no menu, when there is none)."""
         fd = self.folder
-        combo = self.workspace_combo
-        self._ws_updating = True
-        try:
-            combo.clear()
-            problem = fd.git_problem() if fd is not None else None
-            if fd is not None and problem is None:
-                try:
-                    names, current = fd.workspaces(), fd.current_workspace()
-                except K.KernelError as e:
-                    problem = str(e)
-            if fd is not None and problem is None:
-                combo.addItems(names)
-                combo.setCurrentIndex(max(0, combo.findText(current)))
-            for wdg in self._ws_widgets:
-                wdg.setVisible(fd is not None)
-                wdg.setEnabled(problem is None)
-            if problem:
-                combo.setToolTip(f"Workspaces are unavailable: {problem}")
-            else:
-                combo.setToolTip("Workspace: a line of work in this Document")
-            self._refresh_merge_ui()
-        finally:
-            self._ws_updating = False
+        menu = self.workspace_menu
+        menu.clear()
+        self.workspace_actions = {}
+        names, current = [], None
+        problem = fd.git_problem() if fd is not None else None
+        if fd is not None and problem is None:
+            try:
+                names, current = fd.workspaces(), fd.current_workspace()
+            except K.KernelError as e:
+                names, current, problem = [], None, str(e)
+        if problem:
+            menu.addAction(f"Workspaces are unavailable: {problem}").setEnabled(False)
+        else:
+            menu.addAction("Workspaces").setEnabled(False)
+            for name in names:
+                a = menu.addAction(name)
+                a.setCheckable(True)
+                a.setChecked(name == current)
+                a.triggered.connect(lambda _=False, n=name: self._workspace_chosen(n))
+                self.workspace_actions[name] = a
+            menu.addSeparator()
+            menu.addAction(self.workspace_new)
+            menu.addAction(self.merge_action)
+        self.workspace_new.setEnabled(fd is not None and problem is None)
+        self.merge_action.setText(f"Merge another Workspace into “{current}”…" if current
+                                  else "Merge another Workspace…")
+        self.doc_label.set_workspace(current, menu if fd is not None else None)
+        if problem:
+            self.doc_label.setToolTip(f"Workspaces are unavailable: {problem}")
+        else:
+            self.doc_label.setToolTip("Workspace: a line of work in this Document" if fd is not None else "")
+        self._refresh_merge_ui()
         self._refresh_versions()
 
     def _note_git_problem(self, fd):
@@ -2107,10 +2200,14 @@ class MainWindow(QMainWindow):
         if problem:
             self.status.showMessage(f"Versions and Workspaces are off for this Document: {problem}", 15000)
 
-    def _workspace_chosen(self, index):
-        if self._ws_updating or self.folder is None or index < 0:
+    def _workspace_chosen(self, name):
+        if self.folder is None:
             return
-        self.switch_workspace(self.workspace_combo.itemText(index))
+        if name != self.doc_label.workspace():
+            self.switch_workspace(name)
+        # a click toggles the entry; put the ticks back on the Workspace that is current (the switch may have been cancelled)
+        for n, a in self.workspace_actions.items():
+            a.setChecked(n == self.doc_label.workspace())
 
     def _workspace_dirty_choice(self, what):
         """How to treat unsaved tabs before a Workspace change: "raise" (none to worry about), "discard", or None
@@ -2226,21 +2323,17 @@ class MainWindow(QMainWindow):
         return self.versions_ui.updates_dialog()
 
     # ================================================================== Merge (another Workspace into this one)
-    def _build_merge_button(self, layout):
-        """The top-bar Merge button, next to the Workspace switcher."""
-        self.merge_btn = QToolButton()
-        self.merge_btn.setObjectName("menuButton")
-        self.merge_btn.setText("Merge…")
-        self.merge_btn.setToolTip("Merge another Workspace into this one")
-        self.merge_btn.clicked.connect(lambda: self.merge_dialog())
-        layout.addWidget(self.merge_btn)
-        self.merge_btn.setVisible(False)
+    def _build_merge_button(self):
+        """The Merge entry of the Document chip's menu."""
+        self.merge_action = QAction("Merge another Workspace…", self)
+        self.merge_action.triggered.connect(lambda: self.merge_dialog())
+        self.merge_action.setVisible(False)
         self._show_document_warnings(None)
 
     def _refresh_merge_ui(self):
-        """Show the Merge button with a Document that has Workspaces, and the open Document's warnings."""
+        """Show the Merge entry with a Document that has Workspaces, and the open Document's warnings."""
         fd = self.folder
-        btn = getattr(self, "merge_btn", None)
+        btn = getattr(self, "merge_action", None)
         if btn is not None:
             btn.setVisible(fd is not None)
             btn.setEnabled(fd is not None and not fd.read_only and fd.git_problem() is None)

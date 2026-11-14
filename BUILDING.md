@@ -37,6 +37,26 @@ three to the release (`.github/workflows/mac.yml`). **Actions → Build (Windows
 test build instead, with the files, a screenshot of FreeShape running on the Mac and the logs on a private
 *Test builds* draft release (only you can see it). On a Mac of your own, `bash packaging/mac/build_mac.sh` builds the Mac app locally.
 
+### Releases of this fork: push a tag
+
+This fork releases from a tag. With `master` at the commit to release:
+
+```
+git tag v2.0.0-fork.1 && git push origin v2.0.0-fork.1
+```
+
+The tag is the version in `freeshape/__init__.py`, then `-fork.` and a number that goes up with each release of
+that version; a tag that does not match the code's version is refused. GitHub then makes a draft release, builds
+the Windows installer and portable zip, the Mac `.dmg`, the Linux AppImage and a **`.deb`** for Debian and
+Ubuntu, checks each one, attaches them, and publishes the release. Plain `v2.0.0` tags are upstream's and build
+nothing here.
+
+Each build runs a self-test that also checks the bundled plugins (fasteners, gears, hardware) are present and
+that a worker process can rebuild a part. The `.deb` is installed on the build machine and tested from there.
+It installs to `/opt/freeshape` and needs `git`, which Documents use; on Windows and Mac, install git yourself
+to use Documents. To build the `.deb` by hand: `bash packaging/linux/build_appimage.sh && bash
+packaging/linux/build_deb.sh`.
+
 ## Make a Linux AppImage
 
 On Linux, with the requirements and PyInstaller installed (`python3 -m pip install -r requirements.txt pyinstaller`),

@@ -310,6 +310,7 @@ class MainWindow(QMainWindow):
         self._add_action(m, "Export STEP…", lambda: self.export(None, "step"))
         self._add_action(m, "Export STL…", lambda: self.export(None, "stl"))
         self._add_action(m, "Export BREP…", lambda: self.export(None, "brep"))
+        self._add_action(m, "Export DXF (selected sketches / flat faces)…", lambda: self.export_dxf())
         self._add_action(m, "Nest sheet metal for cutting…", self.nest_for_cutting)
         m.addSeparator()
         plm = m.addMenu("Plugins")
@@ -531,6 +532,9 @@ class MainWindow(QMainWindow):
               self.open_step_library, "step parts browse servo motor bearing standard catalogue insert", "File"),
             C("export", "Export", "Export the model as STEP, STL, 3MF, OBJ or BREP.",
               lambda: self.export(None, None), "save stl step 3mf obj brep", "File"),
+            C("dxf", "Export DXF", "Export the selected sketches and flat faces as a DXF for laser cutting, with "
+              "the layers and colours of the profile you choose (e.g. K40 Whisperer).",
+              lambda: self.export_dxf(), "laser cut engrave k40 whisperer outline sketch face profile colour", "File"),
             Command("history", "Compare Versions", "What changed between two Versions of this Document, or since "
                     "one: the features added, removed and changed in each Part Studio.",
                     lambda: self.versions_ui.compare(), "version history what changed diff", "File",
@@ -2684,6 +2688,10 @@ class MainWindow(QMainWindow):
                 return
             pid = ids[names.index(name)]
         part = state.parts[pid]
+        from .export_dialog import DxfExportDialog
+        opts = DxfExportDialog.ask(self, self.settings)
+        if not opts:
+            return
         path, _ = filedlg.getSaveFileName(self, "Export flat pattern", part.name.replace(" ", "_") + "_flat.dxf",
                                           "DXF (*.dxf)", kind="export", doc_path=self._doc_path())
         if not path:
@@ -2692,10 +2700,107 @@ class MainWindow(QMainWindow):
             path += ".dxf"
         try:
             fp = self.flat_pattern_of(state, pid)
-            _n, nb = SM.flat_dxf(fp, path, part.name)
+            _n, nb = SM.flat_dxf(fp, path, part.name, profile=opts["profile"])
             self.status.showMessage(f"Exported the flat pattern of {part.name} ({nb} bend line(s)): {path}", 8000)
         except Exception as e:
             QMessageBox.critical(self, APP_NAME, f"Couldn't export the flat pattern:\n{e}")
+
+    # ------------------------------------------------------------------ DXF of sketches and flat faces
+    DXF_PICK_KINDS = ("face", "region", "sketch_line")
+
+    def dxf_sources(self, picks=None, sketches=()):
+        """What a DXF export would write: [{"label", "kind": "sketch" | "face", "plane", "sketch" | "face"}] for
+        the flat faces and the sketches among `picks` (the selection by default) and the sketch features
+        `sketches`. A sketch is taken whole, once, however many of its lines or regions are picked.
+        dxfexport.DxfExportError for a curved face."""
+        from .. import dxfexport as DX
+        state = self.doc.state
+        out, seen = [], set()
+
+        def add_sketch(fid):
+            sr = state.sketches.get(fid)
+            if sr is None or fid in seen:
+                return
+            seen.add(fid)
+            f = self.doc.feature(fid)
+            out.append({"label": f["name"] if f else str(fid), "kind": "sketch", "plane": sr.plane,
+                        "sketch": sr.sketch})
+
+        for pk in (self.viewport.selection if picks is None else picks):
+            if pk.kind == "face":
+                face = self._sub(pk)
+                if face is None:
+                    continue
+                part = state.parts.get(pk.key[0])
+                out.append({"label": f"{part.name if part else 'Part'} face", "kind": "face",
+                            "plane": DX.face_plane(face), "face": face})
+            elif pk.kind in ("region", "sketch_line"):
+                add_sketch(pk.key[0])
+        for fid in sketches:
+            add_sketch(fid)
+        return out
+
+    def write_dxf(self, sources, path, profile=None, roles=None, construction=None):
+        """Write `sources` (from dxf_sources) as one DXF, each where it is in the model, seen square-on to the
+        first one. `roles` gives a role per source ("cut" by default); `construction` the role a sketch's
+        construction lines get (None: left out). Returns {role: entities written}."""
+        from .. import dxfexport as DX
+        parts = []
+        for i, src in enumerate(sources):
+            role = roles[i] if roles and i < len(roles) else "cut"
+            if src["kind"] == "sketch":
+                g = DX.sketch_geometry(src["sketch"], role, construction)
+            else:
+                g = DX.face_geometry(src["face"], role, src["plane"])
+            parts.append((g, src["plane"]))
+        return DX.write(DX.combine(parts), path, profile)
+
+    def export_dxf(self, picks=None, sketches=()):
+        """Export the selected sketches and flat faces (or the given ones) as a DXF, asking for the profile and
+        what each one is for."""
+        from .. import dxfexport as DX
+        from .export_dialog import DxfExportDialog
+        if self.is_asm or self.is_dwg or self.doc is None:
+            return
+        try:
+            sources = self.dxf_sources(picks, sketches)
+        except DX.DxfExportError as e:
+            QMessageBox.information(self, APP_NAME, str(e))
+            return
+        if not sources:
+            QMessageBox.information(self, APP_NAME, "Select the sketches or flat faces to export first (click them "
+                                    "in the model, or right-click one and choose Export DXF).")
+            return
+        opts = DxfExportDialog.ask(self, self.settings, [(s["label"], s["kind"]) for s in sources])
+        if not opts:
+            return
+        name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in sources[0]["label"]) or "export"
+        path, _ = filedlg.getSaveFileName(self, "Export DXF", name + ".dxf", "DXF (*.dxf)", kind="export",
+                                          doc_path=self._doc_path())
+        if not path:
+            return
+        if not path.lower().endswith(".dxf"):
+            path += ".dxf"
+        try:
+            counts = self.write_dxf(sources, path, opts["profile"], opts["roles"], opts["construction"])
+        except (DX.DxfExportError, K.KernelError, OSError) as e:
+            QMessageBox.critical(self, APP_NAME, f"Couldn't export the DXF:\n{e}")
+            return
+        what = ", ".join(f"{n} {DX.ROLE_LABELS[r].lower()}" for r, n in counts.items())
+        self.status.showMessage(f"Exported DXF for {opts['profile'].name} ({what}): {path}", 8000)
+
+    def _is_flat_face(self, pk):
+        face = self._sub(pk)
+        return face is not None and K.planar_face_plane(face) is not None
+
+    def _dxf_picks(self, pk):
+        """The picks an Export DXF on `pk` acts on: every face / sketch selected if pk is one of them, else pk."""
+        sel = [p for p in self.viewport.selection if p.kind in self.DXF_PICK_KINDS]
+        if pk in sel:
+            return sel
+        if pk.kind in ("region", "sketch_line") and any(p.kind != "face" and p.key[0] == pk.key[0] for p in sel):
+            return sel
+        return [pk]
 
     # ================================================================== undo / misc
     def undo(self):
@@ -3020,6 +3125,12 @@ class MainWindow(QMainWindow):
         if f["type"] == "plane":
             m.addAction("New sketch on plane", lambda: (self.viewport.set_selection([Pick("plane", ("plane", fid))]),
                                                         self.start_sketch()))
+        if f["type"] == "sketch" and fid in self.doc.state.sketches:
+            sks = [i for i in self.left.features.selected_feature_ids()
+                   if (self.doc.feature(i) or {}).get("type") == "sketch" and i in self.doc.state.sketches]
+            sks = sks if fid in sks else [fid]
+            m.addAction(icon("dxf", 16), f"Export {len(sks)} sketches as DXF…" if len(sks) > 1 else "Export DXF…",
+                        lambda: self.export_dxf([], sks))
         m.addSeparator()
         m.addAction("Unsuppress" if f.get("suppressed") else "Suppress",
                     lambda: self.doc.set_suppressed(fid, not f.get("suppressed")))
@@ -3339,6 +3450,8 @@ class MainWindow(QMainWindow):
                     m.addAction("Select part", lambda: self.viewport.set_selection([Pick("part", (pid,))]))
                     m.addAction("Mass properties", lambda: self._mass_props(pid))
                     m.addAction(icon("delete_part", 16), "Delete part…", lambda: self._delete_parts([pid]))
+            if pk.kind in self.DXF_PICK_KINDS and (pk.kind != "face" or self._is_flat_face(pk)):
+                m.addAction(icon("dxf", 16), "Export DXF…", lambda: self.export_dxf(self._dxf_picks(pk)))
             if pk.kind in ("region", "sketch_line"):
                 fid = pk.key[0]
                 m.addAction("Edit sketch", lambda: self.edit_feature(fid))

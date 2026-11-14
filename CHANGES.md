@@ -183,6 +183,19 @@ for cutting), version history, Python plugins, and new navigation. It was built 
   narrow or a name was long. Long names are now shortened with "…" (hover for the full name).
 
 ### 1.8.4
+- **Export DXF from any sketch or flat face**, for laser cutting. Select sketches and flat faces (any mix, as
+  long as they lie in parallel planes), then right-click → *Export DXF…*, Document → *Export DXF…*, or "Export
+  DXF" in Search tools; a sketch in the feature list has it on its right-click menu too. For each one choose
+  **Cut** or **Engrave**; a sketch's construction lines are left out, or given a job of their own, so one sketch
+  can hold the cut outline and the engraving. Lines, circles and arcs stay exact; splines, ellipses and text
+  become outlines.
+- **DXF profiles** say how the file is written for one program: for each of cut, engrave, bend line, note and
+  sheet outline whether it is written, on which layer, in which colour and line type, and the file format.
+  **Standard** is the layout FreeShape has always written (CUT, BEND, NOTES, SHEET, plus ENGRAVE). **K40
+  Whisperer** writes red for vector cut and blue for vector engrave, as a plain R12 file, and leaves out text and
+  the sheet outline (K40 Whisperer would cut them). *Profiles…* in the export dialog copies a profile and changes
+  the copy; your own profiles are kept in the settings. Flat pattern export and Nest for cutting take a profile
+  too.
 - **Component library** (menu, Ctrl+Shift+L, or "Component library" in Search tools): browse a folder of STEP
   files with a preview of each one. Type to search names, tags and folders; pick a folder to narrow the list;
   **Insert into this tab** (or double-click) adds the part to the Part Studio or Assembly, **Open in new tab**

@@ -347,46 +347,29 @@ def sheet_offset(res: NestResult, i):
     return i * (res.sheet_w + SHEET_GAP)
 
 
-def export_dxf(res: NestResult, path, labels=True):
-    """All sheets side by side in one DXF: sheet outlines (SHEET), cut paths (CUT), bend lines (BEND) and part
-    names (NOTES, not for cutting)."""
-    import ezdxf
-    from ezdxf.enums import TextEntityAlignment
-    doc = ezdxf.new("R2010", setup=False)
-    doc.units = ezdxf.units.MM
-    doc.header["$MEASUREMENT"] = 1
-    doc.linetypes.add("DASHED", pattern=[4.5, 3.0, -1.5], description="Dashed __ __ __")
-    doc.layers.add("SHEET", color=8)
-    doc.layers.add("CUT", color=7)
-    doc.layers.add("BEND", color=1, linetype="DASHED")
-    doc.layers.add("NOTES", color=3)
-    msp = doc.modelspace()
+def export_dxf(res: NestResult, path, labels=True, profile=None):
+    """All sheets side by side in one DXF: sheet outlines, cut paths, bend lines and part names (notes, not for
+    cutting). `profile` (dxfexport.Profile) says which layers, colours and format the file uses; the standard one
+    writes layers SHEET, CUT, BEND and NOTES."""
+    from . import dxfexport as DX
+    g = DX.Geometry()
     W, H = res.sheet_w, res.sheet_h
     for si, sheet in enumerate(res.sheets):
         ox = sheet_offset(res, si)
-        msp.add_lwpolyline([(ox, 0), (ox + W, 0), (ox + W, H), (ox, H)], close=True, dxfattribs={"layer": "SHEET"})
-        t = msp.add_text(f"Sheet {si + 1} of {len(res.sheets)}", height=max(W, H) * 0.012,
-                         dxfattribs={"layer": "NOTES"})
-        t.set_placement((ox, H + max(W, H) * 0.01), align=TextEntityAlignment.BOTTOM_LEFT)
+        g.poly("sheet", [(ox, 0), (ox + W, 0), (ox + W, H), (ox, H)], closed=True)
+        g.text("note", (ox, H + max(W, H) * 0.01), f"Sheet {si + 1} of {len(res.sheets)}", max(W, H) * 0.012,
+               0.0, "left", "bottom")
         for pl in sheet:
             p = res.parts[pl.part]
             lines, circles, arcs, polys, bends = placed(p, pl, ox)
-            for a, b in lines:
-                msp.add_line(a, b, dxfattribs={"layer": "CUT"})
-            for c, r in circles:
-                msp.add_circle(c, r, dxfattribs={"layer": "CUT"})
-            for c, r, a0, a1 in arcs:
-                msp.add_arc(c, r, a0, a1, dxfattribs={"layer": "CUT"})
-            for pts in polys:
-                msp.add_lwpolyline(pts, dxfattribs={"layer": "CUT"})
+            DX.add_entities(g, "cut", lines, circles, arcs, polys)
             for a, b, _lab in bends:
-                msp.add_line(a, b, dxfattribs={"layer": "BEND"})
+                g.line("bend", a, b)
             if labels:
                 h = max(2.0, min(pl.w, pl.h) * 0.08)
-                t = msp.add_text(p.name, height=min(h, 12.0), dxfattribs={"layer": "NOTES"})
                 c = np.array([ox, 0.0]) + _box_centre(p, pl)
-                t.set_placement(tuple(c), align=TextEntityAlignment.MIDDLE_CENTER)
-    doc.saveas(path)
+                g.text("note", tuple(c), p.name, min(h, 12.0), 0.0, "center", "middle")
+    DX.write(g, path, profile, declare=("sheet", "cut", "bend", "note"))
 
 
 def _box_centre(p, pl):

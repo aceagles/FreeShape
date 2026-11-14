@@ -27,6 +27,9 @@ class DxfWriter:
     def __init__(self):
         self.layers = {}
         self.ents = []
+        # layer -> colour written on every entity of that layer as well (group 62), for programs that read the
+        # entity's colour rather than its layer's. Empty: entities take their layer's colour, as always.
+        self.entity_colours = {}
 
     def layer(self, name, colour=7, linetype="CONTINUOUS"):
         self.layers[name] = (colour, linetype)
@@ -66,17 +69,20 @@ class DxfWriter:
         self.ents.append(tuple(ent))
 
     # ------------------------------------------------------------------ file
-    def save(self, path, ext_min, ext_max, ltscale=1.0):
+    def save(self, path, ext_min, ext_max, ltscale=1.0, insunits=None):
+        """`insunits` (4 = millimetres) adds $INSUNITS to the header: not part of R12, but readers that ask for
+        the drawing's units look for it; left out unless given."""
         out = []
         w = lambda code, val: out.append(f"{code:>3}\n{_num(val) if isinstance(val, (int, float)) and code >= 10 else val}\n")
         w(0, "SECTION")
         w(2, "HEADER")
-        for name, code, val in (("$ACADVER", 1, "AC1009"), ("$INSBASE", None, (0, 0, 0)),
+        for name, code, val in ((("$ACADVER", 1, "AC1009"), ("$INSBASE", None, (0, 0, 0)),
                                 ("$EXTMIN", None, (ext_min[0], ext_min[1], 0)),
                                 ("$EXTMAX", None, (ext_max[0], ext_max[1], 0)),
                                 ("$LIMMIN", None, (ext_min[0], ext_min[1])),
                                 ("$LIMMAX", None, (ext_max[0], ext_max[1])),
-                                ("$LTSCALE", 40, ltscale), ("$PDMODE", 70, 0), ("$TEXTSTYLE", 7, "STANDARD")):
+                                ("$LTSCALE", 40, ltscale), ("$PDMODE", 70, 0), ("$TEXTSTYLE", 7, "STANDARD"))
+                                + ((("$INSUNITS", 70, int(insunits)),) if insunits is not None else ())):
             w(9, name)
             if code is None:
                 for i, c in enumerate(val):
@@ -133,6 +139,8 @@ class DxfWriter:
         for ent in self.ents:
             for code, val in ent:
                 w(code, val)
+                if code == 8 and val in self.entity_colours:
+                    w(62, self.entity_colours[val])
         w(0, "ENDSEC")
         w(0, "EOF")
         with open(path, "w", encoding="ascii", errors="replace", newline="\r\n") as fh:

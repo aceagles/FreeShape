@@ -660,83 +660,21 @@ def flat_pattern(shape, m: SheetModel, named=None):
 def flat_entities(fp: FlatPattern, face=None):
     """The flat pattern's cut outline as 2D drawing entities: (lines, circles, arcs, polylines, bends).
     `face` replaces the outline (e.g. one grown for kerf); bend lines stay where they are."""
-    lines, circles, arcs, polys = [], [], [], []
-    for e in K.edges(face if face is not None else fp.face):
-        info = K.edge_info(e)
-        if "p0" in info:
-            lines.append((fp.to2d(info["p0"]), fp.to2d(info["p1"])))
-            continue
-        pts = K.discretize_edge(e, 0.005)
-        if "r" in info and len(pts) >= 2:
-            c = fp.to2d(info["center"])
-            p0, p1 = fp.to2d(pts[0]), fp.to2d(pts[-1])
-            if np.linalg.norm(np.subtract(p0, p1)) < 1e-6:
-                circles.append((c, info["r"]))
-                continue
-            mid = fp.to2d(pts[len(pts) // 2])
-            a0 = math.degrees(math.atan2(p0[1] - c[1], p0[0] - c[0]))
-            a1 = math.degrees(math.atan2(p1[1] - c[1], p1[0] - c[0]))
-            am = math.degrees(math.atan2(mid[1] - c[1], mid[0] - c[0]))
-            # counter-clockwise from a0 to a1 must pass through the middle point
-            if not ((am - a0) % 360 < (a1 - a0) % 360):
-                a0, a1 = a1, a0
-            arcs.append((c, info["r"], a0, a1))
-            continue
-        polys.append([fp.to2d(q) for q in pts])
+    from .dxfexport import edge_entities
+    lines, circles, arcs, polys = edge_entities(K.edges(face if face is not None else fp.face), fp.to2d)
     bends = [(fp.to2d(p0), fp.to2d(p1), lab) for p0, p1, lab in fp.bend_lines]
     return lines, circles, arcs, polys, bends
 
 
-def flat_dxf(fp: FlatPattern, path, name=""):
-    """The flat pattern as a DXF for laser / plasma / waterjet cutting: the outline (layer CUT), bend lines
-    (layer BEND, dashed) with their direction, angle and radius."""
+def flat_dxf(fp: FlatPattern, path, name="", profile=None):
+    """The flat pattern as a DXF for laser / plasma / waterjet cutting: the outline (cut), bend lines with their
+    direction, angle and radius as labels. `profile` (dxfexport.Profile) says which layers, colours and format
+    the file uses; the standard one writes layers CUT, BEND (dashed) and NOTES."""
+    from . import dxfexport as DX
     lines, circles, arcs, polys, bends = flat_entities(fp)
-    try:
-        import ezdxf
-        doc = ezdxf.new("R2010", setup=False)
-        doc.units = ezdxf.units.MM
-        doc.header["$MEASUREMENT"] = 1
-        doc.linetypes.add("DASHED", pattern=[4.5, 3.0, -1.5], description="Dashed __ __ __")
-        doc.styles.get("Standard").dxf.font = "arial.ttf"
-        doc.layers.add("CUT", color=7)
-        doc.layers.add("BEND", color=1, linetype="DASHED")
-        doc.layers.add("NOTES", color=3)
-        msp = doc.modelspace()
-        for p, q in lines:
-            msp.add_line(p, q, dxfattribs={"layer": "CUT"})
-        for c, r in circles:
-            msp.add_circle(c, r, dxfattribs={"layer": "CUT"})
-        for c, r, a0, a1 in arcs:
-            msp.add_arc(c, r, a0, a1, dxfattribs={"layer": "CUT"})
-        for pts in polys:
-            msp.add_lwpolyline(pts, dxfattribs={"layer": "CUT"})
-        from ezdxf.enums import TextEntityAlignment
-        for p, q, lab in bends:
-            msp.add_line(p, q, dxfattribs={"layer": "BEND"})
-            ang = math.degrees(math.atan2(q[1] - p[1], q[0] - p[0]))
-            if ang > 90 or ang <= -90:
-                ang -= 180 if ang > 0 else -180
-            t = msp.add_text(lab, height=2.5, rotation=ang, dxfattribs={"layer": "NOTES"})
-            t.set_placement(((p[0] + q[0]) / 2, (p[1] + q[1]) / 2), align=TextEntityAlignment.BOTTOM_CENTER)
-        doc.saveas(path)
-    except ImportError:
-        from .dxf import DxfWriter
-        w = DxfWriter()
-        w.layer("CUT", 7)
-        w.layer("BEND", 1, "DASHED")
-        w.layer("NOTES", 3)
-        for p, q in lines:
-            w.line("CUT", p, q)
-        for c, r in circles:
-            w.circle("CUT", c, r)
-        for c, r, a0, a1 in arcs:
-            w.arc("CUT", c, r, a0, a1)
-        for pts in polys:
-            w.polyline("CUT", pts)
-        for p, q, lab in bends:
-            w.line("BEND", p, q)
-            ang = math.degrees(math.atan2(q[1] - p[1], q[0] - p[0]))
-            w.text("NOTES", ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2), lab, 2.5, ang, "center", "bottom")
-        lo, hi = K.bbox(fp.face)
-        w.save(path, fp.to2d(lo), fp.to2d(hi))
+    g = DX.add_entities(DX.Geometry(), "cut", lines, circles, arcs, polys)
+    for p, q, lab in bends:
+        g.line("bend", p, q)
+        g.text("note", ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2), lab, 2.5, DX.text_angle(p, q), "center", "bottom")
+    DX.write(g, path, profile, declare=("cut", "bend", "note"))
     return len(lines) + len(circles) + len(arcs) + len(polys), len(bends)

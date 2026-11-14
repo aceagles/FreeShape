@@ -250,14 +250,24 @@ class VersionsUI:
             layout.addWidget(b)
             b.setVisible(False)
             return b
-        self.create_btn = button("Create version", "Save and tag the Document as a named version", self.create_dialog)
-        self.versions_btn = button("Versions", "List the versions of this Document", self.list_dialog)
-        self.updates_btn = button("Updates", "Linked Documents have newer versions", self.updates_dialog)
+        from PySide6.QtCore import QSize, Qt
+        from .icons import icon
         self.banner = QLabel("")
         self.banner.setObjectName("muted")
         self.banner.setVisible(False)
         layout.addWidget(self.banner)
         self.back_btn = button("Back to live Document", "Close the read-only version and return", self.close_view)
+        self.updates_btn = button("Updates", "Linked Documents have newer versions", self.updates_dialog)
+        self.create_btn = button("Create version", "Save and tag the Document as a named version", self.create_dialog)
+        self.versions_btn = button("Versions", "List the versions of this Document", self.list_dialog)
+        # icon names of their own: "history" is the toolbar's Compare Versions button
+        for b, name, style in ((self.create_btn, "tag", Qt.ToolButtonTextBesideIcon),
+                               (self.versions_btn, "versions", Qt.ToolButtonIconOnly)):
+            b.setIcon(icon(name))
+            b.setProperty("icon_name", name)             # set_theme redraws it in the theme's ink
+            b.setIconSize(QSize(18, 18))
+            b.setToolButtonStyle(style)
+        self.create_btn.setObjectName("outlineButton")
         self._widgets = (self.create_btn, self.versions_btn)
 
     def problem(self):

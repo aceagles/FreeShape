@@ -53,8 +53,9 @@ nothing here.
 
 Each build runs a self-test that also checks the bundled plugins (fasteners, gears, hardware) are present and
 that a worker process can rebuild a part. The `.deb` is installed on the build machine and tested from there.
-It installs to `/opt/freeshape` and needs `git`, which Documents use; on Windows and Mac, install git yourself
-to use Documents. To build the `.deb` by hand: `bash packaging/linux/build_appimage.sh && bash
+It installs to `/opt/freeshape` and recommends `git`. FreeShape runs without git: only versions and Workspaces
+need it (git 2.38 or newer), and a Document made without git gets its repository the first time you create a
+version after installing it. To build the `.deb` by hand: `bash packaging/linux/build_appimage.sh && bash
 packaging/linux/build_deb.sh`.
 
 ## Make a Linux AppImage

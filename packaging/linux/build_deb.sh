@@ -40,7 +40,8 @@ Section: graphics
 Priority: optional
 Architecture: amd64
 Installed-Size: $SIZE
-Depends: git, libegl1, libgl1, libopengl0, libxkbcommon0, libxkbcommon-x11-0, libxcb-cursor0, libxcb-icccm4, libxcb-keysyms1, libxcb-randr0, libxcb-render-util0, libxcb-shape0, libxcb-xinerama0, libfontconfig1, libdbus-1-3
+Depends: libegl1, libgl1, libopengl0, libxkbcommon0, libxkbcommon-x11-0, libxcb-cursor0, libxcb-icccm4, libxcb-keysyms1, libxcb-randr0, libxcb-render-util0, libxcb-shape0, libxcb-xinerama0, libfontconfig1, libdbus-1-3
+Recommends: git
 Maintainer: Adam Eagles <aceagles@users.noreply.github.com>
 Homepage: https://github.com/${GITHUB_REPOSITORY:-aceagles/FreeShape}
 Description: Onshape-style parametric CAD that runs on your own computer

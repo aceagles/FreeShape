@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import time
 
 import pytest
 from conftest import EXAMPLES_DIR, TOP, add, rect_lines, region_refs, sketch_feature
@@ -12,9 +13,22 @@ from test_pyfeature_outputs import LABELLED, add_py
 
 from freeshape import doc_folder as DF
 from freeshape import docstore as DS
+from freeshape import drawing as DRW
 from freeshape import kernel as K
 from freeshape import links as L
 from freeshape import pyfeature
+
+
+class _RecordingDay:
+    """Stands in for `time` inside freeshape.drawing: a new Drawing stamps its title block with today's date,
+    which is saved in the .fdwg, so the bytes recorded in BEFORE only come back on the day they were recorded
+    (13 November 2026). Everything but that date goes to the real module."""
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+    def strftime(self, fmt, *args):
+        return "13/11/2026" if fmt == "%d/%m/%Y" and not args else time.strftime(fmt, *args)
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +36,7 @@ def isolated(tmp_path, monkeypatch):
     user = tmp_path / "user_plugins"
     user.mkdir()
     monkeypatch.setenv("FREESHAPE_PLUGIN_DIR", str(user))
+    monkeypatch.setattr(DRW, "time", _RecordingDay())
     before = {p.id for p in pyfeature.plugins()}
     yield
     for p in pyfeature.plugins():

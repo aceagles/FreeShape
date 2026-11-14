@@ -878,6 +878,7 @@ def import_step_block():
 
 def test_every_runner_is_characterised():
     used = {f["type"] for fn, _ in CASES.values() for f in _built(fn.__name__).features}
+    # axis is a light feature like plane and has no part result to fingerprint: tests/test_axis_feature.py
     # variable_studio_ref reads another tab, so it is characterised in test_variable_studio_ref.py
     # delete_part only removes parts, so it has no result to fingerprint: tests/test_delete_part.py
     # context restores a stored capture, so it is characterised in test_context_feature.py
@@ -888,7 +889,7 @@ def test_every_runner_is_characterised():
     # characterised in tests/test_20_stage4.py
     left = {t for t in F.RUNNERS if not t.startswith(("py:", "plugin:"))} - used - {
         "variable_studio_ref", "delete_part", "mate_connector", "context", "derived",
-        "sm_hem", "sm_jog", "sm_tab", "sm_convert"}
+        "sm_hem", "sm_jog", "sm_tab", "sm_convert", "axis"}
     assert left == set(), sorted(left)
 
 

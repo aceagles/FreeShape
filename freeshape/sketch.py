@@ -27,7 +27,7 @@ import numpy as np
 ORIGIN = "origin"
 
 # Constraint types that carry an editable value (i.e. dimensions)
-DIMENSIONS = {"distance", "hdistance", "vdistance", "radius", "diameter", "angle"}
+DIMENSIONS = {"distance", "hdistance", "vdistance", "radius", "diameter", "angle", "offset"}
 
 POINT_KEYS = ("p1", "p2", "c", "p", "a")       # entity keys that hold one point id (splines: "pts")
 
@@ -37,6 +37,7 @@ CONSTRAINT_LABELS = {
     "equal": "Equal", "tangent": "Tangent", "concentric": "Concentric", "midpoint": "Midpoint",
     "fix": "Fix", "symmetric": "Symmetric", "distance": "Distance", "hdistance": "Horizontal distance",
     "vdistance": "Vertical distance", "radius": "Radius", "diameter": "Diameter", "angle": "Angle",
+    "offset": "Offset",
 }
 
 
@@ -374,7 +375,7 @@ class Sketch:
             t, R = c["type"], c["refs"]
             v = c.get("value", 0.0)
             try:
-                f, keys = self._make_eq(t, R, v, pt, rad, line_dir, pkeys, ekeys, ents)
+                f, keys = self._make_eq(t, R, v, pt, rad, line_dir, pkeys, ekeys, ents, c)
             except (KeyError, IndexError):
                 continue
             if f is not None:
@@ -382,7 +383,7 @@ class Sketch:
         return eqs
 
     @staticmethod
-    def _make_eq(t, R, v, pt, rad, line_dir, pkeys, ekeys, ents):
+    def _make_eq(t, R, v, pt, rad, line_dir, pkeys, ekeys, ents, c=None):
         def typ(i):
             return ents[R[i]]["type"] if R[i] in ents else "pointref"
 
@@ -541,6 +542,36 @@ class Sketch:
             e = R[0]
             k = 1.0 if t == "radius" else 2.0
             return (lambda g: [k * rad(g, e) - v]), ekeys(e)
+        if t == "offset":
+            # One value for a whole offset chain. refs = [new, source, new, source, ...]; c["signs"] holds the side
+            # of each pair (+1 / -1), set when the offset is made, so the value itself is a plain positive gap.
+            #   lines:          the new line's first point is sign * value to the left of the source line
+            #   arcs, circles:  radius(new) - radius(source) = sign * value
+            signs = list((c or {}).get("signs") or [])
+            gap = abs(float(v))
+            pairs, keys = [], []
+            for i in range(0, len(R) - 1, 2):
+                new, src = R[i], R[i + 1]
+                sg = float(signs[i // 2]) if i // 2 < len(signs) else 1.0
+                if ents[src]["type"] == "line":
+                    pairs.append(("line", ents[new]["p1"], ents[src]["p1"], ents[src]["p2"], sg))
+                    keys += pkeys(ents[new]["p1"], ents[src]["p1"], ents[src]["p2"])
+                else:
+                    ents[new]["c"]                  # a pair that is no longer two curves drops the constraint
+                    pairs.append(("curve", new, src, None, sg))
+                    keys += ekeys(new) + ekeys(src)
+
+            def f(g):
+                out = []
+                for kind, a, b, b2, sg in pairs:
+                    if kind == "line":
+                        d = pt(g, b2) - pt(g, b)
+                        w = pt(g, a) - pt(g, b)
+                        out.append((d[0] * w[1] - d[1] * w[0]) / (np.linalg.norm(d) + 1e-12) - sg * gap)
+                    else:
+                        out.append(rad(g, a) - rad(g, b) - sg * gap)
+                return out
+            return (f, keys) if pairs else (None, [])
         if t == "angle":
             l1, l2 = R
             th = math.radians(v)

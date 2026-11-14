@@ -182,8 +182,29 @@ def _intersections(c1, c2):
     return [m + h * perp, m - h * perp]
 
 
+def _offset_dimension(sk: Sketch, pairs, dist: float, first=None):
+    """The one `offset` dimension that holds every (new, source) pair `dist` apart, on the side each new entity
+    was just placed. The pair of `first` (a source id) leads, so the dimension is drawn there."""
+    pairs = sorted(pairs, key=lambda p: p[1] != first)
+    refs, signs = [], []
+    for new, src in pairs:
+        es = sk.entities[src]
+        if es["type"] == "line":
+            a, b = sk.P(es["p1"]), sk.P(es["p2"])
+            d, w = b - a, sk.P(sk.entities[new]["p1"]) - a
+            side = d[0] * w[1] - d[1] * w[0]
+        else:
+            side = sk.radius(new) - sk.radius(src)
+        refs += [new, src]
+        signs.append(1.0 if side >= 0 else -1.0)
+    c = sk.add_constraint("offset", *refs, value=abs(dist))
+    c["signs"] = signs
+    return c
+
+
 def offset(sk: Sketch, eid: str, dist: float):
-    """Offset the chain containing `eid`. Positive distance = outward for closed chains."""
+    """Offset the chain containing `eid`. Positive distance = outward for closed chains. The copy is held by one
+    `offset` dimension of |dist|, so it follows its source and the gap can be edited."""
     if abs(dist) < TOL:
         raise ValueError("Offset distance can't be zero")
     e0 = sk.entities.get(eid)
@@ -194,7 +215,10 @@ def offset(sk: Sketch, eid: str, dist: float):
         r = e0["r"] + dist
         if r <= TOL:
             raise ValueError("Offset is larger than the circle")
-        return [sk.add_circle(e0["c"], r, cons)]
+        new = sk.add_circle(e0["c"], r, cons)
+        _offset_dimension(sk, [(new, eid)], dist)
+        sk.solve()
+        return [new]
     chain, closed = _chain(sk, eid)
     # orientation: positive offset = outward on a closed chain
     s = dist
@@ -251,6 +275,7 @@ def offset(sk: Sketch, eid: str, dist: float):
             new.append(lid)
         else:
             new.append(sk.add_arc(it["C"], a, b, cons) if it["fwd"] else sk.add_arc(it["C"], b, a, cons))
+    _offset_dimension(sk, [(k, it["eid"]) for k, it in zip(new, items)], dist, first=eid)
     sk.solve()
     return new
 

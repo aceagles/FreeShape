@@ -47,7 +47,7 @@ _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
 _NO_CONFIGS = {"rows": [], "active": 0}
 _EMPTY = {"features": [], "rollback": None, "folders": {}, "overrides": {}, "configs": _NO_CONFIGS,
           "python_builds": {}}
-_LIGHT = ("variable", "sketch", "plane")        # feature types re-run on the GUI thread (see the module doc)
+_LIGHT = ("variable", "sketch", "plane", "axis")        # feature types re-run on the GUI thread (see the module doc)
 
 
 # =========================================================================== pure helpers

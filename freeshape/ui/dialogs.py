@@ -10,7 +10,7 @@ from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QBoxLayout, QLabel, QToolButton, QLineEdit, QComboBox, QCheckBox,
-    QListWidget, QListWidgetItem, QWidget, QButtonGroup, QSizePolicy, QGraphicsDropShadowEffect,
+    QListWidget, QListWidgetItem, QWidget, QButtonGroup, QSizePolicy, QGraphicsDropShadowEffect, QTabWidget,
 )
 
 from .. import kernel as K
@@ -155,6 +155,35 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
         if key[0] == "std":
             return ("plane", {"kind": "std", "name": key[1]})
         return ("plane", {"kind": "plane", "fid": key[1]})
+    # the Axis tool's own picks (its refs_sel field asks for these with "sketch_line", "sketch_point",
+    # "axis_feature" and "connector"; revolve and the patterns do not)
+    if k == "sketch_line" and "sketch_line" in want:
+        fid, eid = pick.key
+        return ("sketch_line", {"kind": "sketch_line", "sketch": fid, "line": eid})
+    if k == "sketch_point" and "sketch_point" in want:
+        return _sketch_point_item(vp, pick)
+    if k == "axis" and ("axis_feature" in want or "axis" in want):
+        return ("axis", {"kind": "axis", "fid": pick.key[0]})
+    if k == "connector" and "connector" in want:
+        return ("connector", {"fid": pick.key[0]})
+    if k == "connector" and ("axis" in want or "axis_connector" in want):
+        # a mate connector where an axis is asked for: its Z axis, by reference to the connector (the viewport pick
+        # does not say which arrow of the triad was hit)
+        return ("axis", {"kind": "connector", "fid": pick.key[0], "axis": "z"})
+    return None
+
+
+def _sketch_point_item(vp, pick):
+    """A sketch point as the ADR 0011 sketch-geometry reference ("sketch" item), as the Mate connector tool stores it."""
+    from .. import sketchref
+    fid, eid = pick.key
+    for sfid, sr, _ in vp.sketches:
+        if sfid == fid:
+            try:
+                d = sketchref.describe(sr.sketch.to_dict(), eid, "point")
+            except K.KernelError:
+                return None
+            return ("sketch", {"sketch": fid, "entity": eid, "role": "point", "etype": d["etype"], "sig": d["sig"]})
     return None
 
 
@@ -187,7 +216,19 @@ def item_label(doc, item):
         return "Planar face"
     if kind == "path":
         return "Sketch curves" if ref["kind"] == "sketch_chain" else "Edge"
+    if kind == "sketch_line":            # the Axis tool's refs
+        f = doc.feature(ref.get("sketch"))
+        return f"{f['name'] if f else 'Sketch'} line"
+    if kind == "connector":
+        f = doc.feature(ref.get("fid"))
+        return f["name"] if f else "Mate connector"
     if kind == "axis":
+        if ref["kind"] == "axis":        # an axis feature (the Axis tool)
+            f = doc.feature(ref.get("fid"))
+            return f["name"] if f else "Axis"
+        if ref["kind"] == "connector":   # a mate connector's axis
+            f = doc.feature(ref.get("fid"))
+            return f"{f['name'] if f else 'Mate connector'} {(ref.get('axis') or 'z').upper()}"
         if ref["kind"] == "std":
             return f"{ref['name']} axis"
         if ref["kind"] == "sketch_line":
@@ -231,7 +272,22 @@ def item_geometry(state, item, plane_half=40.0):
             return ("mesh", m)
         if kind == "axis":
             a, d = F.resolve_axis(state, ref)
+            if ref.get("kind") == "connector":       # short, from the connector origin along that axis
+                return ("poly", np.array([a, a + d * plane_half * 0.5]))
             return ("poly", np.array([a - d * plane_half * 1.5, a + d * plane_half * 1.5]))
+        if kind == "sketch_line":        # the Axis tool's refs
+            a, d = F.resolve_axis(state, ref)
+            return ("poly", np.array([a - d * plane_half * 1.5, a + d * plane_half * 1.5]))
+        if kind == "sketch":
+            c = F._axis_point(state, kind, ref)
+            s = plane_half * 0.06
+            return ("poly", np.array([c - (s, 0, 0), c + (s, 0, 0), c, c - (0, s, 0), c + (0, s, 0), c,
+                                      c - (0, 0, s), c + (0, 0, s)]))
+        if kind == "connector":
+            c, _d = F._connector_axis(state, ref.get("fid"), "z")
+            s = plane_half * 0.06
+            return ("poly", np.array([c - (s, 0, 0), c + (s, 0, 0), c, c - (0, s, 0), c + (0, s, 0), c,
+                                      c - (0, 0, s), c + (0, 0, s)]))
     except K.KernelError:
         return None
     return None
@@ -365,6 +421,20 @@ def _plane_info(p):
     return ""
 
 
+def _axis_info(p):
+    """What the axis dialog says about the current selection."""
+    items = F.axis_items(p)
+    typ = F.axis_type(p)
+    if not items:
+        return "Select an edge, a round face, two points or two planes. The axis type is picked from what you select."
+    if typ is None:
+        return ("⚠ That selection doesn't fit an axis type. Try an edge, a round face, two points, two planes, "
+                "a point and a face, or a face you click.")
+    if (p.get("type") or "auto") == "auto":
+        return f"Type: {F.AXIS_TYPE_NAMES.get(typ, typ)}"
+    return ""
+
+
 def _hole_info(p):
     if p.get("standard") == "sketch":
         return "Each hole is the size of the circle you drew"
@@ -494,7 +564,7 @@ SCHEMAS = {
     "revolve": [
         _ops(),
         _sel("profiles", "Faces and sketch regions to revolve", {"region", "face"}),
-        _sel("axis_sel", "Revolve axis (sketch line or edge)", {"axis"}, multi=False),
+        _sel("axis_sel", "Revolve axis (axis, sketch line or edge)", {"axis"}, multi=False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _choice("end", "Revolve type", [("full", "Full"), ("one", "One direction"), ("symmetric", "Symmetric")]
                 + F.UP_TO_LABELS),
@@ -547,9 +617,18 @@ SCHEMAS = {
     "delete_part": [
         _sel("parts", "Parts to delete", {"part"}),
     ],
+    "axis": [
+        _choice("type", "Axis type", F.AXIS_TYPES),
+        _sel("refs_sel", "Edges, faces, points, planes, axes and connectors",
+             {"face", "edge", "vertex", "plane", "sketch_line", "sketch_point", "axis_feature", "connector"}),
+        {"t": "info", "key": "_info", "text": lambda p: _axis_info(p)},
+        _choice("connector_axis", "Connector axis", [("z", "Z"), ("x", "X"), ("y", "Y")],
+                visible=lambda p: F.axis_type(p) == "connector"),
+        _check("flip", "Opposite direction", visible=lambda p: F.axis_type(p) is not None),
+    ],
     "plane": [
         _choice("type", "Plane type", F.PLANE_TYPES),
-        _sel("refs_sel", "Planes, faces, edges and vertices", {"plane", "face", "edge", "vertex"}),
+        _sel("refs_sel", "Planes, faces, edges, axes and vertices", {"plane", "face", "edge", "vertex", "axis_feature", "axis_connector"}),
         {"t": "info", "key": "_info", "text": lambda p: _plane_info(p)},
         _num("offset", "Offset distance", visible=lambda p: F.plane_type(p) == "offset"),
         _num("angle", "Angle", unit="deg", visible=lambda p: F.plane_type(p) == "line_angle"),
@@ -565,13 +644,13 @@ SCHEMAS = {
         *_pattern_of("pattern"),
         {**_ops([("new", "New"), ("add", "Add")]), "visible": lambda p: p.get("type") != "features"},
         _sel("parts", "Parts to pattern", {"part"}, visible=lambda p: p.get("type") != "features"),
-        _sel("dir_sel", "Direction (edge or sketch line)", {"axis"}, multi=False),
+        _sel("dir_sel", "Direction (axis, edge or sketch line)", {"axis"}, multi=False),
         _choice("dir_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _num("spacing", "Distance"),
         _num("count", "Instance count", unit=""),
         _check("flip", "Opposite direction"),
         _check("dir2_on", "Second direction"),
-        _sel("dir2_sel", "Second direction (edge or sketch line)", {"axis"}, multi=False,
+        _sel("dir2_sel", "Second direction (axis, edge or sketch line)", {"axis"}, multi=False,
              visible=lambda p: p.get("dir2_on")),
         _choice("dir2_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")],
                 visible=lambda p: p.get("dir2_on")),
@@ -583,7 +662,7 @@ SCHEMAS = {
         *_pattern_of("pattern"),
         {**_ops([("new", "New"), ("add", "Add")]), "visible": lambda p: p.get("type") != "features"},
         _sel("parts", "Parts to pattern", {"part"}, visible=lambda p: p.get("type") != "features"),
-        _sel("axis_sel", "Axis of pattern (edge or sketch line)", {"axis"}, multi=False),
+        _sel("axis_sel", "Axis of pattern (axis, edge or sketch line)", {"axis"}, multi=False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _num("angle", "Angle", unit="deg"),
         _num("count", "Instance count", unit=""),
@@ -626,7 +705,7 @@ SCHEMAS = {
         _num("dy", "Move Y"),
         _num("dz", "Move Z"),
         _num("rotate", "Rotate", unit="deg"),
-        _sel("axis_sel", "Rotate about (edge or sketch line)", {"axis"}, multi=False,
+        _sel("axis_sel", "Rotate about (axis, edge or sketch line)", {"axis"}, multi=False,
              visible=lambda p: _isnum(p.get("rotate")) is not False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")],
                 visible=lambda p: _isnum(p.get("rotate")) is not False),
@@ -666,14 +745,17 @@ SCHEMAS = {
     ],
     # Derived: one row per control group, top to bottom. Add a row here and a `_make_derived_*` builder below.
     #   Document chooser and Version pin: before `derived_source` (they decide which Part Studio list it shows).
-    #   Mate connectors tick list: after `derived_sketches`, key "connectors".
+    #   Parts, Sketches and Mate connectors tick lists: the tabs of the one `derived_tabs` row. Add a tick list
+    #   by adding its spec to "tabs".
     #   Location and Placement base: after that.
     "derived": [
         {"t": "derived_document", "key": "source", "label": "Document"},
         {"t": "derived_source", "key": "source", "label": "Part Studio"},
-        {"t": "derived_checks", "key": "parts", "label": "Parts"},
-        {"t": "derived_checks", "key": "sketches", "label": "Sketches"},
-        {"t": "derived_connectors", "key": "connectors", "label": "Mate connectors"},
+        {"t": "derived_tabs", "tabs": [
+            {"t": "derived_checks", "key": "parts", "label": "Parts"},
+            {"t": "derived_checks", "key": "sketches", "label": "Sketches"},
+            {"t": "derived_connectors", "key": "connectors", "label": "Mate connectors"},
+        ]},
         {"t": "derived_location", "key": "placement", "label": "Location"},
         {"t": "derived_base", "key": "placement", "label": "Placement base"},
     ],
@@ -758,6 +840,8 @@ def params_to_fields(ftype, p):
         f["faces"] = [("face", r) for r in p.get("faces", [])]
     if ftype == "plane":
         f["refs_sel"] = [(k, r) for k, r in F.plane_items(p)]
+    if ftype == "axis":
+        f["refs_sel"] = [(k, r) for k, r in F.axis_items(p)]
     if ftype == "mirror":
         f["parts"] = [("part", i) for i in p.get("parts", [])]
         f["plane_sel"] = [("plane", p["plane"])] if p.get("plane") else []
@@ -861,6 +945,10 @@ def fields_to_params(ftype, fields, p):
     if ftype == "plane":
         p["refs"] = [{"k": k, "ref": r} for k, r in fields.get("refs_sel", [])]
         p.pop("ref", None)
+    if ftype == "axis":
+        p["refs"] = [{"k": k, "ref": r} for k, r in fields.get("refs_sel", [])]
+        if not any(k == "face" for k, _ in fields.get("refs_sel", [])):
+            p["click"] = None                # the click belongs to a picked face
     if ftype in ("mirror", "linear_pattern", "circular_pattern"):
         p["parts"] = [r for k, r in fields.get("parts", [])]
     if ftype == "mirror":
@@ -1111,6 +1199,8 @@ class FeatureDialog(_ResizableFrame):
             f.changed.connect(self._fields_changed)
             self.fields[spec["key"]] = f
             return f
+        if t == "derived_tabs":
+            return self._make_derived_tabs(spec, p)
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
@@ -1395,6 +1485,53 @@ class FeatureDialog(_ResizableFrame):
         h.addWidget(self._derived_note)
         self.widgets[key] = cb
         return row
+
+    DERIVED_TABS_STYLE = """
+    QTabWidget::pane { border: none; }
+    QTabBar::tab {
+        background: transparent; color: #4b5563; border: none; border-bottom: 2px solid #e3e6ea;
+        padding: 4px 8px; margin: 0;
+    }
+    QTabBar::tab:hover:!selected { color: #1f2328; }
+    QTabBar::tab:selected { color: #1f2328; font-weight: 600; border-bottom: 2px solid #1f6fd1; }
+    """
+
+    def _make_derived_tabs(self, spec, p):
+        """Parts, Sketches and Mate connectors as the tabs of one row, so one tick list shows at a time. Each tab is
+        built by its own `_make_derived_*` builder. A tab's title carries how many of its rows are ticked, so a
+        hidden list still says what it brings in; the dialog opens on the first tab with a tick."""
+        tabs = QTabWidget()
+        tabs.setObjectName("derived_tabs")
+        tabs.setDocumentMode(True)
+        tabs.tabBar().setUsesScrollButtons(False)
+        tabs.tabBar().setExpanding(True)
+        tabs.setStyleSheet(self.DERIVED_TABS_STYLE)
+        lists = []
+        for sub in spec["tabs"]:
+            page = QWidget()
+            v = QVBoxLayout(page)
+            v.setContentsMargins(0, 4, 0, 0)
+            make = self._make_derived_connectors if sub["t"] == "derived_connectors" else self._make_derived_checks
+            make(sub, p, page, v)
+            tabs.addTab(page, sub["label"])
+            lists.append((sub["label"], self.widgets[sub["key"]]))
+
+        def ticked(lst):
+            return sum(lst.item(i).checkState() == Qt.Checked for i in range(lst.count()))
+
+        def titles(*_):
+            for i, (label, lst) in enumerate(lists):
+                n = ticked(lst)
+                tabs.setTabText(i, f"{label} ({n})" if n else label)
+        for _label, lst in lists:               # connected after the lists' own handlers, which may untick rows
+            lst.itemChanged.connect(titles)
+        self._derived_fills.append(titles)
+        titles()
+        for pf in getattr(self, "_derived_fillers", []):    # a list on a hidden tab still gets its previews
+            pf.watch(tabs)
+        tabs.setCurrentIndex(next((i for i, (_l, lst) in enumerate(lists) if ticked(lst)), 0))
+        self.widgets["derived_tabs"] = tabs
+        return tabs
 
     def _make_derived_checks(self, spec, p, row, h):
         """A tick list of what the source publishes under `spec["key"]` ("parts" or "sketches"): the ticked ids are
@@ -1922,6 +2059,14 @@ class FeatureDialog(_ResizableFrame):
             kinds |= {"edge", "sketch_line"}
         if "plane" in want:
             kinds.add("plane")
+        if "sketch_line" in want:
+            kinds.add("sketch_line")
+        if "sketch_point" in want:
+            kinds.add("sketch_point")
+        if "axis_feature" in want or "axis" in want:
+            kinds.add("axis")
+        if "connector" in want or "axis" in want or "axis_connector" in want:
+            kinds.add("connector")
         if "part" in want:
             kinds.add("part")
         if "vertex" in want:
@@ -1986,6 +2131,11 @@ class FeatureDialog(_ResizableFrame):
         if fld is None:
             return
         item = pick_to_item(self.main.viewport, pick, fld.want, self.base_state)
+        if item is not None and self.ftype == "axis" and item[0] == "face" and fld.key == "refs_sel" \
+                and not any(_same(ex, item) for ex in fld.items) and self.main.viewport.last_click:
+            # the point clicked on the face (a face alone gives an axis there, along its normal)
+            click = self.main.viewport.surface_point(*self.main.viewport.last_click)
+            self.feature["params"]["click"] = [float(a) for a in click] if click is not None else None
         if item is None:
             if pick.kind == "sketch_line" and "region" in fld.want:
                 try:

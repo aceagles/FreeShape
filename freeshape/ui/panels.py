@@ -292,7 +292,7 @@ class FeatureList(_EyeMixin, QListWidget):
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
             if fo:
                 it.setData(ROLE_INDENT, True)
-            if f["type"] in ("sketch", "plane"):
+            if f["type"] in ("sketch", "plane", "axis"):
                 it.setData(ROLE_EYE, "hidden" if f["id"] in doc.hidden_features else "shown")
             err = doc.errors.get(f["id"])
             if err:

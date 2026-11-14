@@ -26,7 +26,7 @@ def test_style_table():
     assert NS.drag_action("blender", M, shift) == "pan"
     assert NS.drag_action("openinventor", L, none) == "orbit"
     assert NS.drag_action("onshape", R, ctrl | shift) is None      # combinations no rule uses
-    assert NS.wheel_action("touchpad", none) == "pan" and NS.wheel_action("touchpad", ctrl) == "zoom"
+    assert NS.wheel_action("touchpad", none) == "zoom" and NS.wheel_action("touchpad", ctrl) == "zoom"
     assert NS.wheel_action("solidworks", none) == "zoom_reverse"
     assert NS.drag_action("nonsense", R, none) == "orbit"          # unknown style: Onshape
     for st in NS.STYLES.values():
@@ -42,12 +42,12 @@ def test_style_table_inside_a_sketch_and_with_no_button():
     assert NS.drag_action("touchpad", L, alt, editing=True) is None
     assert NS.drag_action("onshape", R, none, editing=True) == "orbit"   # other buttons are unchanged
     assert NS.hover_action("touchpad", shift) == "pan" and NS.hover_action("touchpad", alt) == "orbit"
-    assert NS.hover_action("touchpad", ctrl | shift) == "zoom"
+    assert NS.hover_action("touchpad", ctrl) == "zoom" and NS.hover_action("touchpad", ctrl | shift) is None
     assert NS.hover_action("touchpad", none) is None and NS.hover_action("onshape", shift) is None
     for name in NS.STYLES:
         h = NS.help_line(name)
         assert h.startswith("Orbit: ") and "Pan: " in h and "Zoom: " in h and "-drag" in h
-    assert "Alt+move" in NS.help_line("touchpad") and NS.help_line("touchpad").count("Scroll") == 1
+    assert "Alt+move" in NS.help_line("touchpad") and "Ctrl+move" in NS.help_line("touchpad")
 
 
 def _window():
@@ -248,12 +248,16 @@ def test_touchpad_alt_orbits(vp):
     assert not np.allclose(vp.cam.R, R0)
 
 
-def test_touchpad_ctrl_shift_zooms(vp):
+def test_touchpad_ctrl_zooms_and_ctrl_shift_does_nothing(vp):
     vp.nav_style = "touchpad"
+    _move(vp, 400, 300, Qt.ControlModifier)
+    _move(vp, 400, 320, Qt.ControlModifier)
+    assert vp.cam.scale != 0.1
+    s0, t0 = vp.cam.scale, vp.cam.target.copy()
     mods = Qt.ControlModifier | Qt.ShiftModifier
     _move(vp, 400, 300, mods)
-    _move(vp, 400, 320, mods)
-    assert vp.cam.scale != 0.1
+    _move(vp, 400, 340, mods)
+    assert vp.cam.scale == s0 and np.allclose(vp.cam.target, t0)
 
 
 def test_onshape_style_ignores_modifier_moves(vp):
@@ -264,15 +268,16 @@ def test_onshape_style_ignores_modifier_moves(vp):
     assert np.allclose(vp.cam.target, t0) and np.allclose(vp.cam.R, R0) and vp.cam.scale == s0
 
 
-def test_touchpad_scroll_pans_and_ctrl_scroll_zooms(vp):
+def test_touchpad_scroll_zooms_and_so_does_ctrl_scroll(vp):
     vp.nav_style = "touchpad"
-    t0 = vp.cam.target.copy()
-    _wheel(vp, angle=120, pixel=20)
-    assert not np.allclose(vp.cam.target, t0)
-    assert np.allclose(vp.cam.target - t0, vp.cam.R[1] * 20 * 0.1)
-    _wheel(vp, angle=120, mods=Qt.ControlModifier)
+    R0 = vp.cam.R.copy()
+    _wheel(vp, angle=120, pixel=20)                 # two-finger scroll
     _settle(vp)
-    assert vp.cam.scale < 0.1
+    s1 = vp.cam.scale
+    assert s1 < 0.1 and np.allclose(vp.cam.R, R0)
+    _wheel(vp, angle=120, mods=Qt.ControlModifier)  # pinch
+    _settle(vp)
+    assert vp.cam.scale < s1
 
 
 _B = {"L": Qt.LeftButton, "M": Qt.MiddleButton, "R": Qt.RightButton}

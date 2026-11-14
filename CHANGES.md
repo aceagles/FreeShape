@@ -183,6 +183,11 @@ for cutting), version history, Python plugins, and new navigation. It was built 
   narrow or a name was long. Long names are now shortened with "…" (hover for the full name).
 
 ### 1.8.4
+- **Component library** (menu, Ctrl+Shift+L, or "Component library" in Search tools): browse a folder of STEP
+  files with a preview of each one. Type to search names, tags and folders; pick a folder to narrow the list;
+  **Insert into this tab** (or double-click) adds the part to the Part Studio or Assembly, **Open in new tab**
+  opens it on its own. Previews are drawn in the background and kept, so a large library opens at once. The
+  folder defaults to `~/component-library`; **Change folder…** picks another.
 - **Space bar** deselects everything, in the 3D view and in the sketcher.
 - **Arrow keys turn the view** 15° per tap (Right, Left, Up, Down), animated. From the Right view, three taps
   give the edge between Right and Front, six taps give Front.
@@ -212,6 +217,15 @@ for cutting), version history, Python plugins, and new navigation. It was built 
   point plane, a face and a vertex → plane through the point, two faces → mid plane …), and you can select first
   and press Plane. **Sketch does the same**: with a selection that defines a plane it creates that plane and starts
   the sketch on it. Existing planes open as Offset planes, unchanged.
+- **Axis tool** (toolbar, or "Axis" in Search tools): make a construction axis, drawn as a line in the 3D view and
+  listed in the feature list. Eight types: Edge (a straight or circular edge), Round face (a cylinder, cone or torus
+  axis), Two points, Two planes (where they cross), Point + face normal, Perpendicular to a face at the click, Point +
+  parallel line, and **Mate connector** (its Z, X or Y axis; the axis follows the connector). The default
+  *Automatic* picks the type from what is selected, and Flip reverses the direction. An axis is accepted by Revolve,
+  Circular pattern, Linear pattern, Move / rotate and Plane (Line + angle, Point + edge normal), can be hidden with
+  its eye, and can be **projected into a sketch** with the Use tool (a fixed construction line, or a fixed point
+  where the axis is square to the sketch plane) or dimensioned to with the Dimension tool. A mate connector can also
+  be picked directly wherever an axis is asked for.
 
 ### 1.8.3
 - **Linux: fixed the 3D view breaking** on Wayland desktops (most modern Ubuntu / Fedora / KDE setups): the

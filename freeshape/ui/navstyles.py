@@ -6,8 +6,8 @@ A rule is (buttons held, modifier key, action):
   action    "orbit", "pan" or "zoom" (drag up / down to zoom)
 The first matching rule wins. A left click that doesn't move still selects in every style; with no rule for a plain
 left drag it draws a selection box. "wheel" is what the wheel (or two-finger scroll) does without Ctrl:
-"zoom", or "pan" for touchpads (then Ctrl + scroll and pinching zoom). Inside a sketch the left button belongs
-to the sketch; a style that orbits with a plain left drag orbits with Alt + left there instead.
+"zoom", or "pan" (then Ctrl + scroll and pinching zoom; no built-in style uses it now). Inside a sketch the
+left button belongs to the sketch; a style that orbits with a plain left drag orbits with Alt + left there instead.
 """
 from __future__ import annotations
 
@@ -16,9 +16,10 @@ from PySide6.QtCore import Qt
 STYLES = {
     "onshape": {"label": "Onshape", "wheel": "zoom", "rules": [
         ("R", "", "orbit"), ("M", "", "pan"), ("R", "ctrl", "pan"), ("M", "ctrl", "pan")]},
-    "touchpad": {"label": "Touchpad", "wheel": "pan", "rules": [
+    # two-finger scroll and pinch both zoom; pan is Shift+move, zoom is also Ctrl+move
+    "touchpad": {"label": "Touchpad", "wheel": "zoom", "rules": [
         ("L", "alt", "orbit"), ("L", "shift", "pan"), ("R", "", "orbit"), ("M", "", "pan"), ("R", "ctrl", "pan"),
-        ("", "alt", "orbit"), ("", "shift", "pan"), ("", "ctrl+shift", "zoom")]},
+        ("", "alt", "orbit"), ("", "shift", "pan"), ("", "ctrl", "zoom")]},
     "cad": {"label": "CAD (FreeCAD)", "wheel": "zoom", "rules": [
         ("LM", "", "orbit"), ("MR", "", "orbit"), ("M", "", "pan"), ("M", "ctrl", "orbit")]},
     "gesture": {"label": "Gesture (FreeCAD)", "wheel": "zoom", "rules": [
@@ -73,7 +74,7 @@ def drag_action(name, buttons, mods, editing=False):
 
 def hover_action(name, mods):
     """What moving the pointer with no button held does while these keys are down (the Touchpad style: Shift
-    pans, Alt orbits, Ctrl + Shift zooms), or None."""
+    pans, Alt orbits, Ctrl zooms), or None."""
     mod = _modifier(mods)
     if not mod:
         return None

@@ -306,6 +306,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._add_action(m, "Import STEP / BREP (new tab)…", self.import_step)
         self._add_action(m, "Import STEP / BREP into this tab…", lambda: self.import_step(into_current=True))
+        self._add_action(m, "Component library…", self.open_step_library, "Ctrl+Shift+L")
         self._add_action(m, "Export STEP…", lambda: self.export(None, "step"))
         self._add_action(m, "Export STL…", lambda: self.export(None, "stl"))
         self._add_action(m, "Export BREP…", lambda: self.export(None, "brep"))
@@ -406,7 +407,8 @@ class MainWindow(QMainWindow):
         for key, label, kinds, on in (
                 ("vertex", "Vertices", ("vertex",), False), ("edge", "Edges", ("edge",), True),
                 ("face", "Faces", ("face",), True), ("part", "Solids (whole parts)", ("part",), False),
-                ("sketch", "Sketches", ("sketch_line", "region"), True), ("plane", "Planes", ("plane",), True)):
+                ("sketch", "Sketches", ("sketch_line", "region"), True), ("plane", "Planes", ("plane",), True),
+                ("axis", "Axes", ("axis",), True)):
             a = QAction(label, self)
             a.setCheckable(True)
             a.setChecked(on)
@@ -492,6 +494,8 @@ class MainWindow(QMainWindow):
               "sheet metal plate import"),
             C("plane", "Plane", "Make a datum plane: offset, through a point, line and angle, three points, mid "
               "plane, normal to a curve or tangent to a surface.", lambda: F_("plane"), "datum"),
+            C("axis", "Axis", "Make a construction axis: through an edge, a cylinder, two points or two planes, "
+              "or perpendicular to a face.", lambda: F_("axis"), "datum construction centreline"),
             C("mirror", "Mirror", "Copy parts across a plane.", lambda: F_("mirror"), "symmetry"),
             C("linear_pattern", "Linear pattern", "Repeat parts along a direction.", lambda: F_("linear_pattern"),
               "array copies"),
@@ -523,6 +527,8 @@ class MainWindow(QMainWindow):
               self.nest_for_cutting, "sheet metal dxf laser plasma layout stock", "File"),
             C("import", "Import STEP or BREP", "Open a STEP or BREP file in a new tab.", lambda: self.import_step(),
               "open file", "File"),
+            C("import", "Component library", "Search a folder of STEP parts, see their previews and insert one.",
+              self.open_step_library, "step parts browse servo motor bearing standard catalogue insert", "File"),
             C("export", "Export", "Export the model as STEP, STL, 3MF, OBJ or BREP.",
               lambda: self.export(None, None), "save stl step 3mf obj brep", "File"),
             Command("history", "Compare Versions", "What changed between two Versions of this Document, or since "
@@ -597,6 +603,8 @@ class MainWindow(QMainWindow):
             C("drawing", "New Drawing", "Create a Drawing tab.", lambda: self.new_drawing(), "create tab", "File"),
             C("import", "Import STEP", "Open a STEP file in a new tab.", lambda: self.import_step(), "open file",
               "File"),
+            C("import", "Component library", "Search a folder of STEP parts, see their previews and insert one.",
+              self.open_step_library, "step parts browse servo motor bearing standard catalogue insert", "File"),
             C("export", "Save", "Save this tab (Ctrl+S).", self.save, "write store", "File"),
             C("export", "Save as", "Save this tab under a new name (Ctrl+Shift+S).", self.save_as, "write store",
               "File"),
@@ -630,7 +638,7 @@ class MainWindow(QMainWindow):
             self._palette.setParent(host)
         self._palette.open()
 
-    SELECT_DEFAULTS = {"vertex": False, "edge": True, "face": True, "part": False, "sketch": True, "plane": True}
+    SELECT_DEFAULTS = {"vertex": False, "edge": True, "face": True, "part": False, "sketch": True, "plane": True, "axis": True}
 
     def _selection_filter_changed(self, _checked=None):
         kinds = set()
@@ -743,6 +751,7 @@ class MainWindow(QMainWindow):
                  self.nest_for_cutting)
         h.addWidget(_sep())
         self._tb(h, "plane", "Plane", lambda: self.start_feature("plane"))
+        self._tb(h, "axis", "Axis", lambda: self.start_feature("axis"))
         h.addWidget(_sep())
         for name, tip in (("mirror", "Mirror"), ("linear_pattern", "Linear pattern"),
                           ("circular_pattern", "Circular pattern"), ("boolean", "Boolean"),
@@ -1084,6 +1093,15 @@ class MainWindow(QMainWindow):
                 planes.append((("plane", fid), pl, f["name"] if f else "", half * 0.6))
         return planes
 
+    def _axes_for(self, state):
+        axes = []
+        for fid, ax in getattr(state, "axes", {}).items():
+            if fid not in self.doc.hidden_features:
+                f = self.doc.feature(fid)
+                axes.append((("axis", fid), np.asarray(ax["o"], float), np.asarray(ax["d"], float), ax.get("span"),
+                             f["name"] if f else ""))
+        return axes
+
     def _show_state(self, state, active_sketch=None, also_show=()):
         if self.is_dwg:
             return
@@ -1098,7 +1116,7 @@ class MainWindow(QMainWindow):
             if fid in self.doc.hidden_features and fid != active_sketch and fid not in also_show:
                 continue
             sketches.append((fid, sr))
-        self.viewport.set_scene(parts, self._planes_for(state), sketches)
+        self.viewport.set_scene(parts, self._planes_for(state), sketches, self._axes_for(state))
         self.viewport.triads = self._connector_triads(state)
 
     # ================================================================== feature dialogs
@@ -1142,7 +1160,7 @@ class MainWindow(QMainWindow):
         ax = p.get("axis") or {}
         if ax.get("kind") == "sketch_line":
             show.add(ax["sketch"])
-        if feature["type"] == "mate_connector":      # every sketch below it, so its geometry can be picked (I1.6)
+        if feature["type"] in ("mate_connector", "axis"):      # every sketch below it, so its geometry can be picked (I1.6)
             show |= set(st.sketches)
         # ...and stay visible after their reference is cleared, so a lost region can be picked again
         self._dialog_sketches = show = getattr(self, "_dialog_sketches", set()) | show
@@ -2726,6 +2744,14 @@ class MainWindow(QMainWindow):
         ids = self.left.features.selected_feature_ids()
         if ids:
             self._delete_features(ids)
+            return
+        pids = [pk.key[0] for pk in self.viewport.selection if pk.kind == "part"]
+        if pids:
+            self._delete_parts(pids)
+
+    def _delete_parts(self, pids):
+        """Open the Delete part dialog with these parts picked: a part is removed by a feature, not erased."""
+        self.start_feature("delete_part", preselect=[Pick("part", (pid,)) for pid in pids])
 
     def _delete_features(self, ids):
         names = ", ".join(self.doc.feature(i)["name"] for i in ids)
@@ -2876,6 +2902,10 @@ class MainWindow(QMainWindow):
             if pl is not None:
                 h = self.viewport.plane_half() * 0.6
                 polys.append(np.array([pl.to_world(u, v) for u, v in ((-h, -h), (h, -h), (h, h), (-h, h), (-h, -h))]))
+        elif f["type"] == "axis":
+            ax = doc.state.axes.get(fid)
+            if ax is not None:
+                polys.append(np.array(self.viewport.axis_ends(ax["o"], ax["d"], ax.get("span"))))
         elif f["type"] == "mate_connector":
             pass                              # its triad is drawn by _connector_triads
         elif f["type"] != "variable":
@@ -2898,9 +2928,12 @@ class MainWindow(QMainWindow):
                 return
             if f is not None and f["type"] == "sketch" and self._tree_sketch_to_dialog(ident):
                 return
-            if f is None or f["type"] != "plane" or ident not in self.doc.state.planes:
+            if f is not None and f["type"] == "axis" and ident in self.doc.state.axes:
+                pick = Pick("axis", (ident,))
+            elif f is None or f["type"] != "plane" or ident not in self.doc.state.planes:
                 return
-            pick = Pick("plane", ("plane", ident))
+            else:
+                pick = Pick("plane", ("plane", ident))
         if self.mode == "idle":
             self.viewport.set_selection([pick])
         elif self.viewport.pick_handler is not None:
@@ -2977,9 +3010,9 @@ class MainWindow(QMainWindow):
         m.addAction("Rename…", lambda: self._rename_feature(fid))
         if f["type"] == "context":
             m.addAction("Update context", lambda: self.update_context(fid))
-        if f["type"] in ("sketch", "plane"):
+        if f["type"] in ("sketch", "plane", "axis"):
             sel = [i for i in self.left.features.selected_feature_ids()
-                   if (self.doc.feature(i) or {}).get("type") in ("sketch", "plane")]
+                   if (self.doc.feature(i) or {}).get("type") in ("sketch", "plane", "axis")]
             vis = sel if fid in sel and len(sel) > 1 else [fid]
             hide = any(i not in self.doc.hidden_features for i in vis)
             n = f" {len(vis)} items" if len(vis) > 1 else ""
@@ -3099,6 +3132,8 @@ class MainWindow(QMainWindow):
         m.addAction("Export STEP…", lambda: self.export([pid], "step"))
         m.addAction("Export STL…", lambda: self.export([pid], "stl"))
         m.addAction("Export BREP…", lambda: self.export([pid], "brep"))
+        m.addSeparator()
+        m.addAction(icon("delete_part", 16), "Delete part…", lambda: self._delete_parts([pid]))
         m.exec(gpos)
 
     def _rename_part(self, pid):
@@ -3244,6 +3279,9 @@ class MainWindow(QMainWindow):
         if pk.kind in ("face", "edge", "vertex", "part"):
             p = self.doc.state.parts.get(pk.key[0])
             return p.name if p is not None else None
+        if pk.kind == "axis":
+            f = self.doc.feature(pk.key[0])
+            return f["name"] if f else None
         if pk.kind == "plane":
             if pk.key[0] == "std":
                 return pk.key[1]
@@ -3300,6 +3338,7 @@ class MainWindow(QMainWindow):
                     m.addAction("Isolate part", lambda: self._isolate(pid))
                     m.addAction("Select part", lambda: self.viewport.set_selection([Pick("part", (pid,))]))
                     m.addAction("Mass properties", lambda: self._mass_props(pid))
+                    m.addAction(icon("delete_part", 16), "Delete part…", lambda: self._delete_parts([pid]))
             if pk.kind in ("region", "sketch_line"):
                 fid = pk.key[0]
                 m.addAction("Edit sketch", lambda: self.edit_feature(fid))
@@ -3311,6 +3350,9 @@ class MainWindow(QMainWindow):
                 fids = self._menu_features(hid, ("plane",))
                 m.addAction(f"Hide {len(fids)} planes" if len(fids) > 1 else "Hide plane",
                             lambda: self.doc.set_features_hidden(fids, True))
+            if pk.kind == "axis":
+                aid = pk.key[0]
+                m.addAction("Hide axis", lambda: self.doc.toggle_feature_hidden(aid))
             m.addSeparator()
         m.addAction("Zoom to fit", lambda: self.viewport.fit())
         vm = m.addMenu("Views")
@@ -3882,6 +3924,24 @@ class MainWindow(QMainWindow):
                                           doc_path=self._doc_path())
         if path:
             self.import_step_file(path, into_current)
+
+    def open_step_library(self):
+        """The Component library browser: one window, kept so its search and scroll position survive."""
+        from .step_library_ui import StepLibraryDialog
+        d = getattr(self, "_step_library", None)
+        if d is None:
+            d = self._step_library = StepLibraryDialog(self.settings, self._insert_library_part, self)
+        d.show()
+        d.raise_()
+        d.activateWindow()
+        return d
+
+    def _insert_library_part(self, path, into_current):
+        """Insert a library part into this tab when it is a Part Studio or an Assembly, else in a new tab."""
+        if self.mode != "idle":
+            self._leave_modes()
+        can_take = self.doc is not None and getattr(self.doc, "kind", "studio") in ("studio", "assembly")
+        self.import_step_file(path, into_current and can_take)
 
     def import_step_file(self, path, into_current=False):
         from .progress import ImportProgress, read_step_in_background

@@ -24,7 +24,7 @@ from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.GCPnts import GCPnts_QuasiUniformDeflection, GCPnts_TangentialDeflection
 from OCP.GC import GC_MakeArcOfCircle
-from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Line, GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_C1
+from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Line, GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_C1, GeomAbs_Cone, GeomAbs_Torus
 from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_SOLID, TopAbs_REVERSED, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer, TopExp
 from OCP.TopoDS import TopoDS, TopoDS_Compound
@@ -437,7 +437,42 @@ def face_info(face) -> dict:
         info["r"] = cy.Radius()
         info["axis"] = _np(cy.Axis().Direction()).tolist()
         info["axis_p"] = _np(cy.Axis().Location()).tolist()
+    elif st == GeomAbs_Cone:
+        ax = ad.Cone().Axis()
+        info["axis"] = _np(ax.Direction()).tolist()
+        info["axis_p"] = _np(ax.Location()).tolist()
+    elif st == GeomAbs_Torus:
+        ax = ad.Torus().Axis()
+        info["axis"] = _np(ax.Direction()).tolist()
+        info["axis_p"] = _np(ax.Location()).tolist()
     return info
+
+
+def face_axis(face):
+    """(point, unit direction, (t0, t1)) of a cylindrical, conical or toroidal face: the surface's own axis
+    and the stretch of it, along the direction from the point, that the face covers. None for any other face."""
+    ad = BRepAdaptor_Surface(face)
+    st = ad.GetType()
+    if st not in (GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Torus):
+        return None
+    ax = {GeomAbs_Cylinder: lambda: ad.Cylinder().Axis(), GeomAbs_Cone: lambda: ad.Cone().Axis(),
+          GeomAbs_Torus: lambda: ad.Torus().Axis()}[st]()
+    o, d = _np(ax.Location()), _np(ax.Direction())
+    if st == GeomAbs_Torus:
+        pts = _bbox_corners(face)
+    else:
+        from OCP.BRepTools import BRepTools
+        _, _, v0, v1 = BRepTools.UVBounds_s(face)
+        k = math.cos(ad.Cone().SemiAngle()) if st == GeomAbs_Cone else 1.0   # v runs along the generatrix
+        t = sorted((v0 * k, v1 * k))
+        return o, d, (float(t[0]), float(t[1]))
+    ts = [float((c - o) @ d) for c in pts]
+    return o, d, (min(ts), max(ts))
+
+
+def _bbox_corners(shape):
+    lo, hi = bbox(shape)
+    return [np.array([x, y, z]) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
 
 
 def face_outward_normal(face):

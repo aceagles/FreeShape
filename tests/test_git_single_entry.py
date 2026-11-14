@@ -6,8 +6,10 @@ import re
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PKG = os.path.join(ROOT, "freeshape")
 GITSTORE = os.path.join(PKG, "gitstore.py")
-# these two run other programs (pip and relaunch; reveal in the file manager) and must never run git
-ALLOWED = {os.path.join(PKG, "bootstrap.py"), os.path.join(PKG, "ui", "home.py")}
+# these run other programs and must never run git: bootstrap (pip and relaunch), home (reveal a file in Explorer
+# / Finder) and filedlg (ask xdg-mime whether the desktop has a file manager before opening a folder)
+ALLOWED = {os.path.join(PKG, "bootstrap.py"), os.path.join(PKG, "ui", "home.py"),
+           os.path.join(PKG, "ui", "filedlg.py")}
 RUNNERS = {"subprocess", "pty", "popen2", "commands"}
 GIT_LIBS = {"git", "pygit2", "dulwich", "pygit"}
 OS_RUN = {"system", "popen", "execv", "execve", "execvp", "execvpe", "execl", "execle", "execlp", "execlpe",

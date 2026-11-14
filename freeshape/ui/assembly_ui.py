@@ -700,6 +700,11 @@ class InsertPanel(QFrame):
         od.clicked.connect(self.other_doc_action.trigger)
         row.addWidget(od)
         pl.addLayout(row)
+        lib = QPushButton("Component library…")
+        lib.setObjectName("insert_component_library")
+        lib.setToolTip("Search a folder of STEP parts, see their previews and insert one into this Assembly")
+        lib.clicked.connect(ctl.open_component_library)
+        pl.addWidget(lib)
         self.msg = QLabel("")
         self.msg.setWordWrap(True)
         self.msg.setObjectName("muted")
@@ -2224,6 +2229,12 @@ class AssemblyController:
         self.w._adapt_tree(self.insert_panel)
         self.insert_panel.closed.connect(self.close_insert)
 
+    def open_component_library(self):
+        """The Component library browser of the window; its Insert button adds the part to this Assembly."""
+        opener = getattr(self.w, "open_step_library", None)       # tests drive the controller with a stand-in window
+        if opener is not None:
+            opener()
+
     def close_insert(self):
         if self.insert_panel is not None:
             self.insert_panel.hide()
@@ -3139,7 +3150,10 @@ class AssemblyController:
         """Search tools entries for an Assembly tab; each calls what its toolbar button or menu item calls."""
         w = self.w
         cmds = [C("insert", "Insert", "Add parts from your Part Studios or a file (I).", self.toggle_insert,
-                  "add part import component")]
+                  "add part import component"),
+                C("import", "Component library", "Search a folder of STEP parts, see their previews and insert one "
+                  "into this Assembly.", self.open_component_library,
+                  "step parts browse servo motor bearing standard catalogue insert", "File")]
         kw = {"fastened": "joint rigid weld lock", "revolute": "joint hinge axle pin", "slider": "joint prismatic",
               "cylindrical": "joint shaft bearing", "planar": "joint plane", "pin_slot": "joint pinslot pin slot",
               "parallel": "joint axis", "ball": "joint spherical"}

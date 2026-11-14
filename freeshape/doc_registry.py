@@ -173,7 +173,12 @@ class DocRegistry:
         path = rec["path"]
         if not os.path.isdir(path):
             raise DocumentMissing(f"Document {doc_id!r} is registered but its folder is missing: {path}")
-        tags = G.list_tags(path) if G.is_repo(path) else []
+        try:
+            tags = G.list_tags(path) if G.is_repo(path) else []
+        except G.GitUnavailable:
+            if version is not None:
+                raise
+            tags = []           # no usable git: the Document is still listed, with no Versions to pick
         if version is None:
             data = _manifest_workspace(path)
         else:

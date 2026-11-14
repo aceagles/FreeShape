@@ -35,6 +35,8 @@ MIN_GIT = (2, 38)
 IDENTITY = ("FreeShape", "freeshape@localhost")
 DEFAULT_BRANCH = "main"
 _HEX = re.compile(r"^[0-9a-f]{40,64}$")
+NEEDS_GIT = (f"Versions and Workspaces need git {MIN_GIT[0]}.{MIN_GIT[1]} or newer; "
+             "everything else works without it.")
 
 
 class GitError(K.KernelError):
@@ -104,8 +106,10 @@ def _run(args, cwd, allow_file, check, text, input=None):
     feed = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
     try:
         r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=text, **feed)
+    except FileNotFoundError as e:
+        raise GitUnavailable(f"git is not installed on this computer. {NEEDS_GIT}") from e
     except OSError as e:
-        raise GitUnavailable(f"git could not be run: {e}") from e
+        raise GitUnavailable(f"git could not be run ({e}). {NEEDS_GIT}") from e
     if check and r.returncode != 0:
         err = r.stderr if text else r.stderr.decode("utf-8", "replace")
         raise GitError(f"git {args[0] if args else ''} failed: {err.strip()}")
@@ -116,8 +120,21 @@ def _check_version():
     r = _run(["--version"], None, False, True, True)
     m = re.search(r"(\d+)\.(\d+)", r.stdout)
     if not m or (int(m.group(1)), int(m.group(2))) < MIN_GIT:
-        raise GitUnavailable(f"git {'.'.join(map(str, MIN_GIT))} or newer is required, found {r.stdout.strip()!r}")
+        raise GitUnavailable(f"The git on this computer is too old ({r.stdout.strip() or 'unknown version'}). "
+                             f"{NEEDS_GIT}")
     _state["checked"] = True
+
+
+def problem():
+    """Why git cannot be used on this computer (not installed, or older than MIN_GIT), or None when it can.
+    Nothing but versions and Workspaces needs git: a Document opens, edits and saves without it."""
+    if _state["checked"]:
+        return None
+    try:
+        _check_version()
+    except GitUnavailable as e:
+        return str(e)
+    return None
 
 
 # ---------------------------------------------------------------------- names

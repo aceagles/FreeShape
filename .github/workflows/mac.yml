@@ -6,6 +6,9 @@
 #   - Actions tab → "Build (Windows, Mac, Linux)" → Run workflow: a test build. The files, a screenshot of
 #     FreeShape running on the Mac and the logs go on a "Test builds" DRAFT release instead — drafts are only
 #     visible to you (Releases page), never to the public. Each test run replaces the previous test files.
+#   - Pushing a tag v<version>-fork.<n> (this fork, e.g. v2.0.0-fork.1): makes a draft release for the tag,
+#     builds everything, attaches it, then publishes the release. Plain v<version> tags are upstream's and
+#     build nothing here. Linux also gets freeshape_<version>_amd64.deb for Debian and Ubuntu.
 # (The file is still called mac.yml because it started as the Mac build.)
 name: Build (Windows, Mac, Linux)
 
@@ -13,9 +16,16 @@ on:
   workflow_dispatch:
   release:
     types: [published]
+  push:
+    tags:
+      - "v*-fork.*"
 
 permissions:
   contents: write
+
+env:
+  # The release the built files go on: a pushed tag's, a published release's, else the private "Test builds" draft.
+  RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.event_name == 'push' && github.ref_name || 'test-builds') }}
 
 jobs:
   # ------------------------------------------------------------------ test runs: one private draft to put them on
@@ -31,6 +41,21 @@ jobs:
           gh release view test-builds >/dev/null 2>&1 || \
             gh release create test-builds --draft --title "Test builds" \
               --notes "Automatic test builds (draft - only visible to you). Each test run replaces these files."
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+      - name: Make a draft release for the pushed tag
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          V="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' freeshape/__init__.py)"
+          case "$RELEASE_TAG" in
+            "v$V"-fork.*) ;;
+            *) echo "::error::Tag $RELEASE_TAG does not match the code's version $V (expected v$V-fork.<n>)"; exit 1 ;;
+          esac
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --draft --verify-tag --title "FreeShape $RELEASE_TAG" --generate-notes
 
   # ------------------------------------------------------------------ Windows: installer
   windows:
@@ -82,8 +107,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then TAG="${{ github.event.release.tag_name }}"; else TAG=test-builds; fi
-          gh release upload "$TAG" dist/FreeShape-Setup-*.exe dist/FreeShape-portable-*.zip --clobber
+          gh release upload "$RELEASE_TAG" dist/FreeShape-Setup-*.exe dist/FreeShape-portable-*.zip --clobber
 
   # ------------------------------------------------------------------ Mac: .dmg (Apple Silicon)
   mac:
@@ -99,7 +123,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller pytest
+      # Every commit is already tested on Linux by the gate workflow (both OpenCascade versions). On the Mac the
+      # whole suite is for information on a test build only: it never blocks a build, and a tag release skips it.
       - name: Run the tests
+        if: github.event_name != 'push'
+        continue-on-error: true
+        timeout-minutes: 30
         run: python -m pytest -q tests 2>&1 | tee test-results.txt
       - name: Build FreeShape.app and the .dmg
         run: bash packaging/mac/build_mac.sh 2>&1 | tee build-log.txt
@@ -128,8 +157,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            gh release upload "${{ github.event.release.tag_name }}" dist/*.dmg --clobber
+          if [ "$RELEASE_TAG" != "test-builds" ]; then
+            gh release upload "$RELEASE_TAG" dist/*.dmg --clobber
           else
             files=""
             for f in dist/*.dmg mac-screenshot.png app-log.txt build-log.txt test-results.txt; do [ -f "$f" ] && files="$files $f"; done
@@ -158,13 +187,41 @@ jobs:
           python -m pip install -r requirements.txt pyinstaller
       - name: Build the AppImage
         run: PYTHON=python bash packaging/linux/build_appimage.sh
+      - name: Build the .deb (Debian and Ubuntu)
+        run: |
+          if [ "$RELEASE_TAG" != "test-builds" ]; then
+            # v2.0.0-fork.1 -> 2.0.0+fork.1: a Debian version sorts "-" as a packaging revision, "+" as part of the version
+            export FREESHAPE_DEB_VERSION="$(echo "${RELEASE_TAG#v}" | sed 's/-fork\./+fork./')"
+          fi
+          PYTHON=python bash packaging/linux/build_deb.sh
+          dpkg-deb --info dist/*.deb
+      - name: Install the .deb and check the installed app
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          rm -f deb-selftest.txt
+          freeshape --self-test "$PWD/deb-selftest.txt" || true
+          cat deb-selftest.txt
+          grep -q '^OK' deb-selftest.txt
       - uses: actions/upload-artifact@v4
         with:
           name: freeshape-linux
-          path: dist/*.AppImage
+          path: |
+            dist/*.AppImage
+            dist/*.deb
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then TAG="${{ github.event.release.tag_name }}"; else TAG=test-builds; fi
-          gh release upload "$TAG" dist/*.AppImage --clobber
+          gh release upload "$RELEASE_TAG" dist/*.AppImage dist/*.deb --clobber
+
+  # ------------------------------------------------------------------ a pushed tag: publish once everything is attached
+  publish:
+    needs: [windows, mac, linux]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$RELEASE_TAG" --draft=false

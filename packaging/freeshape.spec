@@ -35,6 +35,11 @@ if os.environ.get("FREESHAPE_FULL"):
 # FreeShape's own files: icons, logo, examples
 datas.append((os.path.join(ROOT, "freeshape", "assets"), os.path.join("freeshape", "assets")))
 datas.append((os.path.join(ROOT, "freeshape", "plugin_examples"), os.path.join("freeshape", "plugin_examples")))
+# bundled plugins (fasteners, gears, hardware): found by scanning this folder for plugin.json, and they read
+# their size tables from it, so the folder has to exist on disk beside the code
+datas.append((os.path.join(ROOT, "freeshape", "addons"), os.path.join("freeshape", "addons")))
+# the browser viewer page of `FreeShape serve`
+datas.append((os.path.join(ROOT, "freeshape", "static"), os.path.join("freeshape", "static")))
 datas.append((os.path.join(ROOT, "PLUGINS.md"), "."))
 datas.append((os.path.join(ROOT, "examples"), "examples"))
 datas.append((os.path.join(ROOT, "README.md"), "."))

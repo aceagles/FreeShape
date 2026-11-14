@@ -36,7 +36,7 @@ def _readings(offered, d, size):
     match_hole may answer with any of them; for an unambiguous diameter this is just {size}."""
     out = {size}
     for s in offered:
-        if any(abs(v - d) <= hole_match.TOL + 1e-9 for v in (*CLEARANCE.get(s, ()), *([TAP_DRILL[s]] if s in TAP_DRILL else []))):
+        if any(abs(v - d) <= hole_match.TOL + 1e-9 for v in (*CLEARANCE.get(s, ()), *hole_match.threaded_bores(s))):
             out.add(s)
     return out
 
@@ -144,3 +144,41 @@ def test_iso7049_nominal_is_the_generator_diameter():
     p = part("iso7049")
     for s in p.sizes():
         assert p.match_hole(fb.dia(s, False)) is not None
+
+
+# --------------------------------------------------------------------------- a nut's own bore (minor diameter)
+
+def _bore(shape):
+    """Diameter of the smallest cylindrical face of a nut: its bore."""
+    return 2 * min(i["r"] for i in map(K.face_info, K.faces(shape)) if i.get("r") and "axis" in i)
+
+
+@pytest.mark.parametrize("tid", ("iso4014", "iso4017", "iso4762"))
+def test_a_screw_picks_its_size_from_the_bore_of_every_library_nut(tid):
+    p, nut = part(tid), part("iso4032")
+    offered = set(p.sizes())
+    checked = 0
+    for size in nut.sizes():
+        if size not in offered or size not in K.ISO_PITCH:
+            continue
+        d = _bore(nut.build_solid(size))
+        assert p.match_hole(d) in _readings(offered, d, size), (tid, size, d)
+        checked += 1
+    assert checked > 0
+
+
+def test_the_m6_nut_bore_is_m6_and_was_out_of_reach_of_the_tap_drill():
+    d = _bore(part("iso4032").build_solid("M6"))
+    assert abs(d - 4.917) < 2e-3
+    assert abs(d - TAP_DRILL["M6"]) > hole_match.TOL          # why the tap-drill table alone missed it
+    assert part("iso4762").match_hole(d) == "M6"
+    assert part("iso4762").match_hole(4.917) == "M6"
+
+
+@pytest.mark.parametrize("size", sorted(K.ISO_PITCH, key=lambda s: float(s[1:])))
+def test_every_minor_diameter_matches_its_size(size):
+    p = part("iso4762")
+    if size not in p.sizes():
+        pytest.skip("size not offered")
+    d = float(size[1:]) - 2 * K.THREAD_H * K.ISO_PITCH[size]
+    assert p.match_hole(d) in _readings(set(p.sizes()), d, size)

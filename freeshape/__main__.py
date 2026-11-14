@@ -21,9 +21,10 @@ def _self_test_plugins_and_worker(timeout=180.0):
     if not pyfeature.standard_parts():
         return "FAILED: no standard parts registered"
     root = os.path.dirname(os.path.dirname(os.path.abspath(K.__file__)))
-    example = os.path.join(root, "examples", "bracket.fshape")
+    from freeshape import tabkinds
+    example = os.path.join(root, "examples", "bracket" + tabkinds.get("studio").ext)
     if not os.path.exists(example):
-        return "FAILED: examples/bracket.fshape is not in the build"
+        return "FAILED: the bracket example is not in the build"
     got = {}
 
     def run():

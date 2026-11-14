@@ -8,6 +8,43 @@ so exports are proper STEP solids, and drawings / flat patterns export to DXF fo
 
 ![FreeShape demo: change a number and the part rebuilds, then a 2D drawing with dimensions](docs/images/freeshape_demo.gif)
 
+## About this fork
+
+This is a fork of [richiewillmott/FreeShape](https://github.com/richiewillmott/FreeShape) by Adam Eagles. It
+keeps everything upstream has, including 2.0, and adds Onshape-style Documents and top-down design. The aim is
+a version you can host on your own server: see the [roadmap](ROADMAP.md). The rest of this README is
+upstream's, written by Richard Willmott.
+
+What this fork adds:
+
+- **Documents** — a Document is a folder of tabs kept under git. Create named **Versions**, branch into
+  **Workspaces** and merge them tab by tab, compare two Versions, and link to another Document at a pinned
+  Version.
+- **Top-down design** — **Derived** parts, sketches and mate connectors that follow their source; **Variable
+  Studios** shared between tabs; **Context**, to edit a part against its neighbours in an Assembly; a
+  dependency view of what feeds each tab.
+- **References that survive edits** — every face and edge has a stable name built from its feature history
+  (ported from FreeCAD's element map), so a fillet or a mate stays on the right edge when earlier features
+  change.
+- **A rebuild engine** — each tab rebuilds in its own process, so the window stays responsive and linked tabs
+  update live.
+- **Assemblies** — mate connectors on parts and sketches, pin slot and parallel mates, mate limits, mate values
+  with Set value and Animate, linear relations, groups, sketches as layout instances, suppress, and Select
+  other.
+- **Standard parts and gears as plugins** — ISO fasteners with optional modelled threads, sized to the hole
+  you pick; spur, helical and bevel gears.
+- **Part Studio** — construction axes, mate connectors, a polygon tool, an Extend tool, chamfer by two
+  distances or distance and angle, a second direction for linear patterns, uniform scale in Move, per-part
+  materials for mass and the bill of materials.
+- **Drawings and export** — angular dimensions, tolerances, centre lines, SVG and PNG export; 3MF and OBJ
+  export; STL resolution options.
+- **Component library** — browse a folder of STEP files with previews and insert from it.
+- **Headless and browser** — `python -m freeshape serve <Document>` serves a Document over HTTP on your own
+  machine, with a view-only browser viewer.
+
+The installers linked below are upstream's and do not include these additions. To use this fork, run it from
+source: see [BUILDING.md](BUILDING.md).
+
 ## Why I made it
 
 I use Onshape and like how it works — the feature list, the sketcher, the way assemblies and drawings just make

@@ -360,24 +360,16 @@ def _named_lookup(state, ref, letter):
     return None
 
 
-def element_tail(name) -> str:
-    """The end of an element name, short enough to show a person: where the name was last changed, which is
-    what tells two lost elements apart in a bug report."""
-    name = str(name)
-    return name if len(name) <= 28 else "…" + name[-27:]
-
-
 def _lost_element(kind, ref, state=None):
     """The error for a named reference whose element is no longer in the model (ADR 0003: an error that names
-    the lost element, never a nearest match). The message is for a person: which kind of element, on which
-    part, and what to do. The element name itself is long and internal, so only its tail is shown, for bug
-    reports; the whole name is on the exception as `element_name`."""
+    the lost element, never a nearest match). The first line is for a person: which kind of element, on which
+    part, and what to do. The element name is long and internal, so it goes on a second line, whole, for bug
+    reports; it is also on the exception as `element_name`."""
     part = state.parts.get(ref.get("part")) if state is not None else None
     where = f" on {part.name}" if part is not None and getattr(part, "name", "") else ""
     name = str(ref["name"])
-    tail = element_tail(name)
     err = K.KernelError(f"The {kind} this feature uses{where} is gone: a change earlier in the model removed or "
-                        f"replaced it. Edit this feature and pick the {kind} again. (element {tail})")
+                        f"replaced it. Edit this feature and pick the {kind} again.\nElement: {name}")
     err.element_name = name
     return err
 

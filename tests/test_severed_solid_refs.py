@@ -133,7 +133,7 @@ def test_a_part_that_was_never_split_is_not_searched():
                part=first)
     with pytest.raises(K.KernelError) as err:
         F.resolve(doc.state, ref, "face", fid="probe")
-    assert err.value.element_name == ref["name"] and F.element_tail(ref["name"]) in str(err.value)
+    assert ref["name"] in str(err.value)
 
 
 # =========================================================================== features below an inserted cut
@@ -181,7 +181,7 @@ def test_edge_swallowed_by_the_cut_is_an_error_that_names_it():
     sever_before(doc, first_small, plane)
     # the small hole now finds nothing to cut, and the chamfer's edge does not exist
     assert status(doc, ch["id"]) == "error"
-    assert F.element_tail(rim["name"]) in doc.errors[ch["id"]]      # the message shows the name's tail
+    assert rim["name"] in doc.errors[ch["id"]]
     assert not doc.state.recovered
 
 
@@ -200,7 +200,7 @@ def test_face_cut_into_one_piece_per_part_is_found_by_name_or_is_a_named_error()
     else:
         with pytest.raises(K.KernelError) as err:
             F.resolve(doc.state, top, "face", fid="probe")
-        assert err.value.element_name == top["name"] and F.element_tail(top["name"]) in str(err.value)
+        assert top["name"] in str(err.value)
 
 
 # =========================================================================== stamps shared by the pieces (ADR 0008)

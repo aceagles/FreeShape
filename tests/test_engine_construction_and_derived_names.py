@@ -169,3 +169,18 @@ def test_the_window_takes_axes_from_the_engine_and_does_not_rebuild_them_itself(
     got = doc.state.axes[axis]
     assert np.allclose(got["o"], want["o"]) and np.allclose(got["d"], want["d"])
     assert any(key == ("axis", axis) for key, *_ in win._axes_for(doc.state)), "and it is handed to the viewport"
+
+
+def test_a_lost_reference_says_what_to_do_first_and_names_the_element_after():
+    """The message a person reads in the feature list: a sentence first, the internal element name on a line of
+    its own (ADR 0003 still holds: the error names the lost element, in full)."""
+    doc = block_doc(20, 10, H)
+    part = only_part(doc)
+    _i, face = _top(part.shape)
+    ref = dict(F.make_ref(part.id, face, "face", part.shape), name="no;such;element")
+    with pytest.raises(K.KernelError) as err:
+        F.resolve(doc.state, ref, "face")
+    first, _nl, second = str(err.value).partition("\n")
+    assert first.startswith(f"The face this feature uses on {part.name} is gone") and "pick the face again" in first
+    assert "no;such;element" not in first and second == "Element: no;such;element"
+    assert err.value.element_name == "no;such;element"

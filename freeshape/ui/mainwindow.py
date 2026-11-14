@@ -1447,8 +1447,15 @@ class MainWindow(QMainWindow):
             self.dialog.set_status(f"Can't use that plane: {e}")
             return
         sk = Sketch.from_dict(feat["params"]["sketch"])
+        # show the part edges this sketch uses where the part has them now, as a rebuild would. One whose edge
+        # is gone is cut loose here (a fixed copy again), so the sketch can be opened and repaired.
+        lost = []
+        F.refresh_used_edges(ctx["base"], plane, sk, lost)
+        for eid in lost:
+            sk.entities[eid].pop("src", None)
         self.sketcher = Sketcher(plane, sk, feat["id"], self._sketch_changed, self._sketch_tool_changed)
         self.sketcher.variables = dict(ctx["base"].vars)
+        self.sketcher.base_state = ctx["base"]
         self._sketch_display_toggles()
         vp = self.viewport
         vp.sketcher = self.sketcher
@@ -1460,6 +1467,11 @@ class MainWindow(QMainWindow):
         if animate:
             vp.normal_to(plane)
         self._sketch_changed(True)
+        if lost:
+            n = len(lost)
+            self.status.showMessage(f"{n} used edge{'s are' if n > 1 else ' is'} no longer on the part: "
+                                    f"{'they stay' if n > 1 else 'it stays'} where {'they were' if n > 1 else 'it was'}"
+                                    f" and no longer follow{'' if n > 1 else 's'} the part", 10000)
         vp.setFocus()
         if ctx["is_new"]:
             self._sk_tool("line")

@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QFont, QPen, QPainterPath, QPolygonF, QFontMet
 from PySide6.QtWidgets import QLineEdit
 
 from .. import kernel as K
+from .. import features as F
 from ..sketch import Sketch, ORIGIN, DIMENSIONS, CONSTRAINT_LABELS
 from . import theme
 from . import boxsel
@@ -89,6 +90,7 @@ class Sketcher:
         self.show_regions = True
         self.show_constraints = True
         self.variables = {}          # #name -> value, from the features before this sketch
+        self.base_state = None       # the model before this sketch: where a used edge's reference is checked
         self.undo_stack: list = []
         self.redo_stack: list = []
         self._reset_tool_state()
@@ -2030,6 +2032,27 @@ class Sketcher:
             ed.deleteLater()
 
     # ------------------------------------------------------------------ use / trim
+    def _edge_src(self, pid, ei, edge, shape):
+        """The reference a used edge stores so it follows the part (features.refresh_used_edges), or None when
+        the edge has no element name in the model before this sketch. It is kept only when that name finds
+        this same edge there: an edge of a later feature, or of a part with no names, stays a frozen copy."""
+        st = self.base_state
+        if st is None:
+            return None
+        try:
+            ref = F.make_ref(pid, edge, "edge", shape, st.named(pid))
+            if not ref.get("name"):
+                return None
+            _, found = F.resolve(st, ref, "edge")
+            a, b = K.edge_info(found), K.edge_info(edge)
+        except (K.KernelError, KeyError):
+            return None
+        tol = 1e-6 * max(1.0, float(a.get("len", 1.0)))
+        if a.get("type") != b.get("type") or abs(a["len"] - b["len"]) > tol \
+                or float(np.linalg.norm(np.asarray(a["c"], float) - np.asarray(b["c"], float))) > tol:
+            return None
+        return ref
+
     def _use_edge(self, vp, pk, construction=None, click=None, undo=True):
         """Project a part edge into the sketch as fixed geometry. Returns the entity (or point) id to use, or
         None. An edge that is already in the sketch is not projected again: its line or circle is returned.
@@ -2041,69 +2064,57 @@ class Sketcher:
         if shape is None:
             return None
         edge = K.edges(shape)[ei]
-        info = K.edge_info(edge)
         sk = self.sk
         cons = self.construction if construction is None else construction
-        n = np.asarray(self.plane.normal, float)
-        poly = np.asarray(K.discretize_edge(edge), float)
-        uvs = np.array([self.plane.to_local(q) for q in poly]) if len(poly) else np.zeros((0, 2))
+        got = F.project_edge(self.plane, edge)
+        kind = got[0] if got else None
+        if kind is None:
+            return None
+        if kind == "curve":
+            self._flash(vp, "Only straight or circular edges can be used here")
+            return None
         if undo:
             self.push_undo()
         out = None
         reused = None           # the entity already projected from this edge, when there is one
-        if "r" in info and abs(abs(np.asarray(info["axis"]) @ n) - 1) < 1e-6:
-            c = np.array(self.plane.to_local(info["center"]))
-            partial = len(poly) > 1 and np.linalg.norm(poly[0] - poly[-1]) > 1e-6
-            reused = None if partial else self._used_circle(c, info["r"])
+        if kind == "circle":
+            c, r = got[1], got[2]
+            reused = self._used_circle(c, r)
             if reused is not None:
                 out = reused
             else:
                 pc = sk.add_point(*c)
                 sk.add_constraint("fix", pc, value=c.tolist())
-            if reused is not None:
-                pass
-            elif partial:
-                # partial circular edge: an arc
-                p0, p1, mid = uvs[0], uvs[-1], uvs[len(uvs) // 2]
-                a, b = sk.add_point(*p0), sk.add_point(*p1)
-                if not _ccw_contains(c, p0, p1, mid):
-                    a, b = b, a
-                out = sk.add_arc(pc, a, b, cons)
-                for p_ in (a, b):
-                    sk.add_constraint("fix", p_, value=list(sk.P(p_)))
-            else:
-                out = sk.add_circle(pc, info["r"], cons)
-                sk.add_constraint("radius", out, value=info["r"])
-        elif len(uvs) >= 2:
-            # anything whose outline on the sketch plane is straight: a line between its two extreme points
-            ctr = uvs.mean(axis=0)
-            _u, sv, vt = np.linalg.svd(uvs - ctr)
-            d = vt[0]
-            off = np.abs((uvs - ctr) @ np.array([-d[1], d[0]]))
-            size = max(float(np.ptp(uvs, axis=0).max()), 1e-9)
-            if float(off.max()) > 1e-4 * max(size, 1.0) + 1e-7:
-                if undo:
-                    self.undo_stack.pop()
-                self._flash(vp, "Only straight or circular edges can be used here")
-                return None
-            t = (uvs - ctr) @ d
-            a, b = ctr + d * t.min(), ctr + d * t.max()
-            if np.linalg.norm(b - a) < 1e-7:
-                out = sk.add_point(*a)                     # the edge points straight at you: a point
-                sk.add_constraint("fix", out, value=a.tolist())
-            else:
-                reused = self._used_line(a, b)
-                out = reused or self._add_used_line(a, b, cons)
-                pa, pb = sk.entities[out]["p1"], sk.entities[out]["p2"]
-                if click is not None:
-                    for pp in (pa, pb):
-                        sp = self.scr(vp, sk.P(pp))
-                        if np.hypot(sp[0] - click[0], sp[1] - click[1]) < 10:
-                            out = pp                       # clicked at the end: dimension to the corner
+                out = sk.add_circle(pc, r, cons)
+                sk.add_constraint("radius", out, value=r)
+        elif kind == "arc":
+            # partial circular edge: an arc
+            c = got[1]
+            pc = sk.add_point(*c)
+            sk.add_constraint("fix", pc, value=c.tolist())
+            a, b = sk.add_point(*got[2]), sk.add_point(*got[3])
+            out = sk.add_arc(pc, a, b, cons)
+            for p_ in (a, b):
+                sk.add_constraint("fix", p_, value=list(sk.P(p_)))
+        elif kind == "point":
+            a = got[1]
+            out = sk.add_point(*a)                         # the edge points straight at you: a point
+            sk.add_constraint("fix", out, value=a.tolist())
         else:
-            if undo:
-                self.undo_stack.pop()
-            return None
+            # anything whose outline on the sketch plane is straight: a line between its two extreme points
+            a, b = got[1], got[2]
+            reused = self._used_line(a, b)
+            out = reused or self._add_used_line(a, b, cons)
+        if reused is None and out in sk.entities:
+            # remember which edge this came from, so the sketch projects it again when the part changes
+            src = self._edge_src(pid, ei, edge, shape)
+            if src is not None:
+                sk.entities[out]["src"] = src
+        if kind == "line" and click is not None:
+            for pp in (sk.entities[out]["p1"], sk.entities[out]["p2"]):
+                sp = self.scr(vp, sk.P(pp))
+                if np.hypot(sp[0] - click[0], sp[1] - click[1]) < 10:
+                    out = pp                               # clicked at the end: dimension to the corner
         if reused is not None:
             # the edge is in the sketch already: no second copy on top of it. The Use tool gives it the current
             # solid / construction mode and shows it (a snap may have brought it in as a hidden helper);

@@ -1581,6 +1581,129 @@ def run_context(state, f):
         state.set_named(part.id, N.name_context(shape, named.names, fid, label))
 
 
+def project_edge(plane, edge):
+    """What a part edge looks like on a sketch plane, in sketch coordinates:
+
+      ("circle", c, r)      a whole circle facing the plane
+      ("arc", c, p1, p2)    part of one, counter-clockwise from p1 to p2
+      ("line", a, b)        anything whose outline on the plane is straight (a straight edge, or a curve
+                            seen edge-on, like the rim of a cylinder from the side)
+      ("point", p)          an edge that points straight at the plane
+      ("curve",)            an outline that is neither straight nor a circle: it cannot be used
+      None                  an edge with no points
+
+    The Use tool of the sketcher and `refresh_used_edges` both go through here, so a used edge is projected
+    the same way when it is made and each time the sketch is rebuilt."""
+    from .sketch_ops import _ccw_contains
+    info = K.edge_info(edge)
+    n = np.asarray(plane.normal, float)
+    poly = np.asarray(K.discretize_edge(edge), float)
+    uvs = np.array([plane.to_local(q) for q in poly]) if len(poly) else np.zeros((0, 2))
+    if "r" in info and abs(abs(np.asarray(info["axis"]) @ n) - 1) < 1e-6:
+        c = np.array(plane.to_local(info["center"]), float)
+        if not (len(poly) > 1 and np.linalg.norm(poly[0] - poly[-1]) > 1e-6):
+            return "circle", c, float(info["r"])
+        p0, p1, mid = uvs[0], uvs[-1], uvs[len(uvs) // 2]
+        if not _ccw_contains(c, p0, p1, mid):
+            p0, p1 = p1, p0
+        return "arc", c, p0, p1
+    if len(uvs) < 2:
+        return None
+    ctr = uvs.mean(axis=0)
+    _u, _sv, vt = np.linalg.svd(uvs - ctr)
+    d = vt[0]
+    off = np.abs((uvs - ctr) @ np.array([-d[1], d[0]]))
+    size = max(float(np.ptp(uvs, axis=0).max()), 1e-9)
+    if float(off.max()) > 1e-4 * max(size, 1.0) + 1e-7:
+        return ("curve",)
+    t = (uvs - ctr) @ d
+    a, b = ctr + d * t.min(), ctr + d * t.max()
+    if np.linalg.norm(b - a) < 1e-7:
+        return "point", a
+    return "line", a, b
+
+
+_USED_POINTS = {"line": ("p1", "p2"), "circle": ("c",), "arc": ("c", "p1", "p2")}
+_USED_TOL = 1e-9     # a used edge that moved less than this is left exactly as stored
+
+
+def refresh_used_edges(state, plane, sk, lost=None) -> bool:
+    """Project the part edges a sketch uses again, from the model in `state`. Returns True when any of them
+    moved, and the caller then solves the sketch so the rest of it follows.
+
+    The Use tool copies a part edge into the sketch as a line, circle or arc whose points are held by `fix`
+    constraints (and a circle by a `radius`), and stores a reference to the edge on the entity under `src`.
+    Here that reference is resolved and the fixed values are set from the edge as it is now. An entity
+    without `src` (every used edge of an older file) stays the frozen copy it always was, and so does one
+    whose points are no longer all fixed: the user has trimmed or freed it and it is theirs.
+
+    A reference that no longer resolves, or an edge that now projects to a different kind of curve, is an
+    error (ADR 0003: never a nearest match). With `lost` (a list) the entity id is appended to it instead
+    and the entity is left where it is; the sketch editor uses that to open a sketch it can then repair."""
+    fixes = {c["refs"][0]: c for c in sk.constraints if c["type"] == "fix" and c.get("refs")}
+    moved = False
+
+    def put(pid, uv):
+        nonlocal moved
+        uv = [float(uv[0]), float(uv[1])]
+        if float(np.linalg.norm(np.asarray(sk.points[pid], float) - uv)) > _USED_TOL \
+                or float(np.linalg.norm(np.asarray(fixes[pid]["value"], float) - uv)) > _USED_TOL:
+            sk.points[pid] = uv
+            fixes[pid]["value"] = list(uv)
+            moved = True
+
+    for eid, e in sk.entities.items():
+        src = e.get("src")
+        keys = _USED_POINTS.get(e["type"])
+        if not src or keys is None or any(e[k] not in fixes for k in keys):
+            continue
+        try:
+            try:
+                _, edge = resolve(state, src, "edge")
+            except K.KernelError as err:
+                name = getattr(err, "element_name", None)
+                new = K.KernelError(
+                    f"A part edge used in this sketch is gone: a change earlier in the model removed or replaced "
+                    f"it. Edit the sketch, delete the {e['type']} that was projected from it and use the edge "
+                    f"again." + (f"\nElement: {name}" if name else ""))
+                new.element_name = name
+                raise new from None
+            got = project_edge(plane, edge)
+            kind = got[0] if got else None
+            if kind != e["type"]:
+                raise K.KernelError(
+                    f"A part edge used in this sketch as a {e['type']} no longer looks like one from the sketch "
+                    f"plane. Edit the sketch, delete the {e['type']} and use the edge again.")
+        except K.KernelError:
+            if lost is None:
+                raise
+            lost.append(eid)
+            continue
+        if kind == "circle":
+            put(e["c"], got[1])
+            if abs(float(e["r"]) - got[2]) > _USED_TOL:
+                e["r"] = got[2]
+                moved = True
+            for c in sk.constraints:
+                if c["type"] == "radius" and c.get("refs") and c["refs"][0] == eid \
+                        and not isinstance(c.get("expr"), str) and abs(float(c.get("value", 0.0)) - got[2]) > _USED_TOL:
+                    c["value"] = got[2]
+                    moved = True
+        elif kind == "arc":
+            put(e["c"], got[1])
+            put(e["p1"], got[2])
+            put(e["p2"], got[3])
+        else:
+            # which end is which is not part of a projection: keep each stored end at the end nearer to it
+            a, b = got[1], got[2]
+            p, q = np.asarray(sk.points[e["p1"]], float), np.asarray(sk.points[e["p2"]], float)
+            if np.linalg.norm(p - a) + np.linalg.norm(q - b) > np.linalg.norm(p - b) + np.linalg.norm(q - a):
+                a, b = b, a
+            put(e["p1"], a)
+            put(e["p2"], b)
+    return moved
+
+
 def run_sketch(state, f):
     p = f["params"]
     plane = resolve_plane(state, p["plane"])
@@ -1593,7 +1716,8 @@ def run_sketch(state, f):
             bad = [n for n in var_names(c["expr"]) if n not in state.vars]
             raise K.KernelError(f"Unknown variable #{bad[0]}" if bad else f"Can't read '{c['expr']}'")
         c["value"] = val
-    if driven:
+    # part edges used in the sketch are projected again from the model as it is now
+    if refresh_used_edges(state, plane, sk) or driven:
         sk.solve()
     regions, history, edges = K.sketch_regions(plane, sk.curves(), with_history=True)
     bb = K.bbox(K.compound(regions)) if regions else None

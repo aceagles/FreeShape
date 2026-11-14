@@ -360,9 +360,26 @@ def _named_lookup(state, ref, letter):
     return None
 
 
-def _lost_element(kind, ref):
-    return K.KernelError(f"{kind.capitalize()} {ref['name']} is gone: the model no longer has an element "
-                         "of that name")
+def element_tail(name) -> str:
+    """The end of an element name, short enough to show a person: where the name was last changed, which is
+    what tells two lost elements apart in a bug report."""
+    name = str(name)
+    return name if len(name) <= 28 else "…" + name[-27:]
+
+
+def _lost_element(kind, ref, state=None):
+    """The error for a named reference whose element is no longer in the model (ADR 0003: an error that names
+    the lost element, never a nearest match). The message is for a person: which kind of element, on which
+    part, and what to do. The element name itself is long and internal, so only its tail is shown, for bug
+    reports; the whole name is on the exception as `element_name`."""
+    part = state.parts.get(ref.get("part")) if state is not None else None
+    where = f" on {part.name}" if part is not None and getattr(part, "name", "") else ""
+    name = str(ref["name"])
+    tail = element_tail(name)
+    err = K.KernelError(f"The {kind} this feature uses{where} is gone: a change earlier in the model removed or "
+                        f"replaced it. Edit this feature and pick the {kind} again. (element {tail})")
+    err.element_name = name
+    return err
 
 
 def resolve(state: ModelState, ref, kind, fid=None):
@@ -376,7 +393,7 @@ def resolve(state: ModelState, ref, kind, fid=None):
     if ref.get("name"):
         hit = _named_lookup(state, ref, N.FACE if kind == "face" else N.EDGE)
         if hit is None:
-            raise _lost_element(kind, ref)
+            raise _lost_element(kind, ref, state)
         pid, sub = hit
         return pid, (K._as_face(sub) if kind == "face" else K._as_edge(sub))
     parts = [state.parts[ref["part"]]] if ref.get("part") in state.parts else list(state.parts.values())
@@ -452,7 +469,7 @@ def resolve_point(state: ModelState, ref, fid=None) -> np.ndarray:
     if ref.get("name"):
         hit = _named_lookup(state, ref, N.VERTEX)
         if hit is None:
-            raise _lost_element("vertex", ref)
+            raise _lost_element("vertex", ref, state)
         return _vertex_pos(hit[1])
     parts = [state.parts[ref["part"]]] if ref.get("part") in state.parts else list(state.parts.values())
     if not parts:

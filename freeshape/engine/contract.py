@@ -215,6 +215,11 @@ class StudioOutputs(TabOutputs):
     sketches: list = field(default_factory=list)       # [SketchOut]
     connectors: list = field(default_factory=list)     # [MateConnectorOut], in feature order
     variables: dict = field(default_factory=dict)      # name -> number
+    # Construction geometry as the studio built it, each feature against the model as it was at that feature:
+    # plane feature id -> {"o", "x", "n"} (kernel.Plane.to_dict), axis feature id -> {"o", "d", "span"}. A client
+    # that rebuilt these itself from the finished parts would lose any whose face a later feature changed.
+    planes: dict = field(default_factory=dict)
+    axes: dict = field(default_factory=dict)
 
 
 @dataclass

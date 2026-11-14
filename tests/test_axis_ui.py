@@ -89,7 +89,7 @@ def test_edge_pick_commits_axis_on_edge(win):
     assert any(a[0] == ("axis", f["id"]) for a in win.viewport.axes)
 
 
-def test_face_pick_records_click_and_detects_type(win):
+def test_flat_face_pick_gives_the_axis_at_the_face_centre(win):
     part = only_part(win.doc)
     vp = win.viewport
     s = vp.cam.to_screen(np.array([20.0, 15.0, H]))
@@ -97,10 +97,27 @@ def test_face_pick_records_click_and_detects_type(win):
     dlg = _start(win)
     dlg.handle_pick(Pick("face", (part.id, top_index(part.shape))))
     p = dlg.feature["params"]
+    assert p["click"] is None                                    # off centre click, but the axis is at the centre
+    assert p["refs"][0]["ref"].get("name")                       # the face is stored by its element name
+    assert dlg._info_rows[0][1].text() == "Type: Perpendicular to face at centre"
+    win.commit_dialog()
+    (f,) = _axes(win.doc)
+    ax = win.doc.state.axes[f["id"]]
+    assert np.allclose(ax["o"], [W / 2, D / 2, H], atol=1e-6) and np.allclose(ax["d"], [0, 0, 1], atol=1e-9)
+
+
+def test_face_pick_records_click_when_the_type_is_at_click(win):
+    part = only_part(win.doc)
+    vp = win.viewport
+    s = vp.cam.to_screen(np.array([20.0, 15.0, H]))
+    vp.last_click = (float(s[0]), float(s[1]))
+    dlg = _start(win)
+    dlg._set("type", "face_point")
+    dlg.handle_pick(Pick("face", (part.id, top_index(part.shape))))
+    p = dlg.feature["params"]
     assert p["click"] is not None and abs(p["click"][2] - H) < 1e-3
     assert np.allclose(p["click"][:2], [20, 15], atol=0.5)
     assert F.AXIS_TYPE_NAMES["face_point"] == "Perpendicular to face at click"
-    assert dlg._info_rows[0][1].text() == "Type: Perpendicular to face at click"
     win.commit_dialog()
     (f,) = _axes(win.doc)
     ax = win.doc.state.axes[f["id"]]
@@ -114,6 +131,7 @@ def test_removing_the_face_clears_the_click(win):
     s = vp.cam.to_screen(np.array([20.0, 15.0, H]))
     vp.last_click = (float(s[0]), float(s[1]))
     dlg = _start(win)
+    dlg._set("type", "face_point")
     pk = Pick("face", (part.id, top_index(part.shape)))
     dlg.handle_pick(pk)
     assert dlg.feature["params"]["click"] is not None
@@ -214,7 +232,8 @@ def test_preview_holds_the_axis_while_dialog_is_open(win):
 def test_unfitting_selection_shows_the_build_error(win):
     part = only_part(win.doc)
     dlg = _start(win)
-    dlg.handle_pick(Pick("face", (part.id, top_index(part.shape))))      # no click: a face alone fits nothing
+    dlg.handle_pick(Pick("face", (part.id, top_index(part.shape))))
+    dlg.handle_pick(Pick("edge", (part.id, 0)))                          # a face and an edge fit nothing
     dlg._timer.stop()
     dlg._do_preview()
     assert "does not fit an axis type" in dlg.err.text()

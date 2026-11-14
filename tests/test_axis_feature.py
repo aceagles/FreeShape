@@ -107,7 +107,7 @@ def test_axis_through_two_points_and_sketch_point_and_same_place():
     assert _err(doc, refs=[a, sp, b]) == "That selection does not fit an axis type"
 
 
-def test_auto_detects_each_type_and_rejects_a_plain_face():
+def test_auto_detects_each_type_and_rejects_a_face_with_an_edge():
     doc = _hole_doc()
     e = _eref(doc, _x_edge)
     cyl = _fref(doc, lambda i: i["type"] == int(K.GeomAbs_Cylinder))
@@ -116,8 +116,9 @@ def test_auto_detects_each_type_and_rejects_a_plain_face():
     assert F.axis_type({"type": "auto", "refs": [cyl]}) == "round_face"
     assert F.axis_type({"type": "auto", "refs": [v1, v2]}) == "two_points"
     top = _fref(doc, lambda i: i["type"] == int(K.GeomAbs_Plane) and i["n"][2] > 0.9)
-    assert F.axis_type({"type": "auto", "refs": [top]}) is None
-    assert _err(doc, refs=[top]) == "That selection does not fit an axis type"
+    assert F.axis_type({"type": "auto", "refs": [top]}) == "face_center"      # tests/test_axis_face_center.py
+    assert F.axis_type({"type": "auto", "refs": [top, e]}) is None
+    assert _err(doc, refs=[top, e]) == "That selection does not fit an axis type"
     assert _err(doc, type="two_planes", refs=[]) == "Pick two planes or planar faces"
     assert _err(doc, type="edge", refs=[top]) == "Pick a straight or circular edge"
 

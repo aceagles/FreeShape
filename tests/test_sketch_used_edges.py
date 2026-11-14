@@ -100,6 +100,25 @@ def test_use_without_a_model_to_check_against_stores_no_reference():
     assert "src" not in s.sk.entities[eid]
 
 
+def test_the_radius_of_a_circle_that_follows_the_part_is_not_shown_as_a_dimension():
+    doc, _sid, _cid = _disc(30.0)
+    s, eid = _use(doc, _bottom_circle)
+    radius = [c for c in s.sk.constraints if c["type"] == "radius" and c["refs"][0] == eid]
+    assert len(radius) == 1 and radius[0] not in s._shown_dimensions()
+    OPS.offset(s.sk, eid, 5.0)                    # the user's own dimensions are still shown
+    assert [c["type"] for c in s._shown_dimensions()] == ["offset"]
+
+
+def test_the_radius_of_a_fixed_copy_is_still_a_dimension():
+    doc, _sid, _cid = _disc(30.0)
+    s, eid = _use(doc, _bottom_circle, linked=False)
+    assert [c["type"] for c in s._shown_dimensions()] == ["radius"]
+    s2, eid2 = _use(doc, _bottom_circle)          # linked, then freed: the user owns it again
+    centre = s2.sk.entities[eid2]["c"]
+    s2.sk.constraints = [c for c in s2.sk.constraints if not (c["type"] == "fix" and c["refs"][0] == centre)]
+    assert [c["type"] for c in s2._shown_dimensions()] == ["radius"]
+
+
 # --------------------------------------------------------------------------- the rebuild projects it again
 
 def test_a_used_circle_and_its_offset_follow_the_part():

@@ -186,6 +186,8 @@ def run():
         T.check(w.mode == "dialog" and w.dialog.ftype == "axis", "the Axis tool did not open")
         if click is not None:
             w.viewport.last_click = screen(w, click)        # where the viewport records the click that picks a face
+        if want_type == "face_point":                       # a flat face alone is face_center: choose "at click" first
+            w.dialog._set("type", "face_point")
         for pk in picks:
             w.dialog.handle_pick(pk)
         if flip:

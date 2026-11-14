@@ -8,6 +8,13 @@ patterns), drawings (sections, details, parts lists, balloons), sheet metal (hem
 for cutting), version history, Python plugins, and new navigation. It was built and tested in stages — the
 1.9.x previews below — which together make 2.0.0.
 
+### Axis at the centre of a flat face
+- **Axis tool**: picking a flat face on its own now gives an axis through the **centre of the face**, square to it
+  and pointing out of the part: the same place a mate connector on that face sits. The end face of a shaft or a
+  washer gives the axis through its middle. A plane on its own gives the axis through the plane's origin. The new
+  type is *Perpendicular to face at centre*; choose *Perpendicular to face at click* before picking the face to put
+  the axis where you click instead. Axes saved earlier stay where they are.
+
 ### Split, reworked (issue #20)
 - **Split with any surface**: planes, any face — flat or **curved** (a cylinder, cone, sphere, torus or an extruded
   curve is extended so it cuts right through) — or **sketch curves** (lines, arcs, splines, pushed out both ways

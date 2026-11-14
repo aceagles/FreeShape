@@ -426,10 +426,11 @@ def _axis_info(p):
     items = F.axis_items(p)
     typ = F.axis_type(p)
     if not items:
-        return "Select an edge, a round face, two points or two planes. The axis type is picked from what you select."
+        return ("Select an edge, a round or flat face, two points or two planes. The axis type is picked from what "
+                "you select.")
     if typ is None:
-        return ("⚠ That selection doesn't fit an axis type. Try an edge, a round face, two points, two planes, "
-                "a point and a face, or a face you click.")
+        return ("⚠ That selection doesn't fit an axis type. Try an edge, a round or flat face, two points, two "
+                "planes, or a point and a face.")
     if (p.get("type") or "auto") == "auto":
         return f"Type: {F.AXIS_TYPE_NAMES.get(typ, typ)}"
     return ""
@@ -2132,8 +2133,12 @@ class FeatureDialog(_ResizableFrame):
             return
         item = pick_to_item(self.main.viewport, pick, fld.want, self.base_state)
         if item is not None and self.ftype == "axis" and item[0] == "face" and fld.key == "refs_sel" \
-                and not any(_same(ex, item) for ex in fld.items) and self.main.viewport.last_click:
-            # the point clicked on the face (a face alone gives an axis there, along its normal)
+                and not any(_same(ex, item) for ex in fld.items) and self.main.viewport.last_click \
+                and (self.feature["params"].get("type") == "face_point"
+                     or F.axis_role(*item) != "plane"):
+            # the point clicked on the face. A flat face alone gives an axis at its centre (as a mate connector
+            # sits), so its click is kept only for "Perpendicular to face at click"; a curved face alone gives
+            # an axis at the click, along the normal there.
             click = self.main.viewport.surface_point(*self.main.viewport.last_click)
             self.feature["params"]["click"] = [float(a) for a in click] if click is not None else None
         if item is None:

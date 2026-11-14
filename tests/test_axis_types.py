@@ -192,7 +192,8 @@ def test_auto_detects_all_eight_types_in_order():
     assert t([cyl]) == "round_face"
     assert t([e]) == "edge" and t([circ]) == "edge"
     assert t([top], click=[1, 2, 5]) == "face_point"
-    assert t([top]) is None and t([]) is None and t([v1]) is None and t([v1, v2, e]) is None
+    assert t([top]) == "face_center"                               # no click: the face centre
+    assert t([]) is None and t([v1]) is None and t([v1, v2, e]) is None
     assert t([cyl], click=[1, 2, 5]) == "round_face"               # a round face wins over a click
     assert t([v1, e], click=[1, 2, 5]) == "point_parallel"         # and so does point + line
     assert F.detect_axis_type(["plane", "plane"]) == "two_planes"

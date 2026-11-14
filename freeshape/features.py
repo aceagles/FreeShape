@@ -673,7 +673,8 @@ def build_plane(state, p):
 AXIS_TYPES = [
     ("auto", "Automatic"), ("edge", "Through edge"), ("round_face", "Through cylinder / cone / torus"),
     ("two_points", "Through two points"), ("two_planes", "Two planes"),
-    ("point_normal", "Perpendicular to face through point"), ("face_point", "Perpendicular to face at click"),
+    ("point_normal", "Perpendicular to face through point"), ("face_center", "Perpendicular to face at centre"),
+    ("face_point", "Perpendicular to face at click"),
     ("point_parallel", "Parallel to line through point"), ("connector", "Mate connector axis"),
 ]
 AXIS_TYPE_NAMES = dict(AXIS_TYPES)
@@ -705,7 +706,9 @@ def axis_role(kind, ref):
 
 def detect_axis_type(roles, click=False):
     """The axis type that fits a selection (a list of roles from axis_role; `click` says the feature has a click
-    point), or None. The order matters: a point and a plane is point_normal, not face_point."""
+    point), or None. The order matters: a point and a plane is point_normal, not face_point. A flat face or plane
+    alone is face_center, as a mate connector on it would sit; with a click point it is face_point (the axis goes
+    where the click was), which is what a file saved before face_center existed holds."""
     n = {r: roles.count(r) for r in ("point", "plane", "round", "surface", "line", "axis", "circle", "curve",
                                       "connector")}
     total = len(roles)
@@ -725,6 +728,8 @@ def detect_axis_type(roles, click=False):
         return "edge"
     if total == 1 and click and n["plane"] + n["surface"] == 1:
         return "face_point"
+    if total == 1 and n["plane"] == 1:
+        return "face_center"
     return None
 
 
@@ -828,6 +833,21 @@ def build_axis(state, p):
         if not p.get("click"):
             raise K.KernelError("Click the face where the axis should be")
         o, d = _axis_surface_normal(state, items[0][0], items[0][1], np.asarray(p["click"], float))
+        span = None
+    elif t == "face_center":
+        if len(items) != 1 or axis_role(*items[0]) != "plane":
+            raise K.KernelError("Pick one flat face or plane")
+        kind, ref = items[0]
+        if kind == "plane":
+            pl = _axis_plane(state, kind, ref)
+            o, d = pl.origin, pl.normal
+        else:                               # where a mate connector on the face sits: its centre, Z out of the part
+            from . import assembly as AS
+            pid, face = resolve(state, ref, "face")
+            shape = state.parts[pid].shape
+            index = next(i for i, s in enumerate(K.faces(shape)) if s.IsSame(face))
+            fr = AS.connector_frame(shape, "face", index)
+            o, d = fr["o"], fr["z"]
         span = None
     elif t == "point_parallel":
         pts = [(k, r) for k, r in items if axis_role(k, r) == "point"]

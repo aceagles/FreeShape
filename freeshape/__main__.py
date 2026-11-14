@@ -8,6 +8,46 @@ def _deps_ok():
     return all(importlib.util.find_spec(m) is not None for m in ("OCP", "PySide6", "OpenGL", "numpy", "ezdxf"))
 
 
+def _self_test_plugins_and_worker(timeout=180.0):
+    """None when the bundled plugins loaded and a worker process rebuilt an example part, else what failed.
+    The worker runs on a thread with a time limit: a packaged build that cannot start its workers hangs."""
+    import threading
+    from freeshape import kernel as K
+    from freeshape import pyfeature
+    have = {p.id for p in pyfeature.plugins()}
+    missing = {"fasteners", "gears", "hardware"} - have
+    if missing:
+        return "FAILED: bundled plugins missing: " + ", ".join(sorted(missing))
+    if not pyfeature.standard_parts():
+        return "FAILED: no standard parts registered"
+    root = os.path.dirname(os.path.dirname(os.path.abspath(K.__file__)))
+    from freeshape import tabkinds
+    example = os.path.join(root, "examples", "bracket" + tabkinds.get("studio").ext)
+    if not os.path.exists(example):
+        return "FAILED: the bracket example is not in the build"
+    got = {}
+
+    def run():
+        try:
+            from freeshape.engine import ProcessEngine
+            with ProcessEngine(meshes=False, spares=0) as eng:
+                got["parts"] = len(eng.outputs(eng.open_tab(example)).parts)
+        except Exception as e:
+            import traceback
+            got["error"] = "".join(traceback.format_exception(e))
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return f"FAILED: a worker process did not rebuild a part within {timeout:.0f} s"
+    if "error" in got:
+        return "FAILED: worker process: " + got["error"]
+    if not got.get("parts"):
+        return "FAILED: the worker process built no parts"
+    return None
+
+
 def _self_test(out_path):
     """Quick check that the geometry engine and the display libraries load (used after building the .exe)."""
     try:
@@ -23,6 +63,8 @@ def _self_test(out_path):
         assets = os.path.join(os.path.dirname(os.path.abspath(K.__file__)), "assets", "freeshape.ico")
         ok = abs(K.volume(box) - 6000) < 1e-6 and len(m.tris) > 0 and os.path.exists(assets)
         msg = "OK" if ok else "FAILED: wrong result"
+        if ok:
+            msg = _self_test_plugins_and_worker() or "OK"
     except Exception as e:
         import traceback
         msg = "FAILED: " + "".join(traceback.format_exception(e))

@@ -636,9 +636,27 @@ class FolderDocument:
         if folder is None or not G.is_repo(folder):
             raise G.GitError(self.git_error or "This Document folder has no repository")
 
+    def _repository_can_start(self):
+        """True for a Document the app made while git was missing (trusted, no `.git` at all) on a computer where
+        git now works: it has no versions yet, and creating the first one makes its repository."""
+        try:
+            folder = DS.git_folder(self.store)
+        except K.KernelError:
+            return False
+        return (folder is not None and self.trusted and not self.git_error
+                and not os.path.lexists(os.path.join(folder, ".git")) and G.problem() is None)
+
+    def _start_repository(self):
+        """Make the repository of a Document that `_repository_can_start`; anything else is left to _git_ready."""
+        if self._repository_can_start():
+            folder = DS.git_folder(self.store)
+            G.init_repo(folder)
+            G.ensure_attributes(folder, _attribute_lines())
+
     def create_version(self, name, note=""):
         """Save, then commit everything and tag the commit (annotated, carrying `note`). Saving alone never commits."""
         self._check_writable()
+        self._start_repository()
         self._git_ready()
         G.check_name(name)
         if any(v["name"] == name for v in G.list_tags(self.path)):
@@ -650,6 +668,8 @@ class FolderDocument:
 
     def versions(self):
         """Versions, oldest first: dicts {name, commit, note, time}."""
+        if self._repository_can_start():
+            return []
         self._git_ready()
         return G.list_tags(self.path)
 
@@ -692,16 +712,22 @@ class FolderDocument:
         except K.KernelError as e:
             return str(e)
         if folder is None or not G.is_repo(folder):
-            return "This Document folder has no repository, so it has no versions or Workspaces"
-        return None
+            if self._repository_can_start():
+                return None     # made while git was missing: the first version makes the repository
+            return G.problem() or "This Document folder has no repository, so it has no versions or Workspaces"
+        return G.problem()      # a repository made on another computer, and no usable git on this one
 
     def workspaces(self):
         """Workspace names (branches), the default one first."""
+        if self._repository_can_start():
+            return [G.DEFAULT_BRANCH]
         self._git_ready()
         names = G.list_branches(self.path)
         return names or [G.current_branch(self.path) or G.DEFAULT_BRANCH]
 
     def current_workspace(self):
+        if self._repository_can_start():
+            return G.DEFAULT_BRANCH
         self._git_ready()
         return G.current_branch(self.path) or G.DEFAULT_BRANCH
 

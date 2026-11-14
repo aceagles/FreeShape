@@ -161,6 +161,11 @@ class NestDialog(QDialog):
             warn.setWordWrap(True)
             right.addWidget(warn)
         btns = QHBoxLayout()
+        from .export_dialog import DxfProfileCombo
+        self.profile_combo = DxfProfileCombo(getattr(self.main, "settings", None))
+        self.profile_combo.setToolTip("Which program the DXF is for: the layers, colours and format it is written with.")
+        btns.addWidget(QLabel("DXF profile"))
+        btns.addWidget(self.profile_combo)
         btns.addStretch(1)
         self.export_btn = QPushButton("Export DXF…")
         self.export_btn.setDefault(True)
@@ -265,7 +270,8 @@ class NestDialog(QDialog):
         if not path.lower().endswith(".dxf"):
             path += ".dxf"
         try:
-            N.export_dxf(self.res, path)
+            N.export_dxf(self.res, path, profile=self.profile_combo.profile())
+            self.profile_combo.remember()
         except Exception as e:
             QMessageBox.critical(self, "Nest for cutting", f"Couldn't export:\n{e}")
             return

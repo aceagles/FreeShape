@@ -364,9 +364,12 @@ class StudioTab(_Tab):
             f = doc.feature(fid)
             sketches.append(sketch_out(fid, f["name"] if f else fid, res))
         connectors = [connector_out(fid, c) for fid, c in st.connectors.items()]
+        planes = {str(fid): plain(pl.to_dict()) for fid, pl in st.planes.items()}
+        axes = {str(fid): plain(dict(ax)) for fid, ax in getattr(st, "axes", {}).items()}
         return StudioOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
                              errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts,
-                             sketches=sketches, connectors=connectors, variables=plain(dict(st.vars)))
+                             sketches=sketches, connectors=connectors, variables=plain(dict(st.vars)),
+                             planes=planes, axes=axes)
 
 
 class VariablesTab(_Tab):

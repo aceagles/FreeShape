@@ -974,6 +974,29 @@ def region_ref(state_or_result, sketch_fid, face):
     return ref
 
 
+def round_face_axis(face):
+    """(point, unit direction) of the axis of a round face, or None when the face has none.
+
+    A cylinder, cone or torus gives the surface's own axis. A flat face qualifies only when every edge of its
+    outer wire is a circle or arc and they all share one centre (disc, annulus, arc-bounded face); the axis then
+    runs through that centre along the outward normal, not through the centroid."""
+    fa = K.face_axis(face)
+    if fa is not None:
+        return np.array(fa[0], float), np.array(fa[1], float)
+    if K.planar_face_plane(face) is None:
+        return None
+    from OCP.BRepTools import BRepTools
+    centres = []
+    for e in K.edges(BRepTools.OuterWire_s(face)):
+        info = K.edge_info(e)
+        if "center" not in info:
+            return None
+        centres.append(np.array(info["center"], float))
+    if not centres or any(np.linalg.norm(c - centres[0]) > 1e-6 for c in centres):
+        return None
+    return centres[0], K.face_outward_normal(face)
+
+
 def resolve_axis(state: ModelState, ref):
     kind = ref.get("kind")
     if kind == "std":
@@ -990,6 +1013,20 @@ def resolve_axis(state: ModelState, ref):
         if np.linalg.norm(d) < 1e-9:
             raise K.KernelError("Axis has zero length")
         return a, d / np.linalg.norm(d)
+    if kind == "sketch_circle":
+        sk = state.sketches.get(ref["sketch"])
+        if sk is None or ref["entity"] not in sk.sketch.entities:
+            raise K.KernelError("Missing axis")
+        e = sk.sketch.entities[ref["entity"]]
+        if e.get("type") not in ("circle", "arc"):
+            raise K.KernelError("Pick a circle or an arc as the axis")
+        return sk.plane.to_world(*sk.sketch.points[e["c"]]), np.array(sk.plane.normal, float)
+    if kind == "face":
+        _, face = resolve(state, ref["face"], "face")
+        ax = round_face_axis(face)
+        if ax is None:
+            raise K.KernelError("Pick a round face, an edge, a sketch line or an axis")
+        return ax
     if kind == "edge":
         _, e = resolve(state, ref["edge"], "edge")
         ln = K.edge_line(e)
@@ -1977,6 +2014,10 @@ def run_revolve(state, f):
     p = f["params"]
     profs = _profiles(state, p, f["id"])
     a, d = resolve_axis(state, p.get("axis", {}))
+    for prof in profs:
+        pl = K.planar_face_plane(prof)
+        if pl is not None and abs(float(pl.normal @ d)) > 1 - 1e-9:
+            raise K.KernelError("The axis must not be perpendicular to the sketch plane")
     end = p.get("end", "full")
     angle, flip = signed_extent(360.0 if end == "full" else p.get("angle", 180), p.get("flip", False))
     if flip:

@@ -105,6 +105,9 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
                                   "origin": pl.origin.tolist(), "xdir": pl.xdir.tolist()})
         if "edge" in want:          # selecting a face selects all of its edges (fillet/chamfer)
             return ("edges", [F.make_ref(pid, e, "edge", shape, names(pid)) for e in K.edges(face)])
+        if "axis" in want and F.round_face_axis(face) is not None:      # a cylinder, cone, torus, disc or ring
+            return ("axis", {"kind": "face",
+                             "face": engine_named(F.make_ref(pid, face, "face", shape, names(pid)), pid, "face", fi)})
         if "part" in want:
             return ("part", pid)
     if k == "part" and "part" in want:
@@ -140,6 +143,9 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
             return ("path", {"kind": "edge", "edge": F.make_ref(pid, K.edges(shape)[ei], "edge", shape, names(pid))})
     if k == "sketch_line" and "axis" in want:
         fid, eid = pick.key
+        for sfid, sr, _ in vp.sketches:
+            if sfid == fid and sr.sketch.entities.get(eid, {}).get("type") in ("circle", "arc"):
+                return ("axis", {"kind": "sketch_circle", "sketch": fid, "entity": eid})
         return ("axis", {"kind": "sketch_line", "sketch": fid, "line": eid})
     if k == "vertex" and "vertex" in want:
         pid, vi = pick.key
@@ -233,6 +239,15 @@ def item_label(doc, item):
             return f"{ref['name']} axis"
         if ref["kind"] == "sketch_line":
             return "Sketch line"
+        if ref["kind"] == "sketch_circle":
+            return "Sketch circle"
+        if ref["kind"] == "face":
+            try:
+                _, face = F.resolve(doc.state, ref["face"], "face")
+                return "Cylinder axis" if K.face_axis(face) is not None and \
+                    K.face_info(face).get("type") == int(K.GeomAbs_Cylinder) else "Face axis"
+            except K.KernelError:
+                return "Face axis"
         return "Edge"
     return kind
 
@@ -2058,6 +2073,8 @@ class FeatureDialog(_ResizableFrame):
             kinds |= {"edge", "face"}
         if "axis" in want or "path" in want:
             kinds |= {"edge", "sketch_line"}
+        if "axis" in want:
+            kinds.add("face")
         if "plane" in want:
             kinds.add("plane")
         if "sketch_line" in want:

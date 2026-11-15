@@ -230,6 +230,21 @@ RUN set -eu; \
     chown -R root:root /opt/freecad-src; \
     chmod -R a+rX,go-w /opt/freecad-src
 
+# Playwright WebKit for the Browser client smoke (scripts/web/e2e.sh, scripts/web/shots.sh). Every browser on the
+# iPad is WebKit, so WebKit is what the specs gate under. The version must equal the @playwright/test pin in
+# web/package.json (tests/test_web_playwright_version.py compares them). The browsers live under a fixed path, outside
+# /home/agent/workspace and readable by any uid, because the gate container runs as the daemon's or the runner's uid
+# with HOME=/tmp. The Playwright CLI is fetched only to run the install, then dropped: the specs use the copy in
+# web/node_modules. `--with-deps` installs WebKit's system libraries (including Mesa software GL, which gives
+# WebGL with no GPU).
+ARG PLAYWRIGHT_VERSION=1.64.1
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN set -eu; \
+    apt-get update; \
+    npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps webkit; \
+    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
+    rm -rf /var/lib/apt/lists/* /root/.npm
+
 USER agent
 WORKDIR /home/agent/workspace
 

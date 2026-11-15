@@ -13,7 +13,7 @@
   font-size: var(--fs-body);
   line-height: 1.3;
 }
-.shell button {
+:where(.shell button) {
   font: inherit;
   -webkit-tap-highlight-color: transparent;
 }
@@ -39,7 +39,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin: 0 var(--sp-8) 0 var(--sp-8);
+  margin: 0 var(--sp-8) 0 0;
   font-weight: 600;
   font-size: var(--fs-title);
 }
@@ -186,6 +186,9 @@
 }
 .strip-button[data-gap] {
   margin-left: var(--sp-10);
+}
+.strip-button[data-pinned] {
+  margin-left: var(--sp-18);
 }
 
 /* Feature panel column, dialog area, viewport */

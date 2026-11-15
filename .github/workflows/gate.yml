@@ -9,6 +9,8 @@
 #   test     the pytest suite split into SHARDS shards per OCP venv, one runner each. A shard collects
 #            the whole suite and runs every SHARDS-th test id (round robin), exactly as fs-gate does.
 #   web      the Browser client in web/: npm ci, check, build, e2e:static (WebKit), on Node 22 on the runner.
+#   web-e2e  the Browser client's smoke (scripts/web/e2e.sh): npm ci and build on the runner, then the WebKit specs
+#            against a served copy of the example Documents, inside the harness image with no network.
 #   gate     green only if every job above is green. Wait on this one.
 #
 # Containers run with no network, as a non-root user, with .git mounted read-only, as in fs-gate.
@@ -256,9 +258,44 @@ jobs:
         env:
           CI: "true"
 
+  web-e2e:
+    # The Browser client against a real `freeshape serve`, under WebKit, in the harness image (Playwright and
+    # WebKit are baked into it by Dockerfile.harness). npm ci runs here because the container has no network;
+    # the script builds the client again from the installed modules.
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build
+      - name: Pull the harness image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker pull -q "$IMAGE"
+          docker logout ghcr.io
+      - name: scripts/web/e2e.sh
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          docker run --rm --network none -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:$PWD" -w "$PWD" \
+            --entrypoint sh "$IMAGE" -c "sh scripts/web/e2e.sh"
+
   gate:
     if: always()
-    needs: [prepare, check, test, web]
+    needs: [prepare, check, test, web, web-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -268,7 +305,8 @@ jobs:
           CHECK: ${{ needs.check.result }}
           TEST: ${{ needs.test.result }}
           WEB: ${{ needs.web.result }}
+          WEBE2E: ${{ needs.web-e2e.result }}
           SHA: ${{ needs.prepare.outputs.sha }}
         run: |
-          echo "commit $SHA: prepare=$PREPARE check=$CHECK test=$TEST web=$WEB"
-          [ "$PREPARE" = success ] && [ "$CHECK" = success ] && [ "$TEST" = success ] && [ "$WEB" = success ]
+          echo "commit $SHA: prepare=$PREPARE check=$CHECK test=$TEST web=$WEB web-e2e=$WEBE2E"
+          [ "$PREPARE" = success ] && [ "$CHECK" = success ] && [ "$TEST" = success ] && [ "$WEB" = success ] && [ "$WEBE2E" = success ]

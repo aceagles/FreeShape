@@ -14,6 +14,8 @@ export const paths = {
   expand: 'M4 5h16v14H4z M9 5v14 M13 9l3 3-3 3',
   close: 'M6 6l12 12 M18 6L6 18',
   tab: 'M4 6h16v12H4z M4 10h7',
+  back: 'M15 5l-7 7 7 7',
+  plus: 'M12 5v14 M5 12h14',
 } as const
 
 export function Icon({ d, px = size.icon, stroke = 'currentColor' }: { d: string; px?: number; stroke?: string }) {

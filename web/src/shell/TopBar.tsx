@@ -11,12 +11,15 @@ interface Props {
   onToggleDebug: () => void
 }
 
-/** The top bar: Document name, tab switcher, undo, redo and save (disabled until their cards), the connection state. */
+/** The top bar: Document name, tab switcher, back and add tab, undo, redo and save (disabled until their cards), the connection state. */
 export function TopBar({ store, currentTab, onSelectTab, debugOpen, onToggleDebug }: Props) {
   const { document, tabs } = useConnection(store)
   const status = useLinkStatus(store)
   return (
     <header className="top-bar" data-region="top-bar">
+      <button type="button" className="icon-button" aria-label="Back to Documents" disabled>
+        <Icon d={paths.back} />
+      </button>
       <div className="top-bar-name" data-testid="document-name">
         {document?.name ?? 'FreeShape'}
       </div>
@@ -32,6 +35,9 @@ export function TopBar({ store, currentTab, onSelectTab, debugOpen, onToggleDebu
             {t.name}
           </button>
         ))}
+        <button type="button" className="icon-button" aria-label="Add tab" disabled>
+          <Icon d={paths.plus} />
+        </button>
       </nav>
       <div className="top-bar-gap" />
       <button type="button" className="icon-button" aria-label="Undo" disabled>

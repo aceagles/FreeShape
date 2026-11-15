@@ -30,3 +30,9 @@ origins you control, and put access control (for example the tunnel's own login)
 The tunnel's proxy runs on the host and connects to 127.0.0.1:<port> there. A container's loopback is its own, so
 run it with host networking (`docker run --network host ...`). serve still binds 127.0.0.1, now the host's. Pick a
 free port with `--port`.
+
+## Running the built client
+
+`npm --prefix web run build` writes the client to `freeshape/static/app/`, and serve hosts it at `/`. Behind the tunnel
+nothing else is needed: the page reaches the API and the WebSocket on its own origin, which is the name given with
+`--allow-origin`. `sh scripts/web/e2e.sh` runs the browser smoke against a throwaway copy of the example Documents.

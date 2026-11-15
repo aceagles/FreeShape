@@ -390,7 +390,9 @@ const S: string = c.inkSoft
 const poly = (points: string, fill: string, stroke = S, extra = ''): string =>
   `<polygon points="${points}" fill="${fill}" stroke="${stroke}" style="${extra}stroke-width: 1.5; stroke-linejoin: round"></polygon>`
 const svgOpen = (label: string): string => `<svg viewBox="0 0 744 600" width="100%" height="100%" style="display: block" role="img" aria-label="${label}">`
-const FONT = `font-family: ${fontFamily}`
+// Inside style="..." the family list must not carry double quotes: they end the attribute and drop what follows.
+const inlineFamily = fontFamily.replace(/"/g, "'")
+const FONT = `font-family: ${inlineFamily}`
 
 // Scene drawings, copied from the mock as they are: they stand in for the model, not for the chrome.
 const sceneModel = (): string => `${svgOpen('Part in the viewport with one face selected')}
@@ -474,7 +476,7 @@ const frame = (mode: Mode, key: ScreenKey): string => {
   const vpH = screen.height - (z.topBar + z.toolStrip)
   const scene = sketching ? sceneSketch() : showDialog ? sceneDialog() : sceneModel()
 
-  return `<div style="width: ${px(screen.width)}; height: ${px(screen.height)}; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; background: ${c.white}; color: ${c.ink}; font-family: ${fontFamily}; font-size: ${px(fs.body)}; line-height: 1.3">
+  return `<div style="width: ${px(screen.width)}; height: ${px(screen.height)}; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; background: ${c.white}; color: ${c.ink}; font-family: ${inlineFamily}; font-size: ${px(fs.body)}; line-height: 1.3">
   ${topBar()}
   <div data-region="tool-strip" style="position: relative; z-index: 5; flex: none; height: ${px(z.toolStrip)}; box-sizing: border-box; display: flex; align-items: center; gap: ${px(sp.s2)}; padding: 0 ${px(sp.s8)}; background: ${c.surface}; border-bottom: 1px solid ${c.line}; border-top: 1px solid ${c.line}; margin-top: -1px">
     ${strip}

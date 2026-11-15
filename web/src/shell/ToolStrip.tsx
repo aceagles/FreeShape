@@ -13,6 +13,7 @@ export function ToolStrip() {
       <StripButton label="Modify" icon={paths.fillet} group disabled />
       <StripButton label="Plane" icon={paths.plane} gap disabled />
       <StripButton label="Copy" icon={paths.mirror} group disabled />
+      <StripButton label="Fillet" icon={paths.fillet} pinned disabled />
     </div>
   )
 }

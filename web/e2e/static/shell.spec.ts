@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
+import { fontSize } from '../../src/theme/tokens.ts'
 
 // The app shell against a scripted socket (no freeshape serve), at the iPad sizes.
 const tabs = [
@@ -102,4 +103,20 @@ test('a long strip label and the group mark do not touch', async ({ page }) => {
   expect(label && mark).toBeTruthy()
   const apart = (label?.x ?? 0) + (label?.width ?? 0) <= (mark?.x ?? 0) || (mark?.y ?? 0) + (mark?.height ?? 0) <= (label?.y ?? 0)
   expect(apart).toBe(true)
+})
+
+test('text sizes and weights are the layout tokens: strip label, Document name, tabs, Connected, panel header and rows', async ({ page }) => {
+  await open(page, 1024, 768)
+  const style = (selector: string) =>
+    page.locator(selector).first().evaluate((el) => {
+      const c = getComputedStyle(el)
+      return { size: c.fontSize, weight: c.fontWeight }
+    })
+  expect(await style('.strip-label')).toEqual({ size: `${fontSize.caption}px`, weight: '500' })
+  expect(await style('[data-testid="document-name"]')).toEqual({ size: `${fontSize.title}px`, weight: '600' })
+  expect(await style('.tab-button[aria-current="page"]')).toEqual({ size: `${fontSize.body}px`, weight: '600' })
+  expect(await style('.tab-button:not([aria-current])')).toEqual({ size: `${fontSize.body}px`, weight: '500' })
+  expect(await style('[data-testid="link-status"]')).toEqual({ size: `${fontSize.tab}px`, weight: '400' })
+  expect(await style('.panel-title')).toEqual({ size: `${fontSize.body}px`, weight: '600' })
+  expect(await style('.panel-row')).toEqual({ size: `${fontSize.body}px`, weight: '600' })
 })

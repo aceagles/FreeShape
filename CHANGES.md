@@ -8,6 +8,23 @@ patterns), drawings (sections, details, parts lists, balloons), sheet metal (hem
 for cutting), version history, Python plugins, and new navigation. It was built and tested in stages — the
 1.9.x previews below — which together make 2.0.0.
 
+### Modelling quick wins
+- **Round face or sketch circle as an axis**: Revolve, the patterns and Move take a cylinder, cone or the flat
+  round end face of a pin or washer as their axis, and a sketch circle or arc (its centre, square to the sketch).
+- **Plane on a sketch curve**: the *Curve point* plane type, and Point normal, Plane point and Three point, now
+  accept sketch lines, arcs, circles, splines and sketch points as well as solid edges and vertices.
+- **Extrude draft**: tick *Draft* on a Blind or Symmetric extrude and give an angle; *Draft the other way* widens
+  instead of narrowing. It also works with a second end position. A 20 mm square extruded 10 mm at 5 degrees ends
+  18.25 mm wide.
+- **Slot on a chain**: the Slot tool, clicked on an existing line and arc chain, wraps it into one closed slot and
+  turns the chain into construction. One Undo takes it all back.
+- **Offset both sides**: a *Both sides* toggle on the Offset tool makes the copy on each side of the curve, held by
+  one dimension.
+- **Rib**: a new feature for a gusset or web. Sketch a line on a plane through the part, pick it and the part, and
+  Rib fills the corner to the given thickness. It also has a toolbar button and a palette command.
+- **File version 5**: files now save as version 5, one step up from version 4. Nothing in them changes; older files
+  open as before and build to the same parts. FreeShape 1.x and earlier 2.0 previews refuse a version 5 file.
+
 ### Axis at the centre of a flat face
 - **Axis tool**: picking a flat face on its own now gives an axis through the **centre of the face**, square to it
   and pointing out of the part: the same place a mate connector on that face sits. The end face of a shaft or a

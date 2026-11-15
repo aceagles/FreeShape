@@ -689,6 +689,8 @@ class MainWindow(QMainWindow):
               lambda: self.vis_command("show_all"), "unhide visibility", "View"),
             C("hide", "Make transparent", "Make the selected parts see-through, or solid again (Shift+T).",
               lambda: self.vis_command("transparent"), "see through translucent visibility", "View"),
+            C("hide", "Hide context", "Hide every body of a Context (the selected one, or all of them); again to show "
+              "it.", self.toggle_context_hidden, "hide context instances ghost visibility neighbours", "View"),
             C("hide", "Select through context", "Clicks go through Context bodies to the part you are editing "
               "(on by default); tick or untick it.", lambda: self.set_select_through_context(
                   not self.viewport.select_through),
@@ -1300,6 +1302,12 @@ class MainWindow(QMainWindow):
                              f["name"] if f else ""))
         return axes
 
+    def _context_body_hidden(self, p, also_show=()):
+        """True for a Context body whose whole Context is hidden (its feature id is in hidden_features), unless
+        a feature dialog holds a reference to it (`also_show` lists part ids too). View only: the rebuild is
+        untouched, so references to it still resolve."""
+        return bool(p.reference) and p.id.split("/")[0] in self.doc.hidden_features and p.id not in also_show
+
     def _show_state(self, state, active_sketch=None, also_show=()):
         if self.is_dwg:
             return
@@ -1311,7 +1319,8 @@ class MainWindow(QMainWindow):
         parts = [(p.id, self._flat_or_folded(state, p), p.color,
                   None if self._flat_on(state, p) else p.face_colors, None, None, p.reference)
                  for p in state.parts.values() if p.id not in self.doc.hidden_parts
-                 and (self.view_only_ids is None or p.id in self.view_only_ids)]
+                 and (self.view_only_ids is None or p.id in self.view_only_ids)
+                 and not self._context_body_hidden(p, also_show)]
         sketches = []
         for fid, sr in state.sketches.items():
             if fid in self.doc.hidden_features and fid != active_sketch and fid not in also_show:
@@ -1371,12 +1380,27 @@ class MainWindow(QMainWindow):
             show.add(ax["sketch"])
         if feature["type"] in ("mate_connector", "axis"):      # every sketch below it, so its geometry can be picked (I1.6)
             show |= set(st.sketches)
+        show |= self._referenced_part_ids(p)        # a hidden Context body a field refers to keeps its highlight
         # ...and stay visible after their reference is cleared, so a lost region can be picked again
         self._dialog_sketches = show = getattr(self, "_dialog_sketches", set()) | show
         self._show_state(st, also_show=show)
         self.viewport.overlays = overlays
         self.viewport.update()
         return err
+
+    @staticmethod
+    def _referenced_part_ids(params):
+        """Every part id a feature's references name (the "part" of each reference dict, at any depth)."""
+        out, todo = set(), [params]
+        while todo:
+            v = todo.pop()
+            if isinstance(v, dict):
+                if isinstance(v.get("part"), str):
+                    out.add(v["part"])
+                todo.extend(v.values())
+            elif isinstance(v, (list, tuple)):
+                todo.extend(v)
+        return out
 
     def commit_dialog(self):
         d = self.dialog
@@ -3463,6 +3487,7 @@ class MainWindow(QMainWindow):
         m.addAction("Rename…", lambda: self._rename_feature(fid))
         if f["type"] == "context":
             m.addAction("Update context", lambda: self.update_context(fid))
+            self._add_context_hide_action(m, fid)
         if f["type"] in ("sketch", "plane", "axis"):
             sel = [i for i in self.left.features.selected_feature_ids()
                    if (self.doc.feature(i) or {}).get("type") in ("sketch", "plane", "axis")]
@@ -3658,7 +3683,54 @@ class MainWindow(QMainWindow):
 
     def _show_all_parts(self):
         self.doc.hidden_parts = set()
+        self.doc.hidden_features = self.doc.hidden_features - set(self._context_fids())   # a hidden Context too
         self.doc.notify()
+
+    def _context_fids(self):
+        return [f["id"] for f in self.doc.features if f["type"] == "context"]
+
+    def _add_context_hide_action(self, m, fid):
+        """Hide context / Show context on a Context row's menu: the whole Context, every body of it. The choice
+        of single instances (hidden_parts) is not touched, so it comes back as it was."""
+        hide = fid not in self.doc.hidden_features
+        m.addAction("Hide context" if hide else "Show context", lambda: self.set_context_hidden([fid], hide))
+
+    def set_context_hidden(self, fids, hidden):
+        """Hide or show whole Contexts (one undo step). View only: no rebuild, no change to context_status."""
+        self.doc.checkpoint()
+        self.doc.set_features_hidden(fids, hidden)
+
+    def _add_context_instance_actions(self, m, pids):
+        """Hide context instance(s) for the Context bodies among `pids` (the viewport right-click on one)."""
+        ids = [i for i in pids if i in self.doc.state.parts and self.doc.state.parts[i].reference]
+        if ids:
+            m.addAction("Hide context instances" if len(ids) > 1 else "Hide context instance",
+                        lambda: self.hide_context_instances(ids))
+        return ids
+
+    def hide_context_instances(self, pids):
+        self.doc.checkpoint()
+        self.doc.set_parts_hidden(pids, True)
+        self.status.showMessage(f"Hid {self._count(len(pids), 'context instance')}: Shift+Y shows all parts", 6000)
+
+    def toggle_context_hidden(self):
+        """The Hide context command: the Contexts of the selected rows or bodies (or the body under the mouse),
+        else every Context of the Part Studio. Hides them, or shows them when none is showing."""
+        if self.doc is None or getattr(self.doc, "kind", None) != "studio":
+            return
+        fids = [f for f in self.left.features.selected_feature_ids() if (self.doc.feature(f) or {}).get("type") == "context"]
+        parts, _ = self._vis_targets()
+        for pid in parts:
+            part = self.doc.state.parts.get(pid)
+            if part is not None and part.reference and pid.split("/")[0] not in fids:
+                fids.append(pid.split("/")[0])
+        fids = fids or self._context_fids()
+        if not fids:
+            self.status.showMessage("This Part Studio has no Context", 6000)
+            return
+        hide = any(f not in self.doc.hidden_features for f in fids)
+        self.set_context_hidden(fids, hide)
+        self.status.showMessage("Context hidden: Shift+Y shows it again" if hide else "Context shown", 6000)
 
     def _toggle_planes(self):
         self._reshow()
@@ -3799,6 +3871,12 @@ class MainWindow(QMainWindow):
 
     def _vis_transparent(self):
         parts, _ = self._vis_targets()
+        if not self.is_asm:
+            ctx = [p for p in parts if getattr(self.doc.state.parts.get(p), "reference", False)]
+            if ctx:
+                parts = [p for p in parts if p not in ctx]
+                if not parts:
+                    return "Context bodies use the transparency slider, not Shift+T"
         cur = self._transparent.setdefault(self.doc, set())
         if not parts:
             if not cur:
@@ -4041,7 +4119,9 @@ class MainWindow(QMainWindow):
             if pk.kind in ("face", "edge", "part", "vertex"):
                 pid = pk.key[0]
                 ids = self._menu_parts(pid)
-                self._add_hide_actions(m, ids)
+                if not self._add_context_instance_actions(m, ids) or len(ids) > 1 and any(
+                        not self.doc.state.parts[i].reference for i in ids if i in self.doc.state.parts):
+                    self._add_hide_actions(m, ids)
                 if len(ids) > 1:
                     m.addAction(f"Isolate {len(ids)} parts", lambda: self._isolate(ids))
                     m.addAction(f"Auto colour {len(ids)} parts", lambda: self._auto_color(ids))

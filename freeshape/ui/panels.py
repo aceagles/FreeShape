@@ -538,6 +538,17 @@ class PartsList(_EyeMixin, QListWidget):
             if p.id in doc.hidden_parts:
                 it.setForeground(QColor("#9aa3ae"))
                 it.setToolTip("Hidden")
+            if p.reference:             # a Context body: italic, named after its Context
+                cf = doc.feature(p.id.split("/")[0]) or {}
+                f = it.font()
+                f.setItalic(True)
+                it.setFont(f)
+                it.setToolTip(f"Context body of {cf.get('name', 'its Context')}"
+                              + (": hidden" if p.id in doc.hidden_parts else ""))
+                if cf.get("id") in doc.hidden_features:
+                    it.setData(ROLE_EYE, "hidden")
+                    it.setForeground(QColor("#9aa3ae"))
+                    it.setToolTip(it.toolTip() + ": the whole Context is hidden")
             self.addItem(it)
         self.blockSignals(False)
 

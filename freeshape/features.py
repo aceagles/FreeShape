@@ -1902,6 +1902,51 @@ def _up_to_blind(state, p, profs, n):
     return dist - offset if dist > 0 else dist + offset
 
 
+def _drafted_tool(profs, direction, body, hist, angle, flip):  # hist: the extrude's, names the side faces
+    """The extrude tool body with its side faces drafted, and the draft's history.
+
+    Onshape's meaning: the sketch plane is the neutral plane and the extrude direction is the pull
+    direction. A positive angle makes the far end smaller; `flip` makes it larger. The side faces are the
+    ones the extrude history generates from the profile edges, so inner loops are drafted by the same
+    call (a hole grows where the outside shrinks). The draft runs on the tool body, before the boolean."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone
+    angle = float(angle)
+    if not 0 < angle < 90:
+        raise K.KernelError("Draft angle must be more than 0 and less than 90 degrees")
+    made = [g for pf in profs for e in K.edges(pf) for g in hist.Generated(e)]
+    side = [f for f in K.faces(body) if any(f.IsSame(g) for g in made)]
+    if not side:
+        raise K.KernelError("Draft found no side faces to draft")
+    for f in side:
+        if BRepAdaptor_Surface(f).GetType() not in (GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone):
+            raise K.KernelError("Draft works on straight and circular profile edges")
+    neutral = K.planar_face_plane(profs[0])
+    if neutral is None:
+        raise K.KernelError("Draft needs a flat profile")
+    body, h2 = K.draft(body, side, np.asarray(direction, float), -angle if flip else angle, neutral,
+                       with_history=True)
+    return body, h2
+
+
+def _named_after_draft(named, body, draft_hist):
+    """`named` (the extrude's map of the undrafted tool body) carried one to one onto the drafted `body`.
+
+    Chaining the draft's history into the extrude's would name every drafted face a modification of the
+    extrude's (":M" and a new fragment), so turning draft on would rename the side faces and break what
+    refers to them. The draft only reshapes the faces, so each keeps its name."""
+    out = N.NamedShape(body, {})
+    for letter in N.KINDS:
+        for sub, name in named.named(letter):
+            images = list(draft_hist.Modified(sub)) + list(draft_hist.Generated(sub))
+            for img in images or [sub]:
+                key = out.el.key(img)
+                if key is not None:
+                    out.names.setdefault(key, name)
+    out.stamped_from = named.stamped_from
+    return out
+
+
 def run_extrude(state, f):
     p = legacy_up_to(f["params"])
     profs = _profiles(state, p, f["id"])
@@ -1916,6 +1961,8 @@ def run_extrude(state, f):
     if cutting and not p.get("regions"):
         # cutting from a face goes into the part by default
         flip = not flip
+
+    drafted = {}     # set by make() when the tool body was drafted: the undrafted body and the draft's history
 
     def make(direction):
         if end == "to_face":     # up to a planar face (any part, a Context body included), measured along `direction`
@@ -1939,7 +1986,14 @@ def run_extrude(state, f):
         depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric else 0.0
         if depth + depth2 <= 0 and depth2:
             raise K.KernelError("The second depth cancels the first")
-        return K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
+        body, hist = K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
+        drafted.clear()
+        if p.get("draft") and not symmetric and not depth2:
+            undrafted = body
+            body, h2 = _drafted_tool(profs, direction, body, hist, p.get("draft_angle", 5.0),
+                                     p.get("draft_flip", False))
+            drafted.update(undrafted=undrafted, history=h2)
+        return body, hist
 
     d = -n if flip else n
     if end in UP_TO:
@@ -1957,10 +2011,16 @@ def run_extrude(state, f):
         # like Onshape, a cut that misses everything is tried in the other direction
         targets = [state.parts[i] for i in (p.get("scope") or state.parts) if i in state.parts]
         if not any(K.intersects(t.shape, body) for t in targets):
+            first = dict(drafted)
             alt, alt_hist = make(-d)
             if any(K.intersects(t.shape, alt) for t in targets):
                 body, hist = alt, alt_hist
-    named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "extrude")
+            else:
+                drafted.clear()
+                drafted.update(first)
+    named = name_feature(state, f["id"], _profile_names(state, p), drafted.get("undrafted", body), hist, "extrude")
+    if drafted:
+        named = _named_after_draft(named, body, drafted["history"])
     apply_body(state, body, op, f["id"], p.get("scope"), named)
 
 

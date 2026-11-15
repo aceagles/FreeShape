@@ -580,6 +580,11 @@ SCHEMAS = {
         _check("second", "Second end position", visible=lambda p: p.get("end") == "blind"),
         _num("depth2", "Second depth", visible=lambda p: p.get("end") == "blind" and p.get("second")),
         _check("both", "Both directions", visible=lambda p: p.get("end") == "through"),
+        _check("draft", "Draft", visible=lambda p: p.get("end") == "blind" and not p.get("second")),
+        _num("draft_angle", "Draft angle", unit="deg", minimum=1e-6,
+             visible=lambda p: p.get("end") == "blind" and not p.get("second") and p.get("draft")),
+        _check("draft_flip", "Draft the other way",
+               visible=lambda p: p.get("end") == "blind" and not p.get("second") and p.get("draft")),
         _scope(),
     ],
     "revolve": [
@@ -2382,6 +2387,10 @@ class FeatureDialog(_ResizableFrame):
             fk = {"up_to_face": "upto_face", "up_to_vertex": "upto_vertex", "up_to_part": "upto_part"}.get(value)
             if fk in self.fields:
                 QTimer.singleShot(0, lambda fk=fk: self.activate(self.fields[fk]))
+        if key == "draft" and value and self.ftype == "extrude" and not p.get("draft_angle"):
+            p["draft_angle"] = 5.0           # not in default_params (goldens are built through it), so seed it here
+            if "draft_angle" in self.widgets:
+                self.widgets["draft_angle"].setText(_show(5.0))
         if key in ("axis_std", "dir_std", "dir2_std") and value:
             # choosing a world axis replaces a picked axis
             fk = {"axis_std": "axis_sel", "dir_std": "dir_sel", "dir2_std": "dir2_sel"}[key]

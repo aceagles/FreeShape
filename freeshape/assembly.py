@@ -2683,34 +2683,42 @@ class AssemblyDoc:
         return 6 - int(np.sum(sv > 1e-6 * (sv[0] if len(sv) else 1)))
 
     # ------------------------------------------------------------------ analysis
-    def interferences(self, progress=None):
-        """Pairs of visible instances whose solids overlap: [(iid_a, iid_b, volume, overlap shape)]."""
-        vis = [i for i in self.visible_instances() if not is_sketch_source(i["source"])]
-        shapes = {i["id"]: self.world_shape(i["id"]) for i in vis}
-        boxes = {k: K.bbox(s) for k, s in shapes.items()}
+    def interference_bodies(self, ids=None):
+        """The bodies the interference kernel checks: visible, non-sketch instances (all, or those in `ids`)."""
+        from .interference import Body
         out = []
-        ids = [i["id"] for i in vis]
-        pairs = [(a, b) for k, a in enumerate(ids) for b in ids[k + 1:]]
-        # a Standard part overlaps what it is fastened to by design (a screw in a tap-drill hole)
-        std = {i["id"] for i in self.instances if i["source"].get("kind") == "standard"}
-        joined = {frozenset((m["a"]["inst"], m["b"]["inst"])) for m in self.mates
-                  if m.get("type") == "fastened" and not m.get("suppressed") and m.get("a") and m.get("b")}
-        for n, (a, b) in enumerate(pairs):
-            if (a in std or b in std) and frozenset((a, b)) in joined:
+        for i in self.visible_instances():
+            if is_sketch_source(i["source"]) or (ids is not None and i["id"] not in ids):
                 continue
-            if progress:
-                progress(n, len(pairs))
-            (la, ha), (lb, hb) = boxes[a], boxes[b]
-            if np.any(ha < lb - 1e-6) or np.any(hb < la - 1e-6):
-                continue
-            try:
-                ov = K.common(shapes[a], shapes[b])
-                v = K.volume(ov) if not ov.IsNull() else 0.0
-            except Exception:
-                continue
-            if v > 1e-3:
-                out.append((a, b, v, ov))
+            out.append(Body(i["id"], self.world_shape(i["id"]), self._source_key(i["source"]),
+                            self.T(i["id"]), i["source"].get("kind") == "standard"))
         return out
+
+    def pair_rules(self, include_standard=True):
+        """(skip_pairs, expected_pairs, standard parts left out) for the interference kernel.
+        include_standard=False skips every pair that holds a Standard part and counts those parts.
+        Otherwise a Standard part fastened to another instance is an expected pair (a screw in a
+        tap-drill hole overlaps by design): computed, and reported as a thread rather than a clash."""
+        vis = [i["id"] for i in self.visible_instances() if not is_sketch_source(i["source"])]
+        std = {i["id"] for i in self.instances if i["source"].get("kind") == "standard"}
+        if not include_standard:
+            std_vis = [x for x in vis if x in std]
+            skip = {frozenset((a, b)) for a in std_vis for b in vis if a != b}
+            return frozenset(skip), frozenset(), len(std_vis)
+        expected = {frozenset((m["a"]["inst"], m["b"]["inst"])) for m in self.mates
+                    if m.get("type") == "fastened" and not m.get("suppressed") and m.get("a") and m.get("b")
+                    and (m["a"]["inst"] in std or m["b"]["inst"] in std)}
+        return frozenset(), frozenset(expected), 0
+
+    def interferences(self, progress=None):
+        """Pairs of visible instances whose solids overlap: [(iid_a, iid_b, volume, overlap shape)].
+        Old default rules: a Standard part fastened to another instance is left out. Pairs whose
+        boolean failed are not in the tuples; they are kept in `self.interference_failures`."""
+        from .interference import find_interferences
+        _, expected, _ = self.pair_rules(True)
+        res = find_interferences(self.interference_bodies(), skip_pairs=expected, progress=progress)
+        self.interference_failures = [c for c in res if c.kind == "failed"]
+        return [(c.a, c.b, c.volume, c.shape) for c in res if c.kind != "failed"]
 
     def bom(self):
         """Bill of materials: one row per distinct part, with how many times it is used."""

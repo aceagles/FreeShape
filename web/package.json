@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "design:build": "node design/build.ts",
     "check": "tsc --noEmit && eslint . && vitest run",
     "e2e:static": "playwright test --config playwright.config.ts"
   },

@@ -591,6 +591,7 @@ class DocTabBar(QTabBar):
     """Bottom document tabs styled like Onshape's: flat, icon + name, blue underline on the active tab.
     No close buttons — close from the right-click menu, with a middle-click or with Ctrl+W."""
     middleClicked = Signal(int)
+    LOOSE_BADGE = "Loose file"
 
     STYLE = """
     QTabBar { background: transparent; }
@@ -615,6 +616,25 @@ class DocTabBar(QTabBar):
         self.setIconSize(QSize(16, 16))
         self.setStyleSheet(self.STYLE)
         self.setDocumentMode(True)
+
+    def set_loose(self, i, loose):
+        """Badge tab `i` as a loose file, or take the badge off. The badge is a widget on the tab, so it stays
+        with the tab when tabs are dragged about."""
+        if loose == self.is_loose(i):
+            return
+        old = self.tabButton(i, QTabBar.LeftSide)
+        badge = None
+        if loose:
+            badge = QLabel(self.LOOSE_BADGE)
+            badge.setStyleSheet("color: #6b7280; background: #dfe3e8; border-radius: 3px; padding: 1px 5px;"
+                                " margin-left: 6px; font-size: 11px;")
+            badge.setAttribute(Qt.WA_TransparentForMouseEvents)     # a click on the badge is a click on the tab
+        self.setTabButton(i, QTabBar.LeftSide, badge)
+        if old is not None:
+            old.deleteLater()
+
+    def is_loose(self, i):
+        return self.tabButton(i, QTabBar.LeftSide) is not None
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MiddleButton:

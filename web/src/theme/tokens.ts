@@ -102,4 +102,37 @@ export const color = {
   quickMenuDisc: 'rgba(255, 255, 255, 0.78)',
 } as const
 
-export const tokens = { screens, size, space, radius, fontSize, maxPinned, fontFamily, color } as const
+/**
+ * Colours drawn inside the viewport, from freeshape/ui/theme.py (light theme) and viewport.py _draw_scene.
+ * The background is `color.viewport`, the mock's viewport colour (the desktop's white differs on purpose);
+ * selection is `color.selection`. Triples are r g b in 0..1, as the desktop keeps them.
+ */
+export const sceneColor = {
+  edge: [0.1, 0.11, 0.13],
+  plane: [0.55, 0.7, 0.9],
+  planeOutline: [0.35, 0.55, 0.85],
+  hover: [1.0, 0.62, 0.2],
+  axisX: [0.85, 0.2, 0.2],
+  axisY: [0.2, 0.65, 0.25],
+  axisZ: [0.2, 0.4, 0.9],
+  originDot: [0.25, 0.27, 0.3],
+  /** Part colour when the engine sends none. */
+  part: [0.7, 0.7, 0.7],
+} as const
+
+/** Drawing constants of _draw_scene. */
+export const sceneDraw = {
+  /** Half-size of the default planes on the desktop (150 x 150 mm); also the box of an empty studio. */
+  planeHalf: 75,
+  /** Smallest half-size of a default plane drawn round a model. */
+  planeMin: 10,
+  planeAlpha: 0.14,
+  planeOutlineAlpha: 0.9,
+  /** Edge line width in CSS pixels (the desktop uses 1.4 GL pixels). */
+  edgeWidth: 1.6,
+  contextAlpha: 0.3,
+  /** Origin triad length in CSS pixels. */
+  triad: 28,
+} as const
+
+export const tokens = { screens, size, space, radius, fontSize, maxPinned, fontFamily, color, sceneColor, sceneDraw } as const

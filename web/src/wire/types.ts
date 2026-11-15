@@ -103,11 +103,14 @@ export interface PlaneOut {
   readonly n: Vec3
 }
 
-/** A construction axis: origin, direction, half-length or extent of the drawn line. Keyed by feature id. */
+/**
+ * A construction axis: origin, unit direction, and the stretch [t0, t1] of the source geometry along it, in mm
+ * from the origin (null when the axis has no extent). Keyed by feature id.
+ */
 export interface AxisOut {
   readonly o: Vec3
   readonly d: Vec3
-  readonly span: number
+  readonly span: readonly [number, number] | null
 }
 
 export interface StudioOutputs {

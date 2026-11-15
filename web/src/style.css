@@ -30,3 +30,23 @@ body {
   font-size: 18px;
   color: #9aa1ab;
 }
+/* Until the app shell exists the viewport fills the page; the placeholder text becomes a small caption on it. */
+.placeholder-viewport {
+  position: absolute;
+  inset: 0;
+}
+.placeholder-viewport ~ h1,
+.placeholder-viewport ~ p {
+  position: absolute;
+  left: 12px;
+  color: #3b4250;
+  pointer-events: none;
+}
+.placeholder-viewport ~ h1 {
+  top: 8px;
+  font-size: 15px;
+}
+.placeholder-viewport ~ p {
+  top: 30px;
+  font-size: 12px;
+}

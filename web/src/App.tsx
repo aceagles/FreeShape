@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { fetchHealth } from './health'
 import type { ConnectionStore } from './net/connection'
 import { ConnectionPanel } from './net/react'
+import { StudioViewport } from './viewport/StudioViewport'
 
 type State = { kind: 'loading' } | { kind: 'ready'; version: string } | { kind: 'failed' }
 
@@ -20,6 +21,11 @@ export function App({ store }: { store?: ConnectionStore }) {
   }, [])
   return (
     <main className="placeholder">
+      {store && (
+        <div className="placeholder-viewport">
+          <StudioViewport store={store} />
+        </div>
+      )}
       <h1>FreeShape</h1>
       <p data-testid="version">
         {state.kind === 'loading' && 'Connecting to the server...'}

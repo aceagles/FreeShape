@@ -55,6 +55,13 @@ function vec3(x: unknown, where: string): Vec3 {
   return [num(a[0], where), num(a[1], where), num(a[2], where)]
 }
 
+function span(x: unknown, where: string): readonly [number, number] | null {
+  if (x === null || x === undefined) return null
+  const a = list(x, where)
+  if (a.length !== 2) fail(`${where}: expected 2 numbers or null`)
+  return [num(a[0], where), num(a[1], where)]
+}
+
 function numbers(x: unknown, where: string): number[] {
   return list(x, where).map((v) => num(v, where))
 }
@@ -191,7 +198,7 @@ function studio(f: Fields, common: Common): StudioOutputs {
     connectors: list(f['connectors'], `${w}.connectors`).map((c, i) => connector(c, `${w}.connectors[${i}]`)),
     variables: record(f['variables'], `${w}.variables`) as Record<string, number>,
     planes: mapOf<PlaneOut>(f['planes'], `${w}.planes`, (v, p) => ({ o: vec3(v['o'], p), x: vec3(v['x'], p), n: vec3(v['n'], p) })),
-    axes: mapOf<AxisOut>(f['axes'], `${w}.axes`, (v, p) => ({ o: vec3(v['o'], p), d: vec3(v['d'], p), span: num(v['span'], p) })),
+    axes: mapOf<AxisOut>(f['axes'], `${w}.axes`, (v, p) => ({ o: vec3(v['o'], p), d: vec3(v['d'], p), span: span(v['span'], p) })),
     errorRefs: recordOfLists(f['error_refs']),
   }
 }

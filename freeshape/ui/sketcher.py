@@ -79,6 +79,7 @@ TOOL_HINTS = {
               "Switch on Both sides to offset to both sides at once.",
     "slot": "Click the two end centres of the slot, then type its width — or click an existing line, arc or chain "
             "to wrap a slot round it.",
+    "insert_file": "Pick a DXF or SVG file; set its size and layers, and its curves join this sketch.",
     "sk_mirror": "Select geometry, then click the line to mirror it about.",
     "sk_lpattern": "Select geometry, then click a line for the direction; type the count and spacing.",
     "sk_cpattern": "Select geometry, then click the centre point; type the count and angle.",
@@ -100,6 +101,9 @@ class Sketcher:
         self.sk = sketch
         self.fid = fid
         self.on_change = on_change
+        self.on_status = None        # called with a message for the status bar (set by the main window)
+        self.import_status = ""      # the last message insert_file gave
+        self.import_ends = []        # open end points of the last insert, drawn highlighted
         self.on_tool_changed = on_tool_changed
         self.tool = "select"
         self.construction = False
@@ -176,6 +180,7 @@ class Sketcher:
         return TOOL_HINTS.get(self.tool, "")
 
     def push_undo(self):
+        self.import_ends = []
         self.undo_stack.append(self.sk.to_dict())
         self.redo_stack.clear()
         if len(self.undo_stack) > 300:
@@ -193,6 +198,7 @@ class Sketcher:
 
     def _replace(self, sk):
         self.sk = sk
+        self.import_ends = []
         self.selection = []
         self._reset_tool_state()
         self.sk.solve()
@@ -1026,6 +1032,70 @@ class Sketcher:
         self.sk.delete(self.selection)
         self.selection = []
         self.changed(True)
+
+    # ---- Insert DXF or SVG
+    def pick_import_file(self):
+        """Ask for the file with the application's file dialog; "" when cancelled. Tests stub this."""
+        from PySide6.QtWidgets import QApplication
+        from . import filedlg
+        path, _ = filedlg.getOpenFileName(QApplication.activeWindow(), "Insert DXF or SVG", "",
+                                          "DXF or SVG files (*.dxf *.svg);;All files (*)")
+        return path
+
+    def exec_import_dialog(self, dlg):
+        """Run the options dialog; True when accepted. Tests stub this."""
+        return dlg.exec() == dlg.Accepted
+
+    def _import_message(self, msg):
+        self.import_status = msg
+        if self.on_status:
+            self.on_status(msg)
+
+    def insert_file(self, path=None):
+        """Insert the curves of a DXF or SVG file into this sketch as one undo step; they arrive selected."""
+        from PySide6.QtWidgets import QApplication
+        from .. import sketchimport as SI
+        from . import import_dialog as ID
+        path = path or self.pick_import_file()
+        if not path:
+            return
+        try:
+            src = ID.read_source(path)
+            dlg = ID.ImportDialog(src, QApplication.activeWindow())
+        except (ValueError, RuntimeError, OSError) as e:
+            self._import_message(str(e))
+            return
+        if not self.exec_import_dialog(dlg):
+            return
+        ch = dlg.choice()
+        before = self.sk.to_dict()
+        self.push_undo()
+        try:
+            ids, rep = SI.insert(self.sk, ch.prims, **ch.kwargs)
+        except ValueError as e:
+            self.undo_stack.pop()
+            self.sk = Sketch.from_dict(before)
+            self._import_message(str(e))
+            return
+        if not ids:
+            self.undo_stack.pop()
+            self.sk = Sketch.from_dict(before)
+            self._import_message(f"Nothing to insert from {ch.name}")
+            return
+        self.changed(True)
+        self.selection = list(ids)
+        self.import_ends = list(rep["open_ends"])
+        skipped = dict(ch.report.get("skipped") or {})
+        if rep["dropped_short"]:
+            skipped["too short"] = rep["dropped_short"]
+        if rep["dropped_duplicate"]:
+            skipped["duplicate"] = rep["dropped_duplicate"]
+        msg = f"Inserted {len(ids)} entities from {ch.name}"
+        if skipped:
+            msg += "; skipped " + ", ".join(f"{n} {k}" for k, n in skipped.items())
+        n_open = len(rep["open_ends"])
+        msg += f"; {n_open} open end{'s' if n_open != 1 else ''}"
+        self._import_message(msg)
 
     def toggle_construction(self):
         ents = [i for i in self.selection if i in self.sk.entities]
@@ -2404,6 +2474,14 @@ class Sketcher:
             GL.glColor3f(*col)
             GL.glBegin(GL.GL_POINTS)
             GL.glVertex3f(*pl.to_world(*p))
+            GL.glEnd()
+        ends = [p for p in self.import_ends if p in sk.points]
+        if ends:
+            GL.glPointSize(12)
+            GL.glColor3f(*theme.SKETCH_BAD)
+            GL.glBegin(GL.GL_POINTS)
+            for pid in ends:
+                GL.glVertex3f(*pl.to_world(*sk.points[pid]))
             GL.glEnd()
         self._draw_preview_gl(vp)
         GL.glEnable(GL.GL_DEPTH_TEST)

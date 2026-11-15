@@ -711,7 +711,8 @@ class MainWindow(QMainWindow):
         ("slot", "Slot", "obround stadium offset both sides bi-directional offset wall and slot from curve"), ("sk_mirror", "Mirror", "symmetry"),
         ("sk_lpattern", "Linear pattern", "array copies"), ("sk_cpattern", "Circular pattern", "array copies polar"),
         ("use", "Use", "project convert intersect part edges"), ("trim", "Trim", "cut remove"),
-        ("extend", "Extend", "lengthen"))
+        ("extend", "Extend", "lengthen"),
+        ("insert_file", "Insert DXF or SVG", "insert dxf or dwg import dxf import svg logo dwg file drawing"))
 
     def _palette_sketch_commands(self, C):
         """Search tools entries while a sketch is open: the sketch toolbar's tools, constraints and view commands."""
@@ -720,8 +721,9 @@ class MainWindow(QMainWindow):
         cmds = [C("undo", "Undo", "Undo the last sketch change (Ctrl+Z).", self.undo, "", "Edit"),
                 C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.redo, "", "Edit")]
         for key, name, kw in self.SKETCH_PALETTE:
-            cmds.append(C({"select": "point", "text": "sk_text"}.get(key, key), name,
-                          TOOL_HINTS.get(key) or f"{name} — sketch tool.", lambda k=key: self._sk_tool(k), kw, grp))
+            act = (lambda: self._sk("insert_file")) if key == "insert_file" else (lambda k=key: self._sk_tool(k))
+            cmds.append(C({"select": "point", "text": "sk_text", "insert_file": "import"}.get(key, key), name,
+                          TOOL_HINTS.get(key) or f"{name} — sketch tool.", act, kw, grp))
         cmds.append(C("construction", "Construction", "Turn the selected geometry into construction geometry, or "
                       "back (Q).", lambda: self._sk("toggle_construction"), "toggle reference helper", grp))
         for name, tip in CONSTRAINT_TOOLS.items():
@@ -1081,6 +1083,8 @@ class MainWindow(QMainWindow):
         self._sketch_buttons["trim"] = b
         b = self._tb(h, "extend", "Extend", lambda: self._sk_tool("extend"), checkable=True)
         self._sketch_buttons["extend"] = b
+        self._tb(h, "import", "Insert DXF or SVG — put a drawing or logo file into this sketch",
+                 lambda: self._sk("insert_file"))
         self._tb(h, "delete", "Delete selected (Del)", lambda: self._sk("delete_selection"))
         h.addStretch(1)
         self._tb(h, "normal_to", "Normal to sketch (N)", self._normal_to_sketch)
@@ -1556,6 +1560,7 @@ class MainWindow(QMainWindow):
         for eid in lost:
             sk.entities[eid].pop("src", None)
         self.sketcher = Sketcher(plane, sk, feat["id"], self._sketch_changed, self._sketch_tool_changed)
+        self.sketcher.on_status = lambda m: self.status.showMessage(m, 20000)
         self.sketcher.variables = dict(ctx["base"].vars)
         self.sketcher.base_state = ctx["base"]
         self._sketch_display_toggles()

@@ -25,6 +25,20 @@ for cutting), version history, Python plugins, and new navigation. It was built 
 - **File version 5**: files now save as version 5, one step up from version 4. Nothing in them changes; older files
   open as before and build to the same parts. FreeShape 1.x and earlier 2.0 previews refuse a version 5 file.
 
+### Insert DXF or SVG into a sketch
+- **Insert DXF or SVG**: in a sketch, the command (also found by searching "insert dxf", "import svg" or "logo")
+  picks a `.dxf` or `.svg` file and puts its curves into the sketch as one undo step. They arrive selected.
+  Lines and arcs stay lines and arcs; Bezier curves become splines. Nothing is constrained: the curves arrive
+  **unconstrained**, so dimension or constrain them as you like.
+- **Size and place**: an SVG with a width and a viewBox keeps its stated size; a DXF uses the units it states
+  (inches arrive 25.4 times larger than millimetres). The options window also has Scale, Fit width, DXF layers
+  or SVG groups to leave out or bring in as construction, and a choice of file origin or centred on the sketch
+  origin.
+- **Closing gaps**: ends closer than 0.001 mm are joined. Bigger gaps are left and reported as "N open ends".
+- **Big files**: over 1500 points the window warns; over 4000 you must tick a box before OK is enabled.
+- **Skipped**: text, images, hatches and DWG files. Skipped items are counted in the status line. For DWG, save
+  as DXF first.
+
 ### Axis at the centre of a flat face
 - **Axis tool**: picking a flat face on its own now gives an axis through the **centre of the face**, square to it
   and pointing out of the part: the same place a mate connector on that face sits. The end face of a shaft or a

@@ -38,6 +38,9 @@ What this fork adds:
   materials for mass and the bill of materials.
 - **Drawings and export** — angular dimensions, tolerances, centre lines, SVG and PNG export; 3MF and OBJ
   export; STL resolution options.
+- **Insert DXF or SVG into a sketch** — bring a `.dxf` or `.svg` file's curves into a sketch as one undo step,
+  at the size and units the file states, with Scale, Fit width and layer choices. Text, images, hatches and DWG
+  files are skipped (save a DWG as DXF); curves arrive unconstrained.
 - **Component library** — browse a folder of STEP files with previews and insert from it.
 - **Headless and browser** — `python -m freeshape serve <Document>` serves a Document over HTTP on your own
   machine, with a view-only browser viewer.
@@ -185,6 +188,7 @@ The view turns to face the sketch plane.
 | Offset | `O` | click a line, arc or circle to offset its whole connected outline; type the distance (negative = inside). The Both sides button (shown while Offset is active) offsets to both sides at once |
 | Slot | | click the two end centres, type the width; or click an existing line, arc or chain and type the width to get a closed slot round it (the chain becomes construction geometry) |
 | Mirror | | select geometry, then click the line to mirror about — the copy stays linked to the original |
+| Insert DXF or SVG | | pick a `.dxf` or `.svg` file; its curves arrive selected and unconstrained, in one undo step. Text, images, hatches and DWG are skipped. Open ends are reported in the status bar |
 | Linear / circular pattern | | select geometry, then click a direction line (copies go towards where you click) or a centre point; type the count and spacing / angle |
 
 **Typing sizes as you draw:** right after you finish a line, rectangle, circle or arc, a dimension box pops up — type a value (e.g. `25`, `1/2 in`) and press Enter and the shape snaps to it. For a rectangle you get width, then height. Just keep drawing (or press Esc) to skip it; pressing another tool's key before you type a value skips it and starts that tool.

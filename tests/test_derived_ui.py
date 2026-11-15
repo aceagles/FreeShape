@@ -134,7 +134,7 @@ def test_the_dialog_brings_in_a_part_and_a_sketch(win):
     assert f["params"]["source"]["tab"] == w.src_tab.id
     assert not w.use.errors.get(f["id"])
     assert list(w.use.state.parts) == [f"{f['id']}/1"] and f"{f['id']}:{w.sid}" in _sketches(w)
-    assert w.left.parts.count() == 1                    # the part list shows it
+    assert w.left.parts.count() == 2                    # the part list shows it (under its Parts header)
     _undo_all(w)
 
 

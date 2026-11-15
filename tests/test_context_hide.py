@@ -176,7 +176,7 @@ def test_dialog_reference_to_a_hidden_context_face_keeps_its_body_shown(rig):
 def test_parts_list_marks_context_bodies(rig):
     r = rig
     lst = r.w.left.parts
-    items = {lst.item(i).data(P.ROLE_ID): lst.item(i) for i in range(lst.count())}
+    items = {lst.item(i).data(P.ROLE_ID): lst.item(i) for i in range(lst.count()) if lst.item(i).data(P.ROLE_ID)}   # not the header rows
     it = items[body(r, r.ia)]
     assert it.font().italic() and r.doc.feature(r.cid)["name"] in it.toolTip()
     own = items[next(p for p in items if not p.startswith(r.cid))]

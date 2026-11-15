@@ -1217,8 +1217,9 @@ class MainWindow(QMainWindow):
         self.doc_label.setText(name + ("  •" if self.doc.dirty else ""))
         self.setWindowTitle(f"{name} — {APP_NAME}")
         self._refresh_tab_title(self.doc)
-        n = len(self.doc.state.parts)
-        self.left.parts_header.setText(f"Parts ({n})")
+        n_surf = sum(1 for p in self.doc.state.parts.values() if self.left.parts.is_surface_part(p))
+        n = len(self.doc.state.parts) - n_surf
+        self.left.parts_header.setText(f"Parts ({n})" + (f" · Surfaces ({n_surf})" if n_surf else ""))
         self._refresh_config_box()
         self.left.feat_header.setText(f"Features ({len(self.doc.features)})")
         errs = len(self.doc.errors)
@@ -4052,6 +4053,13 @@ class MainWindow(QMainWindow):
         mp = K.mass_props(shape)
         lo, hi = K.bbox(shape)
         c = mp["centroid"]
+        if K.is_surface(shape):         # a surface body has an area, no volume and no mass
+            box = QMessageBox(self)
+            box.setWindowTitle("Mass properties")
+            box.setText(self._surface_mass_text(name, mp, lo, hi))
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            return
         while True:
             mat = M.material_name(material) or M.DEFAULT_MATERIAL
             box = QMessageBox(self)
@@ -4071,6 +4079,13 @@ class MainWindow(QMainWindow):
             pick, ok = QInputDialog.getItem(self, "Mass properties", "Weigh as:", names, names.index(mat), False)
             if ok:
                 material = pick
+
+    @staticmethod
+    def _surface_mass_text(name, mp, lo, hi):
+        c = mp["centroid"]
+        return (f"<b>{name}</b> (surface)<br><br>Surface area: {fmt(mp['area'], 3)} mm²<br>"
+                f"Centre of area: ({fmt(c[0], 3)}, {fmt(c[1], 3)}, {fmt(c[2], 3)})<br>"
+                f"Bounding box: {fmt(hi[0] - lo[0], 3)} × {fmt(hi[1] - lo[1], 3)} × {fmt(hi[2] - lo[2], 3)} mm")
 
     def _mass_props_assembly(self, doc):
         """Mass properties of the visible instances of an Assembly: mass by material, total, centre of mass."""

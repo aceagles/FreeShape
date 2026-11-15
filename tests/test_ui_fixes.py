@@ -100,7 +100,7 @@ def test_context_menu_hides_every_selected_part():
     # selected in the parts list
     w.viewport.clear_selection()
     for i in range(w.left.parts.count()):
-        w.left.parts.item(i).setSelected(i < 2)
+        w.left.parts.item(i).setSelected(1 <= i < 3)
     assert w._menu_parts(ids[0], w.left.parts.selected_part_ids()) == ids[:2]
 
 

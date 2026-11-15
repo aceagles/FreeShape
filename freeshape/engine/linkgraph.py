@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from .. import kernel as K
 from .. import links
 from .contract import LinkCycleError, TabErrored
 from .encode import connector_out, sketch_out
@@ -52,7 +53,7 @@ def _round_T(T):
 
 def _live_studio(doc, st, enc):
     return {"parts": {str(p.id): enc.brep(p.shape)[1] for p in st.parts.values()
-                      if not p.reference},      # I5.3: Context bodies are reference only
+                      if not p.reference and not K.is_surface(p.shape)},   # I5.3 Context bodies; I2.4 surfaces
             "hidden": sorted(map(str, doc.hidden_parts)), "aliases": dict(getattr(doc, "part_aliases", {})),
             "sketches": {str(fid): sketch_out(fid, "", res).hash for fid, res in st.sketches.items()},
             "connectors": {str(fid): connector_out(fid, c).hash for fid, c in st.connectors.items()}}

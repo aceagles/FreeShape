@@ -1188,6 +1188,13 @@ class PartStudioDoc:
         parts = [p for p in self.state.parts.values() if (part_ids is None or p.id in part_ids) and not p.reference]
         if not parts:
             raise K.KernelError("Nothing to export")
+        self.last_export_skipped = []
+        if str(path).lower().endswith((".stl", ".3mf", ".obj")):
+            # I2.4: a surface body is an open mesh a slicer rejects; STEP and BREP still write it
+            self.last_export_skipped = [p.name for p in parts if K.is_surface(p.shape)]
+            parts = [p for p in parts if not K.is_surface(p.shape)]
+            if not parts:
+                raise K.KernelError("Nothing to export: surface bodies are not written to STL, 3MF or OBJ")
         shapes = [p.shape for p in parts]
         if str(path).lower().endswith((".stl",)):
             K.export_stl(shapes, path, **(options or {}))

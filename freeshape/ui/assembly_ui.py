@@ -741,7 +741,7 @@ class InsertPanel(QFrame):
                 top.setIcon(0, icon("configs" if cfg else "part", 16))
                 top.setData(0, ROLE_KIND, "studio")
                 top.setData(0, ROLE_ID, (doc.uid, cfg))
-                shown = [p for p in st.parts.values() if not p.reference]    # Context bodies are not insertable
+                shown = [p for p in st.parts.values() if not p.reference and not K.is_surface(p.shape)]    # Context bodies and surfaces are not insertable
                 for p in shown:
                     it = QTreeWidgetItem([p.name])
                     it.setIcon(0, swatch(p.color))
@@ -2255,7 +2255,7 @@ class AssemblyController:
             return
         doc = self.doc
         st = studio.state_for(config) if config else studio.state
-        pids = part_ids or [p.id for p in st.parts.values() if not p.reference]
+        pids = part_ids or [p.id for p in st.parts.values() if not p.reference and not K.is_surface(p.shape)]
         if not pids:
             return
         doc.checkpoint()

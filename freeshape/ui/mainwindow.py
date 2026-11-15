@@ -4931,7 +4931,9 @@ class MainWindow(QMainWindow):
             return
         try:
             self.doc.export(path, part_ids, options=opts)
-            self.status.showMessage(f"Exported {path}", 5000)
+            skipped = getattr(self.doc, "last_export_skipped", None)
+            self.status.showMessage(f"Exported {path}" + (f" (left out {len(skipped)} surface bod"
+                                    f"{'y' if len(skipped) == 1 else 'ies'}: meshes need a solid)" if skipped else ""), 5000)
         except Exception as e:
             QMessageBox.critical(self, APP_NAME, f"Export failed:\n{e}")
 

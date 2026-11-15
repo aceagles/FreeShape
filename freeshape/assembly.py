@@ -1211,6 +1211,10 @@ class AssemblyDoc:
         except Exception:
             return False
 
+    def _bbox_diag(self, iid):
+        a, b = K.bbox(self.world_shape(iid))
+        return float(np.linalg.norm(np.asarray(b, float) - np.asarray(a, float)))
+
     def auto_explode(self):
         """Move every part out from the fixed one(s). Screws and bolts from the library come out towards their
         heads; other parts go along whichever main axis they sit out on. Parts going the same way are spaced in
@@ -1218,7 +1222,7 @@ class AssemblyDoc:
         insts = [i for i in self.visible_instances() if i["id"] in self.parts]
         if len(insts) < 2:
             raise K.KernelError("Insert at least two parts first")
-        base = [i for i in insts if i.get("fixed")] or [max(insts, key=lambda i: K.volume(self.world_shape(i["id"])))]
+        base = [i for i in insts if i.get("fixed")] or [max(insts, key=lambda i: self._bbox_diag(i["id"]))]     # I2.4: by bounding box, a surface has no volume
         lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
         for i in base:
             a, b = K.bbox(self.world_shape(i["id"]))
@@ -2762,7 +2766,8 @@ class AssemblyDoc:
             r["instances"].append(inst["name"])
             if r["volume"] is None and p is not None:
                 try:
-                    r["volume"] = K.volume(p.shape)
+                    if not K.is_surface(p.shape):       # I2.4: a surface has no weight
+                        r["volume"] = K.volume(p.shape)
                 except Exception:
                     pass
         for r in rows.values():
@@ -2782,7 +2787,10 @@ class AssemblyDoc:
         by_mat, tot, moment = {}, 0.0, np.zeros(3)
         for inst in self.visible_instances():
             try:
-                mp = K.mass_props(self.world_shape(inst["id"]))
+                shp = self.world_shape(inst["id"])
+                if K.is_surface(shp):                   # I2.4: a surface has area, no mass
+                    continue
+                mp = K.mass_props(shp)
             except Exception:
                 continue
             mat = MS.material_name(inst.get("material"))

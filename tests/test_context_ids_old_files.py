@@ -339,7 +339,13 @@ def test_window_engine_ends_with_the_same_rewritten_params(tmp_path, monkeypatch
         b, c = f"{cid}/{iids['B']}", f"{cid}/{iids['C']}"
         assert doc.feature(cid)["params"]["ids"] == "instance" and _refs(doc, cid, eid, used) == ([b], [b], b, b)
         assert w._transparent[doc] == {b, c} and w.viewport.transparent_ids >= {b, c}
-        worker = json.loads(bytes(eng.in_engine(doc, lambda e, t: e.tab_data(t, {}))).decode("utf-8"))
+        mine = {p for p in w.viewport.reference_ids if p.startswith(f"{cid}/")}
+        assert mine == {c}                                 # B is hidden, so only C is drawn, under its new id
+        assert not any(p in w.viewport.reference_ids for p in (f"{cid}/1", f"{cid}/2", f"{cid}/3"))
+        from freeshape import docstore
+        sink = docstore.HeldBlobs({})                      # as partstudio_engine reads tab_data
+        worker = json.loads(bytes(eng.in_engine(doc, lambda e, t: e.tab_data(t, blobs=sink))).decode("utf-8"))
+        assert doc.feature(cid)["params"]["capture"] in sink.held     # the new capture reached the worker
         bare = json.loads(json.dumps([{k: v for k, v in f.items() if k != "folder"} for f in doc.features]))
         assert [{k: v for k, v in f.items() if k != "folder"} for f in worker["features"]] == bare
         assert set(worker.get("overrides", {})) == {b}

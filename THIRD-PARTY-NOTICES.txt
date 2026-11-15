@@ -36,6 +36,10 @@ ezdxf — DXF export
   Licence: MIT
   https://github.com/mozman/ezdxf
 
+fontTools — SVG path parsing for SVG import
+  Licence: MIT
+  https://github.com/fonttools/fonttools
+
 PyInstaller (used to build FreeShape.exe)
   Licence: GPL v2 with a bootloader exception (allows distributing the built program under any licence)
   https://pyinstaller.org

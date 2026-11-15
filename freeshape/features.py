@@ -1303,7 +1303,8 @@ NUMERIC_KEYS = {"depth", "depth2", "angle", "radius", "distance", "thickness", "
                 "countersink_dia", "k", "relief_scale",
                 "scale",
                 "count2", "spacing2",
-                "distance2"}
+                "distance2",
+                "thickness1", "thickness2"}
 
 
 # numeric params of plugin features: feature type -> set of keys (filled in by freeshape.plugins)
@@ -1924,6 +1925,57 @@ def _profiles(state, p, fid=None, labels=None):
     return profs
 
 
+def _thin_thicknesses(p):
+    """(thickness 1, thickness 2) of a thin feature. Mid plane splits thickness 1 half each side; Flip wall swaps
+    the two."""
+    t1, t2 = float(p.get("thickness1", 1.0)), float(p.get("thickness2", 0.0))
+    if p.get("mid_plane"):
+        return t1 / 2, t1 / 2
+    return (t2, t1) if p.get("flip_wall") else (t1, t2)
+
+
+def _thin_profiles(state, p, fid=None):
+    """The profile faces of a thin extrude or revolve, in place of `_profiles`: (faces, history, seeded names).
+
+    Each sketch chain of `p["curves"]` (open or closed), the outer loop of each region of `p["regions"]` and
+    the outer loop of each planar face of `p["faces"]` becomes one thin face in its own plane
+    (K.thin_profile). `history` chains each wire's offset (the part's names reach the face's edges through
+    it) ahead of the sweep's history; `seeded` are the NamedShapes of what no sketch region names: each
+    sketch curve (named `<sketch fid>_<curve id>`) and the two end-cap edges of an open chain. Thickness 1 is
+    on the right of the curve's direction of travel, outside a closed one (docs/reference/document-format.md)."""
+    t1, t2 = _thin_thicknesses(p)
+    wires, curve_labels, seen, by_sketch = [], [], set(), {}
+    for r in p.get("curves", []):
+        if r.get("kind") != "sketch_chain":
+            raise K.KernelError("A thin feature needs sketch curves, not a model edge")
+        key, pairs = _ref_edges(state, r)
+        if key is not None and key not in seen:
+            seen.add(key)
+            by_sketch.setdefault(r["sketch"], []).extend(pairs)
+    for sid, pairs in by_sketch.items():
+        curve_labels += [(lab, e) for lab, e in pairs if lab]
+        wires += [(state.sketches[sid].plane, w, True) for w in K.chain_wires([e for _, e in pairs])]
+    faces = resolve_regions(state, p.get("regions", []), fid) + [resolve(state, fr, "face")[1]
+                                                                   for fr in p.get("faces", [])]
+    for face in faces:
+        plane = K.planar_face_plane(face)
+        if plane is None:
+            raise K.KernelError("Profile face must be planar")
+        wires.append((plane, K.BRepTools_OuterWire(face), False))
+    out, hists, seeds, cap_labels = [], [], [], []
+    for i, (plane, wire, _curve) in enumerate(wires):
+        face, hist, caps = K.thin_profile(plane, wire, t1, t2)
+        out.append(face)
+        hists.append(hist)
+        cap_labels += [(f"{fid}_thin{i}{'ab'[j]}", c) for j, c in enumerate(caps)]
+    if fid:
+        for names in (_curve_names(fid, [w for _, w, curve in wires if curve], curve_labels) if curve_labels else None,
+                      _curve_names(fid, [c for _, c in cap_labels], cap_labels) if cap_labels else None):
+            if names is not None:
+                seeds.append(names)
+    return out, K._chain(*hists), seeds
+
+
 def _profile_names(state, p):
     """The NamedShapes the profile faces of `_profiles` are named in: each sketch whose regions are
     used (its edges name the side faces, its region names the end faces, § 4) and each part a profile
@@ -1934,7 +1986,7 @@ def _profile_names(state, p):
         if sk is not None and sk.named is not None and all(o is not sk.named for o in out):
             out.append(sk.named)
     out.extend(dict.fromkeys(fr["part"] for fr in p.get("faces", []) if fr.get("part") in state.parts))
-    for r in p.get("curves", []) if p.get("creation") == "surface" else []:
+    for r in p.get("curves", []) if p.get("creation") in ("surface", "thin") else []:
         sk = state.sketches.get(r.get("sketch"))
         if sk is not None and sk.named is not None and all(o is not sk.named for o in out):
             out.append(sk.named)
@@ -2078,7 +2130,7 @@ def _named_after_draft(named, body, draft_hist):
     return out
 
 
-def _drafted_two_ways(state, fid, p, profs, direction, depth, depth2, symmetric):
+def _drafted_two_ways(state, fid, p, profs, direction, depth, depth2, symmetric, thin=(None, ())):
     """Draft with Symmetric, or with a second blind direction: (body, its element map).
 
     One prism across the sketch plane cannot be drafted in one call, since the plane is the neutral plane
@@ -2089,11 +2141,12 @@ def _drafted_two_ways(state, fid, p, profs, direction, depth, depth2, symmetric)
     da, db = (depth / 2, depth / 2) if symmetric else (depth, depth2)
     if da <= 1e-9 or db <= 1e-9:
         raise K.KernelError("Draft with two directions needs both depths to be more than 0")
-    sources = _profile_names(state, p)
+    sources = _profile_names(state, p) + list(thin[1])
     pieces = []
     for d, dist in ((np.asarray(direction, float), da), (-np.asarray(direction, float), db)):
         half, hist = K.extrude(profs, d, dist, with_history=True)
-        named = name_feature(state, fid, sources, half, hist, "extrude")
+        named = name_feature(state, fid, sources, half, K._chain(thin[0], hist) if thin[0] is not None else hist,
+                             "extrude")
         half, h2 = _drafted_tool(profs, d, half, hist, p.get("draft_angle", 5.0), p.get("draft_flip", False))
         pieces.append((half, _named_after_draft(named, half, h2)))
     body, fused = K.fuse_all([b for b, _ in pieces], with_history=True)
@@ -2103,8 +2156,7 @@ def _drafted_two_ways(state, fid, p, profs, direction, depth, depth2, symmetric)
 def run_extrude(state, f):
     p = legacy_up_to(f["params"])
     creation = p.get("creation", "solid")
-    if creation == "thin":
-        raise K.KernelError("A thin extrude is not available yet")
+    thin = creation == "thin"                   # runs the solid path on a thin face (every end, op and up-to works)
     surface = creation == "surface"
     if surface:
         if p.get("op", "add") in ("remove", "intersect"):
@@ -2114,16 +2166,22 @@ def run_extrude(state, f):
         if p.get("draft"):
             raise K.KernelError("Draft is not available for a surface extrude")
     curve_labels = []
-    profs = _profiles(state, p, f["id"], curve_labels)
+    thin_hist, thin_seeds = None, []
+    if thin:
+        profs, thin_hist, thin_seeds = _thin_profiles(state, p, f["id"])
+    else:
+        profs = _profiles(state, p, f["id"], curve_labels)
     if not profs:
-        raise K.KernelError("Select sketch curves to extrude" if surface else "Select sketch regions or a planar face")
+        raise K.KernelError("Select sketch curves to extrude" if surface or thin
+                            else "Select sketch regions or a planar face")
     n = _profile_normal(state, p, profs)
     op = p.get("op", "add")
     end = p.get("end", "blind")
     depth, flip = signed_extent(p.get("depth", 10), p.get("flip", False))
     symmetric = end == "symmetric"
     cutting = op in ("remove", "intersect")
-    if cutting and not p.get("regions"):
+    from_sketch = bool(p.get("regions") or (thin and p.get("curves")))
+    if cutting and not from_sketch:
         # cutting from a face goes into the part by default
         flip = not flip
 
@@ -2149,14 +2207,15 @@ def run_extrude(state, f):
                 a, b = K.bbox(part.shape)
                 lo, hi = np.minimum(lo, a), np.maximum(hi, b)
             dd = float(np.linalg.norm(hi - lo)) * 2 + 10 if state.parts else depth
-            both = p.get("both", False) or (cutting and p.get("regions"))
+            both = p.get("both", False) or (cutting and from_sketch)
             return K.extrude(profs, direction, dd, depth2=dd if both else 0.0, with_history=True)
         depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric else 0.0
         if depth + depth2 <= 0 and depth2:
             raise K.KernelError("The second depth cancels the first")
         drafted.clear()
         if p.get("draft") and (symmetric or depth2):
-            body, named = _drafted_two_ways(state, f["id"], p, profs, direction, depth, depth2, symmetric)
+            body, named = _drafted_two_ways(state, f["id"], p, profs, direction, depth, depth2, symmetric,
+                                            (thin_hist, thin_seeds))
             drafted.update(named=named)
             return body, None
         body, hist = K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
@@ -2172,10 +2231,11 @@ def run_extrude(state, f):
         dist = _up_to_blind(state, p, profs, n)
         if dist is not None:
             body, hist = K.extrude(profs, n if dist > 0 else -n, abs(dist), with_history=True)
-            named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "extrude")
+            named = name_feature(state, f["id"], _profile_names(state, p) + thin_seeds, body,
+                                 K._chain(thin_hist, hist) if thin else hist, "extrude")
             apply_body(state, body, op, f["id"], p.get("scope"), named)
             return
-        body, named = _named_up_to(state, f["id"], p, profs, "extrude", d)
+        body, named = _named_up_to(state, f["id"], p, profs, "extrude", d, (thin_hist, thin_seeds))
         apply_body(state, body, op, f["id"], p.get("scope"), named)
         return
     body, hist = make(d)
@@ -2194,8 +2254,9 @@ def run_extrude(state, f):
         named = drafted["named"]
     else:
         seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
-        named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []),
-                             drafted.get("undrafted", body), hist, "extrude")
+        named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []) + thin_seeds,
+                             drafted.get("undrafted", body), K._chain(thin_hist, hist) if thin else hist,
+                             "extrude")
         if drafted:
             named = _named_after_draft(named, body, drafted["history"])
     apply_body(state, body, op, f["id"], p.get("scope"), named)
@@ -2209,17 +2270,19 @@ def _model_size(state, extra=()):
     return float(np.linalg.norm(hi - lo)) if np.all(hi >= lo) else 100.0
 
 
-def _named_up_to(state, fid, p, profs, kind, how):
+def _named_up_to(state, fid, p, profs, kind, how, thin=(None, ())):
     """The up-to sweep of every profile, fused, and its element map: (body, NamedShape).
 
     Each profile's piece is named from the profile's map through the sweep-and-trim history, as a blind
     extrude is (op `extrude` / `revolve`); its end cap on the target takes the role `end` under the
     profile face's name, so it keeps its name when the target moves. Several pieces are then fused and
     named from their maps, as `apply_body` names a fuse."""
-    sources = _profile_names(state, p)
+    sources = _profile_names(state, p) + list(thin[1])
     pieces = []
     for prof in profs:
         body, hist, ends = _sweep_up_to(state, p, prof, kind, how)
+        if thin[0] is not None:
+            hist = K._chain(thin[0], hist)
         pieces.append((body, name_feature(state, fid, sources, body, hist, kind,
                                           roles=[(e, prof, "end") for e in ends])))
     if len(pieces) == 1:
@@ -2290,11 +2353,14 @@ def _sweep_up_to(state, p, face, kind, how):
 
 
 def _surface_creation(p, what, ends_msg):
-    """True for a surface feature (`creation` "surface"); raises for a thin one (not built yet), and for the
+    """True for a surface feature (`creation` "surface"); False for a solid or thin one (a thin sweep raises, not
+    built yet), and raises for the
     options a surface does not take: Remove and Intersect, and the ends `ends_msg` names."""
     creation = p.get("creation", "solid")
     if creation == "thin":
-        raise K.KernelError(f"A thin {what} is not available yet")
+        if what == "sweep":                       # card I2.9
+            raise K.KernelError(f"A thin {what} is not available yet")
+        return False                              # a thin extrude or revolve is the solid path on a thin face
     if creation != "surface":
         return False
     if p.get("op", "add") in ("remove", "intersect"):
@@ -2308,7 +2374,14 @@ def run_revolve(state, f):
     p = f["params"]
     surface = _surface_creation(p, "revolve", "A surface revolve needs a Full, One direction or Symmetric end")
     curve_labels = []
-    profs = _profiles(state, p, f["id"], curve_labels)
+    thin = p.get("creation") == "thin"
+    thin_hist, thin_seeds = None, []
+    if thin:
+        profs, thin_hist, thin_seeds = _thin_profiles(state, p, f["id"])
+        if not profs:
+            raise K.KernelError("Select sketch curves or regions to revolve")
+    else:
+        profs = _profiles(state, p, f["id"], curve_labels)
     if surface and not profs:
         raise K.KernelError("Select sketch curves to revolve")
     a, d = resolve_axis(state, p.get("axis", {}))
@@ -2325,13 +2398,13 @@ def run_revolve(state, f):
     if flip:
         d = -d
     if end in UP_TO:
-        body, named = _named_up_to(state, f["id"], p, profs, "revolve", (a, d))
+        body, named = _named_up_to(state, f["id"], p, profs, "revolve", (a, d), (thin_hist, thin_seeds))
         apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
         return
     body, hist = K.revolve(profs, a, d, angle, symmetric=(end == "symmetric"), with_history=True)
     seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
-    named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []),
-                         body, hist, "revolve")
+    named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []) + thin_seeds,
+                         body, K._chain(thin_hist, hist) if thin else hist, "revolve")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 

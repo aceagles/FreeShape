@@ -186,12 +186,12 @@ def test_draft_and_model_edges_are_refused():
     assert err and "direction" in err
 
 
-def test_no_curves_is_an_error_and_thin_is_not_built_yet():
+def test_no_curves_is_an_error_for_a_surface_and_for_a_thin_extrude():
     doc, _, f, err = surface_doc()
     f2, err2 = try_add(doc, "extrude", creation="surface", curves=[], depth=10, op="new")
     assert err2 == "Select sketch curves to extrude"
     f3, err3 = try_add(doc, "extrude", creation="thin", depth=10, op="new")
-    assert err3 == "A thin extrude is not available yet"
+    assert err3 == "Select sketch curves to extrude"
 
 
 def face_names(doc, pid):
@@ -275,7 +275,7 @@ def test_dialog_surface_takes_a_curve_pick_and_limits_the_operation(make_win):
     w = make_win(doc)
     w.start_feature("extrude")
     dlg = w.dialog
-    assert list(_segment_buttons(dlg, "creation")) == ["Solid", "Surface"]
+    assert list(_segment_buttons(dlg, "creation")) == ["Solid", "Surface", "Thin"]
     assert list(_segment_buttons(dlg, "op")) == ["New", "Add", "Remove", "Intersect"]
     # Solid: an open line is not a region, so the pick is refused
     lid = first_line(doc, sid)

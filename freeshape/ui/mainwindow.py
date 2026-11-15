@@ -582,10 +582,10 @@ class MainWindow(QMainWindow):
             C("sketch", "Sketch", "Draw 2D profiles on a plane or a flat face. With vertices, edges or faces selected "
               "that define a plane, the plane is made for you.", lambda: self.start_sketch(), "draw 2d profile"),
             C("extrude", "Extrude", "Add or remove material by extending sketch regions or flat faces. Blind, "
-              "symmetric or through all.", lambda: F_("extrude"), "boss cut pad pocket draft taper surface extrude"),
+              "symmetric or through all.", lambda: F_("extrude"), "boss cut pad pocket draft taper surface extrude thin extrude wall"),
             C("revolve", "Revolve", "Spin a sketch region around an axis to make round parts.",
-              lambda: F_("revolve"), "lathe turn"),
-            C("sweep", "Sweep", "Move a profile along a path to make a pipe or rail.", lambda: F_("sweep"), "pipe path"),
+              lambda: F_("revolve"), "lathe turn surface revolve thin revolve wall"),
+            C("sweep", "Sweep", "Move a profile along a path to make a pipe or rail.", lambda: F_("sweep"), "pipe path surface sweep"),
             C("rib", "Rib", "Add a rib, web or gusset to a part from open sketch curves, grown until it meets the "
               "part.", lambda: F_("rib"), "gusset web stiffener support"),
             C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"),

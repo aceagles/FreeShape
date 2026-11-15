@@ -123,11 +123,12 @@ def test_a_surface_revolve_refuses_an_up_to_end(end):
 
 
 @pytest.mark.parametrize("ftype", ["revolve", "sweep"])
-def test_thin_is_not_built_yet_and_no_curves_is_an_error(ftype):
+def test_a_thin_sweep_is_not_built_yet_and_no_curves_is_an_error(ftype):
     doc = PartStudioDoc()
     sid = sketch_feature(doc, line_at_radius, TOP)
     f, err = try_add(doc, ftype, creation="thin", curves=curve_refs(sid, ents(doc, sid, "line")[0]), axis=AXIS_X)
-    assert err and f"A thin {ftype} is not available yet" in err
+    if ftype == "sweep":                 # card I2.9; a thin revolve is built (tests/test_thin_extrude_revolve.py)
+        assert err and "A thin sweep is not available yet" in err
     f, err = try_add(doc, ftype, creation="surface", curves=[], axis=AXIS_X, op="new")
     assert err and "Select sketch curves" in err
 
@@ -298,7 +299,8 @@ def test_dialog_surface_swaps_the_profile_field_and_limits_the_operation(make_wi
     w = make_win(doc)
     w.start_feature(ftype)
     dlg = w.dialog
-    assert list(_segment_buttons(dlg, "creation")) == ["Solid", "Surface"]
+    assert list(_segment_buttons(dlg, "creation")) == (["Solid", "Surface", "Thin"] if ftype == "revolve"
+                                                       else ["Solid", "Surface"])     # a sweep's Thin is card I2.9
     assert list(_segment_buttons(dlg, "op")) == ["New", "Add", "Remove", "Intersect"]
     dlg._set("op", "remove")
     _segment_buttons(dlg, "creation")["Surface"].click()

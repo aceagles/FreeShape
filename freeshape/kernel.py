@@ -2506,6 +2506,193 @@ def chain_wires(edge_list):
     return [make_wire(c) for c in chains.values()]
 
 
+THIN_TOO_THICK = "The thickness is larger than this shape allows"
+
+
+def _travel_chain(wire):
+    """[[edge, points]] of `wire` in travel order, each edge's points running along the travel. The travel
+    starts at the free end of an open wire; which way a closed wire runs is the first edge's."""
+    from OCP.BRepTools import BRepTools_WireExplorer
+    items = []
+    ex = BRepTools_WireExplorer(wire)
+    while ex.More():
+        e = ex.Current()
+        items.append([e, discretize_edge(e).astype(float)])
+        ex.Next()
+    if not items or any(len(pts) < 2 for _, pts in items):
+        raise KernelError("The curve has no edges to make thin")
+    if len(items) == 1:
+        if items[0][0].Orientation() == TopAbs_REVERSED:
+            items[0][1] = items[0][1][::-1]
+        return items
+    a, b = items[0][1], items[1][1]
+    near = lambda p, q: min(np.linalg.norm(p - q[0]), np.linalg.norm(p - q[-1]))
+    if near(a[0], b) < near(a[-1], b):
+        items[0][1] = a[::-1]
+    for i in range(1, len(items)):
+        prev, pts = items[i - 1][1][-1], items[i][1]
+        if np.linalg.norm(prev - pts[0]) > np.linalg.norm(prev - pts[-1]):
+            items[i][1] = pts[::-1]
+    return items
+
+
+def _flat(plane, pts):
+    d = np.asarray(pts, float) - plane.origin
+    return np.stack([d @ plane.xdir, d @ plane.ydir], axis=1)
+
+
+def _signed_area(uv):
+    x, y = uv[:, 0], uv[:, 1]
+    return 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y))
+
+
+def _side_of(uv, q):
+    """+1 when the 2-D point q is right of the polyline `uv` (looking along it), -1 when left."""
+    best, side = 1e300, 0.0
+    for a, b in zip(uv[:-1], uv[1:]):
+        ab = b - a
+        L2 = float(ab @ ab)
+        if L2 < 1e-18:
+            continue
+        t = min(1.0, max(0.0, float((q - a) @ ab) / L2))
+        d = float(np.linalg.norm(q - (a + t * ab)))
+        if d < best - 1e-12:
+            best, side = d, ab[0] * (q[1] - a[1]) - ab[1] * (q[0] - a[0])
+    return 1 if side < 0 else -1
+
+
+def _offset_one_side(plane, wire, chain, uv, closed, right, dist):
+    """`wire` offset by `dist` towards its right (looking along the travel, `right` True) or left, with
+    sharp corners: (offset wire, the offset's history). The history maps each edge of `wire` to its image.
+
+    BRepOffsetAPI_MakeOffset(wire, GeomAbs_Intersection) takes its sign from a plane it finds from the wire
+    itself, so which side +d is on is not known in advance. A probe with a distance too small to harm
+    finds out, so the real offset only ever goes to the side the circle check below has cleared (OCC
+    crashes when an offset reaches past a circle's centre). A straight chain on one line has no plane
+    for OCC to find, and a lone line crashes it, so that case is a plain move."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
+    from OCP.GeomAbs import GeomAbs_Intersection
+    n = plane.normal
+    straight = all(BRepAdaptor_Curve(e).GetType() == GeomAbs_Line for e, _ in chain)
+    pts = np.vstack([c[1] for c in chain])
+    if straight and not closed:
+        u = pts[-1] - pts[0]
+        u = u / np.linalg.norm(u)
+        if float(np.max(np.linalg.norm(np.cross(pts - pts[0], u), axis=1))) < 1e-7:
+            t = _trsf_translate((-np.cross(n, u) if right else np.cross(n, u)) * dist)    # left of u is n x u
+            moved, mk = _placed(wire, t)
+            return _as_wire(moved), _maker_history(mk, [wire])
+    radii = []
+    for e, ep in chain:
+        ad = BRepAdaptor_Curve(e)
+        if ad.GetType() != GeomAbs_Circle:
+            continue
+        r = ad.Circle().Radius()
+        radii.append(r)
+        m = min(len(ep) // 2, len(ep) - 2)
+        a2, b2 = _flat(plane, ep[m:m + 2])
+        c2 = _flat(plane, _np(ad.Circle().Location())[None, :])[0]
+        centre_right = (b2[0] - a2[0]) * (c2[1] - a2[1]) - (b2[1] - a2[1]) * (c2[0] - a2[0]) < 0
+        if centre_right == right and dist >= r - 1e-9:
+            raise KernelError(THIN_TOO_THICK)
+    probe_d = min(dist, 1e-3 * max(1e-3, min(radii + [float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))])))
+
+    def make(sign, d):
+        mk = BRepOffsetAPI_MakeOffset(wire, GeomAbs_Intersection, not closed)
+        mk.Perform(sign * d)
+        res = mk.Shape()
+        ws = _sub_shapes(res, TopAbs_WIRE) if res.ShapeType() != TopAbs_WIRE else [res]
+        if not ws and res.ShapeType() == TopAbs_EDGE:
+            ws = [BRepBuilderAPI_MakeWire(_as_edge(res)).Wire()]
+        return mk, ws
+
+    def side(ws):
+        if len(ws) != 1:
+            return None
+        ruv = _flat(plane, np.vstack([c[1] for c in _travel_chain(_as_wire(ws[0]))]))
+        if closed:                     # outside is the bigger loop
+            return (1 if abs(_signed_area(ruv)) > abs(_signed_area(uv)) else -1) * (1 if _signed_area(uv) > 0 else -1)
+        return _side_of(uv, ruv[0])
+    try:
+        mk, ws = make(1, probe_d)
+        got = side(ws)
+        if got is None:
+            raise KernelError(THIN_TOO_THICK)
+        sign = 1 if (got > 0) == right else -1
+        if not (probe_d >= dist and sign == 1):      # else the probe was the whole offset
+            mk, ws = make(sign, dist)
+        if len(ws) != 1 or side(ws) != (1 if right else -1):
+            raise KernelError(THIN_TOO_THICK)
+    except KernelError:
+        raise
+    except Exception as exc:            # OCC raises Standard_Failure for a wire it cannot offset
+        raise KernelError(THIN_TOO_THICK) from exc
+    return _as_wire(ws[0]), _maker_history(mk, [wire])
+
+
+def thin_profile(plane, wire, t1, t2):
+    """A thin face in `plane` from `wire`, a closed or open chain of sketch curves: (face, offset history, cap
+    edges). The face is the strip between the wire offset by `t1` and by `t2` on its other side, with sharp
+    corners.
+
+    Closed wire: `t1` outside, `t2` inside; the face is the ring between them. Open wire: `t1` on the right of
+    the travel along the wire (looking down the plane's normal), `t2` on the left; the two ends are closed with
+    straight edges square to the wire, which are the returned cap edges (none for a closed wire). A side of 0
+    keeps the wire itself there.
+
+    The history maps every edge and vertex of `wire` to its image in the face, to chain before the history of
+    the sweep made from the face. A wall that folds into itself (no single offset wire, or a face that is
+    not valid) raises "The thickness is larger than this shape allows"."""
+    t1, t2 = float(t1), float(t2)
+    if t1 < 0 or t2 < 0 or t1 + t2 < 1e-9:
+        raise KernelError("The thickness must be more than zero")
+    chain = _travel_chain(wire)
+    pts = np.vstack([chain[0][1]] + [c[1][1:] for c in chain[1:]])
+    uv = _flat(plane, pts)
+    tol = 1e-6 * max(1.0, float(np.ptp(pts, axis=0).max()))
+    closed = float(np.linalg.norm(pts[0] - pts[-1])) < tol
+    if closed:
+        ccw = _signed_area(uv) > 0              # the right of a counter-clockwise loop is outside
+        sides = {True: t1 if ccw else t2, False: t2 if ccw else t1}
+    else:
+        sides = {True: t1, False: t2}
+    made, hists = {}, []
+    for right, dist in sides.items():
+        if dist < 1e-9:
+            made[right] = wire
+            continue
+        made[right], h = _offset_one_side(plane, wire, chain, uv, closed, right, dist)
+        hists.append(h)
+    pln = gp_Pln(plane.gp_ax3())
+
+    def area_of(w):
+        return _signed_area(_flat(plane, np.vstack([c[1] for c in _travel_chain(w)])))
+
+    def facing(w, ccw_wanted):
+        return w if (area_of(w) > 0) == ccw_wanted else _as_wire(w.Reversed())
+    caps = []
+    if closed:
+        outer, inner = (made[True], made[False]) if ccw else (made[False], made[True])
+        mf = BRepBuilderAPI_MakeFace(pln, facing(outer, True), True)
+        mf.Add(facing(inner, False))
+        face = mf.Face()
+    else:
+        ends = []
+        for w in (made[True], made[False]):
+            ch = _travel_chain(w)
+            a, b = ch[0][1][0], ch[-1][1][-1]
+            if np.linalg.norm(a - pts[0]) + np.linalg.norm(b - pts[-1]) > np.linalg.norm(b - pts[0]) + np.linalg.norm(a - pts[-1]):
+                a, b = b, a
+            ends.append((a, b))
+        caps = [BRepBuilderAPI_MakeEdge(_pnt(ends[0][0]), _pnt(ends[1][0])).Edge(),
+                BRepBuilderAPI_MakeEdge(_pnt(ends[0][1]), _pnt(ends[1][1])).Edge()]
+        loop = make_wire(edges(made[True]) + caps + edges(made[False]))
+        face = BRepBuilderAPI_MakeFace(pln, facing(loop, True), True).Face()
+    if not is_valid(face) or mass_props(face)["area"] < 1e-9:
+        raise KernelError(THIN_TOO_THICK)
+    return face, _chain(*hists), caps
+
+
 def _pipe_shell(path_wire, wire):
     return _pipe_maker(path_wire, wire).Shape()
 

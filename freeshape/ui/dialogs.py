@@ -24,7 +24,20 @@ from .viewport import Pick
 
 OP_LABELS = [("new", "New"), ("add", "Add"), ("remove", "Remove"), ("intersect", "Intersect")]
 SURFACE_OP_LABELS = OP_LABELS[:2]        # Remove and Intersect are not available for surfaces
-CREATE_LABELS = [("solid", "Solid"), ("surface", "Surface")]      # "Thin" joins when the thin extrude is built
+CREATE_LABELS = [("solid", "Solid"), ("surface", "Surface")]      # a sweep's Thin joins with card I2.9
+THIN_CREATE_LABELS = CREATE_LABELS + [("thin", "Thin")]            # Extrude and Revolve
+
+
+def _thin_fields(what):
+    """The Thin rows of Extrude and Revolve, named as in Onshape. Thickness 2 and Flip wall go when Mid plane
+    splits Thickness 1 half each side."""
+    thin = lambda p: p.get("creation") == "thin"
+    return [
+        _check("mid_plane", "Mid plane", visible=thin),
+        _num("thickness1", "Thickness 1", minimum=0, visible=thin),
+        _num("thickness2", "Thickness 2", minimum=0, visible=lambda p: thin(p) and not p.get("mid_plane")),
+        _check("flip_wall", "Flip wall", visible=lambda p: thin(p) and not p.get("mid_plane")),
+    ]
 
 
 def _show(v):
@@ -779,10 +792,12 @@ SCHEMAS = {
     "extrude": [
         {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
         {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
-        {"t": "ops", "key": "creation", "options": CREATE_LABELS, "default": "solid"},
+        {"t": "ops", "key": "creation", "options": THIN_CREATE_LABELS, "default": "solid"},
         _sel("profiles", "Faces and sketch regions to extrude", {"region", "face"},
              visible=lambda p: p.get("creation") != "surface"),
-        _sel("curves", "Sketch curves to extrude", {"path"}, visible=lambda p: p.get("creation") == "surface"),
+        _sel("curves", "Sketch curves to extrude", {"path"},
+             visible=lambda p: p.get("creation") in ("surface", "thin")),
+        *_thin_fields("extrude"),
         _choice("end", "End type", [("blind", "Blind"), ("symmetric", "Symmetric"), ("through", "Through all")]
                 + F.UP_TO_LABELS),
         _num("depth", "Depth", visible=lambda p: p.get("end") not in ("through",) + F.UP_TO, signed=True),
@@ -803,10 +818,12 @@ SCHEMAS = {
     "revolve": [
         {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
         {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
-        {"t": "ops", "key": "creation", "options": CREATE_LABELS, "default": "solid"},
+        {"t": "ops", "key": "creation", "options": THIN_CREATE_LABELS, "default": "solid"},
         _sel("profiles", "Faces and sketch regions to revolve", {"region", "face"},
              visible=lambda p: p.get("creation") != "surface"),
-        _sel("curves", "Sketch curves to revolve", {"path"}, visible=lambda p: p.get("creation") == "surface"),
+        _sel("curves", "Sketch curves to revolve", {"path"},
+             visible=lambda p: p.get("creation") in ("surface", "thin")),
+        *_thin_fields("revolve"),
         _sel("axis_sel", "Revolve axis (axis, sketch line or edge)", {"axis"}, multi=False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _choice("end", "Revolve type", [("full", "Full"), ("one", "One direction"), ("symmetric", "Symmetric")]
@@ -2742,6 +2759,13 @@ class FeatureDialog(_ResizableFrame):
         if key == "creation" and self.ftype in ("extrude", "revolve", "sweep") and value == "surface" \
                 and p.get("op", "add") not in ("new", "add"):
             p["op"] = "add"                    # Remove and Intersect are not available for surfaces
+        if key == "creation" and self.ftype in ("extrude", "revolve") and value == "thin":
+            for k, v in (("thickness1", 1.0), ("thickness2", 0.0)):       # not in default_params (goldens go through it)
+                if k not in p:
+                    p[k] = v
+                if k in self.widgets:
+                    self.widgets[k].setText(_show(p[k]))
+            QTimer.singleShot(0, lambda: self.activate(self.fields["curves"]))      # a thin wall is drawn as curves
         if key == "draft" and value and self.ftype == "extrude" and not p.get("draft_angle"):
             p["draft_angle"] = 5.0           # not in default_params (goldens are built through it), so seed it here
             if "draft_angle" in self.widgets:

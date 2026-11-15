@@ -1,0 +1,39 @@
+##### build ocp7.9.3.1.1
+DECISION loft skin=hermite skin_angle_deg=0.0000 gordon79=absent gordon80=absent one_guide=absent corner_guide=absent rational=absent
+
+== build ocp7.9.3.1.1
+-- skinning: Hermite end derivatives
+  hermite: valid=True volume=12000.0000 (expect 12000) max_angle_deg=0.000000 samples=64
+-- skinning: ghost sections via ThruSections
+  ghost eps=3: valid=True volume=12000.0000 max_angle_deg=7.847574 samples=64
+  ghost eps=1: valid=True volume=12000.0000 max_angle_deg=2.401441 samples=64
+  ghost eps=0.3: valid=True volume=12000.0000 max_angle_deg=0.697379 samples=64
+  ghost eps=0.1: valid=True volume=12000.0000 max_angle_deg=0.230274 samples=64
+  ghost best: eps=0.1 angle=0.230274
+-- Gordon (8.0 only)
+  GeomFill_Gordon import: absent (cannot import name 'GeomFill_Gordon' from 'OCP.GeomFill' (/opt/venvs/ocp7.9.3.1.1/lib/python3.12/site-packages/OCP/GeomFill/__init__.py))
+
+##### build ocp8.0.1.1.0
+DECISION loft skin=hermite skin_angle_deg=0.0000 gordon79=absent gordon80=ok one_guide=isocurve corner_guide=ok rational=direct
+
+== build ocp8.0.1.1.0
+-- skinning: Hermite end derivatives
+  hermite: valid=True volume=12000.0000 (expect 12000) max_angle_deg=0.000000 samples=64
+-- skinning: ghost sections via ThruSections
+  ghost eps=3: valid=True volume=12000.0000 max_angle_deg=7.847574 samples=64
+  ghost eps=1: valid=True volume=12000.0000 max_angle_deg=2.401441 samples=64
+  ghost eps=0.3: valid=True volume=12000.0000 max_angle_deg=0.697379 samples=64
+  ghost eps=0.1: valid=True volume=12000.0000 max_angle_deg=0.230274 samples=64
+  ghost best: eps=0.1 angle=0.230274
+-- Gordon (8.0 only)
+  a_two_guides: {'IsDone': True, 'Status': 'Done', 'IsApproximate': False, 'guide_dev': 3.1958131987230857e-12, 'profile_dev': 4.996712129579103e-13, 'surf_closed_u': True, 'surf_closed_v': False, 'degree': (9, 9), 'MaxGuideDeviation': 'n/a (TypeError: Unable to convert function return value to a Python type! The signature was)'}
+  b_one_guide_first_and_last: {'IsDone': False, 'Status': 'OrderingFailed', 'MaxGuideDeviation': 'n/a (TypeError: Unable to convert function return value to a Python type! The signature was)'}
+    far-side iso endpoints (10.0, 20.0, 0.0) -> (25.0, 20.0, 30.0)
+  c_one_guide_plus_far_isocurve: {'IsDone': True, 'Status': 'Done', 'IsApproximate': False, 'guide_dev': 1.779682618776483e-12, 'profile_dev': 2.886238236725078e-14, 'surf_closed_u': True, 'surf_closed_v': False, 'degree': (9, 9), 'MaxGuideDeviation': 'n/a (TypeError: Unable to convert function return value to a Python type! The signature was)'}
+  d_corner_guides: {'IsDone': True, 'Status': 'Done', 'IsApproximate': False, 'guide_dev': 1.9985364428852786e-12, 'profile_dev': 1.3841912319476647e-13, 'surf_closed_u': True, 'surf_closed_v': False, 'degree': (3, 3), 'MaxGuideDeviation': 'n/a (TypeError: Unable to convert function return value to a Python type! The signature was)'}
+  e_circle_direct: {'IsDone': True, 'Status': 'Done', 'IsApproximate': False, 'guide_dev': 2.48286921316615e-12, 'profile_dev': 1.919498232728514e-14, 'surf_closed_u': True, 'surf_closed_v': False, 'degree': (6, 9), 'MaxGuideDeviation': 'n/a (TypeError: Unable to convert function return value to a Python type! The signature was)'}
+  e_circle_rational_bspline: {'IsDone': True, 'Status': 'Done', 'IsApproximate': False, 'guide_dev': 2.48286921316615e-12, 'profile_dev': 2.7095128821855567e-14, 'surf_closed_u': True, 'surf_closed_v': False, 'degree': (6, 9), 'MaxGuideDeviation': 'n/a (TypeError: Unable to convert function return value to a Python type! The signature was)'}
+    approx error 8.94e-08, poles 66
+    approx error 8.94e-08, poles 66
+  e_circle_approx: {'IsDone': True, 'Status': 'Done', 'IsApproximate': False, 'guide_dev': 2.8541964270758837e-12, 'profile_dev': 1.470196884878203e-14, 'surf_closed_u': True, 'surf_closed_v': False, 'degree': (5, 3), 'MaxGuideDeviation': 'n/a (TypeError: Unable to convert function return value to a Python type! The signature was)'}
+

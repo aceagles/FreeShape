@@ -3293,7 +3293,9 @@ class AssemblyController:
                 folder.update_context(tab.id, have["id"])
             else:
                 feat = studio.make_feature("context")
-                feat["params"].update(assembly=asm.uid, instance=iid, capture=studio.store_context(A.capture_context(asm, iid)))
+                # ids "instance": bodies are <fid>/<instance id>, so they keep their identity across Update context
+                feat["params"].update(assembly=asm.uid, instance=iid, ids="instance",
+                                      capture=studio.store_context(A.capture_context(asm, iid)))
                 studio.add_feature(feat)
         except K.KernelError as e:
             self.w.status.showMessage(str(e), 6000)

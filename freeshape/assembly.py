@@ -741,6 +741,9 @@ class AssemblyDoc:
 
     # ------------------------------------------------------------------ ids
     def new_id(self, prefix):
+        """A fresh id `<prefix><n>`. `_counter` only grows, and a saved file keeps it as `id_counter` once it is
+        above every id still in use, so an id freed by a delete is never handed out again, even after a reopen:
+        a Context body is named after its instance id (I6.1) and must not land on a newer instance."""
         self._counter += 1
         used = {i["id"] for i in self.instances} | {m["id"] for m in self.mates} | {g["id"] for g in self.groups}
         used |= {r["id"] for r in self.relations} | {c["id"] for c in self.connectors}
@@ -748,6 +751,13 @@ class AssemblyDoc:
         while f"{prefix}{self._counter}" in used:
             self._counter += 1
         return f"{prefix}{self._counter}"
+
+    def _id_high_water(self):
+        """The highest id number in use (what `from_data` restores `_counter` to when a file has no
+        `id_counter`)."""
+        return max([int("".join(c for c in x["id"] if c.isdigit()) or 0)
+                    for x in self.instances + self.mates + self.groups + self.relations + self.connectors
+                    + self.patterns] + [0])
 
     def instance(self, iid):
         return next((i for i in self.instances if i["id"] == iid), None)
@@ -2899,7 +2909,9 @@ class AssemblyDoc:
                            "relations": self.relations,
                            **({"connectors": self.connectors} if self.connectors else {}),
                            **({"explode": self.explode} if self.explode.get("steps") else {}),
-                           **({"patterns": self.patterns} if self.patterns else {})}, indent=1)
+                           **({"patterns": self.patterns} if self.patterns else {}),
+                           **({"id_counter": self._counter} if self._counter > self._id_high_water() else {})},
+                          indent=1)
 
     def to_data(self) -> bytes:
         """The tab's data as a Document store holds it (the bytes `save` writes). Set `path` first: relative
@@ -2956,9 +2968,8 @@ class AssemblyDoc:
                 cand = os.path.normpath(os.path.join(base, src["relpath"]))
                 if os.path.exists(cand):
                     src["path"] = cand
-        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0)
-                for x in a.instances + a.mates + a.groups + a.relations + a.connectors + a.patterns]
-        a._counter = max(nums + [0])
+        stored = d.get("id_counter")             # ids freed by deletes are never reused (I6.1)
+        a._counter = max(a._id_high_water(), stored if isinstance(stored, int) and not isinstance(stored, bool) else 0)
         a.resolver = resolver
         a.refresh(solve=False, notify=False)
         a._update_mate_values(a.mates, fill_only=True)   # files from before Mate values were stored

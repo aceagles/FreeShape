@@ -1618,8 +1618,11 @@ def context_listing(get, key):
 
 
 def run_context(state, f):
-    """Restore the neighbours of a stored capture (ADR 0004) as reference parts `<fid>/<k>`, each placed as
-    captured relative to the edited instance, its element names carried with a CTX fragment. Reads only blobs
+    """Restore the neighbours of a stored capture (ADR 0004) as reference parts, each placed as captured
+    relative to the edited instance, its element names carried with a CTX fragment. With params["ids"] ==
+    "instance" a body's id is `<fid>/<Assembly instance id>` (e.g. "F7/I3"), so hidden flags, overrides and
+    references stay on the same instance when Update context reorders the capture. Without the key it is
+    `<fid>/<k>`, k the neighbour's position in the capture (Contexts made before I6.1). Reads only blobs
     (PartStudioDoc.compute hands in `get` as params["resolved"]) and never the Assembly or its source studios."""
     from . import blobstore as B
     from .pyfeature import host
@@ -1627,6 +1630,9 @@ def run_context(state, f):
     get = p.get("resolved")
     if not p.get("capture") or get is None:
         raise K.KernelError("Context has no stored capture")
+    by_instance = p.get("ids") is not None
+    if by_instance and p["ids"] != "instance":
+        raise K.KernelError(f"Context has an unknown ids setting {p['ids']!r}")
     try:
         top = context_listing(get, p["capture"])
         loaded = []
@@ -1637,11 +1643,21 @@ def run_context(state, f):
             loaded.append((n, shape, named))
     except Exception as e:      # BlobError, a malformed listing or names blob, or a parser failure
         raise K.KernelError(f"Context capture is missing or damaged ({e})") from e
+    if by_instance:
+        # an instance id becomes the middle of a part id: "/" or "." would break the "<fid>/<n>.<i>" parse
+        iids = [n["id"] for n, _s, _n in loaded]
+        if len(set(iids)) != len(iids) or not all(i and all(c.isalnum() or c == "_" for c in i) for i in iids):
+            raise K.KernelError("Context capture is missing or damaged (bad or repeated instance ids)")
     for n, shape, named in loaded:
-        part = state.new_part(shape, fid)
-        state.parts[part.id] = Part(part.id, n["name"], shape, part.color, None, True)
+        part = state.new_part(shape, fid)       # numbering and colour as before, whatever the id
+        pid = part.id
+        if by_instance:
+            del state.parts[pid]
+            state.old_ids[f"{fid}/{n['id']}"] = state.old_ids.pop(pid)
+            pid = f"{fid}/{n['id']}"
+        state.parts[pid] = Part(pid, n["name"], shape, part.color, None, True)
         label = "".join(c for c in n["id"] if c.isalnum() or c == "_") + "_"
-        state.set_named(part.id, N.name_context(shape, named.names, fid, label))
+        state.set_named(pid, N.name_context(shape, named.names, fid, label))
 
 
 def project_edge(plane, edge):

@@ -1,7 +1,5 @@
 # 15. Sketch solving stays on the server during a drag
 
-#exclude-all-tags
-
 Date: 2026-11-15
 
 ## Status

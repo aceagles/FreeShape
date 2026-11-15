@@ -1,7 +1,5 @@
 # 13. iPad editing uses a browser client, not the streamed desktop
 
-#exclude-all-tags
-
 Date: 2026-11-15
 
 ## Status

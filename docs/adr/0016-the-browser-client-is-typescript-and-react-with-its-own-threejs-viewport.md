@@ -1,7 +1,5 @@
 # 16. The browser client is TypeScript and React with its own three.js viewport
 
-#exclude-all-tags
-
 Date: 2026-11-15
 
 ## Status

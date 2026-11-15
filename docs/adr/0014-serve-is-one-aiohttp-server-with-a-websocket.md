@@ -1,7 +1,5 @@
 # 14. Serve is one aiohttp server with a WebSocket
 
-#exclude-all-tags
-
 Date: 2026-11-15
 
 ## Status

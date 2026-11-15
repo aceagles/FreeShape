@@ -683,12 +683,17 @@ class Viewport(QOpenGLWidget):
         nv = nt = 0
         fcols = self.face_colors
         ref = self.reference_ids | self.transparent_ids      # both draw in the translucent pass
-        nsolid = None
-        for pid, m, color in [x for x in self.parts if x[0] not in ref] + [x for x in self.parts if x[0] in ref]:
+        nsolid = nctx = None
+        # order: opaque, then Context bodies, then Shift+T bodies (a body in both counts as Context)
+        shift_t = [x for x in self.parts if x[0] in ref and x[0] not in self.reference_ids]
+        for pid, m, color in ([x for x in self.parts if x[0] not in ref]
+                              + [x for x in self.parts if x[0] in self.reference_ids] + shift_t):
             if len(m.verts) == 0:
                 continue
             if nsolid is None and pid in ref:
                 nsolid = nt          # translucent bodies come last in the batch so they draw in a translucent pass
+            if nctx is None and pid in ref and pid not in self.reference_ids:
+                nctx = nt            # the Shift+T range starts here
             col = np.empty((len(m.verts), 3), np.float32)
             col[:] = color[:3]
             fc = fcols.get(pid)
@@ -716,7 +721,8 @@ class Viewport(QOpenGLWidget):
         self._batch = {"V": cat(V, (0, 3)), "N": cat(N, (0, 3)), "C": cat(C, (0, 3)),
                        "T": np.ascontiguousarray(np.vstack(T), np.uint32) if T else np.zeros((0, 3), np.uint32),
                        "E": cat(E, (0, 3)), "ranges": ranges, "ntri": nt,
-                       "nsolid": nt if nsolid is None else nsolid, "nedge": sum(len(e) for e in E)}
+                       "nsolid": nt if nsolid is None else nsolid,
+                       "nctx": nt if nctx is None else nctx, "nedge": sum(len(e) for e in E)}
         self._batch_version += 1
 
     def _upload_batch(self):
@@ -853,7 +859,8 @@ class Viewport(QOpenGLWidget):
         (GL.glDisable if through else GL.glEnable)(GL.GL_DEPTH_TEST)
 
     SEE_THROUGH_FACE_ALPHA = 0.35
-    REFERENCE_FACE_ALPHA = 0.3       # Context (reference) bodies
+    REFERENCE_FACE_ALPHA = 0.3       # Shift+T bodies (the name predates the Context alpha)
+    context_alpha = 0.3              # Context bodies: blend state only, so changing it needs update(), not a rebuild
     SEE_THROUGH_EDGE_ALPHA = 0.45
 
     def sketch_view_policy(self):
@@ -902,13 +909,16 @@ class Viewport(QOpenGLWidget):
             self._use_shiny(True)
             self._bind_batch(colors=True)
             GL.glDrawElements(GL.GL_TRIANGLES, b["nsolid"] * 3, GL.GL_UNSIGNED_INT, self._idx_ptr(0))
-            if b["nsolid"] < b["ntri"]:        # reference (Context) and transparent bodies: translucent, no depth write
-                GL.glBlendColor(0.0, 0.0, 0.0, self.REFERENCE_FACE_ALPHA)
-                GL.glBlendFuncSeparate(GL.GL_CONSTANT_ALPHA, GL.GL_ONE_MINUS_CONSTANT_ALPHA,
-                                       GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
-                GL.glDepthMask(GL.GL_FALSE)
-                GL.glDrawElements(GL.GL_TRIANGLES, (b["ntri"] - b["nsolid"]) * 3, GL.GL_UNSIGNED_INT,
-                                  self._idx_ptr(b["nsolid"]))
+            if b["nsolid"] < b["ntri"]:        # Context, then Shift+T bodies: translucent, no depth write
+                for t0, t1, alpha in ((b["nsolid"], b["nctx"], self.context_alpha),
+                                      (b["nctx"], b["ntri"], self.REFERENCE_FACE_ALPHA)):
+                    if t1 <= t0 or alpha <= 0.0:      # alpha 0: skip the faces, the edges still draw
+                        continue
+                    GL.glBlendColor(0.0, 0.0, 0.0, alpha)
+                    GL.glBlendFuncSeparate(GL.GL_CONSTANT_ALPHA, GL.GL_ONE_MINUS_CONSTANT_ALPHA,
+                                           GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+                    GL.glDepthMask(GL.GL_FALSE)
+                    GL.glDrawElements(GL.GL_TRIANGLES, (t1 - t0) * 3, GL.GL_UNSIGNED_INT, self._idx_ptr(t0))
                 if face_depth:
                     GL.glDepthMask(GL.GL_TRUE)
                 if face_alpha < 1.0:

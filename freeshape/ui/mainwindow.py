@@ -191,6 +191,7 @@ class MainWindow(QMainWindow):
         self.set_shiny(str(self.settings.value("shiny", "true")).lower() != "false", save=False)
         self.set_select_through_context(
             str(self.settings.value("select_through_context", "true")).lower() != "false", save=False)
+        self.set_context_alpha(self.settings.value("view/context_alpha", 0.3), save=False)
         self._add_tab(self._new_document())
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self.autosave)
@@ -1900,6 +1901,17 @@ class MainWindow(QMainWindow):
         self.viewport.update()
         if save:
             self.settings.setValue("select_through_context", "true" if on else "false")
+
+    def set_context_alpha(self, alpha, save=True):
+        """How see-through the Context is, 0 (invisible faces) to 1 (opaque). A window setting, not Document state."""
+        try:
+            a = min(1.0, max(0.0, float(alpha)))
+        except (TypeError, ValueError):
+            a = 0.3
+        self.viewport.context_alpha = a
+        self.viewport.update()
+        if save:
+            self.settings.setValue("view/context_alpha", a)
 
     def set_nav_style(self, key, save=True):
         NS = navstyles

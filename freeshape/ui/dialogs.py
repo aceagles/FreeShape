@@ -23,6 +23,8 @@ from .numparse import parse_number, fmt, has_vars
 from .viewport import Pick
 
 OP_LABELS = [("new", "New"), ("add", "Add"), ("remove", "Remove"), ("intersect", "Intersect")]
+SURFACE_OP_LABELS = OP_LABELS[:2]        # Remove and Intersect are not available for surfaces
+CREATE_LABELS = [("solid", "Solid"), ("surface", "Surface")]      # "Thin" joins when the thin extrude is built
 
 
 def _show(v):
@@ -758,8 +760,12 @@ SCHEMAS = {
         _num("radius", "Bend radius (inside)", visible=lambda p: p.get("own_radius"), minimum=0),
     ],
     "extrude": [
-        _ops(),
-        _sel("profiles", "Faces and sketch regions to extrude", {"region", "face"}),
+        {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
+        {"t": "ops", "key": "creation", "options": CREATE_LABELS, "default": "solid"},
+        _sel("profiles", "Faces and sketch regions to extrude", {"region", "face"},
+             visible=lambda p: p.get("creation") != "surface"),
+        _sel("curves", "Sketch curves to extrude", {"path"}, visible=lambda p: p.get("creation") == "surface"),
         _choice("end", "End type", [("blind", "Blind"), ("symmetric", "Symmetric"), ("through", "Through all")]
                 + F.UP_TO_LABELS),
         _num("depth", "Depth", visible=lambda p: p.get("end") not in ("through",) + F.UP_TO, signed=True),
@@ -1045,6 +1051,8 @@ def params_to_fields(ftype, p):
         f["upto_part"] = [("part", u["id"])] if u.get("kind") == "part" else []
     if ftype in ("extrude", "revolve", "sweep"):
         f["profiles"] = [("region", r) for r in p.get("regions", [])] + [("face", r) for r in p.get("faces", [])]
+    if ftype == "extrude":
+        f["curves"] = [("path", r) for r in p.get("curves", [])]
     if ftype in SCOPE_FEATURES:
         f["scope"] = [("part", i) for i in p.get("scope", [])]
     if ftype in ("sm_base", "sm_tab"):
@@ -1137,6 +1145,12 @@ def fields_to_params(ftype, fields, p):
     if ftype in ("extrude", "revolve", "sweep"):
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
         p["faces"] = [r for k, r in fields.get("profiles", []) if k == "face"]
+    if ftype == "extrude":
+        curves = [r for k, r in fields.get("curves", [])]
+        if curves:
+            p["curves"] = curves
+        else:
+            p.pop("curves", None)            # a solid extrude saves no curves key
     if ftype == "sweep":
         p["path"] = [r for k, r in fields.get("path", [])]
     if ftype == "rib":
@@ -1442,7 +1456,7 @@ class FeatureDialog(_ResizableFrame):
                 b.setObjectName("segment")
                 b.setText(lab)
                 b.setCheckable(True)
-                b.setChecked(p.get(spec["key"]) == val)
+                b.setChecked(p.get(spec["key"], spec.get("default")) == val)
                 b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 b.clicked.connect(lambda _=False, v=val: self._set(spec["key"], v))
                 grp.addButton(b)
@@ -2300,6 +2314,9 @@ class FeatureDialog(_ResizableFrame):
                 ok = bool(spec["enabled"](p))
                 w.setEnabled(ok)
                 w.setToolTip("" if ok else spec["why"])
+            if spec["t"] == "ops":            # the buttons show the params (Surface limits the operation to New / Add)
+                for (val, _), b in zip(spec["options"], w.findChildren(QToolButton)):
+                    b.setChecked(p.get(spec["key"], spec.get("default")) == val)
         # clicks go to the active field, so it must be one the user can see: a row that has just been
         # hidden (Merge scope when the operation becomes New) hands over to the first visible empty field
         af = self.active_field
@@ -2646,6 +2663,9 @@ class FeatureDialog(_ResizableFrame):
             fk = {"up_to_face": "upto_face", "up_to_vertex": "upto_vertex", "up_to_part": "upto_part"}.get(value)
             if fk in self.fields:
                 QTimer.singleShot(0, lambda fk=fk: self.activate(self.fields[fk]))
+        if key == "creation" and self.ftype == "extrude" and value == "surface" \
+                and p.get("op", "add") not in ("new", "add"):
+            p["op"] = "add"                    # Remove and Intersect are not available for surfaces
         if key == "draft" and value and self.ftype == "extrude" and not p.get("draft_angle"):
             p["draft_angle"] = 5.0           # not in default_params (goldens are built through it), so seed it here
             if "draft_angle" in self.widgets:

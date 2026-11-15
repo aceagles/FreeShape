@@ -9,6 +9,7 @@ in the common cases.
 from __future__ import annotations
 
 import base64
+import json
 import math
 import os
 import tempfile
@@ -1912,7 +1913,9 @@ def run_sketch(state, f):
                                            named, names)
 
 
-def _profiles(state, p, fid=None):
+def _profiles(state, p, fid=None, labels=None):
+    if p.get("creation", "solid") == "surface":      # a surface extrude takes sketch curves: one wire per chain
+        return _curve_wires(state, p.get("curves", []), labels)
     profs = resolve_regions(state, p.get("regions", []), fid)
     for fr in p.get("faces", []):
         _, face = resolve(state, fr, "face")
@@ -1930,10 +1933,34 @@ def _profile_names(state, p):
         if sk is not None and sk.named is not None and all(o is not sk.named for o in out):
             out.append(sk.named)
     out.extend(dict.fromkeys(fr["part"] for fr in p.get("faces", []) if fr.get("part") in state.parts))
+    for r in p.get("curves", []) if p.get("creation") == "surface" else []:
+        sk = state.sketches.get(r.get("sketch"))
+        if sk is not None and sk.named is not None and all(o is not sk.named for o in out):
+            out.append(sk.named)
     return out
 
 
+def _curve_normal(state, p):
+    """The extrude direction of a surface extrude's curves: the normal of their sketch plane. The curves of
+    several sketches must lie on parallel planes. A model edge has no plane, so it needs an explicit
+    direction, which this card does not offer."""
+    refs = p.get("curves", [])
+    if any(r.get("kind") != "sketch_chain" for r in refs):
+        raise K.KernelError("A surface extrude of a model edge needs a direction: pick sketch curves")
+    normals = []
+    for r in refs:
+        sr = state.sketches.get(r["sketch"])
+        if sr is None:
+            raise K.KernelError("Missing sketch")
+        normals.append(np.asarray(sr.plane.normal, float))
+    if any(abs(float(np.dot(normals[0], m))) < 1 - 1e-6 for m in normals[1:]):
+        raise K.KernelError("The curves are on sketches that are not parallel")
+    return normals[0]
+
+
 def _profile_normal(state, p, profs):
+    if p.get("creation", "solid") == "surface":
+        return _curve_normal(state, p)
     if p.get("regions"):
         return state.sketches[p["regions"][0]["sketch"]].plane.normal
     pl = K.planar_face_plane(profs[0])
@@ -2074,9 +2101,21 @@ def _drafted_two_ways(state, fid, p, profs, direction, depth, depth2, symmetric)
 
 def run_extrude(state, f):
     p = legacy_up_to(f["params"])
-    profs = _profiles(state, p, f["id"])
+    creation = p.get("creation", "solid")
+    if creation == "thin":
+        raise K.KernelError("A thin extrude is not available yet")
+    surface = creation == "surface"
+    if surface:
+        if p.get("op", "add") in ("remove", "intersect"):
+            raise K.KernelError("Remove and Intersect are not available for surfaces")
+        if p.get("end") in UP_TO or p.get("end") == "to_face":
+            raise K.KernelError("A surface extrude needs a Blind, Symmetric or Through all end")
+        if p.get("draft"):
+            raise K.KernelError("Draft is not available for a surface extrude")
+    curve_labels = []
+    profs = _profiles(state, p, f["id"], curve_labels)
     if not profs:
-        raise K.KernelError("Select sketch regions or a planar face")
+        raise K.KernelError("Select sketch curves to extrude" if surface else "Select sketch regions or a planar face")
     n = _profile_normal(state, p, profs)
     op = p.get("op", "add")
     end = p.get("end", "blind")
@@ -2153,7 +2192,9 @@ def run_extrude(state, f):
     if "named" in drafted:
         named = drafted["named"]
     else:
-        named = name_feature(state, f["id"], _profile_names(state, p), drafted.get("undrafted", body), hist, "extrude")
+        seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
+        named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []),
+                             drafted.get("undrafted", body), hist, "extrude")
         if drafted:
             named = _named_after_draft(named, body, drafted["history"])
     apply_body(state, body, op, f["id"], p.get("scope"), named)
@@ -2950,32 +2991,76 @@ def run_thread(state, f):
 
 # --------------------------------------------------------------------------- sweep / loft / draft / split / move
 
-def _path_wire(state, refs):
+def _ref_edges(state, r):
+    """The edges one path reference stands for: (a key that is the same for every reference to the same
+    chain, [(label, edge)]). A `sketch_chain` is the whole chain of sketch curves the picked curve belongs
+    to, each edge labelled "<sketch feature id>_<curve id>"; a model edge has the label None."""
     from . import sketch_ops
+    if r.get("kind") == "sketch_chain":
+        sr = state.sketches.get(r["sketch"])
+        if sr is None or r["entity"] not in sr.sketch.entities:
+            raise K.KernelError("Missing sweep path")
+        sk = sr.sketch
+        e0 = sk.entities[r["entity"]]
+        if e0["type"] == "circle":
+            curves = [{"type": "circle", "id": r["entity"], "c": sk.points[e0["c"]], "r": e0["r"]}]
+            ids = {r["entity"]}
+        else:
+            if sketch_ops._ends(e0) is None:          # a closed curve on its own (ellipse, closed spline)
+                ids = {r["entity"]}
+            else:
+                chain, _closed = sketch_ops._chain(sk, r["entity"], splines=True)
+                ids = {k for k, _ in chain}
+            tmp = Sketch.from_dict(sk.to_dict())
+            tmp.entities = {k: dict(v, construction=False) for k, v in tmp.entities.items() if k in ids}
+            curves = tmp.curves()
+        pairs = K.make_sketch_edges(sr.plane, curves, with_ids=True)
+        return (r["sketch"], frozenset(ids)), [(f"{r['sketch']}_{i}" if i else None, e) for i, e in pairs]
+    if r.get("kind") == "edge":
+        _, e = resolve(state, r["edge"], "edge")
+        return ("edge", json.dumps(r["edge"], sort_keys=True, default=str)), [(None, e)]
+    return None, []
+
+
+def _path_wire(state, refs):
     edges = []
     for r in refs:
-        if r.get("kind") == "sketch_chain":
-            sr = state.sketches.get(r["sketch"])
-            if sr is None or r["entity"] not in sr.sketch.entities:
-                raise K.KernelError("Missing sweep path")
-            sk = sr.sketch
-            e0 = sk.entities[r["entity"]]
-            if e0["type"] == "circle":
-                curves = [{"type": "circle", "c": sk.points[e0["c"]], "r": e0["r"]}]
-            else:
-                if sketch_ops._ends(e0) is None:          # a closed curve on its own (ellipse, closed spline)
-                    ids = {r["entity"]}
-                else:
-                    chain, _closed = sketch_ops._chain(sk, r["entity"], splines=True)
-                    ids = {k for k, _ in chain}
-                tmp = Sketch.from_dict(sk.to_dict())
-                tmp.entities = {k: dict(v, construction=False) for k, v in tmp.entities.items() if k in ids}
-                curves = tmp.curves()
-            edges += K.make_sketch_edges(sr.plane, curves)
-        elif r.get("kind") == "edge":
-            _, e = resolve(state, r["edge"], "edge")
-            edges.append(e)
+        edges += [e for _, e in _ref_edges(state, r)[1]]
     return K.make_wire(edges)
+
+
+def _curve_wires(state, refs, labels=None):
+    """One wire per connected chain of the curves `refs` name (`sketch_chain` and `edge` references, as
+    `_path_wire` reads them). A chain named twice, or by two of its curves, is used once. `labels`, a list,
+    receives (label, edge) for every sketch curve, for `_curve_names`."""
+    seen, pairs = set(), []
+    for r in refs:
+        key, es = _ref_edges(state, r)
+        if key is not None and key not in seen:
+            seen.add(key)
+            pairs += es
+    if not pairs:
+        raise K.KernelError("Select sketch curves to extrude")
+    if labels is not None:
+        labels += [(lab, e) for lab, e in pairs if lab]
+    return K.chain_wires([e for _, e in pairs])
+
+
+def _curve_names(fid, profs, labels):
+    """The NamedShape of a surface extrude's profile wires: each sketch curve's edge is named by the curve's
+    id (as a sketch names its edges), so the side face made from it keeps its name when the depth, or the
+    curve's place, changes. None when a label cannot go in a name."""
+    comp = K.compound(profs)
+    keys = N.NamedShape(comp, {}).el
+    by_key = {}
+    for lab, e in labels:
+        k = keys.key(e)
+        if k is not None:
+            by_key[k] = lab
+    try:
+        return N.seed(comp, fid, N.OP_SKETCH, by_key)
+    except N.NamingError:
+        return None
 
 
 def run_sweep(state, f):

@@ -25,7 +25,7 @@ from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.GCPnts import GCPnts_QuasiUniformDeflection, GCPnts_TangentialDeflection
 from OCP.GC import GC_MakeArcOfCircle
 from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Line, GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_C1, GeomAbs_Cone, GeomAbs_Torus
-from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_SOLID, TopAbs_REVERSED, TopAbs_VERTEX
+from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_SOLID, TopAbs_REVERSED, TopAbs_VERTEX, TopAbs_WIRE
 from OCP.TopExp import TopExp_Explorer, TopExp
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shell
 try:
@@ -990,12 +990,21 @@ def _vertices_np(shape):
 
 # --------------------------------------------------------------------------- solid features
 
-def _swept(sweeps, with_history):
+def _swept(sweeps, with_history, surface=False):
     """The fused sweeps, one per profile, and (with_history) their history, starting at the profile
     faces the caller passed in: the placement that moved a profile, then its sweep, then fuse_all.
 
-    `sweeps` is one (maker, swept shape, profile face, placement maker or None) per profile."""
+    `sweeps` is one (maker, swept shape, profile face, placement maker or None) per profile.
+    With `surface` the profiles are wires and each sweep is a shell of its own: the shells are returned as
+    they are (one shell, or a compound of them), not fused and not sewn, so each keeps its history."""
     results = [mk.Shape() for mk, _, _, _ in sweeps]
+    if surface:
+        shape = results[0] if len(results) == 1 else compound(results)
+        if not with_history:
+            return shape
+        return shape, _chain(*[_chain(None if place is None else _maker_history(place, [f]),
+                                      _maker_history(mk, [start], caps=True))
+                               for mk, start, f, place in sweeps])
     if not with_history:
         return fuse_all(results)
     per_profile = [_chain(None if place is None else _maker_history(place, [f]),
@@ -1007,8 +1016,13 @@ def _swept(sweeps, with_history):
 
 def extrude(profile_faces, direction: np.ndarray, depth: float, symmetric=False, depth2: float = 0.0,
             with_history=False):
+    """Extrude profile faces into a solid, or profile wires (open or closed) into a surface body: a prism of
+    a wire is a shell with one face per edge. Faces and wires are not mixed."""
     if not profile_faces:
         raise KernelError("Select sketch regions or a planar face to extrude")
+    surface = any(f.ShapeType() == TopAbs_WIRE for f in profile_faces)
+    if surface and not all(f.ShapeType() == TopAbs_WIRE for f in profile_faces):
+        raise KernelError("Extrude takes faces or curves, not both")
     if abs(depth) < 1e-9 and abs(depth2) < 1e-9:
         raise KernelError("Depth must be non-zero")
     d = np.asarray(direction, float)
@@ -1030,7 +1044,7 @@ def extrude(profile_faces, direction: np.ndarray, depth: float, symmetric=False,
         if not mk.IsDone():
             raise KernelError("Extrude failed")
         sweeps.append((mk, start, f, place))
-    return _swept(sweeps, with_history)
+    return _swept(sweeps, with_history, surface)
 
 
 def revolve(profile_faces, axis_p, axis_d, angle_deg: float, symmetric=False, with_history=False):
@@ -2318,6 +2332,31 @@ def make_wire(edge_list):
     if not mk.IsDone():
         raise KernelError("Path edges must connect end to end")
     return mk.Wire()
+
+
+def chain_wires(edge_list):
+    """One wire per connected chain of `edge_list` (edges that meet end to end), in the order the chains first
+    appear. A chain that branches raises, as `make_wire` does."""
+    ends = []
+    for e in edge_list:
+        p = discretize_edge(e)
+        ends.append((p[0].astype(float), p[-1].astype(float)))
+    scale = max([float(np.linalg.norm(b - a)) for a, b in ends] + [1.0])
+    tol = max(1e-4, 1e-6 * scale) * 100
+    group = list(range(len(edge_list)))
+
+    def root(i):
+        while group[i] != i:
+            i = group[i]
+        return i
+    for i in range(len(edge_list)):
+        for j in range(i):
+            if any(np.linalg.norm(a - b) < tol for a in ends[i] for b in ends[j]):
+                group[root(i)] = root(j)
+    chains = {}
+    for i, e in enumerate(edge_list):
+        chains.setdefault(root(i), []).append(e)
+    return [make_wire(c) for c in chains.values()]
 
 
 def _pipe_shell(path_wire, wire):

@@ -188,6 +188,8 @@ class MainWindow(QMainWindow):
                            save=False)
         self.set_zoom_speed(str(self.settings.value("zoom_speed", "normal")), save=False)
         self.set_shiny(str(self.settings.value("shiny", "true")).lower() != "false", save=False)
+        self.set_select_through_context(
+            str(self.settings.value("select_through_context", "true")).lower() != "false", save=False)
         self._add_tab(self._new_document())
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self.autosave)
@@ -431,6 +433,12 @@ class MainWindow(QMainWindow):
         self._add_action(vm, "Show all parts", self._show_all_parts)
         self.act_shiny = self._add_action(vm, "Shiny surfaces", lambda on: self.set_shiny(on))
         self.act_shiny.setCheckable(True)
+        self.act_select_through = self._add_action(vm, "Select through context",
+                                                   lambda on: self.set_select_through_context(on))
+        self.act_select_through.setCheckable(True)
+        self.act_select_through.setToolTip("Clicks and hover go through Context bodies to the part you are editing; "
+                                           "a Context body is still picked where nothing of the part lies under the "
+                                           "cursor. Select other lists everything.")
         rm = vm.addMenu("Rotate around")
         from PySide6.QtGui import QActionGroup as _AG
         rgrp = _AG(self)
@@ -672,6 +680,10 @@ class MainWindow(QMainWindow):
               lambda: self.vis_command("show_all"), "unhide visibility", "View"),
             C("hide", "Make transparent", "Make the selected parts see-through, or solid again (Shift+T).",
               lambda: self.vis_command("transparent"), "see through translucent visibility", "View"),
+            C("hide", "Select through context", "Clicks go through Context bodies to the part you are editing "
+              "(on by default); tick or untick it.", lambda: self.set_select_through_context(
+                  not self.viewport.select_through),
+              "select transparent geometry click through context pick see through", "View"),
             C("fit", "Zoom to fit", "Fit the whole model in the view (F).", lambda: self.viewport.fit(), "", "View"),
             C("iso", "Isometric view", "Look at the model from the isometric corner (Shift+7).",
               lambda: self.viewport.set_standard_view("Isometric"), "", "View"),
@@ -1811,6 +1823,16 @@ class MainWindow(QMainWindow):
         self.viewport.update()
         if save:
             self.settings.setValue("shiny", "true" if on else "false")
+
+    def set_select_through_context(self, on, save=True):
+        """The pick rule of I6.4: a Context body never takes a click from, nor hides, geometry of the edited studio."""
+        self.viewport.select_through = bool(on)
+        self.act_select_through.blockSignals(True)
+        self.act_select_through.setChecked(bool(on))
+        self.act_select_through.blockSignals(False)
+        self.viewport.update()
+        if save:
+            self.settings.setValue("select_through_context", "true" if on else "false")
 
     def set_nav_style(self, key, save=True):
         NS = navstyles

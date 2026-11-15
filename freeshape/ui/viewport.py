@@ -1477,9 +1477,18 @@ class Viewport(QOpenGLWidget):
             return kind in self.user_filter
         return kind in self.DEFAULT_KINDS
 
-    def _ray_parts(self, o, d, margin=0.0):
+    # Select through context (I6.4): the Context bodies a click passes through. A Context body is marked by the 7th
+    # element of the parts tuples given to set_parts, which fills reference_ids; I6.1 must keep that set filled.
+    select_through = True           # the window's select_through_context setting
+
+    @property
+    def pick_through_ids(self):
+        """Parts that pick() and box select look through when the option is on (Shift+T bodies are not among them)."""
+        return self.reference_ids if self.select_through else frozenset()
+
+    def _ray_parts(self, o, d, margin=0.0, skip=None):
         """Parts whose bounding box the pick ray passes through (or within `margin` of) — so picking only
-        tests the triangles of parts actually under the cursor."""
+        tests the triangles of parts actually under the cursor. Parts in `skip` are left out."""
         # all parts' boxes as two arrays (rebuilt when the scene changes): one vectorised slab test
         key = (id(self.parts), len(self.parts), id(self._part_boxes))
         bx = getattr(self, "_box_arrays", None)
@@ -1499,13 +1508,13 @@ class Viewport(QOpenGLWidget):
             tmin = np.max(np.minimum(t1, t2), axis=1)
             tmax = np.min(np.maximum(t1, t2), axis=1)
         hit = tmax >= np.maximum(tmin, 0.0)
-        return [items[i] for i in np.nonzero(hit)[0]]
+        return [items[i] for i in np.nonzero(hit)[0] if not skip or items[i][0] not in skip]
 
-    def _segments_near(self, o, d):
-        """Edge segments of the parts near the pick ray, plus all sketch segments."""
+    def _segments_near(self, o, d, skip=None):
+        """Edge segments of the parts near the pick ray (except those in `skip`), plus all sketch segments."""
         A, B, owner = [], [], []
         margin = self.cam.scale * 10
-        for pid, m in self._ray_parts(o, d, margin):
+        for pid, m in self._ray_parts(o, d, margin, skip):
             segs = self._part_segs.get(pid)
             if segs is None:
                 a_, b_, ow = [], [], []
@@ -1553,7 +1562,17 @@ class Viewport(QOpenGLWidget):
                 self._segs = (np.zeros((0, 3)), np.zeros((0, 3)), [])
         return self._segs
 
-    def pick(self, x, y, kinds=None) -> Pick | None:
+    def pick(self, x, y, kinds=None, _skip=None) -> Pick | None:
+        """What a click at (x, y) takes. With Select through context on, a first pass leaves the Context bodies out
+        and its part geometry (face, edge, vertex, part) wins; otherwise the full pass decides. `_skip` is that
+        pass's own argument: an empty set means the plain, unfiltered pick."""
+        if _skip is None:
+            through = self.pick_through_ids
+            if through:
+                hit = self.pick(x, y, kinds, through)
+                if hit is not None and hit.kind in ("face", "edge", "vertex", "part"):
+                    return hit
+            return self.pick(x, y, kinds, frozenset())
         allowed = (lambda k: k in kinds) if kinds is not None else self._allowed
         o, d = self.cam.ray(x, y)
         if allowed("connector") and self.triads:        # a Part Studio dialog asked for mate connectors (Axis tool)
@@ -1574,7 +1593,7 @@ class Viewport(QOpenGLWidget):
         best_face = (np.inf, None)
         part_ok = allowed("part")
         if allowed("face") or part_ok or allowed("edge") or allowed("vertex"):
-            for pid, m in self._ray_parts(o, d):
+            for pid, m in self._ray_parts(o, d, 0.0, _skip):
                 t, ti = _ray_tris(o, d, m.verts, m.tris) if self.section is None else \
                     _ray_tris_kept(o, d, m.verts, m.tris, self._kept)
                 if t < best_face[0]:
@@ -1586,7 +1605,7 @@ class Viewport(QOpenGLWidget):
         # vertices: the nearest corner within a few pixels of the cursor, on the visible side of the model
         if allowed("vertex"):
             best_v = (9.0, None)
-            for pid, m in self._ray_parts(o, d, self.cam.scale * 10):
+            for pid, m in self._ray_parts(o, d, self.cam.scale * 10, _skip):
                 V = getattr(m, "vertices", None)
                 if V is None or len(V) == 0:
                     continue
@@ -1621,7 +1640,7 @@ class Viewport(QOpenGLWidget):
         want_edge = allowed("edge")
         want_sl = allowed("sketch_line")
         if want_edge or want_sl:
-            A, B, owner = self._segments_near(o, d)
+            A, B, owner = self._segments_near(o, d, _skip)
             if len(owner):
                 sa = self.cam.to_screen(A)
                 sb = self.cam.to_screen(B)
@@ -1780,7 +1799,7 @@ class Viewport(QOpenGLWidget):
                     add(pk, float(s[2]))
 
         out = sorted(found, key=lambda pk: -found[pk])       # stable: equal depths keep discovery order
-        head = self.pick(x, y, kinds)
+        head = self.pick(x, y, kinds, frozenset())      # pick_all lists everything: no Context filtering
         if head in found and found[head] >= found[out[0]] - self.cam.scale * 12 - 1e-6:    # pick's tie-break only
             out.remove(head)
             out.insert(0, head)
@@ -1835,7 +1854,10 @@ class Viewport(QOpenGLWidget):
         `crossing` also anything partly inside."""
         want = self._allowed
         out = []
+        through = self.pick_through_ids
         for pid, m, _c in self.parts:
+            if pid in through:
+                continue                # Select through context: a box never takes a Context body
             do_edge, do_face, do_part = want("edge"), want("face"), want("part") and not want("face")
             if want("vertex") and len(m.vertices):
                 S = self.cam.to_screen(np.asarray(m.vertices, float))[:, :2]

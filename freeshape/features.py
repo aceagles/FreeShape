@@ -254,12 +254,14 @@ class ModelState:
     history: dict = field(default_factory=dict)
     # axis feature id -> {o, d, span}: a construction axis (origin, unit direction, stretch of the source along d).
     axes: dict = field(default_factory=dict)
+    # surface bodies made through new_part(surface=True) so far: numbers `Surface n`, apart from `Part n`
+    surface_counter: int = 0
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
                           set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts},
-                          dict(self.connectors), dict(self.history), dict(self.axes))
+                          dict(self.connectors), dict(self.history), dict(self.axes), self.surface_counter)
 
     def named(self, pid):
         """The element map of part `pid`, or None when it has none or the part's shape has since been
@@ -275,7 +277,19 @@ class ModelState:
         else:
             self.names[pid] = named
 
-    def new_part(self, shape, fid, color=None):
+    def new_part(self, shape, fid, color=None, surface=False):
+        """A new part for `shape`. With `surface` it is a surface body, named `Surface n` (counted apart from
+        `Part n`, which it leaves alone)."""
+        if surface:
+            self.surface_counter += 1
+            if color is None:
+                color = palette_color(self.part_counter + self.surface_counter)
+            n = self.feature_part_counts.get(fid, 0) + 1
+            self.feature_part_counts[fid] = n
+            pid = f"{fid}/{n}"
+            p = Part(pid, f"Surface {self.surface_counter}", shape, color)
+            self.parts[pid] = p
+            return p
         self.part_counter += 1
         if color is None:
             color = palette_color(self.part_counter)
@@ -1079,9 +1093,9 @@ def set_part_shape(state: ModelState, part: Part, shape, named=None):
 
     `named` is the NamedShape of `shape` (from `name_feature`): each piece keeps the names of its own
     elements. Without it the part has no names until a feature names it."""
-    pieces = K.solids(shape)
+    pieces = K.bodies(shape)
     if len(pieces) <= 1:
-        one = pieces[0] if pieces else shape
+        one = pieces[0] if K.solids(shape) else shape      # an open result with no solid keeps its form
         state.parts[part.id] = Part(part.id, part.name, one, part.color)
         state.set_named(part.id, named.restrict(one) if named is not None and named.shape is not None else None)
         return
@@ -1184,14 +1198,23 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=Non
     if body is None:
         raise K.KernelError("Feature produced no geometry")
     sols = K.solids(body)
-    if not sols:
+    surfs = [b for b in K.bodies(body) if not K.solids(b)]
+    if not sols and not surfs:
         raise K.KernelError("Feature produced no solid")
     tool = [] if named is None else list(named) if isinstance(named, (list, tuple)) else [named]
     targets = [state.parts[p] for p in (scope or [i for i, q in state.parts.items() if not q.reference])
                if p in state.parts]      # an unscoped feature leaves Context bodies alone (I5.3)
+    if not sols:
+        if op in ("remove", "intersect"):
+            raise K.KernelError("Remove and Intersect are not available for surfaces")
+        _apply_surfaces(state, surfs, op, fid, [p for p in targets if K.is_surface(p.shape)], tool)
+        return
+    targets = [p for p in targets if not K.is_surface(p.shape)]    # parts merge with parts, surfaces with surfaces
     if op == "new" or (op == "add" and not targets):
         for s in sols:
             state.set_named(state.new_part(s, fid).id, _piece(tool, s))
+        _apply_surfaces(state, surfs, op, fid, [p for p in state.parts.values() if K.is_surface(p.shape)
+                        and (not scope or p.id in scope) and not p.reference] if op == "add" else [], tool)
         return
     if op == "add":
         remaining = []
@@ -1214,6 +1237,8 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=Non
             targets[targets.index(keep)] = state.parts[keep.id]
         for s in remaining:
             state.set_named(state.new_part(s, fid).id, _piece(tool, s))
+        _apply_surfaces(state, surfs, op, fid, [p for p in state.parts.values() if K.is_surface(p.shape)
+                        and (not scope or p.id in scope) and not p.reference], tool)
         return
     hit_any = False
     for p in list(targets):
@@ -1229,6 +1254,32 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=Non
         set_part_shape(state, p, res, result)
     if not hit_any:
         raise K.KernelError("Feature does not intersect any part")
+
+
+def _apply_surfaces(state, surfs, op, fid, targets, tool):
+    """The surface bodies of a tool body (new / add): `new` makes one `Surface n` part each; `add` sews each
+    to the surface parts in `targets` it shares an edge with (the first keeps its id) and makes a new part
+    when it touches none."""
+    for s in surfs:
+        if op != "add":
+            state.set_named(state.new_part(s, fid, surface=True).id, _piece(tool, s))
+            continue
+        hit = [p for p in targets if p.id in state.parts and len(K.as_surface([p.shape, s])) < 2]
+        if not hit:
+            state.set_named(state.new_part(s, fid, surface=True).id, _piece(tool, s))
+            continue
+        keep = hit[0]
+        merged = K.as_surface([p.shape for p in hit] + [s])
+        for p in hit[1:]:
+            state.parts.pop(p.id, None)
+            state.names.pop(p.id, None)
+            targets.remove(p)
+        shape = merged[0] if len(merged) == 1 else K.compound(merged)
+        state.parts[keep.id] = Part(keep.id, keep.name, shape, keep.color)
+        state.set_named(keep.id, None)
+        targets[targets.index(keep)] = state.parts[keep.id]
+        if len(merged) > 1:
+            set_part_shape(state, state.parts[keep.id], shape)
 
 
 def _piece(tool, solid):
@@ -2221,8 +2272,16 @@ def _group_by_part(state, refs, kind):
     groups = {}
     for r in refs:
         pid, sub = resolve(state, r, kind)
+        _need_solid_part(state, pid)
         groups.setdefault(pid, []).append(sub)
     return groups
+
+
+def _need_solid_part(state, pid):
+    """Raise when part `pid` is a surface body: features that need a solid do not run on one."""
+    part = state.parts.get(pid)
+    if part is not None and K.is_surface(part.shape):
+        raise K.KernelError(f"{part.name} is a surface - this needs a solid part up front")
 
 
 def _attach_failure_refs(err, state, pid, part):
@@ -2594,6 +2653,8 @@ def run_boolean(state, f):
     op = p.get("op", "union")
     tools = [i for i in p.get("tools", []) if i in state.parts]
     targets = [i for i in p.get("targets", []) if i in state.parts]
+    for i in tools + targets:
+        _need_solid_part(state, i)
     if op == "union":
         allp = tools + targets
         if len(allp) < 2:
@@ -2701,6 +2762,9 @@ def _tool_names(state, fid, shape, label):
 def run_hole(state, f):
     """Holes at sketch points: simple, counterbored or countersunk; custom size or ISO metric."""
     p = f["params"]
+    live = [i for i, q in state.parts.items() if not q.reference]
+    if live and not any(K.solids(state.parts[i].shape) for i in live):
+        _need_solid_part(state, live[0])        # holes need a solid: every part is a surface body
     sk = state.sketches.get(p.get("sketch"))
     if sk is None:
         raise K.KernelError("Select a sketch with points or circles for the hole centres (click it, or pick it above)")
@@ -2720,7 +2784,7 @@ def run_hole(state, f):
         a_, b_ = K.bbox(part.shape)
         lo, hi = np.minimum(lo, a_), np.maximum(hi, b_)
     big = float(np.linalg.norm(hi - lo)) * 2 + 10
-    shapes = [pt.shape for pt in state.parts.values()]
+    shapes = [pt.shape for pt in state.parts.values() if not K.is_surface(pt.shape)]
     back = max(dia * 0.02, 1e-3)      # start a hair above the surface for clean cuts
 
     def material_on(direction):

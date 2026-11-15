@@ -27,7 +27,7 @@ from OCP.GC import GC_MakeArcOfCircle
 from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Line, GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_C1, GeomAbs_Cone, GeomAbs_Torus
 from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_SOLID, TopAbs_REVERSED, TopAbs_VERTEX
 from OCP.TopExp import TopExp_Explorer, TopExp
-from OCP.TopoDS import TopoDS, TopoDS_Compound
+from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shell
 try:
     from OCP.TopTools import TopTools_ListOfShape, TopTools_IndexedMapOfShape
 except ImportError:  # OCP >= 8 exposes NCollection templates directly
@@ -150,6 +150,55 @@ def solids(shape):
         out.append(_as_solid(exp.Current()))
         exp.Next()
     return out
+
+
+def _loose(shape, what, inside):
+    """Sub-shapes of kind `what` that lie outside every shape of kind `inside`."""
+    out = []
+    exp = TopExp_Explorer(shape, what, inside)
+    while exp.More():
+        out.append(exp.Current())
+        exp.Next()
+    return out
+
+
+def bodies(shape):
+    """The bodies of a shape: its solids, then each shell outside a solid, then each face outside a shell
+    wrapped in a shell of its own. A body with no solid is a surface body (`is_surface`)."""
+    from OCP.TopAbs import TopAbs_SHELL
+    out = list(solids(shape))
+    out += [_as_shell(s) for s in _loose(shape, TopAbs_SHELL, TopAbs_SOLID)]
+    for f in _loose(shape, TopAbs_FACE, TopAbs_SHELL):
+        b = BRep_Builder()
+        sh = TopoDS_Shell()
+        b.MakeShell(sh)
+        b.Add(sh, f)
+        out.append(sh)
+    return out
+
+
+def is_surface(shape) -> bool:
+    """True for a shape that has faces and no solid: a surface body."""
+    return not solids(shape) and bool(faces(shape))
+
+
+def as_surface(shapes, tol=1e-6):
+    """Sew faces / shells into surface bodies: one shell per connected set of faces (a list of shells)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    sew = BRepBuilderAPI_Sewing(tol)
+    for s in shapes:
+        sew.Add(s)
+    sew.Perform()
+    return bodies(sew.SewedShape())
+
+
+def _solids_only(shape):
+    """`shape` itself, or a compound of just its solids when a shell or face outside them would add to its
+    volume integrals."""
+    from OCP.TopAbs import TopAbs_SHELL
+    if _loose(shape, TopAbs_SHELL, TopAbs_SOLID) or _loose(shape, TopAbs_FACE, TopAbs_SHELL):
+        return compound(solids(shape))
+    return shape
 
 
 def compound(shapes):
@@ -390,6 +439,9 @@ def volume(shape) -> float:
     surfaces such as threads where the quick method can be badly wrong. Free-form (e.g. thread)
     surfaces use a relative accuracy of 1e-4 — still 4+ significant figures — because the full
     accuracy is slow there. Results are cached per shape."""
+    if not solids(shape):
+        return 0.0                  # a surface body (or any shape with no solid) encloses no volume
+    shape = _solids_only(shape)
     key = hash(shape)
     hit = _VOLUME_CACHE.get(key)
     if hit is not None and hit[0].IsSame(shape) and hit[0].IsEqual(shape):
@@ -411,6 +463,11 @@ def rough_volume(shape) -> float:
 
 
 def mass_props(shape):
+    if not solids(shape):           # a surface body: no volume; the centroid is the area centroid
+        sa = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(shape, sa)
+        return {"volume": 0.0, "area": sa.Mass(), "centroid": _np(sa.CentreOfMass())}
+    shape = _solids_only(shape)
     g = GProp_GProps()
     # CGFlag: the adaptive integrator only computes the centre of mass when asked to
     BRepGProp.VolumePropertiesGK_s(_gk_shape(shape), g, 1e-4 if _has_freeform(shape) else 1e-6, False, False, True)

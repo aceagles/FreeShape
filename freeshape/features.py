@@ -3624,6 +3624,8 @@ def run_rib(state, f):
 
 def run_loft(state, f):
     p = f["params"]
+    if _surface_creation(p, "loft", None):       # I7.8: a surface loft takes sketch curves and part edges
+        return _run_loft_surface(state, f)
     profs, owners = [], []
     for item in p.get("profiles", []):
         if item["kind"] == "region":
@@ -3667,6 +3669,56 @@ def run_loft(state, f):
             raise K.KernelError("End conditions need a smooth loft — untick Straight sides (ruled)")
         body, hist = K.loft_skin(profs, start, end, with_history=True)
     named = name_feature(state, f["id"], _loft_names(state, p), body, hist, "loft")
+    apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
+
+
+def _loft_curve_wires(state, refs, labels):
+    """One wire per curve chain of a surface loft's `curves`, in pick order (`_curve_wires` for each
+    reference in turn; a chain picked twice is used once). `labels` receives (label, edge) of sketch curves."""
+    seen, out = set(), []
+    for r in refs:
+        key, _es = _ref_edges(state, r)
+        if key is not None and key in seen:
+            continue
+        seen.add(key)
+        out += _curve_wires(state, [r], labels)
+    return out
+
+
+def _run_loft_surface(state, f):
+    """A loft as a surface (`creation` "surface", I7.8): the `curves` (sketch chains and part edges, open or
+    closed) are the profiles in pick order. Takes three routes: no guides, ThruSections with no solid
+    (`ruled`, and `closed` with three or more curves, work as on a solid loft); two or more `guides`,
+    one Gordon face from `K.network_surface` on OpenCascade 8.0 (open curves, not ruled, not closed). End
+    conditions are refused. The result is the shell as the kernel built it: `apply_body` sews it on Add,
+    which keeps the face names that sewing here would lose."""
+    p = f["params"]
+    for end in ("start", "end"):
+        if isinstance(p.get(end), dict) and p[end].get("cond"):
+            raise K.KernelError("A surface loft takes no end conditions")
+    guides = [g for g in (p.get("guides") or []) if g]
+    closed = bool(p.get("closed"))
+    refs = p.get("curves") or []
+    if not refs:
+        raise K.KernelError("Select sketch curves to loft")
+    if guides and len(guides) < 2:
+        raise K.KernelError("Add a second guide: a surface loft with guides needs at least two")
+    if guides and closed:
+        raise K.KernelError("A closed surface loft and guides cannot be combined yet")
+    if guides and p.get("ruled"):
+        raise K.KernelError("Guides need a smooth loft — untick Straight sides (ruled)")
+    curve_labels = []
+    wires = _loft_curve_wires(state, refs, curve_labels)
+    if len(wires) < 2:
+        raise K.KernelError("Select at least two profiles, in order")
+    if guides:
+        body, hist = K.loft_surface_network(wires, _loft_guides(state, guides), with_history=True)
+    else:
+        body, hist = K.loft_surface(wires, p.get("ruled", False), closed, with_history=True)
+    seeded = _curve_names(f["id"], wires, curve_labels)
+    parts = [{"part": r["edge"].get("part")} for r in refs if r.get("kind") == "edge" and isinstance(r.get("edge"), dict)]
+    named = name_feature(state, f["id"], _profile_names(state, {"creation": "surface", "curves": refs, "faces": parts})
+                         + ([seeded] if seeded else []), body, hist, "loft")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 

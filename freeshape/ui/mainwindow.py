@@ -589,7 +589,8 @@ class MainWindow(QMainWindow):
             C("rib", "Rib", "Add a rib, web or gusset to a part from open sketch curves, grown until it meets the "
               "part.", lambda: F_("rib"), "gusset web stiffener support"),
             C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"),
-              "blend transition end condition loft tangent normal to profile guide curves guided loft"),
+              "blend transition end condition loft tangent normal to profile guide curves guided loft "
+              "boundary surface ruled surface surface loft"),
             C("fillet", "Fillet", "Round off edges or faces with a radius.", lambda: F_("fillet"),
               "round blend corner variable fillet variable radius"),
             C("variable_fillet", "Variable fillet", "Round off edges with a radius that changes from vertex to vertex.",

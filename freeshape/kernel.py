@@ -3033,11 +3033,12 @@ def _loft_hole_sets(profile_faces):
     return sets
 
 
-def _thru_sections(wires, ruled, max_degree=None):
+def _thru_sections(wires, ruled, max_degree=None, solid=True):
     """ThruSections over `wires`; an entry may be a vertex (a point profile, first or last only).
-    `max_degree` caps the degree of the surface along the loft."""
+    `max_degree` caps the degree of the surface along the loft; `solid` False (a surface loft, I7.8)
+    leaves the ends open instead of capping them."""
     from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
-    mk = BRepOffsetAPI_ThruSections(True, bool(ruled), 1e-6)
+    mk = BRepOffsetAPI_ThruSections(bool(solid), bool(ruled), 1e-6)
     if max_degree:
         mk.SetMaxDegree(max_degree)
     for w in wires:
@@ -3134,6 +3135,24 @@ def loft(profile_faces, ruled=False, with_history=False, closed=False):
         if len(solids(body)) != 1 or not is_valid(body):
             raise KernelError("Loft failed — a hole runs out through the side of the loft")
     return (body, hist) if with_history else body
+
+
+def loft_surface(wires, ruled=False, closed=False, with_history=False):
+    """A surface loft (I7.8): ThruSections(False, ruled) through `wires`, open or closed chains in order,
+    with no caps and no solid. A shell of one face per edge of the first wire and per gap between wires.
+    `closed` adds the first wire again as the last (three or more wires), as `loft` does. The shell is
+    returned as made (the faces are already shared along their edges), so the history keeps its names;
+    `apply_body` sews it to the surface parts it touches."""
+    if len(wires) < 2:
+        raise KernelError("Select at least two profiles, in order")
+    if closed and len(wires) < 3:
+        raise KernelError("A closed loft needs at least three profiles")
+    mk = _thru_sections(list(wires) + [wires[0]] if closed else list(wires), ruled, 3 if closed else None,
+                        solid=False)
+    shape = mk.Shape()
+    if not faces(shape) or solids(shape):
+        raise KernelError("Loft failed — try profiles with similar shapes")
+    return (shape, _thru_sections_history(mk, wires)) if with_history else shape
 
 
 # Loft end conditions (I7.2). The route was chosen by spike I7.1 (scripts/spikes/op2_loft.result.txt):
@@ -4112,6 +4131,42 @@ def loft_network(profile_faces, guide_wires, with_history=False):
         if len(solids(body)) != 1 or not is_valid(body):
             raise KernelError("Loft failed — a hole runs out through the side of the loft")
     return (body, hist) if with_history else body
+
+
+def loft_surface_network(profile_wires, guide_wires, with_history=False):
+    """A surface loft through open profile curves and guides (I7.8, OCP 8.0 only): the one face
+    `network_surface` builds from the curves, no caps and no solid. Each profile is one B-spline (its
+    corners kept as C0 knots), each guide one B-spline (refused with a sharp corner) and every guide must
+    touch every profile. The profiles' own order is kept: it is the order the Gordon network is built in.
+    The first profile's edges all generated the one face, so each names it."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    _gordon_class()
+    if len(profile_wires) < 2:
+        raise KernelError("Select at least two profiles, in order")
+    if len(guide_wires) < 2:
+        raise KernelError("Add a second guide: a surface loft with guides needs at least two")
+    profiles = []
+    for m, w in enumerate(profile_wires):
+        b = _join([_edge_bspline(e) for e in _wire_edges(w)], f"Profile {m + 1}")
+        if b.StartPoint().Distance(b.EndPoint()) < 1e-6:
+            raise KernelError("A surface loft with guides takes open profile curves, not closed ones, yet")
+        profiles.append(b)
+    guides = [_guide_bspline(w, n + 1) for n, w in enumerate(guide_wires)]
+    for n, gw in enumerate(guide_wires):
+        for m, pw in enumerate(profile_wires):
+            d = BRepExtrema_DistShapeShape(gw, pw)
+            if not d.IsDone() or d.Value() > LOFT_GUIDE_TOL:
+                raise KernelError(f"Guide {n + 1} does not touch profile {m + 1}")
+    surf, _rep = network_surface(profiles, guides)
+    face = BRepBuilderAPI_MakeFace(surf, 1e-7).Face()
+    if not is_valid(face):
+        raise KernelError("Loft failed — the guided surface is not valid")
+    if not with_history:
+        return face
+    hist = BRepTools_History()
+    for e in _sub_shapes(profile_wires[0], TopAbs_EDGE):
+        hist.AddGenerated(e, face)
+    return face, hist
 
 
 def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=False):

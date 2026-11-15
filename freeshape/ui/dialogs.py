@@ -712,6 +712,14 @@ _LOFT_GUIDES_WHY = ("Guides, end conditions, a closed loft and a point profile c
                     "untick Guides and continuity, Closed, or take the point out first")
 
 
+_LOFT_SURFACE_WHY = "A surface loft takes no end conditions: choose Solid to set them"
+
+
+def _loft_surface(p):
+    """True when a loft is made as a surface (Create = Surface, I7.8)."""
+    return p.get("creation") == "surface"
+
+
 def _loft_point(p):
     """True when a loft's profile list has a point (a vertex or a sketch point) in it (I7.7)."""
     return any(isinstance(it, dict) and it.get("kind") in ("vertex", "sketch") for it in p.get("profiles") or [])
@@ -742,6 +750,8 @@ def _loft_fold(p, strip=False):
     plain = _loft_plain(p)
     if not p.get("closed"):
         p.pop("closed", None)
+    if not _loft_surface(p):
+        p.pop("curves", None)            # a solid loft saves no curves key
     if "guides_on" in p:
         if p.get("ruled") or not plain or not p["guides_on"] or not any(p.get("guides") or []):
             p.pop("guides", None)
@@ -750,7 +760,7 @@ def _loft_fold(p, strip=False):
     for end in ("start", "end"):
         if f"{end}_cond" not in p:
             continue
-        cond = "" if p.get("ruled") or not plain else p.get(f"{end}_cond") or ""
+        cond = "" if p.get("ruled") or not plain or _loft_surface(p) else p.get(f"{end}_cond") or ""
         if cond:
             p[end] = {"cond": cond, "mag": p.get(f"{end}_mag", 1.0)}
             if cond == "match_tangent" and p.get(f"{end}_faces"):     # none picked: no key, the default faces
@@ -1045,30 +1055,38 @@ SCHEMAS = {
         _check("flip", "Opposite direction"),
     ],
     "loft": [
-        _ops(),
+        {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
+        {"t": "ops", "key": "creation", "options": CREATE_LABELS, "default": "solid"},
         _sel("profiles", "Profiles — pick them in order (a vertex or a sketch point may be the first or the last)",
-             {"region", "face", "vertex", "sketch_point"}),
+             {"region", "face", "vertex", "sketch_point"}, visible=lambda p: p.get("creation") != "surface"),
+        _sel("curves", "Sketch curves or edges to loft through — pick them in order", {"path"},
+             visible=lambda p: p.get("creation") == "surface"),
         _check("ruled", "Straight sides (ruled)"),
         {**_choice("start_cond", "Start profile condition", LOFT_END_CHOICES, visible=lambda p: not p.get("ruled")),
-         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p), "why": _LOFT_GUIDES_WHY},
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p) and not _loft_surface(p),
+         "why": _LOFT_GUIDES_WHY, "why_if": (_loft_surface, _LOFT_SURFACE_WHY)},
         _num("start_mag", "Magnitude", unit="", signed=True,
              visible=lambda p: not p.get("ruled") and bool(p.get("start_cond"))),
         {**_sel("start_faces", "Adjacent faces", {"face"},
                 visible=lambda p: not p.get("ruled") and p.get("start_cond") == "match_tangent"),
-         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p), "why": _LOFT_GUIDES_WHY},
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p) and not _loft_surface(p),
+         "why": _LOFT_GUIDES_WHY, "why_if": (_loft_surface, _LOFT_SURFACE_WHY)},
         {**_choice("end_cond", "End profile condition", LOFT_END_CHOICES, visible=lambda p: not p.get("ruled")),
-         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p), "why": _LOFT_GUIDES_WHY},
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p) and not _loft_surface(p),
+         "why": _LOFT_GUIDES_WHY, "why_if": (_loft_surface, _LOFT_SURFACE_WHY)},
         _num("end_mag", "Magnitude", unit="", signed=True,
              visible=lambda p: not p.get("ruled") and bool(p.get("end_cond"))),
         {**_sel("end_faces", "Adjacent faces", {"face"},
                 visible=lambda p: not p.get("ruled") and p.get("end_cond") == "match_tangent"),
-         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p), "why": _LOFT_GUIDES_WHY},
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p) and not _loft_surface(p),
+         "why": _LOFT_GUIDES_WHY, "why_if": (_loft_surface, _LOFT_SURFACE_WHY)},
         {**_check("guides_on", "Guides and continuity", visible=lambda p: not p.get("ruled")),
-         "enabled": lambda p: not (p.get("start_cond") or p.get("end_cond")) and _loft_plain(p),
+         "enabled": lambda p: (_loft_surface(p) or not (p.get("start_cond") or p.get("end_cond"))) and _loft_plain(p),
          "why": "Guides cannot be combined with end conditions, a closed loft or a point profile yet: "
                 "clear the start and end profile conditions, Closed and the point first"},
         {**_check("closed", "Closed (the last profile joins the first)",
-                  visible=lambda p: len(p.get("profiles") or []) >= 3),
+                  visible=lambda p: len(p.get("curves" if _loft_surface(p) else "profiles") or []) >= 3),
          "enabled": lambda p: not (p.get("start_cond") or p.get("end_cond") or p.get("guides_on") or _loft_point(p)),
          "why": "A closed loft cannot be combined with end conditions, guides or a point profile yet: "
                 "clear those first"},
@@ -1197,7 +1215,7 @@ def params_to_fields(ftype, p):
         f["upto_part"] = [("part", u["id"])] if u.get("kind") == "part" else []
     if ftype in ("extrude", "revolve", "sweep"):
         f["profiles"] = [("region", r) for r in p.get("regions", [])] + [("face", r) for r in p.get("faces", [])]
-    if ftype in ("extrude", "revolve", "sweep"):
+    if ftype in ("extrude", "revolve", "sweep", "loft"):
         f["curves"] = [("path", r) for r in p.get("curves", [])]
     if ftype in SCOPE_FEATURES:
         f["scope"] = [("part", i) for i in p.get("scope", [])]
@@ -1306,7 +1324,7 @@ def fields_to_params(ftype, fields, p):
     if ftype in ("extrude", "revolve", "sweep"):
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
         p["faces"] = [r for k, r in fields.get("profiles", []) if k == "face"]
-    if ftype in ("extrude", "revolve", "sweep"):
+    if ftype in ("extrude", "revolve", "sweep", "loft"):
         curves = [r for k, r in fields.get("curves", [])]
         if curves:
             p["curves"] = curves
@@ -2568,7 +2586,8 @@ class FeatureDialog(_ResizableFrame):
             if spec.get("enabled"):             # greyed with the reason when another setting rules it out
                 ok = bool(spec["enabled"](p))
                 w.setEnabled(ok)
-                w.setToolTip("" if ok else spec["why"])
+                why_if = spec.get("why_if")          # (test, text): a more specific reason when `test(p)`
+                w.setToolTip("" if ok else why_if[1] if why_if and why_if[0](p) else spec["why"])
             if spec["t"] == "ops":            # the buttons show the params (Surface limits the operation to New / Add)
                 for (val, _), b in zip(spec["options"], w.findChildren(QToolButton)):
                     b.setChecked(p.get(spec["key"], spec.get("default")) == val)
@@ -2924,9 +2943,11 @@ class FeatureDialog(_ResizableFrame):
             fk = {"up_to_face": "upto_face", "up_to_vertex": "upto_vertex", "up_to_part": "upto_part"}.get(value)
             if fk in self.fields:
                 QTimer.singleShot(0, lambda fk=fk: self.activate(self.fields[fk]))
-        if key == "creation" and self.ftype in ("extrude", "revolve", "sweep") and value == "surface" \
+        if key == "creation" and self.ftype in ("extrude", "revolve", "sweep", "loft") and value == "surface" \
                 and p.get("op", "add") not in ("new", "add"):
             p["op"] = "add"                    # Remove and Intersect are not available for surfaces
+        if key == "creation" and self.ftype == "loft" and value == "surface" and "curves" in self.fields:
+            QTimer.singleShot(0, lambda: self.activate(self.fields["curves"]))
         if key == "creation" and self.ftype in ("extrude", "revolve", "sweep") and value == "thin":
             for k, v in (("thickness1", 1.0), ("thickness2", 0.0)):       # not in default_params (goldens go through it)
                 if k not in p:

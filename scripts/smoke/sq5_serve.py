@@ -409,7 +409,7 @@ def run(state):
 
     @step("viewer page is served with a strict Content-Security-Policy")
     def _():
-        status, h, body = req("GET", "/")
+        status, h, body = req("GET", "/viewer")
         check(status == 200 and h["Content-Type"].startswith("text/html"), (status, h.get("Content-Type")))
         csp = h.get("Content-Security-Policy", "")
         check("connect-src 'self'" in csp and "default-src 'none'" in csp, f"CSP {csp!r}")

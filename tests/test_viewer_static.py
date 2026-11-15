@@ -1,4 +1,4 @@
-"""I5.5: the dependency-free browser viewer (freeshape/static/viewer.html), served at `/` by `serve`.
+"""I5.5: the dependency-free browser viewer (freeshape/static/viewer.html), served at `/viewer` by `serve`.
 
 No test here runs the page; these check what can be checked without a browser: it is served with the right
 headers, ships as package data, loads nothing from outside, never builds HTML from Document text, and its script
@@ -177,8 +177,8 @@ def served(tmp_path_factory):
         mp.undo()
 
 
-def test_get_root_returns_the_page_with_a_strict_csp(served):
-    status, h, body = served.request("GET", "/")
+def test_get_viewer_returns_the_page_with_a_strict_csp(served):
+    status, h, body = served.request("GET", "/viewer")
     assert status == 200 and body == _page().encode("utf-8")
     assert h["Content-Type"] == "text/html; charset=utf-8"
     assert h["X-Content-Type-Options"] == "nosniff" and h["Cache-Control"] == "no-store"
@@ -191,5 +191,5 @@ def test_get_root_returns_the_page_with_a_strict_csp(served):
 def test_a_missing_page_is_a_plain_404(served, monkeypatch):
     from freeshape import serve as SV
     monkeypatch.setattr(SV, "_viewer_page", lambda: None)
-    status, h, body = served.request("GET", "/")
+    status, h, body = served.request("GET", "/viewer")
     assert status == 404 and h["Content-Type"].startswith("text/plain") and b"not installed" in body

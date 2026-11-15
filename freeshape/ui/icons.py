@@ -168,6 +168,13 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(ORANGE, 2.2))
         p.drawLine(QPointF(5, 6), QPointF(27, 26))
         p.drawLine(QPointF(27, 6), QPointF(5, 26))
+    elif name == "fill":
+        p.setPen(_pen(INK, 1.6))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(16, 16), 11, 8)
+        p.setPen(_pen(ORANGE, 2.2))
+        p.setBrush(QColor(ORANGE).lighter(160))
+        p.drawEllipse(QPointF(16, 16), 6.5, 4.5)
     elif name == "delete_part":
         _box(p, 4, 10, 18, 16, 6)
         p.setPen(_pen(RED, 2.8))

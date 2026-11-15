@@ -2073,17 +2073,23 @@ FILL_TOL = 1e-3          # how far the fill's boundary may sit from an input edg
 FILL_SETTINGS = (3, 15, 2, False, 1e-5, 1e-4, 1e-2, 1e-1, 8, 9)      # the OCC defaults
 
 
-def _boundary_gap(edge_list):
-    """The position of a gap in a set of edges that should close into one loop, or None when every end meets
-    another end (within the tolerance `make_wire` uses)."""
+def boundary_open_ends(edge_list):
+    """The end points of a set of edges that should close into one loop and meet no other end (within the
+    tolerance `make_wire` uses): empty when the loop closes, else usually two points, one at each side of the gap."""
     ends = []
     for e in edge_list:
         p = discretize_edge(e)
         ends += [p[0].astype(float), p[-1].astype(float)]
     scale = max([float(np.linalg.norm(a - b)) for a in ends for b in ends] + [1.0])
     tol = max(1e-4, 1e-6 * scale) * 100
-    loose = [a for i, a in enumerate(ends)
-             if not any(j != i and np.linalg.norm(a - b) < tol for j, b in enumerate(ends))]
+    return [a for i, a in enumerate(ends)
+            if not any(j != i and np.linalg.norm(a - b) < tol for j, b in enumerate(ends))]
+
+
+def _boundary_gap(edge_list):
+    """The position of a gap in a set of edges that should close into one loop, or None when every end meets
+    another end."""
+    loose = boundary_open_ends(edge_list)
     if not loose:
         return None
     return loose[0] if len(loose) == 1 else (loose[0] + loose[1]) / 2

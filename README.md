@@ -250,6 +250,10 @@ Things selected before opening a feature are pre-filled. Extrude and Plane show 
   keep the surfaces. A solid's face adds to it, a surface makes a new part.
 - **Enclose** — make a solid from surface parts, faces and planes that surround a volume (they may overlap); tick
   *Keep tools* to keep the surfaces. Search for it as *stitch*, *sew* or *knit*.
+- **Fill** — make a surface across a closed ring of edges and sketch curves, to patch or cap a hole. Each model edge
+  can be set to *Tangency*, which aims the fill along the face beside it (a target, not a guarantee); guide points
+  pull it through them. *Add* sews it to the surface parts in scope and makes a solid if they enclose a volume.
+  Search for it as *patch*, *cap hole* or *fill surface*.
 - **Mirror**, **Linear pattern**, **Circular pattern** — of parts.
 - **Boolean** — union, subtract, intersect parts.
 - **Import STEP / BREP** and **Export STEP / STL / BREP** (whole studio, or selected parts from the Parts list).

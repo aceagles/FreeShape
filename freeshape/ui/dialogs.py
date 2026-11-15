@@ -77,6 +77,43 @@ def region_touching(sr, eid):
     return None if best is None else best[1]
 
 
+def _cross(c, s):
+    """A three-axis cross of half-length `s` at point `c`, as one polyline."""
+    c = np.asarray(c, float)
+    pts = []
+    for d in (np.array((s, 0, 0)), np.array((0, s, 0)), np.array((0, 0, s))):
+        pts += [c - d, c + d, c]
+    return np.array(pts)
+
+
+def _fill_item(e):
+    """The selection item of one Fill edge: a model edge, or the chain of sketch curves a picked curve belongs to."""
+    ref = e.get("ref") or {}
+    return ("edge", ref["edge"]) if ref.get("kind") == "edge" else ("path", ref)
+
+
+def _fill_edge(k, r, prev=None):
+    """One Fill edge from a selection item; Position unless `prev` (the same edge before) says otherwise."""
+    return {"ref": {"kind": "edge", "edge": r} if k == "edge" else r,
+            "continuity": prev.get("continuity", "position") if prev else "position",
+            "faces": list(prev.get("faces") or []) if prev else []}
+
+
+def fill_gap_points(state, params):
+    """The loose end points of the boundary a Fill's edges make (empty when it closes or an edge is missing)."""
+    es = []
+    try:
+        for e in params.get("edges") or []:
+            ref = e.get("ref") or {}
+            if ref.get("kind") == "edge":
+                es.append(F.resolve(state, ref["edge"], "edge")[1])
+            else:
+                es += [x for _, x in F._ref_edges(state, ref)[1]]
+        return K.boundary_open_ends(es) if es else []
+    except (K.KernelError, KeyError):
+        return []
+
+
 def _split_item(tool):
     """The selection item a Split tool shows as: a surface tool is a part pick."""
     return ("part" if tool["kind"] == "surface" else tool["kind"], tool["ref"])
@@ -902,6 +939,13 @@ SCHEMAS = {
         _check("keep_tools", "Keep tools"),
         _scope(),
     ],
+    "fill": [
+        _ops(SURFACE_OP_LABELS),
+        _sel("edges", "Edges and sketch curves around the hole", {"edge", "path"}),
+        {"t": "fill_rows", "key": "_fill_rows"},
+        _sel("guides", "Guide points the fill passes through (optional)", {"vertex"}),
+        _scope(),
+    ],
     "delete_part": [
         _sel("parts", "Parts to delete", {"part"}),
     ],
@@ -1175,6 +1219,10 @@ def params_to_fields(ftype, p):
     if ftype == "thicken":              # one field holds faces and surface parts
         f["faces"] = [("face", r) for r in p.get("faces", [])] + [("part", i) for i in p.get("parts", [])]
         f["scope"] = [("part", i) for i in p.get("scope", [])]
+    if ftype == "fill":                 # one field holds model edges and sketch curves; guides are vertices
+        f["edges"] = [_fill_item(e) for e in p.get("edges", [])]
+        f["guides"] = [("vertex", r) for r in p.get("guides", [])]
+        f["scope"] = [("part", i) for i in p.get("scope", [])]
     if ftype == "enclose":              # one field holds parts, faces and planes, one entity each
         f["entities"] = [(e["kind"], e["ref"]) for e in p.get("entities", [])]
         f["scope"] = [("part", i) for i in p.get("scope", [])]
@@ -1312,6 +1360,17 @@ def fields_to_params(ftype, fields, p):
     if ftype == "thicken":
         p["faces"] = [r for k, r in fields.get("faces", []) if k == "face"]
         p["parts"] = [r for k, r in fields.get("faces", []) if k == "part"]
+        p["scope"] = [r for k, r in fields.get("scope", [])]
+    if ftype == "fill":                 # the continuity of an edge that stays in the list is kept
+        old = list(p.get("edges") or [])
+        out = []
+        for k, r in fields.get("edges", []):
+            prev = next((e for e in old if _same(_fill_item(e), (k, r))), None)
+            if prev is not None:
+                old.remove(prev)
+            out.append(_fill_edge(k, r, prev))
+        p["edges"] = out
+        p["guides"] = [r for k, r in fields.get("guides", [])]
         p["scope"] = [r for k, r in fields.get("scope", [])]
     if ftype == "enclose":
         p["entities"] = [{"kind": k, "ref": r} for k, r in fields.get("entities", [])]
@@ -1565,6 +1624,13 @@ class FeatureDialog(_ResizableFrame):
             v.setContentsMargins(0, 0, 0, 0)
             v.setSpacing(2)
             self._split_box, self._split_sig = box, None
+            return box
+        if t == "fill_rows":
+            box = QWidget()
+            v = QVBoxLayout(box)
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(2)
+            self._fill_box, self._fill_sig = box, None
             return box
         if t == "info":
             lab = QLabel("")
@@ -2383,6 +2449,52 @@ class FeatureDialog(_ResizableFrame):
             h.addWidget(fl)
             lay.addWidget(row)
 
+    def _fill_rows(self):
+        """One row per Fill edge with a Tangency tick (the per-row mechanism Split uses for Trim). A sketch curve
+        has no face beside it, so its row says Position and has no tick."""
+        box = getattr(self, "_fill_box", None)
+        if box is None:
+            return
+        edges = self.feature["params"].get("edges") or []
+        sig = tuple((e.get("continuity"), json.dumps(e.get("ref"), sort_keys=True, default=str)) for e in edges)
+        if sig == self._fill_sig:
+            return
+        self._fill_sig = sig
+        lay = box.layout()
+        while lay.count():
+            w = lay.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        for i, e in enumerate(edges):
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(4, 0, 0, 0)
+            name = QLabel(f"{i + 1}. {item_label(self.doc, _fill_item(e))}")
+            name.setStyleSheet("color:#4b5563;")
+            h.addWidget(name, 1)
+            if (e.get("ref") or {}).get("kind") == "edge":
+                tg = QCheckBox("Tangency")
+                tg.setToolTip("Aim the fill along the face beside this edge. Off: Position, the fill meets the edge only.")
+                tg.setChecked(e.get("continuity") == "tangency")
+                tg.toggled.connect(lambda on, i=i: self._fill_set(i, on))
+                h.addWidget(tg)
+            else:
+                pos = QLabel("Position")
+                pos.setToolTip("A sketch curve has no face beside it, so the fill meets it at Position only")
+                pos.setStyleSheet("color:#8a94a3;")
+                h.addWidget(pos)
+            lay.addWidget(row)
+
+    def _fill_set(self, i, tangency):
+        p = self.feature["params"]
+        edges = [dict(e) for e in p.get("edges") or []]
+        if i >= len(edges):
+            return
+        edges[i]["continuity"] = "tangency" if tangency else "position"
+        p["edges"] = edges
+        QTimer.singleShot(0, self._sync_visibility)
+        self.schedule_preview()
+
     def _split_set(self, i, key, value):
         tools = F.split_tools(self.feature["params"])
         if i >= len(tools):
@@ -2404,6 +2516,8 @@ class FeatureDialog(_ResizableFrame):
             self.widgets["owner"].setItemText(0, OWNER_PICK if (p.get("ref") or {}).get("origin") else OWNER_SAME)
         if self.ftype == "split":
             self._split_rows()
+        if self.ftype == "fill":
+            self._fill_rows()
         for spec, lab in self._info_rows:
             txt = spec["text"](p)
             lab.setText(txt)
@@ -2833,6 +2947,8 @@ class FeatureDialog(_ResizableFrame):
                         out.append((("hover", i), item_geometry(self.base_state, item, half * 2.5)))
         if self.ftype == "derived":
             out += self._derived_location_overlays()
+        for i, c in enumerate(getattr(self, "_gap_points", [])):     # a Fill's open ends, a cross each
+            out.append((("gap", i), ("poly", _cross(c, half * 0.15))))
         return out
 
     # ------------------------------------------------------------------ drag arrows
@@ -2959,7 +3075,17 @@ class FeatureDialog(_ResizableFrame):
         vp = self.main.viewport
         if vp._manip_drag is None:          # don't rebuild the arrow while it's being dragged
             vp.manipulators = self.manipulators()
+        if self.ftype == "fill":
+            self._gap_points = []
         err = self.main.show_preview(self.feature, self.index, self.overlays())
+        if self.ftype == "fill":             # an open boundary: mark the two open ends and hold OK back
+            gap = bool(err) and err.startswith(K.FILL_GAP)
+            if gap:
+                self._gap_points = fill_gap_points(self.base_state, self.feature["params"])
+                self.main.viewport.overlays = self.overlays()
+                self.main.viewport.update()
+            self.ok_button.setEnabled(not gap)
+            self.ok_button.setToolTip("The boundary has a gap: close it before accepting" if gap else "Accept (Enter)")
         if err:
             self.err.setText("⚠ " + err)
             self.err.setStyleSheet("")

@@ -618,6 +618,9 @@ class MainWindow(QMainWindow):
             C("enclose", "Enclose", "Make a solid from surfaces, faces and planes that surround a volume. The "
               "surfaces are used up unless you keep them.",
               lambda: F_("enclose"), "enclose solid from surfaces sew stitch knit"),
+            C("fill", "Fill", "Make a surface across a closed ring of edges or sketch curves, to patch or cap a "
+              "hole. Each edge can take Tangency; guide points pull the surface through them.",
+              lambda: F_("fill"), "fill patch cap hole fill surface"),
             C("delete_part", "Delete part", "Remove the selected parts from the model from this point on.",
               lambda: F_("delete_part"), "remove erase discard body"),
             C("sm_base", "Sheet metal", "A flat sheet from a sketch with thickness, bend radius and K-factor.",
@@ -900,6 +903,7 @@ class MainWindow(QMainWindow):
                           ("offset_surface", "Offset surface — a new surface a set distance from faces"),
                           ("thicken", "Thicken — turn surfaces or faces into a solid"),
                           ("enclose", "Enclose — a solid from surfaces that surround a volume"),
+                          ("fill", "Fill — a surface across a closed ring of edges, to patch a hole"),
                           ("delete_part", "Delete part — remove parts from the model from here on")):
             self._tb(h, name, tip, lambda _=False, n=name: self.start_feature(n))
         h.addWidget(_sep())

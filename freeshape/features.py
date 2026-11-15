@@ -3615,13 +3615,30 @@ def run_loft(state, f):
             got = resolve_regions(state, [item["ref"]], f["id"])
             profs += got
             owners += [None] * len(got)
+        elif item["kind"] in ("vertex", "sketch"):      # a point profile (I7.7): a model vertex or a sketch point
+            profs.append(K.make_vertex(_axis_point(state, item["kind"], item["ref"])))
+            owners.append(None)
         else:
             pid, face = resolve(state, item["ref"], "face")
             profs.append(face)
             owners.append(pid)
-    start = _loft_end(state, p.get("start"), profs[0] if profs else None, owners[0] if owners else None)
-    end = _loft_end(state, p.get("end"), profs[-1] if profs else None, owners[-1] if owners else None)
+    point = any(K.is_vertex(x) for x in profs)
+    start = _loft_end(state, p.get("start"), profs[0] if profs and not K.is_vertex(profs[0]) else None,
+                      owners[0] if owners else None)
+    end = _loft_end(state, p.get("end"), profs[-1] if profs and not K.is_vertex(profs[-1]) else None,
+                    owners[-1] if owners else None)
     guides = [g for g in (p.get("guides") or []) if g]
+    closed = bool(p.get("closed"))
+    if closed or point:                          # I7.7: the legacy maker only
+        what = "A closed loft" if closed else "A point profile"
+        if start is not None or end is not None:
+            raise K.KernelError(f"{what} and end conditions cannot be combined yet")
+        if guides:
+            raise K.KernelError(f"{what} and guides cannot be combined yet")
+        body, hist = K.loft(profs, p.get("ruled", False), with_history=True, closed=closed)
+        named = name_feature(state, f["id"], _loft_names(state, p), body, hist, "loft")
+        apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
+        return
     if guides:                                   # the network route (I7.3), OpenCascade 8.0 only
         if start is not None or end is not None:
             raise K.KernelError("Guides and end conditions cannot be combined yet")
@@ -3692,6 +3709,8 @@ def _loft_names(state, p):
     for item in p.get("profiles", []):
         if item["kind"] == "region":
             regions.append(item["ref"])
+        elif item["kind"] == "sketch":           # a sketch point names nothing: its sketch is no input
+            continue
         else:
             faces.append({"part": item["ref"].get("part")})
     return _profile_names(state, {"regions": regions, "faces": faces})

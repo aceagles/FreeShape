@@ -627,6 +627,16 @@ def vertex_points(shape):
     return _vertices_np(shape)
 
 
+def make_vertex(pos):
+    """A vertex shape at `pos` (a point profile of a loft)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    return BRepBuilderAPI_MakeVertex(gp_Pnt(*[float(x) for x in pos])).Vertex()
+
+
+def is_vertex(shape):
+    return shape.ShapeType() == TopAbs_VERTEX
+
+
 def planar_face_plane(face) -> Plane | None:
     ad = BRepAdaptor_Surface(face)
     if ad.GetType() != GeomAbs_Plane:
@@ -2988,11 +2998,18 @@ def _loft_hole_sets(profile_faces):
     return sets
 
 
-def _thru_sections(wires, ruled):
+def _thru_sections(wires, ruled, max_degree=None):
+    """ThruSections over `wires`; an entry may be a vertex (a point profile, first or last only).
+    `max_degree` caps the degree of the surface along the loft."""
     from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
     mk = BRepOffsetAPI_ThruSections(True, bool(ruled), 1e-6)
+    if max_degree:
+        mk.SetMaxDegree(max_degree)
     for w in wires:
-        mk.AddWire(w)
+        if w.ShapeType() == TopAbs_VERTEX:
+            mk.AddVertex(_as_vertex(w))
+        else:
+            mk.AddWire(w)
     try:
         mk.Build()
     except Exception as exc:
@@ -3002,20 +3019,27 @@ def _thru_sections(wires, ruled):
     return mk
 
 
-def _thru_sections_history(mk, wires, faces=None) -> BRepTools_History:
+def _thru_sections_history(mk, wires, faces=None, from_point=False) -> BRepTools_History:
     """Each profile edge generated the loft face that runs from it; with `faces`, the first and last
-    profile faces generated the two end caps (spec I1.7: FreeCAD's MapperThruSections)."""
+    profile faces generated the two end caps (spec I1.7: FreeCAD's MapperThruSections). A loft that
+    starts at a point (I7.7) has no face generated from the next profile's edges, so `from_point` asks
+    `Generated` for the face that ends on each edge."""
     hist = BRepTools_History()
     for w in wires:
         for e in _sub_shapes(w, TopAbs_EDGE):
             try:
                 g = mk.GeneratedFace(e)
+                if g.IsNull() and from_point:
+                    gen = mk.Generated(e)
+                    g = gen.First() if gen.Size() else g
                 if not g.IsNull():
                     hist.AddGenerated(e, g)
             except Exception:
                 pass            # an OCCT history failure degrades the names; it never fails the operation
     if faces:
         for f, cap in ((faces[0], mk.FirstShape), (faces[-1], mk.LastShape)):
+            if f is None:           # a point end has no cap
+                continue
             try:
                 c = cap()
                 if not c.IsNull() and not c.IsSame(f):
@@ -3025,15 +3049,42 @@ def _thru_sections_history(mk, wires, faces=None) -> BRepTools_History:
     return hist
 
 
-def loft(profile_faces, ruled=False, with_history=False):
+def loft(profile_faces, ruled=False, with_history=False, closed=False):
     """A loft through the profiles' outer wires. When every profile has the same number of holes,
-    each matched set of hole wires is lofted the same way and cut out, as sweep cuts its tunnels."""
+    each matched set of hole wires is lofted the same way and cut out, as sweep cuts its tunnels.
+    I7.7: a profile may be a vertex, the first or the last only (a point: no cap at that end); with
+    `closed` the first profile is added again as the last, so the loft is a closed shell with no caps."""
     from OCP.BRepTools import BRepTools
     if len(profile_faces) < 2:
         raise KernelError("Select at least two profiles, in order")
-    outers = [BRepTools.OuterWire_s(f) for f in profile_faces]
-    mk = _thru_sections(outers, ruled)
+    pts = [f.ShapeType() == TopAbs_VERTEX for f in profile_faces]
+    if any(pts[1:-1]):
+        raise KernelError("A point can only be the first or the last profile")
+    if all(pts):
+        raise KernelError("A loft needs at least one profile that is not a point")
+    if closed:
+        if len(profile_faces) < 3:
+            raise KernelError("A closed loft needs at least three profiles")
+        if any(pts):
+            raise KernelError("A closed loft cannot have a point profile")
+    if (closed or any(pts)) and any(len(_sub_shapes(f, TopAbs_WIRE)) > 1 for f, pt in zip(profile_faces, pts) if not pt):
+        raise KernelError("A closed loft or a loft to a point needs profiles without holes")
+    outers = [f if pt else BRepTools.OuterWire_s(f) for f, pt in zip(profile_faces, pts)]
+    # A closed loft is cubic along the loft: through 4 circles the default degree 4 curve swings 8 percent
+    # off the ring, the cubic stays within 2 percent of it.
+    mk = _thru_sections(outers + [outers[0]] if closed else outers, ruled, 3 if closed else None)
     body = mk.Shape()
+    if closed or any(pts):
+        if body.ShapeType() != TopAbs_SOLID and solids(body):
+            body = solids(body)[0]
+        if volume(body) < 0:
+            body = body.Reversed()
+        if len(solids(body)) != 1 or not is_valid(body):
+            raise KernelError("Loft failed — try profiles with similar shapes")
+        if not with_history:
+            return body
+        caps = None if closed else [None if pt else f for f, pt in zip(profile_faces, pts)]
+        return body, _thru_sections_history(mk, [o for o in outers if o.ShapeType() != TopAbs_VERTEX], caps, pts[0])
     hist = _thru_sections_history(mk, outers, profile_faces) if with_history else None
     for wires in _loft_hole_sets(profile_faces):
         tool = _thru_sections(wires, ruled)

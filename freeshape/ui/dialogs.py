@@ -707,7 +707,18 @@ LOFT_CONDITIONS = [("", "None"), ("normal", "Normal to profile"), ("tangent", "T
 LOFT_END_CHOICES = LOFT_CONDITIONS + [("match_tangent", "Match tangent")]     # I7.5: with Adjacent faces
 
 
-_LOFT_GUIDES_WHY = "Guides and end conditions cannot be combined yet: untick Guides and continuity first"
+_LOFT_GUIDES_WHY = ("Guides, end conditions, a closed loft and a point profile cannot be combined yet: "
+                    "untick Guides and continuity, Closed, or take the point out first")
+
+
+def _loft_point(p):
+    """True when a loft's profile list has a point (a vertex or a sketch point) in it (I7.7)."""
+    return any(isinstance(it, dict) and it.get("kind") in ("vertex", "sketch") for it in p.get("profiles") or [])
+
+
+def _loft_plain(p):
+    """True when nothing in a loft's params rules out end conditions and guides: no Closed, no point profile."""
+    return not (p.get("closed") or _loft_point(p))
 
 
 def _loft_unfold(p):
@@ -724,16 +735,21 @@ def _loft_unfold(p):
 def _loft_fold(p, strip=False):
     """The flat dialog fields back into `start` and `end`. No condition (or a ruled loft, which hides
     them) leaves no key, so an old loft keeps the legacy route; strip=True drops the flat fields.
-    `guides` goes the same way: no tick, a ruled loft or no entries leaves no key."""
+    `guides` goes the same way: no tick, a ruled loft or no entries leaves no key. `closed` (I7.7) is
+    kept only when ticked, and a closed loft or a point profile (which grey the conditions and guides
+    out) leaves none of them."""
+    plain = _loft_plain(p)
+    if not p.get("closed"):
+        p.pop("closed", None)
     if "guides_on" in p:
-        if p.get("ruled") or not p["guides_on"] or not any(p.get("guides") or []):
+        if p.get("ruled") or not plain or not p["guides_on"] or not any(p.get("guides") or []):
             p.pop("guides", None)
         if strip:
             p.pop("guides_on", None)
     for end in ("start", "end"):
         if f"{end}_cond" not in p:
             continue
-        cond = "" if p.get("ruled") else p.get(f"{end}_cond") or ""
+        cond = "" if p.get("ruled") or not plain else p.get(f"{end}_cond") or ""
         if cond:
             p[end] = {"cond": cond, "mag": p.get(f"{end}_mag", 1.0)}
             if cond == "match_tangent" and p.get(f"{end}_faces"):     # none picked: no key, the default faces
@@ -1026,25 +1042,32 @@ SCHEMAS = {
     ],
     "loft": [
         _ops(),
-        _sel("profiles", "Profiles — pick them in order", {"region", "face"}),
+        _sel("profiles", "Profiles — pick them in order (a vertex or a sketch point may be the first or the last)",
+             {"region", "face", "vertex", "sketch_point"}),
         _check("ruled", "Straight sides (ruled)"),
         {**_choice("start_cond", "Start profile condition", LOFT_END_CHOICES, visible=lambda p: not p.get("ruled")),
-         "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p), "why": _LOFT_GUIDES_WHY},
         _num("start_mag", "Magnitude", unit="", signed=True,
              visible=lambda p: not p.get("ruled") and bool(p.get("start_cond"))),
         {**_sel("start_faces", "Adjacent faces", {"face"},
                 visible=lambda p: not p.get("ruled") and p.get("start_cond") == "match_tangent"),
-         "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p), "why": _LOFT_GUIDES_WHY},
         {**_choice("end_cond", "End profile condition", LOFT_END_CHOICES, visible=lambda p: not p.get("ruled")),
-         "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p), "why": _LOFT_GUIDES_WHY},
         _num("end_mag", "Magnitude", unit="", signed=True,
              visible=lambda p: not p.get("ruled") and bool(p.get("end_cond"))),
         {**_sel("end_faces", "Adjacent faces", {"face"},
                 visible=lambda p: not p.get("ruled") and p.get("end_cond") == "match_tangent"),
-         "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p), "why": _LOFT_GUIDES_WHY},
         {**_check("guides_on", "Guides and continuity", visible=lambda p: not p.get("ruled")),
-         "enabled": lambda p: not (p.get("start_cond") or p.get("end_cond")),
-         "why": "Guides and end conditions cannot be combined yet: clear the start and end profile conditions first"},
+         "enabled": lambda p: not (p.get("start_cond") or p.get("end_cond")) and _loft_plain(p),
+         "why": "Guides cannot be combined with end conditions, a closed loft or a point profile yet: "
+                "clear the start and end profile conditions, Closed and the point first"},
+        {**_check("closed", "Closed (the last profile joins the first)",
+                  visible=lambda p: len(p.get("profiles") or []) >= 3),
+         "enabled": lambda p: not (p.get("start_cond") or p.get("end_cond") or p.get("guides_on") or _loft_point(p)),
+         "why": "A closed loft cannot be combined with end conditions, guides or a point profile yet: "
+                "clear those first"},
         _sel_list("guides", "Guides — one pick is one guide (sketch curves or an edge)", {"path"},
                   visible=lambda p: not p.get("ruled") and bool(p.get("guides_on"))),
         _scope(),

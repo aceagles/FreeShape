@@ -252,8 +252,8 @@ def engine_open_box(w):
     return part
 
 
-def test_fill_made_in_the_engine_window_builds_the_face(engine_win):
-    w = engine_win
+def engine_fill(w):
+    """The open box with its top filled through the dialog in the engine window; returns the box part."""
     se, doc = w.studio_engine, w.doc
     part = engine_open_box(w)
     w.start_feature("fill")
@@ -277,13 +277,20 @@ def test_fill_made_in_the_engine_window_builds_the_face(engine_win):
     assert not doc.errors, doc.errors
     new = [q for q in surfaces(doc) if q.id != part.id]
     assert len(new) == 1 and area(new[0].shape) == pytest.approx(BOX[0] * BOX[1], abs=1e-6)
+    return part
+
+
+def test_fill_made_in_the_engine_window_builds_the_face(engine_win):
+    engine_fill(engine_win)
 
 
 def test_fill_tangency_on_one_edge_resolves_in_the_engine_window(engine_win):
     w = engine_win
     se, doc = w.studio_engine, w.doc
+    if not any(f["type"] == "fill" for f in doc.features):     # run without the test above (a CI shard)
+        engine_fill(w)
     fills = [f for f in doc.features if f["type"] == "fill"]
-    assert fills                                    # the test above committed one
+    assert fills
     part = next(q for q in doc.state.parts.values() if q.name and K.is_surface(q.shape) and len(K.faces(q.shape)) == 5)
     w.start_feature("fill", edit_fid=fills[-1]["id"])
     dlg = w.dialog

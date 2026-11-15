@@ -612,6 +612,20 @@ class Sketcher:
         a, b = ctr + d * t.min(), ctr + d * t.max()
         return None if np.linalg.norm(b - a) < 1e-7 else (a, b)
 
+    def _follows_part(self, eid):
+        """True for a line, circle or arc that was used from a part edge and still follows it: it has the edge's
+        reference and every point of it is still fixed (features.refresh_used_edges projects it again)."""
+        e = self.sk.entities.get(eid)
+        keys = F._USED_POINTS.get(e["type"]) if e else None
+        return bool(e and e.get("src") and keys and all(self._fixed(e[k]) for k in keys))
+
+    def _shown_dimensions(self):
+        """The dimensions drawn and clickable in the sketch. The radius that holds a circle used from a part edge
+        is left out while the circle follows the part: its value is the part's, set again on every rebuild, so
+        it is not a dimension the user can drive. A used circle that no longer follows the part shows it."""
+        return [c for c in self.sk.constraints if c["type"] in DIMENSIONS
+                and not (c["type"] == "radius" and c.get("refs") and self._follows_part(c["refs"][0]))]
+
     def _fixed(self, pid):
         return any(c["type"] == "fix" and c["refs"][0] == pid for c in self.sk.constraints)
 
@@ -2470,9 +2484,7 @@ class Sketcher:
         p.setFont(f)
         fm = QFontMetricsF(f)
         # ---- dimensions
-        for c in sk.constraints:
-            if c["type"] not in DIMENSIONS:
-                continue
+        for c in self._shown_dimensions():
             try:
                 self._draw_dimension(vp, p, c, fm)
             except (KeyError, IndexError, ValueError):

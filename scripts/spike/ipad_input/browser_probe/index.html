@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>iPad input probe</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; font: 14px/1.3 -apple-system, sans-serif;
+               background: #14161a; color: #e6e6e6; -webkit-user-select: none; user-select: none;
+               -webkit-touch-callout: none; }
+  #bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; background: #20242b; }
+  #bar button { font: inherit; padding: 10px 12px; border: 1px solid #47505e; border-radius: 6px;
+                background: #2b313a; color: inherit; min-height: 44px; }
+  #bar button.on { background: #3a6df0; border-color: #3a6df0; }
+  #stats { padding: 6px 10px; background: #1a1d22; font-variant-numeric: tabular-nums; }
+  #pad { position: absolute; left: 0; right: 0; bottom: 0; touch-action: none; }
+  #log { position: absolute; left: 10px; bottom: 10px; margin: 0; pointer-events: none; opacity: .85;
+         font: 12px/1.35 ui-monospace, Menlo, monospace; white-space: pre; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<div id="bar"></div>
+<div id="stats">Pick a gesture, then perform it in the area below.</div>
+<div id="pad"><canvas id="cv"></canvas><pre id="log"></pre></div>
+<script>
+"use strict";
+// What iPad Safari reports for fingers and the Pencil. Every event is tagged with the gesture selected in the bar
+// and posted to the server, which appends it to a JSON-lines file.
+const GESTURES = ["finger tap", "finger drag", "two-finger drag", "pinch", "pen tap", "pen drag",
+                  "pen above glass", "pen down + finger drag"];
+const bar = document.getElementById("bar"), pad = document.getElementById("pad");
+const stats = document.getElementById("stats"), logEl = document.getElementById("log");
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+let gesture = null, queue = [], recent = [], sent = 0, failed = 0;
+const active = new Map();             // pointerId -> pointerType, for pointers currently down
+let counts = {}, maxDown = 0, types = new Set(), pressures = new Set();
+
+function layout() {
+  pad.style.top = (bar.offsetHeight + stats.offsetHeight) + "px";
+  cv.width = pad.clientWidth * devicePixelRatio;
+  cv.height = pad.clientHeight * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+function select(name, btn) {
+  gesture = name;
+  for (const b of bar.children) b.classList.toggle("on", b === btn);
+  counts = {}; maxDown = 0; types = new Set(); pressures = new Set(); active.clear();
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  record({ ev: "gesture-selected" });
+  show();
+}
+for (const g of GESTURES) {
+  const b = document.createElement("button");
+  b.textContent = g;
+  b.addEventListener("click", () => select(g, b));
+  bar.appendChild(b);
+}
+function record(o) {
+  o.gesture = gesture;
+  o.t = Math.round(performance.now() * 10) / 10;
+  queue.push(o);
+  if (o.ev !== "gesture-selected") {
+    counts[o.ev] = (counts[o.ev] || 0) + 1;
+    recent.push(o);
+    if (recent.length > 10) recent.shift();
+  }
+}
+function show() {
+  const c = Object.entries(counts).map(([k, v]) => k + " " + v).join("  ");
+  stats.textContent = (gesture || "no gesture selected") + "  |  types: " + ([...types].join(", ") || "-") +
+    "  |  most down at once: " + maxDown + "  |  distinct pressures: " + pressures.size +
+    "  |  sent " + sent + (failed ? "  FAILED " + failed : "") + (c ? "  |  " + c : "");
+  logEl.textContent = recent.map(o => o.ev.padEnd(18) + (o.pt || "").padEnd(6) + " id " + String(o.id ?? "-").padEnd(4) +
+    (o.p !== undefined ? " p " + o.p.toFixed(2) : "") + (o.n !== undefined ? " n " + o.n : "")).join("\n");
+}
+const COLOUR = { pen: "#ffd24a", touch: "#59d0ff", mouse: "#b0ffb0" };
+function onPointer(e) {
+  if (!gesture) return;
+  const r = pad.getBoundingClientRect();
+  const o = { ev: e.type, pt: e.pointerType, id: e.pointerId, x: Math.round(e.clientX - r.left),
+              y: Math.round(e.clientY - r.top), p: e.pressure, b: e.buttons, tx: e.tiltX, ty: e.tiltY,
+              w: Math.round(e.width * 10) / 10, h: Math.round(e.height * 10) / 10, primary: e.isPrimary };
+  if (e.type === "pointerdown") active.set(e.pointerId, e.pointerType);
+  if (e.type === "pointerup" || e.type === "pointercancel") active.delete(e.pointerId);
+  o.down = active.size;
+  o.downTypes = [...new Set(active.values())].sort().join("+");
+  maxDown = Math.max(maxDown, active.size);
+  types.add(e.pointerType);
+  if (e.pressure > 0) pressures.add(e.pressure.toFixed(3));
+  if (e.type === "pointermove" && e.getCoalescedEvents) o.coalesced = e.getCoalescedEvents().length;
+  record(o);
+  ctx.fillStyle = COLOUR[e.pointerType] || "#fff";
+  const s = e.buttons ? 3 : 1.5;      // small dots for moves with nothing down (hover)
+  ctx.fillRect(o.x - s / 2, o.y - s / 2, s, s);
+  e.preventDefault();
+}
+for (const t of ["pointerdown", "pointermove", "pointerup", "pointercancel", "pointerenter", "pointerleave",
+                 "pointerover", "pointerout", "gotpointercapture", "lostpointercapture"])
+  pad.addEventListener(t, onPointer, { passive: false });
+function onTouch(e) {
+  if (!gesture) return;
+  record({ ev: e.type, n: e.touches.length,
+           kinds: [...e.touches].map(t => t.touchType || "?").join(","),
+           force: [...e.touches].map(t => Math.round((t.force || 0) * 100) / 100) });
+  e.preventDefault();
+}
+for (const t of ["touchstart", "touchmove", "touchend", "touchcancel"])
+  pad.addEventListener(t, onTouch, { passive: false });
+for (const t of ["gesturestart", "gesturechange", "gestureend"])       // Safari only
+  pad.addEventListener(t, e => { if (gesture) record({ ev: e.type, scale: e.scale, rot: e.rotation }); e.preventDefault(); },
+                       { passive: false });
+for (const t of ["mousedown", "mouseup", "click", "dblclick", "contextmenu", "wheel"])
+  pad.addEventListener(t, e => { if (gesture) record({ ev: e.type, b: e.buttons }); e.preventDefault(); },
+                       { passive: false });
+
+async function flush() {
+  if (queue.length) {
+    const batch = queue; queue = [];
+    try {
+      const r = await fetch("log", { method: "POST", headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ ua: navigator.userAgent, events: batch }) });
+      if (!r.ok) throw new Error(r.status);
+      sent += batch.length;
+    } catch (err) {
+      failed += batch.length;
+      queue = batch.concat(queue);
+    }
+  }
+  show();
+}
+setInterval(flush, 300);
+addEventListener("resize", layout);
+layout();
+</script>
+</body>
+</html>

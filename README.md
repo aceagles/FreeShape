@@ -167,7 +167,7 @@ The view turns to face the sketch plane.
 | Tool | Key | Notes |
 |---|---|---|
 | Line | `L` | click-click; lines chain until `Esc` or you click an existing point. Hover a point or midpoint then move level / plumb for a yellow guide; start from an arc's end or hover a circle to snap tangent |
-| Corner / centre rectangle | `R` | adds horizontal/vertical constraints automatically |
+| Corner / centre rectangle | `G` / `R` | adds horizontal/vertical constraints automatically |
 | Circle | `C` | centre, then radius |
 | 3-point arc / centre-point arc | `A` | |
 | Point | `P` | used for hole centres |
@@ -182,7 +182,7 @@ The view turns to face the sketch plane.
 | Mirror | | select geometry, then click the line to mirror about — the copy stays linked to the original |
 | Linear / circular pattern | | select geometry, then click a direction line (copies go towards where you click) or a centre point; type the count and spacing / angle |
 
-**Typing sizes as you draw:** right after you finish a line, rectangle, circle or arc, a dimension box pops up — type a value (e.g. `25`, `1/2 in`) and press Enter and the shape snaps to it. For a rectangle you get width, then height. Just keep drawing (or press Esc) to skip it.
+**Typing sizes as you draw:** right after you finish a line, rectangle, circle or arc, a dimension box pops up — type a value (e.g. `25`, `1/2 in`) and press Enter and the shape snaps to it. For a rectangle you get width, then height. Just keep drawing (or press Esc) to skip it; pressing another tool's key before you type a value skips it and starts that tool.
 
 Drawing snaps to existing points and curves (adding coincident constraints) and infers horizontal/vertical.
 Geometry is **blue while under-defined and black when fully defined**; conflicting constraints turn red.

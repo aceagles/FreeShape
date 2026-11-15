@@ -138,6 +138,8 @@ def test_checkbox_hidden_for_a_host_without_standard_content(win):
 
 
 def test_toggle_reruns_and_reuses_the_cache(win, monkeypatch):
+    from freeshape.ui import interference_ui as IU
+    monkeypatch.setattr(IU, "ENGINE", "thread")      # K.common is patched in this process
     calls = []
     real = K.common
     monkeypatch.setattr(K, "common", lambda *a, **k: (calls.append(1), real(*a, **k))[1])

@@ -117,6 +117,7 @@ def test_scope_of_two_separate_parts_gives_no_interference(awin):
 
 
 def test_a_failed_pair_is_a_could_not_check_row(awin, monkeypatch):
+    monkeypatch.setattr(IU, "ENGINE", "thread")      # K.common is patched in this process
     def boom(*a, **k):
         raise K.KernelError("boolean blew up")
     monkeypatch.setattr(K, "common", boom)
@@ -172,6 +173,7 @@ def test_close_restores_transparency_ghosts_and_the_button(awin):
 
 
 def test_cancel_stops_a_slow_run_with_a_partial_list(awin5, monkeypatch):
+    monkeypatch.setattr(IU, "ENGINE", "thread")      # K.common is patched in this process
     awin = awin5
     real = K.common
 

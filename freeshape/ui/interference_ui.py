@@ -6,13 +6,22 @@ QTimer, as HistoryPanel._start_3d does: the bodies are snapshotted on the GUI th
 read by the timer, a flag cancels between pairs, and a run id drops a result that has been overtaken.
 
 The place where a check is started is `launch_check`: it is the one function that decides which engine runs it.
+The engine is a helper process (see `_HelperRun`): a boolean holds Python's lock, so a thread would freeze the window.
 
 View state the panel borrows (ghosts, tool_transparent, view_only_ids, the feature highlight) is put back on close;
 it never writes to the Document."""
 from __future__ import annotations
 
+import atexit
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
@@ -46,10 +55,260 @@ GREY = QBrush(QColor("#9aa0a6"))
 MIN_BOX = 1.0                               # mm; the zoom never frames less than this
 
 
+ENGINE = os.environ.get("FREESHAPE_INTERFERENCE_ENGINE", "helper")   # "helper" (a process) or "thread"
+_LIVE_HELPERS = set()                 # helper processes alive right now; killed at exit
+
+
+def _kill_live_helpers():
+    for p in list(_LIVE_HELPERS):
+        try:
+            p.kill()
+        except Exception:
+            pass
+
+
+atexit.register(_kill_live_helpers)
+
+
 def launch_check(executor, bodies, skip, expected, progress, cancelled, cache):
-    """Start one check and return its Future. The only place a check is launched: swap the engine here."""
+    """Start one check and return its Future. The only place a check is launched. With ENGINE "helper" the pair
+    loop runs in `freeshape.interference_worker` (a boolean holds Python's lock, so a thread would freeze the
+    window: the I5.1 benchmark); the Future has a `kill()`. With "thread" it runs on `executor`.
+    The helper keeps its own cache for the length of one run; `cache` is not used by it."""
+    if ENGINE == "helper":
+        return _HelperRun(bodies, skip, expected, progress, cancelled).future
     return executor.submit(I.find_interferences, bodies, skip_pairs=skip, expected_pairs=expected,
                            progress=progress, cancelled=cancelled, cache=cache)
+
+
+class _HelperRun:
+    """One check run by helper processes, driven from a plain thread. Each process gets the pairs not yet done and
+    reports one log line per pair. Cancel (the `cancelled` callable, or `future.kill()`) kills the process and
+    returns the pairs done so far, marked incomplete. A process that dies is reported as a "could not check" row for
+    the pair in flight and the run goes on with a new process. If no process can be started or kept alive, the
+    remaining pairs run in this thread instead."""
+    STARTUP_TRIES = 2
+
+    def __init__(self, bodies, skip, expected, progress, cancelled):
+        self.bodies = list(bodies)
+        self.skip = skip
+        self.expected = expected
+        self.progress = progress
+        self.cancelled = cancelled
+        self.proc = None
+        self._killed = False
+        self.future = Future()
+        self.future.kill = self.kill
+        self.future.set_running_or_notify_cancel()
+        threading.Thread(target=self._main, name="interference-helper", daemon=True).start()
+
+    def kill(self):
+        self._killed = True
+        p = self.proc
+        if p is not None:
+            try:
+                p.kill()
+            except OSError:
+                pass
+
+    def _stop(self):
+        return self._killed or (self.cancelled is not None and self.cancelled())
+
+    def _main(self):
+        try:
+            res = self._run()
+        except BaseException as e:
+            self.future.set_exception(e)
+        else:
+            self.future.set_result(res)
+
+    def _run(self):
+        bodies = self.bodies
+        boxes = [K.bbox(b.shape) for b in bodies]
+        los = np.array([b[0] for b in boxes]).reshape(-1, 3)
+        his = np.array([b[1] for b in boxes]).reshape(-1, 3)
+        pairs = [(i, j) for i, j in I._boxes_overlap(los, his)
+                 if frozenset((bodies[i].id, bodies[j].id)) not in self.skip]
+        out = I.ClashList()
+        out.pairs_total = total = len(pairs)
+        if self.progress:
+            self.progress(0, total)
+        tmp = tempfile.mkdtemp(prefix="fs_interf_")
+        try:
+            if pairs:
+                self._write_geometry(tmp)
+                pos = self._drive(tmp, pairs, out, los, his)
+                if pos < total and not self._stop():
+                    self._inprocess(pairs, pos, out)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        out.incomplete = out.pairs_checked < total and self._stop()
+        out.sort(key=lambda c: -c.volume)
+        return out
+
+    def _write_geometry(self, tmp):
+        """One BREP per distinct geometry: a keyed body is sent unplaced (its placement goes in the request)."""
+        self._body_json = []
+        seen = {}
+        for n, b in enumerate(self.bodies):
+            keyed = b.geom_key is not None
+            if keyed and b.geom_key in seen:
+                k = seen[b.geom_key]
+            else:
+                k = len(seen) if keyed else 1_000_000 + n
+                shape = K.located(b.shape, np.linalg.inv(np.asarray(b.T, float))) if keyed else b.shape
+                with open(os.path.join(tmp, f"g{k}.brep"), "wb") as fh:
+                    fh.write(K.shape_to_brep(shape))
+                if keyed:
+                    seen[b.geom_key] = k
+            self._body_json.append({"geom": k, "keyed": keyed, "standard": bool(b.standard),
+                                    "T": np.asarray(b.T, float).ravel().tolist() if keyed else None})
+
+    def _failed(self, i, j, los, his, note):
+        a, b = self.bodies[i], self.bodies[j]
+        return I.Clash(a.id, b.id, "failed", 0.0, np.maximum(los[i], los[j]), np.minimum(his[i], his[j]), None, note)
+
+    def _drive(self, tmp, pairs, out, los, his):
+        """Run the pairs on helper processes; return how many pairs are accounted for (a cancel returns early)."""
+        total = len(pairs)
+        index = {b.id: n for n, b in enumerate(self.bodies)}
+        expected = [[index[a], index[b]] for a, b in (tuple(p) for p in self.expected)
+                    if a in index and b in index]
+        pos = 0
+        no_start = 0
+        attempt = 0
+        while pos < total and not self._stop():
+            attempt += 1
+            req = {"bodies": self._body_json, "pairs": pairs[pos:], "expected": expected,
+                   "min_volume": I.MIN_VOLUME, "min_depth": I.MIN_DEPTH,
+                   "log": os.path.join(tmp, f"log{attempt}.txt")}
+            req_path = os.path.join(tmp, f"req{attempt}.json")
+            with open(req_path, "w", encoding="utf-8") as fh:
+                json.dump(req, fh)
+            open(req["log"], "w").close()
+            try:
+                self.proc = subprocess.Popen(_worker_command(req_path), cwd=_ROOT, stdin=subprocess.DEVNULL,
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **_no_window())
+            except OSError:
+                return pos                          # no process can be started: the caller runs the rest here
+            if self._killed:                        # kill() came in between
+                self.kill_quietly()
+            _LIVE_HELPERS.add(self.proc)
+            inflight = None
+            finished = False
+            started_any = False
+            try:
+                for ev in self._events(self.proc, req["log"]):
+                    if ev["t"] == "S":
+                        inflight = pos + ev["n"]
+                        started_any = True
+                    elif ev["t"] == "R":
+                        i, j = pairs[pos + ev["n"]]
+                        c = self._clash(tmp, ev, i, j)
+                        if c is not None:
+                            out.append(c)
+                        inflight = None
+                        out.pairs_checked += 1
+                        if self.progress:
+                            self.progress(out.pairs_checked, total)
+                    elif ev["t"] == "E":
+                        finished = True
+                if finished:
+                    return total
+                if self._stop():
+                    return pos
+                # the process died without finishing
+                if inflight is not None:
+                    i, j = pairs[inflight]
+                    out.append(self._failed(i, j, los, his,
+                                            f"The check process stopped (exit code {self.proc.returncode})"))
+                    out.pairs_checked += 1
+                    if self.progress:
+                        self.progress(out.pairs_checked, total)
+                    pos = inflight + 1
+                    no_start = 0
+                else:
+                    pos = out.pairs_checked
+                    no_start = 0 if started_any else no_start + 1
+                    if no_start >= self.STARTUP_TRIES:
+                        return pos
+            finally:
+                _LIVE_HELPERS.discard(self.proc)
+                self.kill_quietly()
+        return pos
+
+    def kill_quietly(self):
+        p = self.proc
+        if p is None:
+            return
+        if p.poll() is None:
+            try:
+                p.kill()
+            except OSError:
+                pass
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            pass
+
+    def _events(self, proc, log_path):
+        """Yield the log lines as dicts as they appear. Ends when the process has exited and the log is read to the
+        end, or when the run is cancelled (the process is killed first)."""
+        buf = ""
+        with open(log_path, encoding="utf-8") as fh:
+            while True:
+                if self._stop():
+                    self.kill_quietly()
+                    return
+                alive = proc.poll() is None
+                chunk = fh.read()
+                if chunk:
+                    buf += chunk
+                    *lines, buf = buf.split("\n")
+                    for ln in lines:
+                        if ln.strip():
+                            yield json.loads(ln)
+                    continue
+                if not alive:
+                    return
+                time.sleep(0.01)
+
+    def _clash(self, tmp, ev, i, j):
+        if ev["kind"] is None:
+            return None
+        shape = None
+        if ev.get("brep"):
+            with open(os.path.join(tmp, ev["brep"]), "rb") as fh:
+                shape = K.shape_from_brep(fh.read())
+        return I.Clash(self.bodies[i].id, self.bodies[j].id, ev["kind"], ev["vol"], np.array(ev["lo"], float),
+                       np.array(ev["hi"], float), shape, ev.get("note", ""))
+
+    def _inprocess(self, pairs, pos, out):
+        """The fallback: the remaining pairs in this thread, through the same kernel."""
+        cache = {}
+        for i, j in pairs[pos:]:
+            if self._stop():
+                break
+            for c in I.find_interferences([self.bodies[i], self.bodies[j]], expected_pairs=self.expected,
+                                          cache=cache):
+                out.append(c)
+            out.pairs_checked += 1
+            if self.progress:
+                self.progress(out.pairs_checked, out.pairs_total)
+
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _worker_command(req_path):
+    """The same route as the STEP and HLR workers: the frozen app runs itself with a flag."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--interference-worker", req_path]
+    return [sys.executable, "-m", "freeshape.interference_worker", req_path]
+
+
+def _no_window():
+    return {"creationflags": 0x08000000} if sys.platform == "win32" else {}      # CREATE_NO_WINDOW
 
 
 def surviving_pairs(bodies, skip):

@@ -27,6 +27,7 @@ from .. import interference as I
 from .. import kernel as K
 from .assembly_ui import _floating, _head, _hline
 from .numparse import fmt
+from .panels import ROLE_ID
 from .viewport import Pick
 
 # From scripts/spikes/op2_interference_bench.result.txt (I5.1):
@@ -111,6 +112,71 @@ class AssemblyHost(QObject):
         self.ctl.show_scene()
 
 
+class StudioHost(QObject):
+    """What the panel needs from a Part Studio tab: parts that are shown, not Context and have a solid."""
+    changed = Signal()
+    has_standard = False                      # no Standard content in a Part Studio: the checkbox stays hidden
+    min_parts = 2                             # fewer parts than this and the panel says so instead of "no overlap"
+    clears_cache = True                       # a part keeps its id when a feature edit changes its shape
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.doc = win.doc
+        self._cb = lambda: self.changed.emit()
+        self.doc.listeners.append(self._cb)
+
+    def detach(self):
+        if self._cb in self.doc.listeners:
+            self.doc.listeners.remove(self._cb)
+
+    @property
+    def main(self):
+        return self.win
+
+    def parent_widget(self):
+        return self.win.viewport
+
+    def visible_ids(self):
+        return [b.id for b in I.studio_bodies(self.doc)]
+
+    def bodies(self, ids):
+        return [b for b in I.studio_bodies(self.doc) if ids is None or b.id in ids]
+
+    def left_out(self):
+        """How many parts studio_bodies leaves out (hidden, Context or no solid), for the footer."""
+        return len(self.doc.state.parts) - len(I.studio_bodies(self.doc))
+
+    def name(self, pid):
+        p = self.doc.state.parts.get(pid)
+        return p.name if p is not None else "?"
+
+    def selected_ids(self):
+        ids = list(self.win.left.parts.selected_part_ids())
+        for pk in self.win.viewport.selection:
+            if pk.kind in ("face", "edge", "part") and pk.key[0] not in ids:
+                ids.append(pk.key[0])
+        return [i for i in ids if i in self.doc.state.parts]
+
+    def select(self, ids):
+        lst = self.win.left.parts
+        lst.blockSignals(True)
+        lst.clearSelection()
+        for r in range(lst.count()):
+            it = lst.item(r)
+            if it.data(ROLE_ID) in ids:
+                it.setSelected(True)
+        lst.blockSignals(False)
+        self.win.viewport.set_selection([Pick("part", (i,)) for i in ids])
+
+    def exploded(self):
+        return False
+
+    def redraw(self):
+        if self.win.mode == "idle" and self.win.doc is self.doc:
+            self.win._show_state(self.doc.state)
+
+
 class _Item(QTreeWidgetItem):
     """A result row that sorts by volume, not by its text."""
 
@@ -154,6 +220,8 @@ class InterferencePanel(QFrame):
         self._scope = None                # None = every visible part, else a set of ids
         self._cache = {}
         self._left = 0                    # standard parts the last check left out
+        self._left_out = 0                # Part Studio parts the last check left out (hidden or Context)
+        self._nbodies = 0
         self._group = None                # the Expected (threads) group item, or None
         self._ignored = set()             # frozenset pairs ignored this session
         self._ghost_meshes = {}           # id(clash) -> Mesh
@@ -314,6 +382,10 @@ class InterferencePanel(QFrame):
             return
         self._stop_run()
         bodies = self.host.bodies(self._scope)
+        self._nbodies = len(bodies)
+        if getattr(self.host, "clears_cache", False):
+            self._cache = {}                  # a run still going keeps the old dict
+        self._left_out = self.host.left_out() if hasattr(self.host, "left_out") else 0
         self._run += 1
         self._stale = False
         self._cancel = threading.Event()
@@ -442,6 +514,10 @@ class InterferencePanel(QFrame):
             parts.append(f"{n_thread} expected thread overlap{'s' if n_thread != 1 else ''} not counted.")
         if n_fail:
             parts.append(f"{n_fail} pair{'s' if n_fail != 1 else ''} could not be checked.")
+        if self._nbodies < getattr(self.host, "min_parts", 0):
+            parts = ["Interference needs two or more parts."]
+        if self._left_out:
+            parts.append(f"{self._left_out} part{'s' if self._left_out != 1 else ''} not checked: hidden or reference.")
         if self._left:
             parts.append(f"{self._left} standard part{'s' if self._left != 1 else ''} not checked.")
         if self._ignored:

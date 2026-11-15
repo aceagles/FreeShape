@@ -66,6 +66,8 @@ def test_part_studio_list_keeps_its_entries(w):
     got = names(w)
     assert got[:3] == ["Sketch", "Extrude", "Revolve"]
     assert {"Extrude", "Fillet", "Delete part", "Section view", "Export"} <= set(got)
+    assert "Interference detection" in got
+    assert [c.name for c in search_commands(w._palette_commands(), "collision")][:1] == ["Interference detection"]
     assert "Revolute" not in got and "Polygon" not in got
 
 

@@ -161,6 +161,7 @@ class MainWindow(QMainWindow):
         self.sketch_waiting_for_plane = False
         self._sketch_buttons = {}
         self.section_panel = None
+        self.studio_interf = None   # the Interference detection panel of a Part Studio while open
         # view state of the visibility keys: none of it is saved with the file
         self.show_axes = True                               # construction axes (Shift+P)
         self.show_connectors = True                         # a Part Studio's mate connectors (K, Shift+P)
@@ -669,6 +670,9 @@ class MainWindow(QMainWindow):
             C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.redo, "", "Edit"),
             C("section", "Section view", "Cut the model open with a plane to see inside (Shift+X).",
               self.toggle_section, "cross", "View"),
+            Command("interference", "Interference detection", "Show where parts overlap.",
+                    lambda: self.toggle_studio_interference(), "interference clash collision overlap check", "View",
+                    "" if self.mode == "idle" else "Finish or cancel the open feature first"),
             C("hide", "Show or hide planes", "Show or hide the default planes and the planes you made (P).",
               lambda: self.vis_command("planes"), "visibility datum", "View"),
             C("hide", "Show or hide construction geometry", "Show or hide planes, axes and mate connectors "
@@ -916,6 +920,8 @@ class MainWindow(QMainWindow):
         h.addStretch(1)
         self.btn_section = self._tb(h, "section", "Section view (Shift+X) — select a face or plane first to cut there",
                                     self.toggle_section, checkable=True)
+        self.btn_pinterf = self._tb(h, "interference", "Interference detection — show where parts overlap",
+                                    lambda checked=False: self.toggle_studio_interference(checked), checkable=True)
         self._tb(h, "fit", "Zoom to fit (F)", lambda: self.viewport.fit())
         self._tb(h, "iso", "Isometric (Shift+7)", lambda: self.viewport.set_standard_view("Isometric"))
         return w
@@ -2906,6 +2912,32 @@ class MainWindow(QMainWindow):
             w_.setChecked(on)
             w_.blockSignals(False)
 
+    def toggle_studio_interference(self, on=None):
+        """Open or close the Interference detection panel of a Part Studio (toolbar button and palette command)."""
+        btn = self.btn_pinterf
+        if on is None:
+            on = self.studio_interf is None
+        if not on:
+            self.close_studio_interference()
+            return
+        if self.studio_interf is not None:
+            return
+        if self.mode != "idle" or self.is_asm or self.is_dwg or self.var_tabs.is_variables(self.doc):
+            btn.setChecked(False)
+            return
+        from .interference_ui import InterferencePanel, StudioHost
+        self.studio_interf = InterferencePanel(StudioHost(self))
+        self.studio_interf.closed.connect(self.close_studio_interference)
+        btn.setChecked(True)
+
+    def close_studio_interference(self):
+        p, self.studio_interf = self.studio_interf, None
+        if p is not None:
+            p.shutdown()
+            p.hide()
+            p.deleteLater()
+        self.btn_pinterf.setChecked(False)
+
     # ================================================================== sheet metal
     def _flat_on(self, state, p):
         return getattr(self, "_flat_view", False) and p.id in getattr(state, "sheet", {})
@@ -4229,6 +4261,7 @@ class MainWindow(QMainWindow):
         self._leave_tab()
         if self.section_panel is not None:
             self.toggle_section()
+        self.close_studio_interference()
         if self.doc is not None and self.doc.kind != "variables":
             self._update_thumbnail()
             if self.doc.kind != "drawing":

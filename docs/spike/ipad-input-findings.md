@@ -1,5 +1,47 @@
 # iPad input findings
 
+Spike: what finger and Apple Pencil input reaches the FreeShape Qt app when it is streamed to an iPad browser through Selkies. The spike closed early. The browser side was measured, the Selkies side was read from code, and what Qt receives is a prediction that was never measured.
+
+## Summary
+
+1. What the iPad browser reports: pen and finger are told apart by `pointerType`; pen pressure is graded (highest seen 0.41), finger pressure is always 0, two fingers are tracked together and also fire gesture events, and there is no pen hover. Evidence: "Baseline".
+2. What Selkies sends: finger, pen and mouse all become the same mouse message (`m,x,y,mask,0,seq`; in trackpad mode `m2` with relative deltas), in both touch modes, with no touch or pen message. Evidence: "Selkies input path".
+3. What Qt receives: mouse only, in both touch modes, with no `QTouchEvent`, `QTabletEvent`, pressure or hover. This is a prediction from reading the Selkies code, not a measurement; the Qt probe was never run under Selkies. Evidence: "Selkies input path", "Results".
+4. Whether fingers and pen work together: no, because the browser never reports them at the same time, even when a finger is dragged while the pen is down. Evidence: "Baseline".
+5. Whether a side channel would carry raw events to Qt: not tested. Reading the code (I1.2) shows it is feasible, since the browser has pressure and tilt, the server could accept a new message type and the app could read it directly, but it is the input half of a browser client, so it was not pursued. Evidence: "Selkies input path" (candidate patch points), "Recommendation and decision".
+
+One field observation, not confirmed: loading real FreeShape through Selkies on the iPad on 15 Nov, the pen was treated as text input instead of navigating. The likely cause is iPadOS Scribble writing into the hidden text field Selkies keeps for its on-screen keyboard.
+
+## Baseline
+
+Measured in the I1.1 browser probe on 2026-11-15: first-generation Apple Pencil, Chrome on iPadOS 18.6.2 (which runs on WebKit). Safari itself was not tested. Raw log: `docs/spike/ipad-input-logs/i11-browser-baseline.jsonl`. Reproduce the per-gesture summary with:
+
+```
+python3 scripts/spike/ipad_input/browser_probe/probe_server.py summary --log docs/spike/ipad-input-logs/i11-browser-baseline.jsonl
+```
+
+| Gesture | Pointer types | Most pointers down at once | Touches in one TouchEvent | Pressure | Hover (moves with nothing down) | Gesture events |
+|---|---|---|---|---|---|---|
+| Finger tap | touch | 1 | 1 | touch 0 | none | none |
+| Finger drag | touch | 1 | 1 | touch 0 | none | none |
+| Two-finger drag | touch | 2 | 2 | touch 0 | none | gesturestart, gesturechange, gestureend |
+| Pinch | touch | 2 | 2 | touch 0 | none | gesturestart, gesturechange, gestureend |
+| Pen tap | pen, touch | 1 | 1 | pen 0 to 0.18 | none | none |
+| Pen drag | pen | 1 | 1 | pen 0 to 0.30 | none | none |
+| Pen above glass | pen | 1 | 1 | pen 0.001 to 0.08 | none | none |
+| Pen down plus finger drag | pen, touch | 1 | 1 | pen 0.01 to 0.41, touch 0 | none | none |
+
+Findings:
+
+- Pen and finger are told apart by `pointerType` (`pen` or `touch`). Touch Events also label the pen `stylus` and the finger `direct`.
+- Pen pressure is graded: 46 to 152 distinct values per gesture. The highest seen is 0.41. The full scale was not tested, so do not assume 1.0 is reachable.
+- Finger pressure is always 0.
+- Two fingers are tracked as two pointers in one TouchEvent, and they also fire `gesturestart`, `gesturechange` and `gestureend`.
+- There is no pen hover. Pen above glass produced no moves with nothing down.
+- Pen and finger are never reported together. In "pen down plus finger drag" the most pointers down at once is 1, although the user did drag a finger while the pen was down.
+- WebKit gives a finger implicit pointer capture (`gotpointercapture` and `lostpointercapture` appear on finger gestures) but not the pen. The probe never called `setPointerCapture`, so an explicit call for the pen is untested.
+- The "pen tap" row includes some touch pointers alongside the pen. The cause was not investigated.
+
 ## Selkies input path
 
 Read-only study of the running `freeshape` container (Selkies 2.2.1, pixelflux 2.2.3, labwc 0.9.7, Wayland session) on 2026-11-15. Client code is `/usr/share/selkies/web/selkies-core.js` (minified; function names below are the class methods, which survive minification). Server code is `/lsiopy/lib/python3.14/site-packages/selkies/`. Nothing was run in the container beyond `cat`, `ls`, `grep`, `readlink`, `ps` and reads of `/proc`.
@@ -9,7 +51,7 @@ Read-only study of the running `freeshape` container (Selkies 2.2.1, pixelflux 2
 - Every input device collapses to the Selkies mouse message `m,x,y,buttonMask,0,seq` (absolute) or `m2,dx,dy,buttonMask,0,seq` (relative). There is no touch message and no pen message.
 - Pen pressure, tilt, hover and finger contact points are never sent. The server has no API to inject touch or tablet events.
 - Compositor-side, labwc sees one pointer and one keyboard, in every touch mode.
-- Prediction for I1.5: mouse only, in both touch modes.
+- Prediction for what Qt receives: mouse only, in both touch modes. Not measured; the hand tests (I1.5) were withdrawn.
 
 ### Transport
 
@@ -58,15 +100,17 @@ How each is set:
 
 What labwc sees. Selkies injects input with the in-process pixelflux `ScreenCapture` object (`input_handler.py:4805`, `self.wayland_input`). Its injection API is `inject_mouse_move` (absolute), `inject_relative_mouse_move`, `inject_mouse_button`, `inject_mouse_scroll`, `inject_finger_scroll(_end)`, `inject_key(s)` (strings in `pixelflux.cpython-314-x86_64-linux-gnu.so`). There is no touch or tablet call. pixelflux's compositor (socket `wayland-1`) forwards these to its seat, and labwc is a nested client of it, so labwc's wlroots Wayland backend gets a `wl_pointer` and a `wl_keyboard`. On X11 sessions the same `send_x11_mouse` path uses XTEST (`send_mouse`, line 5892) or a uinput mouse socket when `uinput_mouse_socket_path` is set; both are mouse only. Not determined: the exact device name labwc reports and whether pixelflux's seat advertises a `wl_touch` capability. Querying the Wayland registry needs a client such as `wayland-info`, which this read-only pass did not run. It does not change the conclusion, since nothing injects touch.
 
-### Prediction for I1.5
+### Prediction for what Qt receives
+
+This is a prediction. The hand test that would check it (I1.5) was not run.
 
 Mouse only, in both touch modes. A finger will arrive at Qt as a mouse (direct: absolute left-drag, trackpad: relative moves), and the pen as a mouse with a left button in direct mode. In trackpad mode the pen's pointer events are discarded (`_mouseButtonMovement` returns early when `_trackpadMode`), and its stylus Touch Events drive the relative cursor like a finger. Qt will see no `QTouchEvent`, no `QTabletEvent`, no pressure, no hover, and `Qt::MouseEventNotSynthesized` mouse events from a single pointer. Expected side effects: two-finger scroll arrives as wheel events (or Wayland finger-scroll), and pinch arrives as Ctrl+wheel.
 
-Candidate patch points, if I1.5 confirms mouse only and pressure is wanted:
+Candidate patch points, if pressure were wanted through Selkies (untested, not pursued):
 
 1. Client, send pressure: `_handlePointerDown/_Move/_Up` and `_mouseButtonMovement` in `selkies-core.js` (add a pen message with `pressure`, `tiltX`, `tiltY`, `pointerId`). The page is served from `/usr/share/selkies/web`, which is rebuilt each start (see below), so a patch needs a bind mount at the source directory.
 2. Server, receive: a new branch in `_dispatch_message` beside `m`/`m2` (`input_handler.py` ~line 9276), plus the prefix tuples at ~line 173.
-3. Server, inject: pixelflux has no tablet or touch injection. Either write a uinput tablet device from the server (the code already has a uinput helper at ~line 2806 and a uinput mouse socket) or deliver the samples to the app directly. For FreeShape the simplest route is a side channel (I1.6) that sends pen samples straight to the Qt app and ignores the compositor.
+3. Server, inject: pixelflux has no tablet or touch injection. Either write a uinput tablet device from the server (the code already has a uinput helper at ~line 2806 and a uinput mouse socket) or deliver the samples to the app directly. For FreeShape the simplest route is a side channel (I1.6, not run) that sends pen samples straight to the Qt app and ignores the compositor.
 4. App, no Selkies change: read pen state from a side channel and combine it with the mouse position Selkies already delivers.
 
 ### Upstream pen and stylus support
@@ -78,7 +122,7 @@ Candidate patch points, if I1.5 confirms mouse only and pressure is wanted:
 
 ### Launcher, Wayland socket, environment, nginx, web root
 
-Launcher copy rule. `/etc/s6-overlay/s6-rc.d/init-selkies-config/run` sets `CONF_DIR=$HOME/.config/labwc` and `DEF_AUTOSTART=/defaults/autostart_wayland` when `PIXELFLUX_WAYLAND=true`. It copies `DEF_AUTOSTART` to `$CONF_DIR/autostart` only if `$CONF_DIR/autostart` does not exist (`if [[ ! -f "$CONF_DIR/autostart" ]]`). An existing autostart is never overwritten, so a probe needs to replace `$HOME/.config/labwc/autostart` (here `/config/.config/labwc/autostart`) or run on a fresh `/config`. The same script chmods the file to 644 `abc:abc`, or to root-owned 550 when `RESTART_APP=true`. `menu.xml` follows the same copy-once rule. `rc.xml` does not: it is regenerated from `/defaults/labwc.xml` on every start, so edits to it are lost. In this container the live autostart equals `/defaults/autostart_wayland` and holds one line: `cd /config/Desktop && PYTHONPATH=/src exec /opt/freeshape-venv/bin/python -m freeshape`.
+Launcher copy rule. `/etc/s6-overlay/s6-rc.d/init-selkies-config/run` sets `CONF_DIR=$HOME/.config/labwc` and `DEF_AUTOSTART=/defaults/autostart_wayland` when `PIXELFLUX_WAYLAND=true`. It copies `DEF_AUTOSTART` to `$CONF_DIR/autostart` only if `$CONF_DIR/autostart` does not exist (`if [[ ! -f "$CONF_DIR/autostart" ]]`). An existing autostart is never overwritten, so a probe would need to replace `$HOME/.config/labwc/autostart` (here `/config/.config/labwc/autostart`) or run on a fresh `/config`. The same script chmods the file to 644 `abc:abc`, or to root-owned 550 when `RESTART_APP=true`. `menu.xml` follows the same copy-once rule. `rc.xml` does not: it is regenerated from `/defaults/labwc.xml` on every start, so edits to it are lost. In this container the live autostart equals `/defaults/autostart_wayland` and holds one line: `cd /config/Desktop && PYTHONPATH=/src exec /opt/freeshape-venv/bin/python -m freeshape`.
 
 Wayland socket. The runtime dir is `XDG_RUNTIME_DIR=/config/.XDG` and holds `wayland-0` and `wayland-1` (plus `labwc.sock`). Reading `/proc/net/unix` against the file descriptors of each process shows labwc (pid 458) listening on `wayland-0` and on `labwc.sock`, and the Selkies process (pid 309, pixelflux's compositor) listening on `wayland-1`. labwc itself runs with `WAYLAND_DISPLAY=wayland-1` (`startwm_wayland.sh` exports it) and is a client of Selkies. Apps started by labwc connect to `wayland-0`. Xwayland is `:0` (`Xwayland :0 -rootless`, started by labwc, socket `/tmp/.X11-unix/X0`).
 
@@ -154,10 +198,59 @@ XKB_DEFAULT_RULES=evdev
 
 nginx. The template is `/defaults/default.conf`. `/etc/s6-overlay/s6-rc.d/init-nginx/run` line 28 runs `cp /defaults/default.conf /etc/nginx/sites-available/default` on every start, then `sed` replaces `3000` (HTTP port), `3001` (HTTPS port), `CWS` (8082) and `SUBFOLDER` (default `/`). `sites-enabled/default` is a symlink to it. Any edit made in the live file is lost at the next start, so a change must go into the template (a bind mount of a replacement `/defaults/default.conf`). The template serves the web root at `location SUBFOLDER` with `alias /usr/share/selkies/web/`, proxies `SUBFOLDERapi` to `127.0.0.1:CWS` (the Selkies WebSocket), and listens on 3000 plain and 3001 with TLS (`/config/ssl/cert.pem`).
 
-Web root. `/usr/share/selkies/web/`. The same init script runs `rm -Rf /usr/share/selkies/web` and then `cp -a /usr/share/selkies/$DASHBOARD /usr/share/selkies/web` (default `DASHBOARD=selkies-dashboard`), then overwrites `favicon.ico`, `icon.png` and writes `manifest.json`. A bind mount placed on `web/` or on a file inside it would be removed or fail at start. For I1.6 the mount belongs on `/usr/share/selkies/selkies-dashboard` (the copy source), or the `DASHBOARD` variable can point at a different directory under `/usr/share/selkies/`.
+Web root. `/usr/share/selkies/web/`. The same init script runs `rm -Rf /usr/share/selkies/web` and then `cp -a /usr/share/selkies/$DASHBOARD /usr/share/selkies/web` (default `DASHBOARD=selkies-dashboard`), then overwrites `favicon.ico`, `icon.png` and writes `manifest.json`. A bind mount placed on `web/` or on a file inside it would be removed or fail at start. A mount for a side-channel patch would belong on `/usr/share/selkies/selkies-dashboard` (the copy source), or the `DASHBOARD` variable can point at a different directory under `/usr/share/selkies/`.
 
 ### Not determined
 
 - The device name and capabilities labwc reports for the pixelflux seat (needs a Wayland client; not run, to keep the container untouched).
-- Whether stock 2.2.1 produces duplicate mouse events from the compatibility `mousedown`/`mouseup` events Safari fires after a pen tap. The element-level `mousedown` and window `mouseup` listeners would call `_mouseButtonMovement` a second time; whether Safari actually sends them for the pen is a hand-test question for I1.5.
+- Whether stock 2.2.1 produces duplicate mouse events from the compatibility `mousedown`/`mouseup` events Safari fires after a pen tap. The element-level `mousedown` and window `mouseup` listeners would call `_mouseButtonMovement` a second time; whether Safari actually sends them for the pen is a hand-test question that was not run (I1.5).
 - The `touch-action` value on the overlay element. No `touch-action` rule for it appears in `index.html` or the JS, so it is not set by Selkies; behaviour depends on the browser default and on the `preventDefault()` calls above.
+
+## Results
+
+The hand-test matrix (I1.4, I1.5) and the side channel (I1.6) were not run. The spike was closed early after the decision below, so the work would not have changed the outcome. Consequences:
+
+- Nothing was measured on the Qt side. The Qt probe (`scripts/spike/ipad_input/qt_probe.py`) has a passing self-test and was never run under Selkies. Every statement about what Qt receives is a prediction from the Selkies code.
+- The candidate patch points in "Selkies input path" are untested. No Selkies file was patched and no bind mount was made.
+- The "Not determined" items above stay open.
+
+## Recommendation and decision
+
+Decision (Adam, 2026-11-15): the iPad client will be browser-native, a backend plus a browser front end for a single user, instead of the Qt window streamed through Selkies.
+
+Reasons:
+
+- Selkies delivers mouse only.
+- Real pen and touch in Qt would need a side channel, which is the input half of a browser client.
+- A Qt gesture layer and compact layout would be thrown away when the UI moves to the browser.
+- The video stream is soft and adds latency.
+
+Follow-on work package: the browser client, planned separately. Its ADR will be written with that work package on a branch from master. This spike branch never merges to master, so no ADR is written here.
+
+Design consequences for the browser client:
+
+- A snap preview has to show while the pen is down, because there is no pen hover.
+- A finger-held modifier has to be an on-screen toggle, because pen and finger are never reported together.
+
+## Decision log text
+
+Plain text for the Drive decision log. The Drive connector cannot edit that document, so paste this by hand.
+
+D1 (route: stream the Qt app through Selkies): superseded on 2026-11-15 by the browser-native decision below. Its assumption that Selkies passes real touch and stylus input is false. Selkies sends finger, pen and mouse as the same mouse message in both touch modes and has no touch or pen message. Source: the I1.2 reading of the Selkies code. What Qt receives was not measured, because the Qt hand tests were withdrawn.
+
+D4 (pen hover): closed. The iPad browser reports no pen hover on this iPad and first-generation Pencil (Chrome on iPadOS 18.6.2, WebKit). Source: the I1.1 browser probe. Consequence: a snap preview has to show while the pen is down.
+
+D10 (pen and finger together): dropped. The browser never reports a pen and a finger at the same time, even when a finger is dragged while the pen is down. Source: the I1.1 browser probe. Consequence: a finger-held modifier has to be an on-screen toggle.
+
+New decision (Adam, 2026-11-15): the iPad client will be browser-native, a backend plus a browser front end for a single user, instead of the Qt window streamed through Selkies. Reasons: Selkies delivers mouse only; real pen and touch in Qt would need a side channel, which is the input half of a browser client; a Qt gesture layer and compact layout would be thrown away when the UI moves to the browser; the video stream is soft and adds latency. Follow-on: the browser client work package, planned separately, with its own ADR written on a branch from master.
+
+Unconfirmed field note, 2026-11-15: loading real FreeShape through Selkies on the iPad for the first time, the pen was treated as text input instead of navigating. The likely cause is iPadOS Scribble writing into the hidden text field Selkies keeps for its on-screen keyboard. Not confirmed.
+
+## What is left on this branch
+
+- `scripts/spike/ipad_input/browser_probe/`: the I1.1 browser probe and its server, including the `summary` command.
+- `scripts/spike/ipad_input/qt_probe.py` and `test_qt_probe.py`: the Qt probe window and its self-test. The probe was never run under Selkies.
+- `docs/spike/ipad-input-logs/i11-browser-baseline.jsonl`: the raw I1.1 log.
+- Nothing was pushed to master. This branch does not merge to master.
+- No `freeshape-touch` container and no `config-touch` directory were ever created. On 2026-11-15 `docker ps -a` showed no `freeshape-touch` and `/home/ncr/freeshape/config-touch` did not exist.
+- The I1.1 preview hostname `ipad-probe` was removed on 2026-11-15. `preview ls` that day listed no ipad or touch hostname.

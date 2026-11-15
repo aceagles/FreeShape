@@ -156,6 +156,7 @@ class MainWindow(QMainWindow):
         self.dialog = None
         self.sketcher = None
         self.sk_ctx = None
+        self._parked = {}           # tab key -> the sketch left open in that tab (see _park_sketch)
         self.sketch_waiting_for_plane = False
         self._sketch_buttons = {}
         self.section_panel = None
@@ -1574,6 +1575,64 @@ class MainWindow(QMainWindow):
         self.mode = "idle"
         self.tool_stack.setCurrentIndex(0)
         self._populate_lists()
+
+    def _leave_tab(self):
+        """Before another tab is shown: an open sketch is kept for when its tab is shown again (as Onshape
+        does); anything else that is open is cancelled."""
+        if self.mode != "sketch" or not self._park_sketch():
+            self._leave_modes()
+
+    def _park_sketch(self):
+        """Set the open sketch aside whole (the sketcher, with its undo history and tool, and the Sketch panel)
+        and leave the window idle for the tab about to be shown. Nothing goes into the document: its undo
+        history and the tabs that follow it never see a half-drawn sketch. False for a new sketch with
+        nothing drawn, which has nothing to keep."""
+        ctx, skr = self.sk_ctx, self.sketcher
+        if skr is None or (ctx["is_new"] and not skr.sk.entities):
+            return False
+        skr._close_editor()
+        skr._close_select_other()
+        self._parked[id(self.doc)] = {"doc": self.doc, "ctx": ctx, "sketcher": skr, "dialog": self.dialog}
+        self.dialog.hide()
+        self.sketcher = self.dialog = None      # so that _exit_sketch only detaches them
+        self._exit_sketch()
+        self._show_state(self.doc.state)
+        return True
+
+    def _resume_sketch(self):
+        """The tab just shown had a sketch open when it was left: open it again as it was."""
+        for key in [k for k, p in self._parked.items() if self.docs.get(k) is not p["doc"]]:
+            self._parked.pop(key)["dialog"].deleteLater()         # its tab was closed meanwhile
+        p = self._parked.pop(id(self.doc), None)
+        if p is None:
+            return
+        ctx, skr = p["ctx"], p["sketcher"]
+        # the model below the sketch may have been rebuilt while its tab was away (a Variable Studio it uses
+        # edited in another tab): sketch on it as it is now
+        if not ctx["extra"]:
+            ctx["base"] = self.doc.state_before(ctx["index"])
+        else:
+            st, err = self.doc.preview(ctx["extra"][0], ctx["index"])
+            if not err:
+                ctx["base"] = st
+        skr.variables = dict(ctx["base"].vars)
+        skr.base_state = ctx["base"]
+        try:
+            skr.plane = F.resolve_plane(ctx["base"], ctx["feature"]["params"]["plane"])
+        except K.KernelError:
+            pass                                # the plane is gone: keep drawing where it was
+        self.mode = "sketch"
+        self.sk_ctx, self.sketcher, self.dialog = ctx, skr, p["dialog"]
+        vp = self.viewport
+        vp.feature_hl = None
+        vp.sketcher = skr
+        vp.sketch_see_through = self.dialog.see_through.isChecked()
+        self.tool_stack.setCurrentIndex(1)
+        self._sketch_tool_changed(skr.tool)
+        self.dialog.show()
+        self._populate_lists()
+        self._sketch_changed(True)
+        vp.setFocus()
 
     def edit_configs(self):
         if self.doc is None or self.is_asm or self.is_dwg:
@@ -3737,7 +3796,7 @@ class MainWindow(QMainWindow):
         doc = self.docs.get(self.tabs.tabData(i))
         if doc is None or doc is self.doc:
             return
-        self._leave_modes()
+        self._leave_tab()
         if self.section_panel is not None:
             self.toggle_section()
         if self.doc is not None and self.doc.kind != "variables":
@@ -3772,6 +3831,8 @@ class MainWindow(QMainWindow):
             self.viewport.update()
         else:
             QTimer.singleShot(0, lambda: self.viewport.set_standard_view("Isometric", animate=False))
+        if not asm:
+            self._resume_sketch()
 
     def close_tab(self, i):
         if i < 0:
@@ -3860,13 +3921,13 @@ class MainWindow(QMainWindow):
         self._add_tab(doc)
 
     def new_doc(self):
-        self._leave_modes()
+        self._leave_tab()
         doc = self._new_document()
         self._register_in_document(doc)
         self._add_tab(doc)
 
     def new_assembly(self):
-        self._leave_modes()
+        self._leave_tab()
         self._asm_counter = getattr(self, "_asm_counter", 0) + 1
         a = AssemblyDoc()
         a.name = f"Assembly {self._asm_counter}"

@@ -199,6 +199,62 @@ class Sketch:
             return float(np.linalg.norm(self.P(e["p1"]) - self.P(e["c"])))
         return 0.0
 
+    # ------------------------------------------------------------------ dimension labels
+    # A dimension's number is placed at "pos" (sketch coordinates). That alone would leave it behind when the
+    # geometry it measures moves, so "pos_anchor" records where that geometry was when pos was set and the
+    # label is drawn at pos shifted by however far the geometry has gone since. The shift is worked out when
+    # it is asked for, so it holds for a drag, a solve, undo and a rebuild alike. It follows translation only.
+    def dim_anchor(self, c):
+        """The point of the measured geometry that a dimension's label keeps its offset from, or None."""
+        try:
+            t, R = c["type"], c["refs"]
+            if t in ("radius", "diameter"):
+                return self.P(self.entities[R[0]]["c"])
+            if t == "angle":
+                l1, l2 = self.entities[R[0]], self.entities[R[1]]
+                return (self.P(l1["p1"]) + self.P(l1["p2"]) + self.P(l2["p1"]) + self.P(l2["p2"])) / 4
+            if t == "offset":
+                en, es = self.entities[R[0]], self.entities[R[1]]
+                if es["type"] == "line":
+                    return (self.P(en["p1"]) + self.P(en["p2"])) / 2
+                return self.P(es["c"])
+            if t in ("distance", "hdistance", "vdistance"):
+                refs = list(R)
+                if len(refs) == 1:
+                    e = self.entities[refs[0]]
+                    refs = [e["p1"], e["p2"]]
+                pts = []
+                for i in refs:
+                    e = self.entities.get(i)
+                    if e is None:
+                        pts.append(self.P(i))
+                    elif e["type"] != "line":          # point to line: the point alone, as it is drawn from there
+                        pts.append(self.P(e.get("c", e.get("p"))))
+                return sum(pts) / len(pts)
+        except (KeyError, IndexError, TypeError, ZeroDivisionError):
+            pass
+        return None
+
+    def place_dim(self, c, pos):
+        """Put a dimension's label at pos, anchored to the geometry as it is now."""
+        c["pos"] = [float(pos[0]), float(pos[1])]
+        a = self.dim_anchor(c)
+        if a is None:
+            c.pop("pos_anchor", None)
+        else:
+            c["pos_anchor"] = a.tolist()
+
+    def dim_pos(self, c):
+        """Where a dimension's label is now: its placed position, moved along with the geometry it measures.
+        None if it was never placed. Without "pos_anchor" (a sketch saved before it existed) it is pos as saved."""
+        if not c.get("pos"):
+            return None
+        pos = np.array(c["pos"], float)
+        at, now = c.get("pos_anchor"), self.dim_anchor(c)
+        if at is None or now is None:
+            return pos
+        return pos + (now - np.array(at, float))
+
     def arc_angles(self, eid):
         e = self.entities[eid]
         c = self.P(e["c"])

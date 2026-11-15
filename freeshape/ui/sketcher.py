@@ -105,6 +105,11 @@ class Sketcher:
         self.model_hover = None
         self.infer = None
         self.infer_tan = None
+        # a sketch saved before "pos_anchor": its labels sit where the saved points put them, so anchor them
+        # there before the first solve moves anything; from then on they follow like any other
+        for c in self.sk.constraints:
+            if c.get("pos") and "pos_anchor" not in c:
+                self.sk.place_dim(c, c["pos"])
         self.sk.solve()
 
     # ================================================================== state
@@ -803,7 +808,7 @@ class Sketcher:
         if kind == "constraint":
             for c in sk.constraints:
                 if c["id"] == i:
-                    c["pos"] = uv.tolist()
+                    sk.place_dim(c, uv)
             self.on_change(False)
             return
         # restore original then apply the drag delta (avoids drift)
@@ -1619,7 +1624,7 @@ class Sketcher:
         self.push_undo()
         c = sk.add_constraint(ctype, *refs, value=float(val))
         if pos is not None:
-            c["pos"] = [float(pos[0]), float(pos[1])]
+            sk.place_dim(c, pos)
         sk.solve()
         if not sk.status.get("ok", True) or sk.status.get("dof", 0) >= dof_before:
             # it would fight the other dimensions (or just repeat them): leave the sketch as it was and say so
@@ -1940,7 +1945,7 @@ class Sketcher:
             if v is not None and v > 0 and all(r in self.sk.entities for r in refs):
                 self.push_undo()
                 c = self.sk.add_constraint(ctype, *refs, value=float(v))
-                c["pos"] = [float(pos[0]), float(pos[1])]
+                self.sk.place_dim(c, pos)
                 if has_vars(txt):
                     c["expr"] = txt
                 self.sk.solve()
@@ -1984,8 +1989,8 @@ class Sketcher:
         ed.selectAll()
         r = self._dim_rects.get(c["id"])
         if r is None:
-            pos = c.get("pos")
-            s = self.scr(vp, pos) if pos else np.array([vp.width() / 2, vp.height() / 2])
+            pos = self.sk.dim_pos(c)
+            s = self.scr(vp, pos) if pos is not None else np.array([vp.width() / 2, vp.height() / 2])
             r = QRectF(s[0] - 40, s[1] - 10, 80, 20)
         ed.move(int(r.center().x() - 55), int(r.center().y() - 12))
         ed.setStyleSheet("QLineEdit { border: 2px solid %s; border-radius: 4px; padding: 2px 4px; font-weight: 600; }"
@@ -2615,7 +2620,7 @@ class Sketcher:
             text = fmt(val)
         if c.get("expr"):
             text = f"{c['expr']} ({text})"
-        pos = np.array(c["pos"]) if c.get("pos") else None
+        pos = sk.dim_pos(c)          # where it was placed, carried along with the geometry it measures
 
         def arrow(tip: QPointF, frm: QPointF):
             d = np.array([tip.x() - frm.x(), tip.y() - frm.y()])

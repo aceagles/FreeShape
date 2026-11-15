@@ -341,7 +341,7 @@ class Viewport(QOpenGLWidget):
         if self.sketcher is not None:
             sk = self.sketcher
             # only real geometry counts (the lone origin point has no size)
-            pts = [sk.plane.to_world(*c["pos"]) for c in sk.sk.constraints if c.get("pos")]
+            pts = [sk.plane.to_world(*sk.sk.dim_pos(c)) for c in sk.sk.constraints if c.get("pos")]
             for eid in sk.sk.entities:
                 pts += [sk.plane.to_world(u, v) for o in sk.sk.polylines(eid, 16) for u, v in o]
             for w in pts:

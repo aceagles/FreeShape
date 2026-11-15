@@ -206,7 +206,8 @@ def test_schema_shows_draft_for_blind_without_second_direction():
         assert k in spec
     vis = lambda k, p: spec[k]["visible"](p)  # noqa: E731
     assert vis("draft", {"end": "blind"})
-    assert not vis("draft", {"end": "blind", "second": True})
+    assert vis("draft", {"end": "blind", "second": True})      # I1.5: two-direction ends draft too
+    assert vis("draft", {"end": "symmetric"})
     assert not vis("draft", {"end": "through"})
     assert not vis("draft_angle", {"end": "blind"})
     assert vis("draft_angle", {"end": "blind", "draft": True})

@@ -1947,6 +1947,28 @@ def _named_after_draft(named, body, draft_hist):
     return out
 
 
+def _drafted_two_ways(state, fid, p, profs, direction, depth, depth2, symmetric):
+    """Draft with Symmetric, or with a second blind direction: (body, its element map).
+
+    One prism across the sketch plane cannot be drafted in one call, since the plane is the neutral plane
+    and the draft grows away from it. So each half is extruded from the plane (half the depth each when
+    symmetric; the first depth along `direction` and the second against it otherwise), drafted away from
+    the plane by I1.4's `_drafted_tool` with the one angle, named like a plain extrude (`_named_after_draft`)
+    and the halves fused with their history. A side face is two faces here, one per half."""
+    da, db = (depth / 2, depth / 2) if symmetric else (depth, depth2)
+    if da <= 1e-9 or db <= 1e-9:
+        raise K.KernelError("Draft with two directions needs both depths to be more than 0")
+    sources = _profile_names(state, p)
+    pieces = []
+    for d, dist in ((np.asarray(direction, float), da), (-np.asarray(direction, float), db)):
+        half, hist = K.extrude(profs, d, dist, with_history=True)
+        named = name_feature(state, fid, sources, half, hist, "extrude")
+        half, h2 = _drafted_tool(profs, d, half, hist, p.get("draft_angle", 5.0), p.get("draft_flip", False))
+        pieces.append((half, _named_after_draft(named, half, h2)))
+    body, fused = K.fuse_all([b for b, _ in pieces], with_history=True)
+    return body, name_feature(state, fid, [n for _, n in pieces], body, fused, "fuse_all", stamp=False)
+
+
 def run_extrude(state, f):
     p = legacy_up_to(f["params"])
     profs = _profiles(state, p, f["id"])
@@ -1963,6 +1985,9 @@ def run_extrude(state, f):
         flip = not flip
 
     drafted = {}     # set by make() when the tool body was drafted: the undrafted body and the draft's history
+    #                  (the two-halves path stores its finished `named` map instead)
+    if p.get("draft") and end not in ("blind", "symmetric"):
+        raise K.KernelError("Draft works with Blind and Symmetric ends")
 
     def make(direction):
         if end == "to_face":     # up to a planar face (any part, a Context body included), measured along `direction`
@@ -1986,8 +2011,12 @@ def run_extrude(state, f):
         depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric else 0.0
         if depth + depth2 <= 0 and depth2:
             raise K.KernelError("The second depth cancels the first")
-        body, hist = K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
         drafted.clear()
+        if p.get("draft") and (symmetric or depth2):
+            body, named = _drafted_two_ways(state, f["id"], p, profs, direction, depth, depth2, symmetric)
+            drafted.update(named=named)
+            return body, None
+        body, hist = K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
         if p.get("draft") and not symmetric and not depth2:
             undrafted = body
             body, h2 = _drafted_tool(profs, direction, body, hist, p.get("draft_angle", 5.0),
@@ -2018,9 +2047,12 @@ def run_extrude(state, f):
             else:
                 drafted.clear()
                 drafted.update(first)
-    named = name_feature(state, f["id"], _profile_names(state, p), drafted.get("undrafted", body), hist, "extrude")
-    if drafted:
-        named = _named_after_draft(named, body, drafted["history"])
+    if "named" in drafted:
+        named = drafted["named"]
+    else:
+        named = name_feature(state, f["id"], _profile_names(state, p), drafted.get("undrafted", body), hist, "extrude")
+        if drafted:
+            named = _named_after_draft(named, body, drafted["history"])
     apply_body(state, body, op, f["id"], p.get("scope"), named)
 
 

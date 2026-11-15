@@ -690,6 +690,18 @@ def _loft_fold(p, strip=False):
             p.pop(f"{end}_mag", None)
 
 
+def thicken_op_for(state, p):
+    """The operation a Thicken pick implies: "add" when a picked face belongs to a solid (the new solid joins
+    it), "new" when only surface parts, or faces of them, are picked, None with nothing picked."""
+    if not p.get("faces") and not p.get("parts"):
+        return None
+    for r in p.get("faces", []):
+        part = state.parts.get(r.get("part")) if isinstance(r, dict) else None
+        if part is not None and not K.is_surface(part.shape):
+            return "add"
+    return "new"
+
+
 def _scope():
     return _sel("scope", "Merge scope (empty = every part it touches)", {"part"},
                 visible=lambda p: p.get("op", "add") in SCOPE_OPS)
@@ -848,6 +860,18 @@ SCHEMAS = {
         _sel("faces", "Faces to offset", {"face"}),
         _num("distance", "Distance (outwards)"),
         _check("flip", "Flip direction"),
+    ],
+    "thicken": [
+        _ops(),
+        _sel("faces", "Surface parts and faces to thicken", {"face", "part"}),
+        _num("thickness1", "Thickness 1", minimum=1e-6),
+        _num("thickness2", "Thickness 2", minimum=0, visible=lambda p: not p.get("mid_plane")),
+        _check("mid_plane", "Mid plane"),
+        _check("flip", "Opposite direction"),
+        _check("keep_tools", "Keep tools"),
+        {"t": "info", "key": "_info", "text": lambda p: "Thickness is the total, split half each side."
+         if p.get("mid_plane") else ""},
+        _scope(),
     ],
     "delete_part": [
         _sel("parts", "Parts to delete", {"part"}),
@@ -1109,6 +1133,9 @@ def params_to_fields(ftype, p):
         f["vertices_numbers"] = [None if e.get("radius") == p.get("radius") else e.get("radius") for e in rows]
     if ftype in ("shell", "thread", "delete_face", "move_face", "offset_surface"):
         f["faces"] = [("face", r) for r in p.get("faces", [])]
+    if ftype == "thicken":              # one field holds faces and surface parts
+        f["faces"] = [("face", r) for r in p.get("faces", [])] + [("part", i) for i in p.get("parts", [])]
+        f["scope"] = [("part", i) for i in p.get("scope", [])]
     if ftype == "plane":
         f["refs_sel"] = [(k, r) for k, r in F.plane_items(p)]
     if ftype == "axis":
@@ -1238,6 +1265,10 @@ def fields_to_params(ftype, fields, p):
                 p.pop("fillet_type")
     if ftype in ("shell", "thread", "delete_face", "move_face", "offset_surface"):
         p["faces"] = [r for k, r in fields.get("faces", [])]
+    if ftype == "thicken":
+        p["faces"] = [r for k, r in fields.get("faces", []) if k == "face"]
+        p["parts"] = [r for k, r in fields.get("faces", []) if k == "part"]
+        p["scope"] = [r for k, r in fields.get("scope", [])]
     if ftype == "plane":
         p["refs"] = [{"k": k, "ref": r} for k, r in fields.get("refs_sel", [])]
         p.pop("ref", None)
@@ -2670,7 +2701,13 @@ class FeatureDialog(_ResizableFrame):
 
     def _fields_changed(self):
         fields = self._field_values()
+        before = thicken_op_for(self.base_state, self.feature["params"]) if self.ftype == "thicken" else None
         fields_to_params(self.ftype, fields, self.feature["params"])
+        if self.ftype == "thicken":
+            # the picks choose the operation (a solid's face: Add; surface parts: New) when what is picked changes
+            now = thicken_op_for(self.base_state, self.feature["params"])
+            if now is not None and now != before:
+                self.feature["params"]["op"] = now
         if self.ftype == "rib" and not self.fields["parts"].items:
             self._default_rib_part()
             fields["parts"] = self.fields["parts"].items

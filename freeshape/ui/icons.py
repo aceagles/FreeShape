@@ -158,6 +158,11 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(ORANGE, 2.2))
         p.drawLine(QPointF(8, 9), QPointF(22, 9))
         p.drawLine(QPointF(22, 9), QPointF(27, 6))
+    elif name == "thicken":
+        p.setPen(_pen(ORANGE, 2.2))
+        p.drawLine(QPointF(5, 9), QPointF(20, 9))
+        p.drawLine(QPointF(20, 9), QPointF(27, 5))
+        _box(p, 4, 15, 18, 6, 6)
     elif name == "delete_part":
         _box(p, 4, 10, 18, 16, 6)
         p.setPen(_pen(RED, 2.8))

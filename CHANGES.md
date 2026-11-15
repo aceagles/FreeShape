@@ -56,6 +56,27 @@ for cutting), version history, Python plugins, and new navigation. It was built 
 - **Out of date**: a change to the model greys the rows and the footer says "Out of date. Check again." The panel
   stays open while you turn the view; closing it removes the ghosts and restores transparency.
 
+### Context identity and display
+- **Bodies keep their identity**: a Context made by *Edit in context* names each neighbour by its Assembly
+  instance, not by its place in the list. A neighbour you hid, coloured or ended an extrude on stays that
+  neighbour after an earlier instance is deleted and the Context is updated, also when a twin of the same part
+  now stands where it was. A sketch projection of a twin's edge follows that twin; if the twin is removed, the
+  sketch says the edge is gone instead of jumping to another.
+- **Old Contexts convert at their first update**: a file saved before this version opens with its Context as it
+  was. *Update context* changes it to the new identity in one undo step, renaming the hidden flag, colour and
+  references on its bodies.
+- **Context bar**: over the 3D view of a Part Studio with a Context. It shows the Assembly's name and whether the
+  Context is current or out of date, and has *Update context*, *Go to assembly*, an eye for the whole Context, a
+  list of the neighbours with an eye each, *Select through context* and a transparency slider.
+- **Select through context**: on by default (View menu, the bar, or search for "select through"). A click on a
+  spot covered by a Context body picks your own face behind it; where only a Context body lies it is still
+  picked. Box select skips Context bodies.
+- **Two kinds of hide**: *Hide context* hides the whole Context (every body), *Hide context instance* hides one
+  neighbour. They do not change each other, and neither rebuilds the model or changes the Context's status.
+  Context bodies are shown in italics in the Parts list.
+- **Transparency**: the slider sets how see-through Context bodies are, 0 to 100, and is remembered. Moving it
+  redraws without rebuilding the model.
+
 ### Axis at the centre of a flat face
 - **Axis tool**: picking a flat face on its own now gives an axis through the **centre of the face**, square to it
   and pointing out of the part: the same place a mate connector on that face sits. The end face of a shaft or a

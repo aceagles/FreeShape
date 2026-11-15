@@ -45,6 +45,13 @@ What this fork adds:
   overlap volume and size; click a row to select the pair and frame the overlap. Assemblies have an *Include
   standard content* tick, and screws fastened into their holes sit in an *Expected (threads)* group that is not
   counted. The check runs in a helper process.
+- **Context bar and stable Context bodies** — a Part Studio with a Context shows a bar over the 3D view: its
+  status, **Update context**, **Go to assembly**, an eye for the whole Context, a list with an eye for each
+  neighbour, **Select through context** and a transparency slider. With Select through on, a click picks your own
+  face behind a Context body; where only the Context body lies, it is still picked. Hiding the whole Context and
+  hiding one instance are separate choices. A Context body keeps its identity when an earlier instance is deleted
+  and the Context is updated; a Context saved by an earlier version opens as it was and converts at its first
+  Update context.
 - **Component library** — browse a folder of STEP files with previews and insert from it.
 - **Headless and browser** — `python -m freeshape serve <Document>` serves a Document over HTTP on your own
   machine, with a view-only browser viewer.

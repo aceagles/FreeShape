@@ -980,8 +980,8 @@ class MainWindow(QMainWindow):
         self._tb(h, "redo", "Redo (Ctrl+Y)", lambda: self._sk("redo"))
         h.addWidget(_sep())
         tools = [("select", "Select (S)", "point"),
-                 ("line", "Line (L)", None), ("rect", "Corner rectangle (R)", None),
-                 ("center_rect", "Center rectangle", None), ("circle", "Circle (C)", None),
+                 ("line", "Line (L)", None), ("rect", "Corner rectangle (G)", None),
+                 ("center_rect", "Center rectangle (R)", None), ("circle", "Circle (C)", None),
                  ("polygon", "Polygon — centre, corner, then sides (Shift: circumscribed)", None),
                  ("arc3", "3-point arc (A)", None), ("arc_center", "Center-point arc", None),
                  ("spline", "Spline — click points, double-click or Enter to finish", None),
@@ -4313,7 +4313,7 @@ class MainWindow(QMainWindow):
             "<b>Features</b><br>Alt+C or Ctrl+Space: search tools · "
             "Shift+S: sketch · Shift+E: extrude · Shift+W: revolve · Shift+F: fillet<br>"
             "Ctrl+Z / Ctrl+Y: undo / redo · Enter: accept dialog · Esc: cancel<br><br>"
-            "<b>Sketch</b><br>L line · R rectangle · C circle · A arc · P point · D dimension · Q construction<br>"
+            "<b>Sketch</b><br>L line · G rectangle · R centre rectangle · C circle · A arc · P point · D dimension · Q construction<br>"
             "I coincident · H horizontal · V vertical · E equal · T tangent · U use edges · Del delete · Esc stop tool<br><br>"
             "<b>Assembly</b><br>I insert · Shift+F fastened · Shift+R revolute · Shift+L slider · "
             "left-drag a part to move it · Del delete"))

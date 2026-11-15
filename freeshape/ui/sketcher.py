@@ -21,6 +21,25 @@ from .. import sketch_ops as OPS
 DRAW_TOOLS = {"line", "rect", "center_rect", "circle", "polygon", "arc3", "arc_center", "point", "spline", "ellipse",
               "text"}
 
+# plain keys that start a tool, as in Onshape (G corner rectangle, R centre rectangle). Q, construction, is
+# handled beside them in Sketcher.key_press.
+TOOL_KEYS = {Qt.Key_L: "line", Qt.Key_G: "rect", Qt.Key_R: "center_rect", Qt.Key_C: "circle", Qt.Key_A: "arc3",
+             Qt.Key_D: "dimension", Qt.Key_I: "coincident", Qt.Key_H: "horizontal",
+             Qt.Key_V: "vertical", Qt.Key_E: "equal", Qt.Key_T: "tangent", Qt.Key_S: "select",
+             Qt.Key_P: "point", Qt.Key_U: "use", Qt.Key_O: "offset"}
+
+
+class _OfferEdit(QLineEdit):
+    """The dimension box offered right after drawing (Sketcher._offer_dims). `tool_key(event)` sees each key
+    first and returns True when it took it as a tool key instead of text."""
+    tool_key = None
+
+    def keyPressEvent(self, e):
+        if self.tool_key is not None and self.tool_key(e):
+            return
+        super().keyPressEvent(e)
+
+
 # constraint tool -> (description, list of acceptable selection signatures)
 CONSTRAINT_TOOLS = {
     "coincident": "Select two points, or a point and a curve",
@@ -988,15 +1007,11 @@ class Sketcher:
                 self.selection = list(self.sk.entities)
                 return True
             return False
-        shortcuts = {Qt.Key_L: "line", Qt.Key_R: "rect", Qt.Key_C: "circle", Qt.Key_A: "arc3",
-                     Qt.Key_D: "dimension", Qt.Key_I: "coincident", Qt.Key_H: "horizontal",
-                     Qt.Key_V: "vertical", Qt.Key_E: "equal", Qt.Key_T: "tangent", Qt.Key_S: "select",
-                     Qt.Key_P: "point", Qt.Key_U: "use", Qt.Key_O: "offset"}
         if k == Qt.Key_Q:
             self.toggle_construction()
             return True
-        if k in shortcuts and not e.modifiers():
-            self.set_tool(shortcuts[k])
+        if k in TOOL_KEYS and not e.modifiers():
+            self.set_tool(TOOL_KEYS[k])
             return True
         return False
 
@@ -1933,8 +1948,22 @@ class Sketcher:
         ctype, refs, value, pos = offers[0]
         rest = offers[1:]
         s = self.scr(vp, pos)
-        ed = self._make_editor(vp, s[0], s[1], fmt(value))
+        ed = self._make_editor(vp, s[0], s[1], fmt(value), _OfferEdit)
         ed.setToolTip("Type a value and press Enter to dimension it — or just keep drawing")
+        touched = []
+
+        def tool_key(e):
+            # The box takes the keyboard the moment a shape is drawn, so the next tool's key would be typed
+            # into it and nothing would happen until Esc. While the offered value is as we put it, such a key
+            # means "carry on with that tool": close the box, no dimension. Once the user has typed, letters
+            # are theirs ("1 in", "10 cm").
+            if touched or e.modifiers() or not (e.key() in TOOL_KEYS or e.key() == Qt.Key_Q):
+                return False
+            self._close_editor()
+            vp.setFocus()
+            self.key_press(vp, e)
+            vp.update()
+            return True
 
         def commit():
             if self._editor is not ed:
@@ -1964,6 +1993,8 @@ class Sketcher:
                 self._close_editor()
                 vp.update()
 
+        ed.tool_key = tool_key
+        ed.textEdited.connect(lambda _t: touched.append(True))     # typing only: not the value we set
         ed.returnPressed.connect(commit)
         ed.editingFinished.connect(dismiss)
         self._editor = ed
@@ -1971,8 +2002,8 @@ class Sketcher:
         ed.setFocus()
         ed.selectAll()
 
-    def _make_editor(self, vp, cx, cy, text):
-        ed = QLineEdit(vp)
+    def _make_editor(self, vp, cx, cy, text, cls=QLineEdit):
+        ed = cls(vp)
         ed.setFixedWidth(110)
         ed.setText(text)
         ed.move(int(cx - 55), int(cy - 12))

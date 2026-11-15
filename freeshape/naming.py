@@ -68,6 +68,7 @@ OP_FOR = {
     "loft": "LFT",
     "move": "XFM",
     "offset_surface": "OFS",
+    "thicken": "THK",
     "shell": "THK",
     "split": "SPT",
     "sweep": "PSH",

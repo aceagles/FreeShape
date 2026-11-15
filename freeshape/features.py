@@ -56,6 +56,7 @@ FEATURE_LABELS = {
     "sweep": "Sweep", "rib": "Rib", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "sm_hem": "Hem", "sm_jog": "Jog", "sm_tab": "Tab",
     "sm_convert": "Convert to sheet metal", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
+    "thicken": "Thicken",
     "delete_part": "Delete part",
 }
 
@@ -2509,6 +2510,52 @@ def run_offset_surface(state, f):
         state.set_named(state.new_part(res, f["id"]).id, named)
 
 
+def run_thicken(state, f):
+    """Thicken surface parts and picked faces into solids. Connected faces make one solid; the surface parts
+    used are deleted unless keep_tools (a face picked from a solid is never deleted)."""
+    p = f["params"]
+    fid = f["id"]
+    units, used = [], []         # (shape, source part id) per input; surface parts that were used
+    for pid in p.get("parts", []):
+        part = state.parts.get(pid)
+        if part is None or not K.is_surface(part.shape):
+            raise K.KernelError("Thicken needs surface parts here: pick a surface part, or a face")
+        units.append((part.shape, pid))
+        used.append(pid)
+    from_solid = False
+    for r in p.get("faces", []):
+        pid, face = resolve(state, r, "face")
+        units.append((face, pid))
+        if K.is_surface(state.parts[pid].shape):
+            if pid not in used:
+                used.append(pid)
+        else:
+            from_solid = True
+    if not units:
+        raise K.KernelError("Select a surface or a face to thicken")
+    op = p.get("op") or ("add" if from_solid else "new")
+    t1 = float(p.get("thickness1", 2.0))
+    t2 = 0.0 if p.get("mid_plane") else float(p.get("thickness2", 0.0))
+    if p.get("mid_plane"):
+        t1 = t2 = t1 / 2
+    if p.get("flip"):
+        t1, t2 = -t1, -t2
+    if len(units) == 1:
+        groups = [([units[0][0]], [units[0][1]])]
+    else:                         # sewing keeps no element names: the group's result is named from its parts
+        sewn = K.as_surface([u[0] for u in units])
+        groups = [([sh], list(dict.fromkeys(u[1] for u in units))) for sh in sewn]
+    for shapes, pids in groups:
+        solid, hist = K.thicken(shapes[0], t1, t2, with_history=True)
+        named = name_feature(state, fid, pids, solid, hist, "thicken")
+        apply_body(state, solid, op, fid, p.get("scope"), named)
+    if not p.get("keep_tools"):
+        for pid in used:          # as run_delete_part does, once per part
+            state.parts.pop(pid, None)
+            state.names.pop(pid, None)
+            state.sheet.pop(pid, None)
+
+
 def run_delete_part(state, f):
     ids = _selected_parts(state, f["params"])
     for i in ids:
@@ -3664,6 +3711,7 @@ RUNNERS = {
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "sm_hem": run_sm_hem, "sm_jog": run_sm_jog, "sm_tab": run_sm_tab, "sm_convert": run_sm_convert,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
+    "thicken": run_thicken,
     "delete_part": run_delete_part,
 }
 
@@ -3686,6 +3734,8 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "delete_face": {"faces": [], "mode": "heal"},
         "move_face": {"faces": [], "distance": 2.0, "flip": False},
         "offset_surface": {"faces": [], "distance": 2.0, "flip": False},
+        "thicken": {"faces": [], "parts": [], "thickness1": 2.0, "thickness2": 0.0, "mid_plane": False,
+                    "flip": False, "keep_tools": False, "op": "new", "scope": []},
         "delete_part": {"parts": []},
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
         "axis": {"type": "auto", "refs": [], "click": None, "flip": False, "connector_axis": "z"},

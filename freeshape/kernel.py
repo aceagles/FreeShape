@@ -1924,6 +1924,68 @@ def offset_surface(face, distance, with_history=False):
     return (out, _maker_history(mk, [face])) if with_history else out
 
 
+THICKEN_FAILED = "The thickness is larger than the surface's tightest curve allows"
+
+
+def thicken(shape_or_faces, t1, t2=0.0, with_history=False):
+    """A solid `t1` thick on the outward-normal side of a surface and `t2` thick on the other side (a
+    negative value reverses a side). `shape_or_faces` is one shell/face/compound or a list of faces; several
+    faces must make one connected shell. Returns the solid, or (solid, history) over the input faces.
+    One face or coplanar faces make a prism; anything else goes through BRepOffset_MakeOffset with
+    Thickening (spike I2.1: native, history from the maker)."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
+    from OCP.BRepOffset import BRepOffset_MakeOffset, BRepOffset_Skin
+    from OCP.GeomAbs import GeomAbs_Intersection
+    shape = compound(list(shape_or_faces)) if isinstance(shape_or_faces, (list, tuple)) else shape_or_faces
+    fs = faces(shape)
+    if not fs:
+        raise KernelError("Select a surface or a face to thicken")
+    total = float(t1) + float(t2)
+    if abs(total) < 1e-6:
+        raise KernelError("The thickness must be more than zero")
+    planes = [planar_face_plane(f) for f in fs]
+    if len(fs) == 1 and planes[0] is not None:
+        res, hist = extrude([fs[0]], planes[0].normal, float(t1), depth2=float(t2), with_history=True)
+        sol = res
+    else:
+        h_move = None
+        src = shape
+        if abs(t2) > 1e-9:
+            try:
+                mv = BRepOffsetAPI_MakeOffsetShape()
+                mv.PerformByJoin(shape, -float(t2), 1e-6)
+                ok = mv.IsDone()
+            except Exception:
+                ok = False
+            if not ok or not faces(mv.Shape()):
+                raise KernelError(THICKEN_FAILED)
+            src = mv.Shape()
+            h_move = _maker_history(mv, [shape])
+        try:
+            mo = BRepOffset_MakeOffset()
+            mo.Initialize(src, total, 1e-6, BRepOffset_Skin, False, False, GeomAbs_Intersection, True)
+            mo.MakeOffsetShape()          # without this call the maker gives no valid solid
+            ok = mo.IsDone()
+            sol = mo.Shape() if ok else None
+        except Exception:
+            ok, sol = False, None
+        if not ok or sol is None:
+            raise KernelError(THICKEN_FAILED)
+        sol, h_clean = clean(sol, with_history=True)       # walls of coplanar free edges become one face
+        hist = _chain(h_move, _maker_history(mo, [src]), h_clean)
+    ss = solids(sol)
+    if len(ss) != 1 or not is_valid(ss[0]):
+        raise KernelError(THICKEN_FAILED)
+    out = ss[0]
+    v = volume(out)
+    if v < 0:
+        out = out.Reversed()
+        v = -v
+    if v <= 1e-9:
+        raise KernelError(THICKEN_FAILED)
+    return (out, hist) if with_history else out
+
+
 # --------------------------------------------------------------------------- tessellation
 
 @dataclass

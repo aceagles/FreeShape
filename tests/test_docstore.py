@@ -148,6 +148,9 @@ def _save_all(base):
 # Part Studio file a save rewrites (3 to 4). Checked when recording: putting the old version number back into
 # each of those files gives the hash recorded before, so nothing but the number changed. Unchanged: every
 # .fdwg, document.json, Vars.fvars, all blobs.
+# Re-recorded for file version 5 (the Onshape parity 2 run, 4 to 5): the Part Studio files a resave rewrote (bracket,
+# hinge and bolted bracket) and the built Document's Studio.fshape, in both phases, went up a file version; putting 4
+# back in each of those gives the hash recorded before (checked when recording: the old version number was the only change).
 BEFORE = {
     'bolted_bracket': {
         'saved': {
@@ -170,7 +173,7 @@ BEFORE = {
             'bolted_bracket.fasm':
                 '5e0e674abc29916787c21ae7871acb87e2168a8f5dc7dcf7026edff78a51dd98',
             'bolted_bracket_parts.fshape':
-                '58b632f7ababb9ad291383740a7120c90b6aab590613fab7cc98f9419b231f67',
+                'c3669a98d1a15116bd97ea6f1995001232de234517c4e66c023644cd2fa073bb',
             'document.json':
                 'daf12f6b952cf1df83bb3aacfb077f45e11d03229c71212aee5e4d54bf87d5a9',
         },
@@ -184,7 +187,7 @@ BEFORE = {
         },
         'resaved': {
             'bracket.fshape':
-                'aeda8f8da34122c46d8467c46c730c23f5c1a517f5ba305363aa8e1a4c04016d',
+                'a00f3846efcdc94717a9336a47f090a97eef090b8b70adaf23d6a11afd41152d',
             'document.json':
                 '356cc886bbf61d1f3bf99378ece1590f20698510599f0e70ed869ffa4c4e2827',
         },
@@ -196,7 +199,7 @@ BEFORE = {
             'Dwg.fdwg':
                 'e8f24eef5a746e6513250b40f0d17d555aabc09deefb47c4c6cb9ad9e919ce4b',
             'Studio.fshape':
-                '08cf809114b6e4739c6d6bf5dae42174680719208e7912f1ec6429d1e966466b',
+                '53b93231f198328d5c3d7118326871f3105934281e6503e6176acccd54718b0b',
             'Vars.fvars':
                 'dbca3925a4c877982c7b7190459ce9cba4779c56d068c9951ee007700de0c86c',
             'blobs/42aa9e4532b97dee001028762b1b07b10cd5822bf660c466b4e766850d31e21d':
@@ -216,7 +219,7 @@ BEFORE = {
             'Dwg.fdwg':
                 '782e1f583bc09d593958149eb159d3f4ed0666284efb9b7d786e5754e15a3dff',
             'Studio.fshape':
-                '08cf809114b6e4739c6d6bf5dae42174680719208e7912f1ec6429d1e966466b',
+                '53b93231f198328d5c3d7118326871f3105934281e6503e6176acccd54718b0b',
             'Vars.fvars':
                 'dbca3925a4c877982c7b7190459ce9cba4779c56d068c9951ee007700de0c86c',
             'blobs/42aa9e4532b97dee001028762b1b07b10cd5822bf660c466b4e766850d31e21d':
@@ -258,7 +261,7 @@ BEFORE = {
             'hinge.fasm':
                 '92d09c65948f6dc17401fab78b3938bf99fad28bb4e44c83fd63cb57cb088c3d',
             'hinge_parts.fshape':
-                '26fcc8240fde06b26370573e6f2f6e4681440e28ada1c0e196ed4ab1639402f4',
+                '38efb0a1177a72f232e17f8c3b02a6f2e527c5a77227738dacdc591ff3ff3a51',
         },
     },
 }

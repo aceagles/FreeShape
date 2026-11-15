@@ -105,6 +105,18 @@ def _adopt_upstream_2_0(data):
 M.register("document", _adopt_upstream_2_0)
 
 
+def _onshape_parity_2(data):
+    """FILE_VERSION 4 -> 5 (the Onshape parity 2 run). A pass-through step: nothing in a version 4 file changes.
+    The step takes one version for every key this plan saves, so a build before the plan refuses a file that
+    holds one, rather than reading the key without error and building wrong. Version 5 may hold this plan's
+    keys for: loft end conditions and guides, variable fillet radii, an extrude draft, and Context bodies under
+    new ids. The format reference lists each key and the card that adds it."""
+    return data
+
+
+M.register("document", _onshape_parity_2)
+
+
 CONTEXT_CURRENT, CONTEXT_OUT_OF_DATE, CONTEXT_ASSEMBLY_MISSING = "current", "out of date", "assembly missing"
 
 
@@ -135,9 +147,36 @@ def context_status(doc, fid, asm):
     return CONTEXT_CURRENT
 
 
+CONTEXT_UNREADABLE = ("This Context's stored capture can't be read, so its bodies can't be re-identified. "
+                      "Delete the Context and use Edit in context again.")
+
+
+def _positional_context_ids(doc, f):
+    """{"<fid>/<k>": "<fid>/<instance id>"} for a Context made before I6.1 (no "ids" param): k is the neighbour's
+    position in the capture as stored in this file, which is how run_context numbered it. Raises KernelError
+    CONTEXT_UNREADABLE when that listing can't be read, or holds instance ids run_context would refuse."""
+    fid, key = f["id"], (f.get("params") or {}).get("capture")
+    try:
+        if not key:
+            raise ValueError("no capture")
+        iids = [n["id"] for n in context_listing(doc._blob_get, key)["neighbours"]]
+    except (blobstore.BlobError, ValueError, TypeError) as e:
+        raise K.KernelError(CONTEXT_UNREADABLE) from e
+    if len(set(iids)) != len(iids) or not all(i and all(c.isalnum() or c == "_" for c in i) for i in iids):
+        raise K.KernelError(CONTEXT_UNREADABLE)
+    return {f"{fid}/{k}": f"{fid}/{iid}" for k, iid in enumerate(iids, 1)}
+
+
 def update_context(doc, fid, asm):
     """Recapture the "context" feature `fid` from the Assembly `asm`: new blobs, a new capture key, one undoable
-    param edit that rebuilds the studio. Raises KernelError when the Assembly or the instance is missing."""
+    param edit that rebuilds the studio. Raises KernelError when the Assembly or the instance is missing.
+
+    A Context made before I6.1 (no "ids" param) is converted in the same undoable edit (I6.2): its bodies
+    `<fid>/<k>` become `<fid>/<instance id>` by the capture stored in this file, every reference to one in this
+    studio is renamed (feature params through features.rename_part_refs, part overrides, hidden parts) and the
+    Context gets ids "instance". When that capture can't be read the update is refused with CONTEXT_UNREADABLE
+    and nothing changes. Returns the map of renamed ids ({} when nothing was converted), so the window can rename
+    its session state too."""
     from .assembly import capture_context
     f = doc.feature(fid)
     if f is None or f.get("type") != "context":
@@ -145,10 +184,21 @@ def update_context(doc, fid, asm):
     p = f.get("params") or {}
     if asm is None or asm.instance(p.get("instance")) is None:
         raise K.KernelError("Can't update the Context: its Assembly or instance is missing")
+    ids = _positional_context_ids(doc, f) if "ids" not in p else {}
     key = doc.store_context(capture_context(asm, p["instance"]))
     new = copy.deepcopy(f)
     new["params"]["capture"] = key
-    doc.replace_feature(new)
+    if not ids:
+        doc.replace_feature(new)
+        return {}
+    from .features import rename_part_refs, renamed_part_id
+    new["params"]["ids"] = "instance"
+    doc.checkpoint()
+    doc.features = [new if g["id"] == fid else rename_part_refs(g, ids) for g in doc.features]
+    doc.part_overrides = {renamed_part_id(k, ids): v for k, v in doc.part_overrides.items()}
+    doc.hidden_parts = {renamed_part_id(k, ids) for k in doc.hidden_parts}
+    doc.rebuild()
+    return ids
 
 
 def config_row(configs, name=None):
@@ -160,6 +210,17 @@ def config_row(configs, name=None):
     if name is None:
         return rows[min(max(int(configs.get("active", 0)), 0), len(rows) - 1)]
     return next((r for r in rows if r["name"] == name), None)
+
+
+class ErrorText(str):
+    """A feature's error message that also carries `refs`: references to the edges and vertices where it failed
+    (a fillet's), for the window to highlight. Behaves as the plain string; refs do not cross the engine's wire."""
+    refs = None
+
+    def __new__(cls, text, refs=None):
+        self = super().__new__(cls, text)
+        self.refs = refs
+        return self
 
 
 class PartStudioDoc:
@@ -195,6 +256,7 @@ class PartStudioDoc:
         self._redo: list[str] = []
         self._cache: dict[str, ModelState] = {}
         self.errors: dict[str, str] = {}
+        self.error_refs: dict = {}                # feature id -> refs to where it failed (a fillet's), for the window
         self.state = ModelState()
         self._counter = 0
         self.listeners = []
@@ -612,6 +674,7 @@ class PartStudioDoc:
     def compute(self, features, upto=None, errors=None, config=None):
         """Replay features (with caching). Returns the resulting ModelState."""
         state = ModelState()
+        self._error_refs = {}
         from . import plugins as _P      # upstream's plugin features ("plugin:<id>"); loads no Qt
         _P.CURRENT_DOC[0] = self.uid
         h = hashlib.sha1()
@@ -670,7 +733,7 @@ class PartStudioDoc:
                                 state.parts[pid] = Part(part.id, part.name, part.shape, part.color,
                                                         carry_face_colors(old, part.shape))
                     except K.KernelError as e:
-                        err = str(e)
+                        err = ErrorText(str(e), getattr(e, "refs", None))
                         if err == REFERENCE_ONLY:
                             state = prior.copy()      # nothing the feature did to a Context body stays
                     except Exception as e:  # never let one feature kill the model
@@ -681,7 +744,9 @@ class PartStudioDoc:
                         state.history[f["id"]] = (prior, state)
             new_cache[key] = (state, err)
             if errors is not None and err:
-                errors[f["id"]] = err
+                errors[f["id"]] = str(err)
+                if getattr(err, "refs", None):
+                    self._error_refs[f["id"]] = err.refs
         self._cache.update(new_cache)
         if len(self._cache) > 400:
             self._cache = new_cache
@@ -844,6 +909,7 @@ class PartStudioDoc:
         errors = {}
         self.state = self.compute(self.features, self.active_count(), errors).copy()
         self.errors = errors
+        self.error_refs = self._error_refs
         self._apply_overrides(self.state)
         self.notify()
 
@@ -1122,6 +1188,13 @@ class PartStudioDoc:
         parts = [p for p in self.state.parts.values() if (part_ids is None or p.id in part_ids) and not p.reference]
         if not parts:
             raise K.KernelError("Nothing to export")
+        self.last_export_skipped = []
+        if str(path).lower().endswith((".stl", ".3mf", ".obj")):
+            # I2.4: a surface body is an open mesh a slicer rejects; STEP and BREP still write it
+            self.last_export_skipped = [p.name for p in parts if K.is_surface(p.shape)]
+            parts = [p for p in parts if not K.is_surface(p.shape)]
+            if not parts:
+                raise K.KernelError("Nothing to export: surface bodies are not written to STL, 3MF or OBJ")
         shapes = [p.shape for p in parts]
         if str(path).lower().endswith((".stl",)):
             K.export_stl(shapes, path, **(options or {}))

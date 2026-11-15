@@ -741,6 +741,9 @@ class AssemblyDoc:
 
     # ------------------------------------------------------------------ ids
     def new_id(self, prefix):
+        """A fresh id `<prefix><n>`. `_counter` only grows, and a saved file keeps it as `id_counter` once it is
+        above every id still in use, so an id freed by a delete is never handed out again, even after a reopen:
+        a Context body is named after its instance id (I6.1) and must not land on a newer instance."""
         self._counter += 1
         used = {i["id"] for i in self.instances} | {m["id"] for m in self.mates} | {g["id"] for g in self.groups}
         used |= {r["id"] for r in self.relations} | {c["id"] for c in self.connectors}
@@ -748,6 +751,13 @@ class AssemblyDoc:
         while f"{prefix}{self._counter}" in used:
             self._counter += 1
         return f"{prefix}{self._counter}"
+
+    def _id_high_water(self):
+        """The highest id number in use (what `from_data` restores `_counter` to when a file has no
+        `id_counter`)."""
+        return max([int("".join(c for c in x["id"] if c.isdigit()) or 0)
+                    for x in self.instances + self.mates + self.groups + self.relations + self.connectors
+                    + self.patterns] + [0])
 
     def instance(self, iid):
         return next((i for i in self.instances if i["id"] == iid), None)
@@ -1201,6 +1211,10 @@ class AssemblyDoc:
         except Exception:
             return False
 
+    def _bbox_diag(self, iid):
+        a, b = K.bbox(self.world_shape(iid))
+        return float(np.linalg.norm(np.asarray(b, float) - np.asarray(a, float)))
+
     def auto_explode(self):
         """Move every part out from the fixed one(s). Screws and bolts from the library come out towards their
         heads; other parts go along whichever main axis they sit out on. Parts going the same way are spaced in
@@ -1208,7 +1222,7 @@ class AssemblyDoc:
         insts = [i for i in self.visible_instances() if i["id"] in self.parts]
         if len(insts) < 2:
             raise K.KernelError("Insert at least two parts first")
-        base = [i for i in insts if i.get("fixed")] or [max(insts, key=lambda i: K.volume(self.world_shape(i["id"])))]
+        base = [i for i in insts if i.get("fixed")] or [max(insts, key=lambda i: self._bbox_diag(i["id"]))]     # I2.4: by bounding box, a surface has no volume
         lo, hi = np.full(3, np.inf), np.full(3, -np.inf)
         for i in base:
             a, b = K.bbox(self.world_shape(i["id"]))
@@ -2683,34 +2697,42 @@ class AssemblyDoc:
         return 6 - int(np.sum(sv > 1e-6 * (sv[0] if len(sv) else 1)))
 
     # ------------------------------------------------------------------ analysis
-    def interferences(self, progress=None):
-        """Pairs of visible instances whose solids overlap: [(iid_a, iid_b, volume, overlap shape)]."""
-        vis = [i for i in self.visible_instances() if not is_sketch_source(i["source"])]
-        shapes = {i["id"]: self.world_shape(i["id"]) for i in vis}
-        boxes = {k: K.bbox(s) for k, s in shapes.items()}
+    def interference_bodies(self, ids=None):
+        """The bodies the interference kernel checks: visible, non-sketch instances (all, or those in `ids`)."""
+        from .interference import Body
         out = []
-        ids = [i["id"] for i in vis]
-        pairs = [(a, b) for k, a in enumerate(ids) for b in ids[k + 1:]]
-        # a Standard part overlaps what it is fastened to by design (a screw in a tap-drill hole)
-        std = {i["id"] for i in self.instances if i["source"].get("kind") == "standard"}
-        joined = {frozenset((m["a"]["inst"], m["b"]["inst"])) for m in self.mates
-                  if m.get("type") == "fastened" and not m.get("suppressed") and m.get("a") and m.get("b")}
-        for n, (a, b) in enumerate(pairs):
-            if (a in std or b in std) and frozenset((a, b)) in joined:
+        for i in self.visible_instances():
+            if is_sketch_source(i["source"]) or (ids is not None and i["id"] not in ids):
                 continue
-            if progress:
-                progress(n, len(pairs))
-            (la, ha), (lb, hb) = boxes[a], boxes[b]
-            if np.any(ha < lb - 1e-6) or np.any(hb < la - 1e-6):
-                continue
-            try:
-                ov = K.common(shapes[a], shapes[b])
-                v = K.volume(ov) if not ov.IsNull() else 0.0
-            except Exception:
-                continue
-            if v > 1e-3:
-                out.append((a, b, v, ov))
+            out.append(Body(i["id"], self.world_shape(i["id"]), self._source_key(i["source"]),
+                            self.T(i["id"]), i["source"].get("kind") == "standard"))
         return out
+
+    def pair_rules(self, include_standard=True):
+        """(skip_pairs, expected_pairs, standard parts left out) for the interference kernel.
+        include_standard=False skips every pair that holds a Standard part and counts those parts.
+        Otherwise a Standard part fastened to another instance is an expected pair (a screw in a
+        tap-drill hole overlaps by design): computed, and reported as a thread rather than a clash."""
+        vis = [i["id"] for i in self.visible_instances() if not is_sketch_source(i["source"])]
+        std = {i["id"] for i in self.instances if i["source"].get("kind") == "standard"}
+        if not include_standard:
+            std_vis = [x for x in vis if x in std]
+            skip = {frozenset((a, b)) for a in std_vis for b in vis if a != b}
+            return frozenset(skip), frozenset(), len(std_vis)
+        expected = {frozenset((m["a"]["inst"], m["b"]["inst"])) for m in self.mates
+                    if m.get("type") == "fastened" and not m.get("suppressed") and m.get("a") and m.get("b")
+                    and (m["a"]["inst"] in std or m["b"]["inst"] in std)}
+        return frozenset(), frozenset(expected), 0
+
+    def interferences(self, progress=None):
+        """Pairs of visible instances whose solids overlap: [(iid_a, iid_b, volume, overlap shape)].
+        Old default rules: a Standard part fastened to another instance is left out. Pairs whose
+        boolean failed are not in the tuples; they are kept in `self.interference_failures`."""
+        from .interference import find_interferences
+        _, expected, _ = self.pair_rules(True)
+        res = find_interferences(self.interference_bodies(), skip_pairs=expected, progress=progress)
+        self.interference_failures = [c for c in res if c.kind == "failed"]
+        return [(c.a, c.b, c.volume, c.shape) for c in res if c.kind != "failed"]
 
     def bom(self):
         """Bill of materials: one row per distinct part, with how many times it is used."""
@@ -2744,7 +2766,8 @@ class AssemblyDoc:
             r["instances"].append(inst["name"])
             if r["volume"] is None and p is not None:
                 try:
-                    r["volume"] = K.volume(p.shape)
+                    if not K.is_surface(p.shape):       # I2.4: a surface has no weight
+                        r["volume"] = K.volume(p.shape)
                 except Exception:
                     pass
         for r in rows.values():
@@ -2764,7 +2787,10 @@ class AssemblyDoc:
         by_mat, tot, moment = {}, 0.0, np.zeros(3)
         for inst in self.visible_instances():
             try:
-                mp = K.mass_props(self.world_shape(inst["id"]))
+                shp = self.world_shape(inst["id"])
+                if K.is_surface(shp):                   # I2.4: a surface has area, no mass
+                    continue
+                mp = K.mass_props(shp)
             except Exception:
                 continue
             mat = MS.material_name(inst.get("material"))
@@ -2891,7 +2917,9 @@ class AssemblyDoc:
                            "relations": self.relations,
                            **({"connectors": self.connectors} if self.connectors else {}),
                            **({"explode": self.explode} if self.explode.get("steps") else {}),
-                           **({"patterns": self.patterns} if self.patterns else {})}, indent=1)
+                           **({"patterns": self.patterns} if self.patterns else {}),
+                           **({"id_counter": self._counter} if self._counter > self._id_high_water() else {})},
+                          indent=1)
 
     def to_data(self) -> bytes:
         """The tab's data as a Document store holds it (the bytes `save` writes). Set `path` first: relative
@@ -2948,9 +2976,8 @@ class AssemblyDoc:
                 cand = os.path.normpath(os.path.join(base, src["relpath"]))
                 if os.path.exists(cand):
                     src["path"] = cand
-        nums = [int("".join(c for c in x["id"] if c.isdigit()) or 0)
-                for x in a.instances + a.mates + a.groups + a.relations + a.connectors + a.patterns]
-        a._counter = max(nums + [0])
+        stored = d.get("id_counter")             # ids freed by deletes are never reused (I6.1)
+        a._counter = max(a._id_high_water(), stored if isinstance(stored, int) and not isinstance(stored, bool) else 0)
         a.resolver = resolver
         a.refresh(solve=False, notify=False)
         a._update_mate_values(a.mates, fill_only=True)   # files from before Mate values were stored

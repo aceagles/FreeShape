@@ -371,7 +371,7 @@ class LinkResolver:
         if src.get("kind") == "sketch":
             return self._resolve_sketch(studio, src)
         p = _studio_state(studio, src).parts.get(_translate_part(studio, src.get("part")))
-        if p is None or getattr(p, "reference", False):
+        if p is None or getattr(p, "reference", False) or K.is_surface(p.shape):
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         return p
 
@@ -411,6 +411,8 @@ class LinkResolver:
         st = _studio_state(studio, src)
         parts = {}
         for p in st.parts.values():
+            if K.is_surface(p.shape):       # I2.4: surface bodies stay in the Part Studio
+                continue
             named = st.named(p.id)
             parts[str(p.id)] = PublishedPart(
                 id=str(p.id), name=str(p.name), color=tuple(float(c) for c in p.color),
@@ -513,10 +515,10 @@ class LinkResolver:
         st = _studio_state(studio, src)
         if src.get("part") in (None, "*"):
             parts = [p for p in st.parts.values() if p.id not in studio.hidden_parts
-                     and not getattr(p, "reference", False)]
+                     and not getattr(p, "reference", False) and not K.is_surface(p.shape)]
         else:
             p = st.parts.get(_translate_part(studio, src["part"]))
-            parts = [] if p is None or getattr(p, "reference", False) else [p]
+            parts = [] if p is None or getattr(p, "reference", False) or K.is_surface(p.shape) else [p]
         return [{"name": p.name, "qty": 1, "mass": None, "shapes": [p.shape]} for p in parts]
 
     def _resolve_studio_shape(self, src):
@@ -526,7 +528,7 @@ class LinkResolver:
         st = _studio_state(studio, src)
         if src.get("part") in (None, "*"):
             parts = [p for p in st.parts.values() if p.id not in studio.hidden_parts
-                     and not getattr(p, "reference", False)]
+                     and not getattr(p, "reference", False) and not K.is_surface(p.shape)]
             if not parts:
                 raise K.KernelError(f"“{studio.name}” has no parts")
             if len(parts) == 1:
@@ -536,7 +538,7 @@ class LinkResolver:
                 self._shape_cache[key] = K.compound([p.shape for p in parts])
             return self._shape_cache[key]
         p = st.parts.get(_translate_part(studio, src["part"]))
-        if p is None or getattr(p, "reference", False):
+        if p is None or getattr(p, "reference", False) or K.is_surface(p.shape):
             raise K.KernelError(f"The part no longer exists in “{studio.name}”")
         if src.get("flat"):
             if p.id not in getattr(st, "sheet", {}):

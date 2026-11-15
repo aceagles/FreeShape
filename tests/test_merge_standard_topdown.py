@@ -32,7 +32,7 @@ def test_file_versions_after_the_merge():
     """The chains after Parity Sweep (geometry to blobs: assembly 8, document 3, drawing 3) and the upstream 2.0
     merge (assembly 9: explode and patterns; document 4: upstream's keys and up-to ends)."""
     assert Mig.latest_version("assembly") == 9
-    assert Mig.latest_version("document") == 4 and Mig.latest_version("drawing") == 3
+    assert Mig.latest_version("document") == 5 and Mig.latest_version("drawing") == 3
     assert A.AssemblyDoc().to_json().count('"version": 9') == 1
 
 

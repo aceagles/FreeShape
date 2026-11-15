@@ -299,7 +299,7 @@ class _Worker:
                     if getattr(p, "named", None) is None:
                         p.named = st.named(p.id)
                 return {"parts": [lean_part(enc, p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
-                                  if not p.reference],      # I5.3: Context bodies are reference only
+                                  if not p.reference and not K.is_surface(p.shape)],   # I5.3 Context bodies; I2.4 surfaces
                         "sketches": [plain(asdict(sketch_out(fid, (doc.feature(fid) or {}).get("name", fid), res)))
                                      for fid, res in st.sketches.items()],
                         "connectors": [plain(asdict(connector_out(fid, c))) for fid, c in st.connectors.items()]}

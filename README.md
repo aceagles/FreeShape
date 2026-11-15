@@ -38,6 +38,25 @@ What this fork adds:
   materials for mass and the bill of materials.
 - **Drawings and export** — angular dimensions, tolerances, centre lines, SVG and PNG export; 3MF and OBJ
   export; STL resolution options.
+- **Insert DXF or SVG into a sketch** — bring a `.dxf` or `.svg` file's curves into a sketch as one undo step,
+  at the size and units the file states, with Scale, Fit width and layer choices. Text, images, hatches and DWG
+  files are skipped (save a DWG as DXF); curves arrive unconstrained.
+- **Interference detection** — in a Part Studio and an Assembly, a panel lists the parts that overlap with the
+  overlap volume and size; click a row to select the pair and frame the overlap. Assemblies have an *Include
+  standard content* tick, and screws fastened into their holes sit in an *Expected (threads)* group that is not
+  counted. The check runs in a helper process.
+- **Context bar and stable Context bodies** — a Part Studio with a Context shows a bar over the 3D view: its
+  status, **Update context**, **Go to assembly**, an eye for the whole Context, a list with an eye for each
+  neighbour, **Select through context** and a transparency slider. With Select through on, a click picks your own
+  face behind a Context body; where only the Context body lies, it is still picked. Hiding the whole Context and
+  hiding one instance are separate choices. A Context body keeps its identity when an earlier instance is deleted
+  and the Context is updated; a Context saved by an earlier version opens as it was and converts at its first
+  Update context.
+- **Variable-radius fillet and clearer fillet errors** — in the Fillet dialog, set Type to Variable radius and give
+  each end vertex its own radius (a number or an expression); the radius eases smoothly between them. A fillet that
+  fails names the edge or corner and the reason, says how large a radius would work, and highlights the failing
+  edges. Not included: full round, conic and curvature sections, and face blend. No retry ladder or crash guard
+  was built: a corpus of 40 fillets found nothing for them to rescue (ADR 0012).
 - **Component library** — browse a folder of STEP files with previews and insert from it.
 - **Headless and browser** — `python -m freeshape serve <Document>` serves a Document over HTTP on your own
   machine, with a view-only browser viewer.
@@ -182,9 +201,10 @@ The view turns to face the sketch plane.
 | Use (project) | `U` | project part edges into the sketch (edges seen side-on, like a cylinder's rim, become straight lines) |
 | Trim | | removes a line segment up to its intersections |
 | Sketch fillet | | click a corner where two lines meet, type the radius — the shape keeps its dimensions |
-| Offset | `O` | click a line, arc or circle to offset its whole connected outline; type the distance (negative = inside) |
-| Slot | | click the two end centres, type the width |
+| Offset | `O` | click a line, arc or circle to offset its whole connected outline; type the distance (negative = inside). The Both sides button (shown while Offset is active) offsets to both sides at once |
+| Slot | | click the two end centres, type the width; or click an existing line, arc or chain and type the width to get a closed slot round it (the chain becomes construction geometry) |
 | Mirror | | select geometry, then click the line to mirror about — the copy stays linked to the original |
+| Insert DXF or SVG | | pick a `.dxf` or `.svg` file; its curves arrive selected and unconstrained, in one undo step. Text, images, hatches and DWG are skipped. Open ends are reported in the status bar |
 | Linear / circular pattern | | select geometry, then click a direction line (copies go towards where you click) or a centre point; type the count and spacing / angle |
 
 **Typing sizes as you draw:** right after you finish a line, rectangle, circle or arc, a dimension box pops up — type a value (e.g. `25`, `1/2 in`) and press Enter and the shape snaps to it. For a rectangle you get width, then height. Just keep drawing (or press Esc) to skip it; pressing another tool's key before you type a value skips it and starts that tool.
@@ -203,8 +223,12 @@ feature list, so you can define them part-way through and use them in later feat
 Things selected before opening a feature are pre-filled. Extrude and Plane show a **blue arrow you can drag** to set the depth/offset (drag back past the start to flip direction; hold Shift for finer, unsnapped values).
 
 - **Extrude** — New / Add / Remove / Intersect; Blind, Symmetric, Through all; second direction. Cuts
-  automatically go into the material.
-- **Revolve** — around a sketch line, a part edge, or the X/Y/Z axis; full, one direction or symmetric.
+  automatically go into the material. *Create* chooses **Solid** (closed regions, the default), **Surface** (open
+  or closed sketch curves become a surface body, no solid; Remove, Intersect and the up-to ends are refused) or
+  **Thin** (a wall of the given thickness grown from the curves into a solid; *Mid plane*, *Thickness 1 and 2*,
+  *Flip wall*; thickness 1 is on the right of the curve's direction, outside a closed curve).
+- **Revolve** — around a sketch line, a part edge, or the X/Y/Z axis; full, one direction or symmetric. *Create*
+  offers Solid, Surface and Thin, as Extrude does.
 - **Fillet / Chamfer** — pick edges, or a face to do all its edges.
 - **Shell** — pick faces to remove, inward or outward.
 - **Hole** — at the points and circle centres of a sketch (click the sketch, or pick it in the dialog);
@@ -216,15 +240,43 @@ Things selected before opening a feature are pre-filled. Extrude and Plane show 
   and a *print clearance* for 3D-printed threads (0.1–0.2 mm usually works). Tapped holes can also be modelled
   straight from the Hole feature (*Model the thread*). Real threads take a few seconds to build, so plain tapped
   holes (sized for the tap drill) stay the default — like Onshape.
-- **Sweep** — a profile along a path (connected sketch curves or part edges), e.g. pipes and handles.
+- **Sweep** — a profile along a path (connected sketch curves or part edges), e.g. pipes and handles. *Create*
+  offers Solid, Surface and Thin; a thin sweep that is thicker than the path's tightest bend allows says so.
+  Surface bodies are listed in the Parts list under **Surfaces**, have an area and no volume or mass, and are
+  left out of STL, 3MF and OBJ export, of Assembly inserts and of interference checks (STEP and BREP keep them).
+- **Rib** — a web or gusset from open sketch curves (lines and arcs) grown to meet a part, parallel to the sketch plane; set the thickness and direction.
 - **Loft** — blend between two or more profiles on different planes; tick *Straight sides* for a ruled loft.
+- **Boundary surface** — a surface through curves in a U direction and, optionally, curves in a V direction (search
+  for *gordon*, *network surface* or *curve network*). Pick the curves of each direction in order; with U curves
+  only it also works on OpenCascade 7.9, V curves need 8.0. It is a surface Loft saved with a marker, so its face
+  names match the same Loft's. It does not match tangent to neighbouring faces (use *Fill* for that).
+- **Loft end conditions, guides and sweep control** — a Loft's start and end can be *Normal to profile*, *Tangent
+  to profile* or *Match tangent* (continuing the faces beside the profile), each with a signed magnitude. Tick
+  *Guides and continuity* to pick guide curves; **guides need OpenCascade 8.0 or newer** and cannot be combined with
+  end conditions. *Closed* lofts back to the first profile, a point can end a loft, and *Create = Surface* lofts
+  curves into a surface body. A Sweep's *Profile control* is None, *Keep profile orientation* (the end stays parallel
+  to the start) or *Lock profile direction* along a picked direction. Not included: *Match curvature*, and tangent
+  match on a Boundary surface. `scripts/smoke/sy7_loft.py` runs the whole route in the real window.
 - **Draft** — tilt faces by an angle from a neutral plane, for moulded or 3D-printed parts.
-- **Split** — cut parts in two with a plane or flat face; keep both sides or one.
+- **Split** — cut parts in two with a plane or flat face; keep both sides or one. **Split with a surface**: pick a
+  surface part and it cuts as drawn, so it must pass completely through the part (otherwise Split says so); tick
+  *Keep tools* to keep the surface, or pick one of its faces to use the extended face (or *Trim to face
+  boundaries* to use it as it is).
 - **Move** — move and/or rotate parts (or imports), optionally keeping the original as a copy.
 - **Plane** — offset, plane + point, line + angle, point + edge normal, three points, mid plane, curve + point or
   tangent; *Automatic* picks the type from your selection.
 - **Delete face / Move face / Offset surface** — remove fillets, chamfers, bosses and holes from imported parts
   (heal, cap or leave open), push or pull flat faces, or make a surface a set distance from faces.
+- **Thicken** — turn surfaces or faces into a solid, on one or both sides or about the middle; tick *Keep tools* to
+  keep the surfaces. A solid's face adds to it, a surface makes a new part.
+- **Enclose** — make a solid from surface parts, faces and planes that surround a volume (they may overlap); tick
+  *Keep tools* to keep the surfaces. Search for it as *stitch*, *sew* or *knit*.
+- **Fill** — make a surface across a closed ring of edges and sketch curves, to patch or cap a hole. Each model edge
+  can be set to *Tangency*, which aims the fill along the face beside it (a target, not a guarantee); guide points
+  pull it through them. *Add* sews it to the surface parts in scope and makes a solid if they enclose a volume.
+  Search for it as *patch*, *cap hole* or *fill surface*.
+- **Surfaces to solids** — Thicken, Enclose and Fill take a surface model to a solid; `scripts/smoke/sy3_solidify.py` runs the whole
+  route in the real window (a fender surface thickened, six squares enclosed to a cube, a box's open top filled).
 - **Mirror**, **Linear pattern**, **Circular pattern** — of parts.
 - **Boolean** — union, subtract, intersect parts.
 - **Import STEP / BREP** and **Export STEP / STL / BREP** (whole studio, or selected parts from the Parts list).
@@ -291,6 +343,10 @@ tab puts parts together and lets them move the way the real thing would — like
 - **Instances** — right-click for rename, fix / unfix, hide, isolate, colour, **Move / rotate** by exact amounts,
   duplicate, open its Part Studio, mass properties and the degrees of freedom it has left.
 - **Interference check** — shows in red where parts overlap, with the overlap volume.
+- **Interference detection** — the toolbar button opens a panel listing each pair of overlapping parts, with the
+  volume and size. Click a row to select the pair, frame the overlap and ghost it. *Include standard content*
+  (ticked by default) brings Standard parts in; thread fits between a fastened screw and its hole go in the
+  *Expected (threads)* group and are not counted. A change to the model greys the list until you check again.
 - **Bill of materials** — each different part with its quantity, volume and mass; copy it or save it as CSV.
 - **Export** — STEP keeps the assembly structure, part names and colours; STL is one mesh; BREP is the exact
   OpenCascade geometry (no names or colours).

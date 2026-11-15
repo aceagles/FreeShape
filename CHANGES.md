@@ -8,6 +8,142 @@ patterns), drawings (sections, details, parts lists, balloons), sheet metal (hem
 for cutting), version history, Python plugins, and new navigation. It was built and tested in stages — the
 1.9.x previews below — which together make 2.0.0.
 
+### Modelling quick wins
+- **Round face or sketch circle as an axis**: Revolve, the patterns and Move take a cylinder, cone or the flat
+  round end face of a pin or washer as their axis, and a sketch circle or arc (its centre, square to the sketch).
+- **Plane on a sketch curve**: the *Curve point* plane type, and Point normal, Plane point and Three point, now
+  accept sketch lines, arcs, circles, splines and sketch points as well as solid edges and vertices.
+- **Extrude draft**: tick *Draft* on a Blind or Symmetric extrude and give an angle; *Draft the other way* widens
+  instead of narrowing. It also works with a second end position. A 20 mm square extruded 10 mm at 5 degrees ends
+  18.25 mm wide.
+- **Slot on a chain**: the Slot tool, clicked on an existing line and arc chain, wraps it into one closed slot and
+  turns the chain into construction. One Undo takes it all back.
+- **Offset both sides**: a *Both sides* toggle on the Offset tool makes the copy on each side of the curve, held by
+  one dimension.
+- **Rib**: a new feature for a gusset or web. Sketch a line on a plane through the part, pick it and the part, and
+  Rib fills the corner to the given thickness. It also has a toolbar button and a palette command.
+- **File version 5**: files now save as version 5, one step up from version 4. Nothing in them changes; older files
+  open as before and build to the same parts. FreeShape 1.x and earlier 2.0 previews refuse a version 5 file.
+
+### Surface bodies and thin features
+- **Create: Solid, Surface or Thin** on Extrude, Revolve and Sweep. Solid is the default and saves nothing new.
+  Surface turns sketch curves (open or closed) into a surface body with no solid; Remove, Intersect and the up-to
+  ends are refused with a message. Thin grows a wall from the curves into one solid, with *Mid plane*,
+  *Thickness 1 and 2* and *Flip wall* (thickness 1 is on the right of the curve's direction, outside a closed
+  curve); an open arc with Mid plane works, and a thin sweep thicker than the path's tightest bend says so. The
+  open chain of a fender extrudes and sweeps thin into one solid.
+- **Surface bodies**: a surface part is named Surface 1, Surface 2 and so on, and the Parts list shows them under
+  a Surfaces (n) header after Parts (n). It has an area and no volume or mass, patterns and mirrors like a
+  solid (a mirrored surface that touches the mirror plane sews into one part), and saves and reopens unchanged.
+  It is left out of STL, 3MF and OBJ export (a studio of only surfaces says "Nothing to export"), of Assembly
+  inserts and of interference checks; STEP and BREP keep it.
+- **Split with a surface**: pick a surface part as the Split tool and it cuts as drawn. A surface that stops short
+  is refused ("The surface must pass completely through the part"); pick one of its faces to use the extended face.
+  *Keep tools* keeps the surface; *Trim to face boundaries* uses a face as it is. Search for it as "split with
+  surface".
+
+### Insert DXF or SVG into a sketch
+- **Insert DXF or SVG**: in a sketch, the command (also found by searching "insert dxf", "import svg" or "logo")
+  picks a `.dxf` or `.svg` file and puts its curves into the sketch as one undo step. They arrive selected.
+  Lines and arcs stay lines and arcs; Bezier curves become splines. Nothing is constrained: the curves arrive
+  **unconstrained**, so dimension or constrain them as you like.
+- **Size and place**: an SVG with a width and a viewBox keeps its stated size; a DXF uses the units it states
+  (inches arrive 25.4 times larger than millimetres). The options window also has Scale, Fit width, DXF layers
+  or SVG groups to leave out or bring in as construction, and a choice of file origin or centred on the sketch
+  origin.
+- **Closing gaps**: ends closer than 0.001 mm are joined. Bigger gaps are left and reported as "N open ends".
+- **Big files**: over 1500 points the window warns; over 4000 you must tick a box before OK is enabled.
+- **Skipped**: text, images, hatches and DWG files. Skipped items are counted in the status line. For DWG, save
+  as DXF first.
+
+### Interference detection
+- **Interference detection panel**: in a Part Studio and in an Assembly, the toolbar button (or the command, also
+  found by searching "clash", "collision" or "overlap") lists every pair of parts that share volume, largest first,
+  with the overlap volume and size. Click a row to select the pair, frame the overlap and ghost it; the Document is
+  not changed and not marked dirty. Isolate shows only the pair.
+- **Part Studio**: hidden parts and Context parts are left out and counted in the footer ("2 parts not checked:
+  hidden or reference."). With fewer than two parts the panel says "Interference needs two or more parts."
+- **Include standard content**: in an Assembly, ticked by default. Unticking it leaves Standard parts out and the
+  footer counts them ("1 standard part not checked.").
+- **Expected (threads)**: a screw fastened into its tapped hole overlaps the plate by design. These pairs sit in a
+  collapsed "Expected (threads) (n)" group and are not counted. A screw run into a third part is counted.
+- **Check in a helper process**: the check runs in a separate process, so the window stays responsive and Cancel
+  returns at once. If the helper cannot start, the check runs in the app instead. A pair that cannot be checked is a
+  "could not check" row, and the footer counts it.
+- **Out of date**: a change to the model greys the rows and the footer says "Out of date. Check again." The panel
+  stays open while you turn the view; closing it removes the ghosts and restores transparency.
+
+### Thicken, Enclose and Fill: surfaces to solids
+- **Thicken** turns a surface part or a face into a solid, 2 mm or any thickness on one side, both sides or about the
+  middle. A surface makes a new part and is used up unless you tick *Keep tools*; a solid's face adds to the solid.
+  A thickness larger than the surface's tightest curve allows fails with a message saying so.
+- **Enclose** makes a solid from surface parts, faces and planes that surround a volume. The surfaces may overhang
+  each other. Five faces of a cube fail with "The selection does not close a volume".
+- **Fill** makes a surface across a closed ring of edges, for example the open top of a box. Tick *Tangency* on a
+  model edge to aim the fill along the face beside it. With *Add*, the fill is sewn to the surface parts in scope
+  and the part becomes a solid when they enclose a volume.
+
+### Loft conditions, guides, Loft as a surface, Boundary surface and sweep control
+- **End conditions on Loft**: *Start profile condition* and *End profile condition* offer None, *Normal to profile*,
+  *Tangent to profile* and *Match tangent*, each with a signed *Magnitude*. Normal to profile leaves each profile
+  square (the two offset 20 mm squares leave within 0.1 degree, against 26.6 degrees for the plain loft). Match
+  tangent continues the faces beside the profile; leave *Adjacent faces* empty to use the faces that share the
+  profile's outer edges (a loft from a cone frustum's top face stays within 0.5 degree of the cone wall, against
+  32.5 degrees with no condition). The dialog preview follows the condition.
+- **Guides**: tick *Guides and continuity* and pick guide curves. Two bowed guides turn two squares into one solid
+  that passes through both guides. **Guides need OpenCascade 8.0 or newer**; on 7.9 the loft fails with "Loft guides
+  need OpenCascade 8.0 or newer". A loft takes guides or end conditions, not both.
+- **Closed loft and point profiles**: tick *Closed* with three or more profiles to loft back to the first (four
+  circles on a ring make a solid with no end caps). A vertex or sketch point can be the first or last profile.
+- **Create: Surface on Loft**: the curves, open or closed, loft into a surface body with no caps.
+- **Boundary surface**: a new command, a surface through U curves and, on OpenCascade 8.0, V curves. From U curves
+  alone it equals the surface Loft of the same curves; the feature list calls it "Boundary surface 1". Search for it
+  as *gordon*, *network surface* or *curve network*.
+- **Sweep Profile control**: None, *Keep profile orientation* (every section stays parallel to the profile, so a
+  quarter-turn path ends parallel to its start) and *Lock profile direction* with a direction to pick (the profile
+  stays in a plane that holds that direction; on a path that pitches and turns, a default sweep's long edge leans
+  up to 17 degrees off square to z where a locked one stays square).
+- **Not included**: *Match curvature*, guides combined with end conditions, and tangent match to neighbouring
+  faces on a Boundary surface (use *Fill*). `scripts/smoke/sy7_loft.py` runs all of the above in the real window.
+
+### Context identity and display
+- **Bodies keep their identity**: a Context made by *Edit in context* names each neighbour by its Assembly
+  instance, not by its place in the list. A neighbour you hid, coloured or ended an extrude on stays that
+  neighbour after an earlier instance is deleted and the Context is updated, also when a twin of the same part
+  now stands where it was. A sketch projection of a twin's edge follows that twin; if the twin is removed, the
+  sketch says the edge is gone instead of jumping to another.
+- **Old Contexts convert at their first update**: a file saved before this version opens with its Context as it
+  was. *Update context* changes it to the new identity in one undo step, renaming the hidden flag, colour and
+  references on its bodies.
+- **Context bar**: over the 3D view of a Part Studio with a Context. It shows the Assembly's name and whether the
+  Context is current or out of date, and has *Update context*, *Go to assembly*, an eye for the whole Context, a
+  list of the neighbours with an eye each, *Select through context* and a transparency slider.
+- **Select through context**: on by default (View menu, the bar, or search for "select through"). A click on a
+  spot covered by a Context body picks your own face behind it; where only a Context body lies it is still
+  picked. Box select skips Context bodies.
+- **Two kinds of hide**: *Hide context* hides the whole Context (every body), *Hide context instance* hides one
+  neighbour. They do not change each other, and neither rebuilds the model or changes the Context's status.
+  Context bodies are shown in italics in the Parts list.
+- **Transparency**: the slider sets how see-through Context bodies are, 0 to 100, and is remembered. Moving it
+  redraws without rebuilding the model.
+
+### Variable-radius fillet and clearer fillet errors
+- **Variable radius**: in the Fillet dialog, set *Type* to *Variable radius* (or run the *Variable fillet*
+  command), pick the edges, then pick end vertices in the *Vertices* list and type a radius for each. A radius can
+  be a number or an expression. The radius eases smoothly from one vertex to the next; a vertex you leave out takes
+  the dialog's radius. On a 40 mm block edge, 2 mm at one end and 6 mm at the other measures 2 mm and 6 mm there,
+  and swapping the two mirrors it. Constant fillets save and build exactly as before.
+- **Failures say where and why**: a fillet that is too large says "the largest that works here is about N mm"
+  (for a variable fillet, "about N percent of these radii") and, after "Where:", names the edge or corner and the
+  reason OpenCascade gave. When no smaller radius works either, the message gives the reasons and suggests no
+  radius. The failing edges are highlighted in the view until the fillet is fixed. A corner is named in the
+  message but not drawn.
+- **Not included**: full round, conic and curvature-continuous sections, and face blend. The radius always eases
+  smoothly; there is no linear option.
+- **No retry ladder and no crash guard**: we tried a corpus of 40 fillets on swept and lofted bodies against every
+  alternative way of building a round. None rescued a failing fillet and none crashed, so fillets still run in the
+  app's own process and a failed one just reports its error (ADR 0012).
+
 ### Axis at the centre of a flat face
 - **Axis tool**: picking a flat face on its own now gives an axis through the **centre of the face**, square to it
   and pointing out of the part: the same place a mate connector on that face sits. The end face of a shaft or a

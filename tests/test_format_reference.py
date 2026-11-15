@@ -90,7 +90,7 @@ def _studio():
     assert doc.errors == {}
     tab = DF.Tab("T9", "studio", "other.fshape", "Other")
     extra = []
-    for ftype in ("derived", "variable_studio_ref", "mate_connector", "context", "delete_part", "import", "axis"):
+    for ftype in ("derived", "variable_studio_ref", "mate_connector", "context", "delete_part", "import", "axis", "rib", "thicken", "enclose", "fill"):
         extra.append(doc.make_feature(ftype))
     extra[0]["params"]["source"] = L.studio_source(tab, "F1/1", document="doc-id", version="v1")
     extra[1]["params"].update(source={"kind": "variables", "tab": "T3", "name": "V"}, names=["w"])
@@ -264,7 +264,7 @@ def test_every_registered_step_is_listed(fmt):
 def test_glossary_and_decision_records_are_in_the_repo():
     assert os.path.isfile(os.path.join(REPO, "CONTEXT.md"))
     names = sorted(os.path.basename(p) for p in glob.glob(os.path.join(ADR_DIR, "*.md")))
-    assert [n[:4] for n in names] == [f"{i:04d}" for i in range(1, 12)]
+    assert [n[:4] for n in names] == [f"{i:04d}" for i in range(1, 13)]
 
 
 def _markdown_files():

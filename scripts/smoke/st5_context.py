@@ -93,7 +93,8 @@ def run():
     T.run_action(w, "edit_in_context")
     T.check(w.doc is lid.doc and len(contexts(lid.doc)) == 1, "Edit in context did not open Lid with one Context")
     cfid = contexts(lid.doc)[0]["id"]
-    ref_id = f"{cfid}/1"
+    T.check(contexts(lid.doc)[0]["params"].get("ids") == "instance", "Edit in context did not write ids: instance")
+    ref_id = f"{cfid}/{i_base}"             # a Context body is <fid>/<Assembly instance id> (I6.1)
     ref = lid.doc.state.parts[ref_id]
     T.check(ref.reference, "the Context body is not a reference part")
     want = K.located(a.world_shape(i_base), np.linalg.inv(a.T(i_lid)))
@@ -159,7 +160,8 @@ def run():
     fd2.remove_tab(asm_id)
     T.check(fd2.context_status(lid_id, fid2) == "assembly missing", fd2.context_status(lid_id, fid2))
     lid2.doc.rebuild()
-    T.check(not lid2.doc.errors and f"{fid2}/1" in lid2.doc.state.parts and lid2.doc.state.parts[f"{fid2}/1"].reference,
+    T.check(not lid2.doc.errors and f"{fid2}/{i_base}" in lid2.doc.state.parts
+            and lid2.doc.state.parts[f"{fid2}/{i_base}"].reference,
             lid2.doc.errors)
     T.say("assembly deleted: context still displayed (status: assembly missing)")
 
@@ -187,7 +189,7 @@ def run():
         PartStudioDoc.compute = orig
     T.check(not again.errors, again.errors)
     got = {k: shape_fingerprint(p.shape) for k, p in again.state.parts.items()}
-    T.check(got == lid_fp and again.state.parts[f"{cfid}/1"].reference, "reopened Lid differs from the saved one")
+    T.check(got == lid_fp and again.state.parts[f"{cfid}/{i_base}"].reference, "reopened Lid differs from the saved one")
     n_base = sum(1 for n in builds if n == "Base")
     T.check(n_base == 0 and builds, f"builds {builds}")
     T.say(f"reopened: restored from blobs, Base built {n_base} times")

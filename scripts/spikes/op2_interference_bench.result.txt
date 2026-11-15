@@ -1,0 +1,74 @@
+DECISION interference min_depth=0.0001 min_volume=1e-3 engine=helper open_runs_at_most=90
+(combined over: ocp7.9.3.1.1, ocp8.0.1.1.0; most cautious value of each key)
+
+== ocp7.9.3.1.1 ==
+load average at start (1/5/15 min): 7.82 3.72 1.57 on 12 cores
+
+Pair counts and times (one build, this run). Pairs = all pairs; survive = pairs left after the 1e-6 mm bbox reject.
+          case  inst   pairs  survive  overlap  ms/pair common  ms/pair volume  ms/pair total  ms longest  s bbox  s total
+--------------  ----  ------  -------  -------  --------------  --------------  -------------  ----------  ------  -------
+  synthetic 50    50    1225       49       25           12.16            0.50          12.66        31.3   0.001     0.63
+ synthetic 200   200   19900      197       94           12.64            0.47          13.11        37.9   0.008     2.62
+ synthetic 500   500  124750      493      231           12.02            0.45          12.46        39.8   0.014     6.20
+bolted bracket     2       1        1        0           20.41            0.10          20.51        20.5   0.000     0.02
+overlap = survivors with volume > 1e-3 mm3. s total = shape placement + bbox + bbox reject + all booleans + volumes.
+boolean errors (pair skipped): 0
+
+Mate solver noise (largest overlap depth 2V/A between parts mated face to face; connector misalignment in mm).
+              case  mated pairs  dof left  max depth mm  max normal gap mm  max lateral mm
+------------------  -----------  --------  ------------  -----------------  --------------
+    bolted bracket            1         0     0.000e+00          0.000e+00       0.000e+00
+ chain of 6 plates            5         0     0.000e+00          1.421e-14       1.465e-14
+chain of 12 plates           11         0     0.000e+00          1.421e-14       2.864e-14
+noise = 1.421e-14 mm (the larger of the overlap depth and the normal gap); min_depth = max(10 x noise, 0.0001) = 1.000e-04 mm
+
+GIL test: a worker thread repeats the boolean for 2 s while the main thread counts; median of 3 runs. A stall is the gap between two counter checks.
+idle counter (no worker): 2.725e+07 increments/s (3 runs: 2.657e+07 .. 3.134e+07)
+                          pair               worker runs  one Common ms  increments/s  fraction of idle  max stall ms  time in stalls >20 ms
+------------------------------  ------------------------  -------------  ------------  ----------------  ------------  ---------------------
+  longest pair (synthetic 500)  BRepAlgoAPI_Common.Build           22.9     7.466e+06              0.27            17                     0%
+  longest pair (synthetic 500)                  K.common           22.9     9.709e+06              0.36            22                     1%
+heavy pair (64 holes, 64 pins)  BRepAlgoAPI_Common.Build          442.7     7.367e+05              0.03           235                    98%
+heavy pair (64 holes, 64 pins)                  K.common          442.7     9.727e+05              0.04           230                    95%
+A fraction near 1 means the boolean released the GIL. A short boolean looks better than it is: the worker hands the GIL over between booleans, so read the heavy pair and the stall columns.
+
+engine rule: thread when longest pair < 1 s (0.040 s) and the lowest counter fraction over both pairs is >= 25% of idle (3%) -> helper
+open_runs_at_most: (2 s - 0.05 s fixed) / 20.51 ms worst mean per pair = 90 surviving pairs, rounded down to a multiple of 5
+metrics min_depth=1.000e-04 engine=helper open_runs=90
+script time on this build: 59 s; load average at end: 5.69 3.92 1.78
+
+== ocp8.0.1.1.0 ==
+load average at start (1/5/15 min): 5.69 3.92 1.78 on 12 cores
+
+Pair counts and times (one build, this run). Pairs = all pairs; survive = pairs left after the 1e-6 mm bbox reject.
+          case  inst   pairs  survive  overlap  ms/pair common  ms/pair volume  ms/pair total  ms longest  s bbox  s total
+--------------  ----  ------  -------  -------  --------------  --------------  -------------  ----------  ------  -------
+  synthetic 50    50    1225       49       25            7.71            0.33           8.04        16.2   0.001     0.40
+ synthetic 200   200   19900      197       94            7.89            0.32           8.21        21.8   0.004     1.64
+ synthetic 500   500  124750      493      231            7.89            0.32           8.21        23.8   0.013     4.10
+bolted bracket     2       1        1        0           13.68            0.08          13.75        13.8   0.000     0.01
+overlap = survivors with volume > 1e-3 mm3. s total = shape placement + bbox + bbox reject + all booleans + volumes.
+boolean errors (pair skipped): 0
+
+Mate solver noise (largest overlap depth 2V/A between parts mated face to face; connector misalignment in mm).
+              case  mated pairs  dof left  max depth mm  max normal gap mm  max lateral mm
+------------------  -----------  --------  ------------  -----------------  --------------
+    bolted bracket            1         0     0.000e+00          0.000e+00       0.000e+00
+ chain of 6 plates            5         0     0.000e+00          1.421e-14       1.465e-14
+chain of 12 plates           11         0     0.000e+00          1.421e-14       2.864e-14
+noise = 1.421e-14 mm (the larger of the overlap depth and the normal gap); min_depth = max(10 x noise, 0.0001) = 1.000e-04 mm
+
+GIL test: a worker thread repeats the boolean for 2 s while the main thread counts; median of 3 runs. A stall is the gap between two counter checks.
+idle counter (no worker): 3.238e+07 increments/s (3 runs: 3.197e+07 .. 3.273e+07)
+                          pair               worker runs  one Common ms  increments/s  fraction of idle  max stall ms  time in stalls >20 ms
+------------------------------  ------------------------  -------------  ------------  ----------------  ------------  ---------------------
+  longest pair (synthetic 500)  BRepAlgoAPI_Common.Build           15.9     1.282e+07              0.40            10                     0%
+  longest pair (synthetic 500)                  K.common           15.9     1.016e+07              0.31            18                     0%
+heavy pair (64 holes, 64 pins)  BRepAlgoAPI_Common.Build          361.9     9.351e+05              0.03           179                    97%
+heavy pair (64 holes, 64 pins)                  K.common          361.9     1.245e+06              0.04           212                    94%
+A fraction near 1 means the boolean released the GIL. A short boolean looks better than it is: the worker hands the GIL over between booleans, so read the heavy pair and the stall columns.
+
+engine rule: thread when longest pair < 1 s (0.024 s) and the lowest counter fraction over both pairs is >= 25% of idle (3%) -> helper
+open_runs_at_most: (2 s - 0.05 s fixed) / 13.75 ms worst mean per pair = 140 surviving pairs, rounded down to a multiple of 5
+metrics min_depth=1.000e-04 engine=helper open_runs=140
+script time on this build: 51 s; load average at end: 4.09 3.76 1.84

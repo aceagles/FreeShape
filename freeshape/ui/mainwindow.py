@@ -36,6 +36,7 @@ from .viewport import Viewport, Pick
 from .panels import LeftPanel, STD_PLANES, DocTabBar, DependenciesPanel
 from .dialogs import FeatureDialog, SketchDialog, pick_to_item
 from .section import SectionPanel
+from .context_bar import ContextBar
 from .sketcher import Sketcher, CONSTRAINT_TOOLS
 from .numparse import fmt
 from .assembly_ui import AssemblyController
@@ -161,10 +162,13 @@ class MainWindow(QMainWindow):
         self.sketch_waiting_for_plane = False
         self._sketch_buttons = {}
         self.section_panel = None
+        self.studio_interf = None   # the Interference detection panel of a Part Studio while open
         # view state of the visibility keys: none of it is saved with the file
         self.show_axes = True                               # construction axes (Shift+P)
         self.show_connectors = True                         # a Part Studio's mate connectors (K, Shift+P)
         self._transparent = weakref.WeakKeyDictionary()     # document -> ids of the parts made transparent (Shift+T)
+        self.tool_transparent = set()   # ids a tool made transparent: session state, never saved, merged into the above
+        self.view_only_ids = None       # a set: show only these part / instance ids; None shows all. View only, no undo
         self._passing_key = False
         self._shown = None                                  # what _show_state last drew in a Part Studio
         from PySide6.QtCore import QSettings
@@ -186,6 +190,9 @@ class MainWindow(QMainWindow):
                            save=False)
         self.set_zoom_speed(str(self.settings.value("zoom_speed", "normal")), save=False)
         self.set_shiny(str(self.settings.value("shiny", "true")).lower() != "false", save=False)
+        self.set_select_through_context(
+            str(self.settings.value("select_through_context", "true")).lower() != "false", save=False)
+        self.set_context_alpha(self.settings.value("view/context_alpha", 0.3), save=False)
         self._add_tab(self._new_document())
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self.autosave)
@@ -251,6 +258,7 @@ class MainWindow(QMainWindow):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
         self.viewport = Viewport()
+        self.context_bar = ContextBar(self)       # shown over the 3D view of a Part Studio with a Context
         self.view_stack = QStackedWidget()       # the 3D view, or the drawing sheet
         self.view_stack.addWidget(self.viewport)
         self.view_stack.addWidget(self.dwg.canvas)
@@ -334,6 +342,7 @@ class MainWindow(QMainWindow):
         lp.features.planeClicked.connect(self._tree_plane_clicked)
         lp.features.featureHovered.connect(self._feature_hovered)
         lp.features.itemSelectionChanged.connect(self._update_feature_hl)
+        lp.features.itemSelectionChanged.connect(self._refresh_context_bar)
         self._hl_hover = None
         self._hl_cache = {}
         lp.filter.textChanged.connect(lambda t: (lp.features.set_filter(t), self._populate_lists()))
@@ -429,6 +438,12 @@ class MainWindow(QMainWindow):
         self._add_action(vm, "Show all parts", self._show_all_parts)
         self.act_shiny = self._add_action(vm, "Shiny surfaces", lambda on: self.set_shiny(on))
         self.act_shiny.setCheckable(True)
+        self.act_select_through = self._add_action(vm, "Select through context",
+                                                   lambda on: self.set_select_through_context(on))
+        self.act_select_through.setCheckable(True)
+        self.act_select_through.setToolTip("Clicks and hover go through Context bodies to the part you are editing; "
+                                           "a Context body is still picked where nothing of the part lies under the "
+                                           "cursor. Select other lists everything.")
         rm = vm.addMenu("Rotate around")
         from PySide6.QtGui import QActionGroup as _AG
         rgrp = _AG(self)
@@ -567,12 +582,22 @@ class MainWindow(QMainWindow):
             C("sketch", "Sketch", "Draw 2D profiles on a plane or a flat face. With vertices, edges or faces selected "
               "that define a plane, the plane is made for you.", lambda: self.start_sketch(), "draw 2d profile"),
             C("extrude", "Extrude", "Add or remove material by extending sketch regions or flat faces. Blind, "
-              "symmetric or through all.", lambda: F_("extrude"), "boss cut pad pocket"),
+              "symmetric or through all.", lambda: F_("extrude"), "boss cut pad pocket draft taper surface extrude thin extrude wall"),
             C("revolve", "Revolve", "Spin a sketch region around an axis to make round parts.",
-              lambda: F_("revolve"), "lathe turn"),
-            C("sweep", "Sweep", "Move a profile along a path to make a pipe or rail.", lambda: F_("sweep"), "pipe path"),
-            C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"), "blend transition"),
-            C("fillet", "Fillet", "Round off edges or faces with a radius.", lambda: F_("fillet"), "round blend corner"),
+              lambda: F_("revolve"), "lathe turn surface revolve thin revolve wall"),
+            C("sweep", "Sweep", "Move a profile along a path to make a pipe or rail.", lambda: F_("sweep"), "pipe path surface sweep thin sweep profile orientation"),
+            C("rib", "Rib", "Add a rib, web or gusset to a part from open sketch curves, grown until it meets the "
+              "part.", lambda: F_("rib"), "gusset web stiffener support"),
+            C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"),
+              "blend transition end condition loft tangent normal to profile guide curves guided loft "
+              "boundary surface ruled surface surface loft"),
+            C("boundary_surface", "Boundary surface", "A surface through curves in a U direction and, optionally, "
+              "a V direction. V curves need OpenCascade 8.0.", lambda: F_("boundary_surface"),
+              "boundary surface gordon network surface uv surface curve network surface"),
+            C("fillet", "Fillet", "Round off edges or faces with a radius.", lambda: F_("fillet"),
+              "round blend corner variable fillet variable radius"),
+            C("variable_fillet", "Variable fillet", "Round off edges with a radius that changes from vertex to vertex.",
+              lambda: self.start_variable_fillet(), "fillet variable radius round blend corner"),
             C("chamfer", "Chamfer", "Create beveled edges or faces with a distance.", lambda: F_("chamfer"),
               "bevel"),
             C("draft", "Draft", "Angle side faces so a part releases from a mould.", lambda: F_("draft"), "taper"),
@@ -591,6 +616,15 @@ class MainWindow(QMainWindow):
             C("offset_surface", "Offset surface", "Make a new surface a set distance from selected faces (flat or "
               "curved). The result is a surface body you can use as a reference or delete faces from.",
               lambda: F_("offset_surface"), "offset face surface copy shell skin"),
+            C("thicken", "Thicken", "Turn surfaces or faces into a solid of a set thickness, on one or both sides or "
+              "about the middle. Picking a solid's face adds to it; picking a surface makes a new part.",
+              lambda: F_("thicken"), "thicken surface to solid offset solid"),
+            C("enclose", "Enclose", "Make a solid from surfaces, faces and planes that surround a volume. The "
+              "surfaces are used up unless you keep them.",
+              lambda: F_("enclose"), "enclose solid from surfaces sew stitch knit"),
+            C("fill", "Fill", "Make a surface across a closed ring of edges or sketch curves, to patch or cap a "
+              "hole. Each edge can take Tangency; guide points pull the surface through them.",
+              lambda: F_("fill"), "fill patch cap hole fill surface"),
             C("delete_part", "Delete part", "Remove the selected parts from the model from this point on.",
               lambda: F_("delete_part"), "remove erase discard body"),
             C("sm_base", "Sheet metal", "A flat sheet from a sketch with thickness, bend radius and K-factor.",
@@ -613,7 +647,7 @@ class MainWindow(QMainWindow):
               lambda: F_("circular_pattern"), "array copies polar"),
             C("boolean", "Boolean", "Add, subtract or intersect parts.", lambda: F_("boolean"),
               "union subtract intersect combine merge"),
-            C("split", "Split", "Cut parts with planes, faces (flat or curved) or sketch curves; keep both sides or one.", lambda: F_("split"), "cut"),
+            C("split", "Split", "Cut parts with planes, faces (flat or curved) or sketch curves; keep both sides or one.", lambda: F_("split"), "cut split with surface cut with surface"),
             C("move", "Move", "Move, rotate or copy parts by exact amounts.", lambda: F_("move"), "translate"),
             C("mate_connector", "Mate connector", "Put a named frame (origin, Z and X) on a face or edge, with the "
               "same snap points as an Assembly. Assemblies can mate to it.", lambda: F_("mate_connector"),
@@ -654,6 +688,9 @@ class MainWindow(QMainWindow):
             C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.redo, "", "Edit"),
             C("section", "Section view", "Cut the model open with a plane to see inside (Shift+X).",
               self.toggle_section, "cross", "View"),
+            Command("interference", "Interference detection", "Show where parts overlap.",
+                    lambda: self.toggle_studio_interference(), "interference clash collision overlap check", "View",
+                    "" if self.mode == "idle" else "Finish or cancel the open feature first"),
             C("hide", "Show or hide planes", "Show or hide the default planes and the planes you made (P).",
               lambda: self.vis_command("planes"), "visibility datum", "View"),
             C("hide", "Show or hide construction geometry", "Show or hide planes, axes and mate connectors "
@@ -670,6 +707,12 @@ class MainWindow(QMainWindow):
               lambda: self.vis_command("show_all"), "unhide visibility", "View"),
             C("hide", "Make transparent", "Make the selected parts see-through, or solid again (Shift+T).",
               lambda: self.vis_command("transparent"), "see through translucent visibility", "View"),
+            C("hide", "Hide context", "Hide every body of a Context (the selected one, or all of them); again to show "
+              "it.", self.toggle_context_hidden, "hide context instances ghost visibility neighbours", "View"),
+            C("hide", "Select through context", "Clicks go through Context bodies to the part you are editing "
+              "(on by default); tick or untick it.", lambda: self.set_select_through_context(
+                  not self.viewport.select_through),
+              "select transparent geometry click through context pick see through", "View"),
             C("fit", "Zoom to fit", "Fit the whole model in the view (F).", lambda: self.viewport.fit(), "", "View"),
             C("iso", "Isometric view", "Look at the model from the isometric corner (Shift+7).",
               lambda: self.viewport.set_standard_view("Isometric"), "", "View"),
@@ -677,6 +720,9 @@ class MainWindow(QMainWindow):
         for i, name in enumerate(("Front", "Back", "Left", "Right", "Top", "Bottom"), 1):
             cmds.append(C("iso", f"{name} view", f"Look at the model from the {name.lower()} (Shift+{i}).",
                           lambda n=name: self.viewport.set_standard_view(n), "", "View"))
+        if self.context_bar.context_fid() is not None:
+            cmds.append(C("assembly", "Go to assembly", "Switch to the Assembly this Part Studio's Context was "
+                          "captured from.", self.context_bar.go_to_assembly, "context tab", "View"))
         from . import pyfeature_ui, plugin_ui
         return cmds + pyfeature_ui.palette_commands(self) + plugin_ui.palette_commands(self, C)
 
@@ -688,11 +734,12 @@ class MainWindow(QMainWindow):
         ("arc_center", "Center-point arc", "centre point"), ("spline", "Spline", "curve through points"),
         ("ellipse", "Ellipse", "oval"), ("text", "Text", "letters font engrave"), ("point", "Point", "vertex"),
         ("dimension", "Dimension", "smart dimension size measure"),
-        ("sk_fillet", "Sketch fillet", "round corner radius"), ("offset", "Offset", "parallel copy"),
-        ("slot", "Slot", "obround stadium"), ("sk_mirror", "Mirror", "symmetry"),
+        ("sk_fillet", "Sketch fillet", "round corner radius"), ("offset", "Offset", "parallel copy both sides"),
+        ("slot", "Slot", "obround stadium offset both sides bi-directional offset wall and slot from curve"), ("sk_mirror", "Mirror", "symmetry"),
         ("sk_lpattern", "Linear pattern", "array copies"), ("sk_cpattern", "Circular pattern", "array copies polar"),
         ("use", "Use", "project convert intersect part edges"), ("trim", "Trim", "cut remove"),
-        ("extend", "Extend", "lengthen"))
+        ("extend", "Extend", "lengthen"),
+        ("insert_file", "Insert DXF or SVG", "insert dxf or dwg import dxf import svg logo dwg file drawing"))
 
     def _palette_sketch_commands(self, C):
         """Search tools entries while a sketch is open: the sketch toolbar's tools, constraints and view commands."""
@@ -701,8 +748,9 @@ class MainWindow(QMainWindow):
         cmds = [C("undo", "Undo", "Undo the last sketch change (Ctrl+Z).", self.undo, "", "Edit"),
                 C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.redo, "", "Edit")]
         for key, name, kw in self.SKETCH_PALETTE:
-            cmds.append(C({"select": "point", "text": "sk_text"}.get(key, key), name,
-                          TOOL_HINTS.get(key) or f"{name} — sketch tool.", lambda k=key: self._sk_tool(k), kw, grp))
+            act = (lambda: self._sk("insert_file")) if key == "insert_file" else (lambda k=key: self._sk_tool(k))
+            cmds.append(C({"select": "point", "text": "sk_text", "insert_file": "import"}.get(key, key), name,
+                          TOOL_HINTS.get(key) or f"{name} — sketch tool.", act, kw, grp))
         cmds.append(C("construction", "Construction", "Turn the selected geometry into construction geometry, or "
                       "back (Q).", lambda: self._sk("toggle_construction"), "toggle reference helper", grp))
         for name, tip in CONSTRAINT_TOOLS.items():
@@ -848,7 +896,9 @@ class MainWindow(QMainWindow):
         self._tb(h, "sketch", "Sketch (Shift+S)", lambda: self.start_sketch())
         h.addWidget(_sep())
         for name, tip in (("extrude", "Extrude (Shift+E)"), ("revolve", "Revolve (Shift+W)"),
-                          ("sweep", "Sweep — a profile along a path"), ("loft", "Loft — blend between profiles"),
+                          ("sweep", "Sweep — a profile along a path"),
+                          ("rib", "Rib — a web or gusset from sketch curves"), ("loft", "Loft — blend between profiles"),
+                          ("boundary_surface", "Boundary surface — a surface through U and V curves"),
                           ("fillet", "Fillet (Shift+F)"), ("chamfer", "Chamfer"), ("draft", "Draft — angle side faces"),
                           ("shell", "Shell"), ("hole", "Hole — custom or ISO clearance / tapped"),
                           ("thread", "Thread — real ISO threads on holes and shafts"),
@@ -856,6 +906,9 @@ class MainWindow(QMainWindow):
                                           "imported parts (heal, cap or leave open)"),
                           ("move_face", "Move face — push or pull flat faces"),
                           ("offset_surface", "Offset surface — a new surface a set distance from faces"),
+                          ("thicken", "Thicken — turn surfaces or faces into a solid"),
+                          ("enclose", "Enclose — a solid from surfaces that surround a volume"),
+                          ("fill", "Fill — a surface across a closed ring of edges, to patch a hole"),
                           ("delete_part", "Delete part — remove parts from the model from here on")):
             self._tb(h, name, tip, lambda _=False, n=name: self.start_feature(n))
         h.addWidget(_sep())
@@ -894,6 +947,8 @@ class MainWindow(QMainWindow):
         h.addStretch(1)
         self.btn_section = self._tb(h, "section", "Section view (Shift+X) — select a face or plane first to cut there",
                                     self.toggle_section, checkable=True)
+        self.btn_pinterf = self._tb(h, "interference", "Interference detection — show where parts overlap",
+                                    lambda checked=False: self.toggle_studio_interference(checked), checkable=True)
         self._tb(h, "fit", "Zoom to fit (F)", lambda: self.viewport.fit())
         self._tb(h, "iso", "Isometric (Shift+7)", lambda: self.viewport.set_standard_view("Isometric"))
         return w
@@ -922,7 +977,7 @@ class MainWindow(QMainWindow):
         self._tb(h, "fix", "Fix / unfix the selected parts", self._asm_toggle_fix)
         self.btn_group = self._tb(h, "group", "Group the selected parts so they move as one body", self._asm_group)
         h.addWidget(_sep())
-        self.btn_interf = self._tb(h, "interference", "Interference check — show where parts overlap",
+        self.btn_interf = self._tb(h, "interference", "Interference detection — show where parts overlap",
                                    lambda: a.toggle_interference(), checkable=True)
         self._tb(h, "linear_pattern", "Linear pattern of the selected parts", lambda: a.pattern_dialog("linear"))
         self._tb(h, "circular_pattern", "Circular pattern of the selected parts", lambda: a.pattern_dialog("circular"))
@@ -1045,6 +1100,15 @@ class MainWindow(QMainWindow):
                           ("sk_cpattern", "Circular pattern — select geometry, then the centre point")):
             self._sketch_buttons[name] = self._tb(h, name, tip, lambda _=False, n=name: self._sk_tool(n),
                                                   checkable=True)
+        b = QToolButton()
+        b.setText("Both sides")
+        b.setToolTip("Offset to both sides of the line, arc or chain at once")
+        b.setCheckable(True)
+        b.setAutoRaise(True)
+        b.toggled.connect(self._set_offset_both)
+        b.setVisible(False)
+        h.addWidget(b)
+        self._offset_both_btn = b
         h.addWidget(_sep())
         b = self._tb(h, "use", "Use (project) part edges (U)", lambda: self._sk_tool("use"), checkable=True)
         self._sketch_buttons["use"] = b
@@ -1052,6 +1116,8 @@ class MainWindow(QMainWindow):
         self._sketch_buttons["trim"] = b
         b = self._tb(h, "extend", "Extend", lambda: self._sk_tool("extend"), checkable=True)
         self._sketch_buttons["extend"] = b
+        self._tb(h, "import", "Insert DXF or SVG — put a drawing or logo file into this sketch",
+                 lambda: self._sk("insert_file"))
         self._tb(h, "delete", "Delete selected (Del)", lambda: self._sk("delete_selection"))
         h.addStretch(1)
         self._tb(h, "normal_to", "Normal to sketch (N)", self._normal_to_sketch)
@@ -1131,6 +1197,7 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(i)
 
     def _on_doc_changed(self):
+        self._refresh_context_bar()
         self.dependencies.populate(self._dependency_view())
         if self.var_tabs.is_variables(self.doc):
             self.var_tabs.on_changed(self.doc)
@@ -1167,8 +1234,9 @@ class MainWindow(QMainWindow):
         self.doc_label.setText(name + ("  •" if self.doc.dirty else ""))
         self.setWindowTitle(f"{name} — {APP_NAME}")
         self._refresh_tab_title(self.doc)
-        n = len(self.doc.state.parts)
-        self.left.parts_header.setText(f"Parts ({n})")
+        n_surf = sum(1 for p in self.doc.state.parts.values() if self.left.parts.is_surface_part(p))
+        n = len(self.doc.state.parts) - n_surf
+        self.left.parts_header.setText(f"Parts ({n})" + (f" · Surfaces ({n_surf})" if n_surf else ""))
         self._refresh_config_box()
         self.left.feat_header.setText(f"Features ({len(self.doc.features)})")
         errs = len(self.doc.errors)
@@ -1261,17 +1329,25 @@ class MainWindow(QMainWindow):
                              f["name"] if f else ""))
         return axes
 
+    def _context_body_hidden(self, p, also_show=()):
+        """True for a Context body whose whole Context is hidden (its feature id is in hidden_features), unless
+        a feature dialog holds a reference to it (`also_show` lists part ids too). View only: the rebuild is
+        untouched, so references to it still resolve."""
+        return bool(p.reference) and p.id.split("/")[0] in self.doc.hidden_features and p.id not in also_show
+
     def _show_state(self, state, active_sketch=None, also_show=()):
         if self.is_dwg:
             return
-        self.viewport.transparent_ids = set(self._transparent.get(self.doc, ()))
+        self.viewport.transparent_ids = set(self._transparent.get(self.doc, ())) | set(self.tool_transparent)
         if self.is_asm:
             self.asm.show_scene()
             return
         self._shown = (self.doc, state, active_sketch, also_show)
         parts = [(p.id, self._flat_or_folded(state, p), p.color,
                   None if self._flat_on(state, p) else p.face_colors, None, None, p.reference)
-                 for p in state.parts.values() if p.id not in self.doc.hidden_parts]
+                 for p in state.parts.values() if p.id not in self.doc.hidden_parts
+                 and (self.view_only_ids is None or p.id in self.view_only_ids)
+                 and not self._context_body_hidden(p, also_show)]
         sketches = []
         for fid, sr in state.sketches.items():
             if fid in self.doc.hidden_features and fid != active_sketch and fid not in also_show:
@@ -1284,9 +1360,12 @@ class MainWindow(QMainWindow):
     def start_feature(self, ftype, edit_fid=None, preselect=None):
         if self.is_asm or self.is_dwg:
             return
+        door = ftype if ftype in F.FRONT_DOORS else None        # a front door (I7.9): its type plus a marker
+        if door:
+            ftype = F.FRONT_DOORS[door][0]
         if self.mode != "idle":
-            if self.mode == "dialog" and self.dialog and self.dialog.is_new and self.dialog.ftype != ftype \
-                    and edit_fid is None:
+            if self.mode == "dialog" and self.dialog and self.dialog.is_new \
+                    and F.door_kind(self.dialog.feature) != (door or ftype) and edit_fid is None:
                 self.cancel_dialog()
             else:
                 return
@@ -1297,6 +1376,11 @@ class MainWindow(QMainWindow):
             pre = []
         else:
             feat = self.doc.make_feature(ftype)
+            if door:
+                feat["params"].update(creation="surface", front=door)
+                taken = {g["name"] for g in self.doc.features}
+                n = next(i for i in range(1, len(taken) + 2) if f"{F.FRONT_DOORS[door][1]} {i}" not in taken)
+                feat["name"] = f"{F.FRONT_DOORS[door][1]} {n}"
             index = self.doc.insert_index()
             is_new = True
             pre = list(preselect) if preselect else list(self.viewport.selection)
@@ -1311,6 +1395,14 @@ class MainWindow(QMainWindow):
         self.measure.hide()
         self._populate_lists()
 
+    def start_variable_fillet(self):
+        """The Fillet dialog with Type set to Variable radius."""
+        self.start_feature("fillet")
+        d = self.dialog
+        if self.mode == "dialog" and d is not None and d.ftype == "fillet":
+            cb = d.widgets["fillet_type"]
+            cb.setCurrentIndex(cb.findData("variable"))
+
     def show_preview(self, feature, index, overlays):
         st, err = self.doc.preview(feature, index)
         p = feature["params"]
@@ -1323,12 +1415,27 @@ class MainWindow(QMainWindow):
             show.add(ax["sketch"])
         if feature["type"] in ("mate_connector", "axis"):      # every sketch below it, so its geometry can be picked (I1.6)
             show |= set(st.sketches)
+        show |= self._referenced_part_ids(p)        # a hidden Context body a field refers to keeps its highlight
         # ...and stay visible after their reference is cleared, so a lost region can be picked again
         self._dialog_sketches = show = getattr(self, "_dialog_sketches", set()) | show
         self._show_state(st, also_show=show)
         self.viewport.overlays = overlays
         self.viewport.update()
         return err
+
+    @staticmethod
+    def _referenced_part_ids(params):
+        """Every part id a feature's references name (the "part" of each reference dict, at any depth)."""
+        out, todo = set(), [params]
+        while todo:
+            v = todo.pop()
+            if isinstance(v, dict):
+                if isinstance(v.get("part"), str):
+                    out.add(v["part"])
+                todo.extend(v.values())
+            elif isinstance(v, (list, tuple)):
+                todo.extend(v)
+        return out
 
     def commit_dialog(self):
         d = self.dialog
@@ -1518,6 +1625,7 @@ class MainWindow(QMainWindow):
         for eid in lost:
             sk.entities[eid].pop("src", None)
         self.sketcher = Sketcher(plane, sk, feat["id"], self._sketch_changed, self._sketch_tool_changed)
+        self.sketcher.on_status = lambda m: self.status.showMessage(m, 20000)
         self.sketcher.variables = dict(ctx["base"].vars)
         self.sketcher.base_state = ctx["base"]
         self._sketch_display_toggles()
@@ -1579,9 +1687,18 @@ class MainWindow(QMainWindow):
                 b.setChecked(bool(self.sketcher and self.sketcher.construction))
             else:
                 b.setChecked(name == tool)
+        b = getattr(self, "_offset_both_btn", None)
+        if b is not None:
+            b.setVisible(tool == "offset")
+            if self.sketcher:
+                b.setChecked(self.sketcher.offset_both)
         if self.sketcher:
             self.viewport.status_text = self.sketcher.hint()
             self.viewport.update()
+
+    def _set_offset_both(self, on):
+        if self.sketcher:
+            self.sketcher.offset_both = bool(on)
 
     def _sk(self, method):
         if self.sketcher:
@@ -1808,6 +1925,29 @@ class MainWindow(QMainWindow):
         self.viewport.update()
         if save:
             self.settings.setValue("shiny", "true" if on else "false")
+
+    def set_select_through_context(self, on, save=True):
+        """The pick rule of I6.4: a Context body never takes a click from, nor hides, geometry of the edited studio."""
+        self.viewport.select_through = bool(on)
+        self._refresh_context_bar()
+        self.act_select_through.blockSignals(True)
+        self.act_select_through.setChecked(bool(on))
+        self.act_select_through.blockSignals(False)
+        self.viewport.update()
+        if save:
+            self.settings.setValue("select_through_context", "true" if on else "false")
+
+    def set_context_alpha(self, alpha, save=True):
+        """How see-through the Context is, 0 (invisible faces) to 1 (opaque). A window setting, not Document state."""
+        try:
+            a = min(1.0, max(0.0, float(alpha)))
+        except (TypeError, ValueError):
+            a = 0.3
+        self.viewport.context_alpha = a
+        self._refresh_context_bar()
+        self.viewport.update()
+        if save:
+            self.settings.setValue("view/context_alpha", a)
 
     def set_nav_style(self, key, save=True):
         NS = navstyles
@@ -2844,6 +2984,32 @@ class MainWindow(QMainWindow):
             w_.setChecked(on)
             w_.blockSignals(False)
 
+    def toggle_studio_interference(self, on=None):
+        """Open or close the Interference detection panel of a Part Studio (toolbar button and palette command)."""
+        btn = self.btn_pinterf
+        if on is None:
+            on = self.studio_interf is None
+        if not on:
+            self.close_studio_interference()
+            return
+        if self.studio_interf is not None:
+            return
+        if self.mode != "idle" or self.is_asm or self.is_dwg or self.var_tabs.is_variables(self.doc):
+            btn.setChecked(False)
+            return
+        from .interference_ui import InterferencePanel, StudioHost
+        self.studio_interf = InterferencePanel(StudioHost(self))
+        self.studio_interf.closed.connect(self.close_studio_interference)
+        btn.setChecked(True)
+
+    def close_studio_interference(self):
+        p, self.studio_interf = self.studio_interf, None
+        if p is not None:
+            p.shutdown()
+            p.hide()
+            p.deleteLater()
+        self.btn_pinterf.setChecked(False)
+
     # ================================================================== sheet metal
     def _flat_on(self, state, p):
         return getattr(self, "_flat_view", False) and p.id in getattr(state, "sheet", {})
@@ -3205,9 +3371,34 @@ class MainWindow(QMainWindow):
             shp = vp.part_shapes.get(pid)
             if shp is not None:
                 edges[pid] = K.face_edge_indices(shp, fis)
-        vp.feature_hl = {"faces": faces, "edges": edges, "polys": polys} if (faces or polys) else None
+        for pid, eis in self._error_hl_edges().items():       # where a failed fillet failed (edges only)
+            edges.setdefault(pid, set()).update(eis)
+        vp.feature_hl = {"faces": faces, "edges": edges, "polys": polys} if (faces or polys or edges) else None
         vp.triads = self._connector_triads(getattr(self.doc, "state", None))
         vp.update()
+
+    def error_hl_refs(self):
+        """The references (edges and vertices) where the features now in error failed, e.g. a fillet's failing
+        contour: [] when no feature has failed there. Cleared when the feature is fixed, because the list is read
+        from the Document's current errors."""
+        doc = getattr(self, "doc", None)
+        if doc is None or self.is_asm or self.is_dwg:
+            return []
+        refs = getattr(doc, "error_refs", None) or {}
+        return [r for fid in getattr(doc, "errors", {}) for r in refs.get(fid, ())]
+
+    def _error_hl_edges(self):
+        """{part id: {edge index}} in the viewport's shapes for the edge references of `error_hl_refs`."""
+        out = {}
+        for r in self.error_hl_refs():
+            if r.get("kind") != "edge" or r.get("part") not in self.viewport.part_shapes:
+                continue
+            for i, e in enumerate(K.edges(self.viewport.part_shapes[r["part"]])):
+                info = K.edge_info(e)
+                if info["type"] == r["type"] and np.linalg.norm(np.asarray(info["c"]) - np.asarray(r["c"])) < 1e-6 \
+                        and abs(info["len"] - r["len"]) < 1e-6:
+                    out.setdefault(r["part"], set()).add(i)
+        return out
 
     def _feature_geometry(self, fid):
         """(faces by part in the model shown now, world polylines) for one feature — cached per model state."""
@@ -3344,6 +3535,7 @@ class MainWindow(QMainWindow):
         m.addAction("Rename…", lambda: self._rename_feature(fid))
         if f["type"] == "context":
             m.addAction("Update context", lambda: self.update_context(fid))
+            self._add_context_hide_action(m, fid)
         if f["type"] in ("sketch", "plane", "axis"):
             sel = [i for i in self.left.features.selected_feature_ids()
                    if (self.doc.feature(i) or {}).get("type") in ("sketch", "plane", "axis")]
@@ -3395,6 +3587,11 @@ class MainWindow(QMainWindow):
         except K.KernelError:
             return None
 
+    def _refresh_context_bar(self):
+        bar = getattr(self, "context_bar", None)
+        if bar is not None and getattr(self, "left", None) is not None:
+            bar.refresh()
+
     def update_context(self, fid=None):
         """Recapture a Context feature of the current studio from its Assembly (one undoable edit). Acts on `fid`,
         else the selected Context row, else the studio's only Context feature."""
@@ -3409,10 +3606,23 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Select a Context feature to update", 5000)
             return
         try:
-            self.folder.update_context(tab.id, fid)
+            self.rename_session_parts(self.doc, self.folder.update_context(tab.id, fid))
         except K.KernelError as e:
             self.status.showMessage(str(e), 6000)
         self._populate_lists()              # the row's status text
+
+    def rename_session_parts(self, doc, ids):
+        """Rename, by the map `ids` (old part id -> new), the parts of `doc` made transparent this session (Shift+T):
+        Update context converting an old Context's body ids (I6.2) keeps them see-through under their new ids."""
+        from ..features import renamed_part_id
+        cur = self._transparent.get(doc)
+        if not ids or not cur:
+            return
+        new = {renamed_part_id(pid, ids) for pid in cur}
+        cur.clear()
+        cur.update(new)
+        if doc is self.doc:
+            self.viewport.set_transparent(cur | self.tool_transparent)
 
     def _add_origin_connector_action(self, m):
         a = m.addAction("Mate connector at origin", self.mate_connector_at_origin)
@@ -3539,7 +3749,54 @@ class MainWindow(QMainWindow):
 
     def _show_all_parts(self):
         self.doc.hidden_parts = set()
+        self.doc.hidden_features = self.doc.hidden_features - set(self._context_fids())   # a hidden Context too
         self.doc.notify()
+
+    def _context_fids(self):
+        return [f["id"] for f in self.doc.features if f["type"] == "context"]
+
+    def _add_context_hide_action(self, m, fid):
+        """Hide context / Show context on a Context row's menu: the whole Context, every body of it. The choice
+        of single instances (hidden_parts) is not touched, so it comes back as it was."""
+        hide = fid not in self.doc.hidden_features
+        m.addAction("Hide context" if hide else "Show context", lambda: self.set_context_hidden([fid], hide))
+
+    def set_context_hidden(self, fids, hidden):
+        """Hide or show whole Contexts (one undo step). View only: no rebuild, no change to context_status."""
+        self.doc.checkpoint()
+        self.doc.set_features_hidden(fids, hidden)
+
+    def _add_context_instance_actions(self, m, pids):
+        """Hide context instance(s) for the Context bodies among `pids` (the viewport right-click on one)."""
+        ids = [i for i in pids if i in self.doc.state.parts and self.doc.state.parts[i].reference]
+        if ids:
+            m.addAction("Hide context instances" if len(ids) > 1 else "Hide context instance",
+                        lambda: self.hide_context_instances(ids))
+        return ids
+
+    def hide_context_instances(self, pids):
+        self.doc.checkpoint()
+        self.doc.set_parts_hidden(pids, True)
+        self.status.showMessage(f"Hid {self._count(len(pids), 'context instance')}: Shift+Y shows all parts", 6000)
+
+    def toggle_context_hidden(self):
+        """The Hide context command: the Contexts of the selected rows or bodies (or the body under the mouse),
+        else every Context of the Part Studio. Hides them, or shows them when none is showing."""
+        if self.doc is None or getattr(self.doc, "kind", None) != "studio":
+            return
+        fids = [f for f in self.left.features.selected_feature_ids() if (self.doc.feature(f) or {}).get("type") == "context"]
+        parts, _ = self._vis_targets()
+        for pid in parts:
+            part = self.doc.state.parts.get(pid)
+            if part is not None and part.reference and pid.split("/")[0] not in fids:
+                fids.append(pid.split("/")[0])
+        fids = fids or self._context_fids()
+        if not fids:
+            self.status.showMessage("This Part Studio has no Context", 6000)
+            return
+        hide = any(f not in self.doc.hidden_features for f in fids)
+        self.set_context_hidden(fids, hide)
+        self.status.showMessage("Context hidden: Shift+Y shows it again" if hide else "Context shown", 6000)
 
     def _toggle_planes(self):
         self._reshow()
@@ -3680,6 +3937,12 @@ class MainWindow(QMainWindow):
 
     def _vis_transparent(self):
         parts, _ = self._vis_targets()
+        if not self.is_asm:
+            ctx = [p for p in parts if getattr(self.doc.state.parts.get(p), "reference", False)]
+            if ctx:
+                parts = [p for p in parts if p not in ctx]
+                if not parts:
+                    return "Context bodies use the transparency slider, not Shift+T"
         cur = self._transparent.setdefault(self.doc, set())
         if not parts:
             if not cur:
@@ -3693,7 +3956,7 @@ class MainWindow(QMainWindow):
             cur.update(parts)
             msg = f"{self._count(len(parts))} transparent: Shift+T with nothing selected or under the mouse " \
                   "makes every part solid again"
-        self.viewport.set_transparent(cur)
+        self.viewport.set_transparent(cur | self.tool_transparent)
         return msg
 
     # ---- in a Part Studio
@@ -3815,6 +4078,13 @@ class MainWindow(QMainWindow):
         mp = K.mass_props(shape)
         lo, hi = K.bbox(shape)
         c = mp["centroid"]
+        if K.is_surface(shape):         # a surface body has an area, no volume and no mass
+            box = QMessageBox(self)
+            box.setWindowTitle("Mass properties")
+            box.setText(self._surface_mass_text(name, mp, lo, hi))
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            return
         while True:
             mat = M.material_name(material) or M.DEFAULT_MATERIAL
             box = QMessageBox(self)
@@ -3834,6 +4104,13 @@ class MainWindow(QMainWindow):
             pick, ok = QInputDialog.getItem(self, "Mass properties", "Weigh as:", names, names.index(mat), False)
             if ok:
                 material = pick
+
+    @staticmethod
+    def _surface_mass_text(name, mp, lo, hi):
+        c = mp["centroid"]
+        return (f"<b>{name}</b> (surface)<br><br>Surface area: {fmt(mp['area'], 3)} mm²<br>"
+                f"Centre of area: ({fmt(c[0], 3)}, {fmt(c[1], 3)}, {fmt(c[2], 3)})<br>"
+                f"Bounding box: {fmt(hi[0] - lo[0], 3)} × {fmt(hi[1] - lo[1], 3)} × {fmt(hi[2] - lo[2], 3)} mm")
 
     def _mass_props_assembly(self, doc):
         """Mass properties of the visible instances of an Assembly: mass by material, total, centre of mass."""
@@ -3922,7 +4199,9 @@ class MainWindow(QMainWindow):
             if pk.kind in ("face", "edge", "part", "vertex"):
                 pid = pk.key[0]
                 ids = self._menu_parts(pid)
-                self._add_hide_actions(m, ids)
+                if not self._add_context_instance_actions(m, ids) or len(ids) > 1 and any(
+                        not self.doc.state.parts[i].reference for i in ids if i in self.doc.state.parts):
+                    self._add_hide_actions(m, ids)
                 if len(ids) > 1:
                     m.addAction(f"Isolate {len(ids)} parts", lambda: self._isolate(ids))
                     m.addAction(f"Auto colour {len(ids)} parts", lambda: self._auto_color(ids))
@@ -4142,12 +4421,14 @@ class MainWindow(QMainWindow):
         self._leave_tab()
         if self.section_panel is not None:
             self.toggle_section()
+        self.close_studio_interference()
         if self.doc is not None and self.doc.kind != "variables":
             self._update_thumbnail()
             if self.doc.kind != "drawing":
                 self._views[id(self.doc)] = self.viewport.cam.state()
         self.doc = doc
-        self.viewport.transparent_ids = set(self._transparent.get(doc, ()))
+        self._refresh_context_bar()
+        self.viewport.transparent_ids = set(self._transparent.get(doc, ())) | set(self.tool_transparent)
         self.viewport.clear_selection()
         self.measure.hide()
         if self.var_tabs.is_variables(doc):
@@ -4691,7 +4972,9 @@ class MainWindow(QMainWindow):
             return
         try:
             self.doc.export(path, part_ids, options=opts)
-            self.status.showMessage(f"Exported {path}", 5000)
+            skipped = getattr(self.doc, "last_export_skipped", None)
+            self.status.showMessage(f"Exported {path}" + (f" (left out {len(skipped)} surface bod"
+                                    f"{'y' if len(skipped) == 1 else 'ies'}: meshes need a solid)" if skipped else ""), 5000)
         except Exception as e:
             QMessageBox.critical(self, APP_NAME, f"Export failed:\n{e}")
 
@@ -4721,6 +5004,7 @@ class MainWindow(QMainWindow):
             "Shift+T: transparent · Shift+X: section view<br><br>"
             "<b>Features</b><br>Alt+C or Ctrl+Space: search tools · "
             "Shift+S: sketch · Shift+E: extrude · Shift+W: revolve · Shift+F: fillet<br>"
+            "Boundary surface (a surface through U and V curves): search for it, or use its toolbar button<br>"
             "Ctrl+Z / Ctrl+Y: undo / redo · Enter: accept dialog · Esc: cancel<br><br>"
             "<b>Sketch</b><br>L line · G rectangle · R centre rectangle · C circle · A arc · P point · D dimension · Q construction<br>"
             "I coincident · H horizontal · V vertical · E equal · T tangent · U use edges · Del delete · Esc stop tool<br><br>"
@@ -4771,6 +5055,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(e)
         if self.section_panel is not None:
             self.section_panel.place()
+        if not self.context_bar.isHidden():
+            self.context_bar.place()
         if self.measure.isVisible():
             self._selection_changed()
 

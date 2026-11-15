@@ -308,17 +308,25 @@ def other_changes(old_snap, new_snap):
 
 # ---------------------------------------------------------------------- geometry
 def geometry_changes(old_state, new_state, shapes=True):
-    """{"rows": [(name, old volume or None, new volume or None)], "added": [shape], "removed": [shape]}.
-    Volumes in mm³; shapes are the material added / removed (for showing in 3D)."""
-    rows, added, removed = [], [], []
+    """{"rows": [(name, old volume or None, new volume or None)], "added": [shape], "removed": [shape],
+    "surface_rows": [(name, old area or None, new area or None)]}.
+    Volumes in mm³, areas in mm²; shapes are the material added / removed (for showing in 3D).
+    A surface body has no volume, so it gets a row in "surface_rows" (area) and none in "rows"."""
+    rows, added, removed, surf = [], [], [], []
     for pid, p in new_state.parts.items():
         o = old_state.parts.get(pid)
         if o is None:
-            rows.append((p.name, None, K.volume(p.shape)))
+            if K.is_surface(p.shape):
+                surf.append((p.name, None, K.mass_props(p.shape)["area"]))
+            else:
+                rows.append((p.name, None, K.volume(p.shape)))
             if shapes:
                 added.append(p.shape)
             continue
         if o.shape.IsSame(p.shape):
+            continue
+        if K.is_surface(o.shape) or K.is_surface(p.shape):
+            surf.append((p.name, K.mass_props(o.shape)["area"], K.mass_props(p.shape)["area"]))
             continue
         vo, vn = K.volume(o.shape), K.volume(p.shape)
         rows.append((p.name, vo, vn))
@@ -331,10 +339,13 @@ def geometry_changes(old_state, new_state, shapes=True):
                     pass
     for pid, o in old_state.parts.items():
         if pid not in new_state.parts:
-            rows.append((o.name, K.volume(o.shape), None))
+            if K.is_surface(o.shape):
+                surf.append((o.name, K.mass_props(o.shape)["area"], None))
+            else:
+                rows.append((o.name, K.volume(o.shape), None))
             if shapes:
                 removed.append(o.shape)
-    return {"rows": rows, "added": added, "removed": removed}
+    return {"rows": rows, "added": added, "removed": removed, "surface_rows": surf}
 
 
 def compare(doc, old_snap, new_snap=None, geometry=True):
@@ -519,7 +530,18 @@ def to_html(res, old_label="before", new_label="now") -> str:
                           f"{d:+.2f}{pct}</span>" if abs(d) > 5e-6 else "same volume, different shape"
                 h.append(f"<tr><td style='padding-right:10px'>{_esc(name)}</td><td>{txt}</td></tr>")
             h.append("</table>")
-        elif feats:
+        if g.get("surface_rows"):
+            h.append("<p><b>Surfaces</b> <span style='color:#888'>(area)</span></p><table cellspacing=0 cellpadding=1>")
+            for name, a, b in g["surface_rows"]:
+                if a is None:
+                    txt = f"new · {b / 100:.2f} cm²"
+                elif b is None:
+                    txt = f"removed · was {a / 100:.2f} cm²"
+                else:
+                    txt = f"{a / 100:.2f} → {b / 100:.2f} cm²"
+                h.append(f"<tr><td style='padding-right:10px'>{_esc(name)}</td><td>{txt}</td></tr>")
+            h.append("</table>")
+        elif feats and not g["rows"]:
             h.append("<p style='color:#888'>The parts' shapes didn't change.</p>")
     if not h:
         h.append(f"<p style='color:#888'>No changes between {_esc(old_label)} and {_esc(new_label)}.</p>")

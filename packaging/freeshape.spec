@@ -58,7 +58,7 @@ if sys.platform.startswith("linux"):
     hidden += ["OpenGL.platform.egl", "OpenGL.raw.GLX._types"]
 if sys.platform == "darwin":
     hidden += ["OpenGL.platform.darwin"]
-hidden = hidden + ["ezdxf", "ezdxf.render.dimension", "OCP", "OCP.OCP", "PySide6.QtSvg", "PySide6.QtOpenGL",
+hidden = hidden + ["ezdxf", "ezdxf.render.dimension", "fontTools.svgLib.path", "OCP", "OCP.OCP", "PySide6.QtSvg", "PySide6.QtOpenGL",
                                             "PySide6.QtOpenGLWidgets", "OpenGL.GL", "OpenGL.GL.shaders",
                                             "OpenGL.platform.win32" if sys.platform == "win32" else
                                             "OpenGL.platform.darwin" if sys.platform == "darwin" else "OpenGL.platform.glx",

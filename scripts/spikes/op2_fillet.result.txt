@@ -1,0 +1,52 @@
+== ocp7.9.3.1 (python 3.12.11)
+block vertex-route reset: {'done': True, 'valid': True, 'volume_removed': 151.62, 'faces': 7, 'offsets': [1.999999999999993, 2.770046384877119, 3.967352269628546, 5.1839604397626635, 5.99420149906102], 'faces_per_edge': 1}
+block vertex-route no_reset: {'done': True, 'valid': True, 'volume_removed': 151.62, 'faces': 7, 'offsets': [1.999999999999993, 2.770046384877119, 3.967352269628546, 5.1839604397626635, 5.99420149906102], 'faces_per_edge': 1}
+block contours=1 edges_in_contour1=1
+block edge-pair route: {'done': True, 'valid': True, 'offsets': [1.999999999999993, 2.770046384877119, 3.967352269628546, 5.1839604397626635, 5.99420149906102], 'faces_per_edge': 1}
+boss contours=1 edges_in_contour1=8 closed=True
+boss contour vertices=8
+boss vertex-route reset: {'done': True, 'valid': True, 'volume_removed': 437.257, 'faces_added': 8, 'offsets': [1.981, 2.527, 4.541, 6.589, 6.0], 'faces_per_edge': 1}
+boss vertex-route no_reset: {'done': True, 'valid': True, 'volume_removed': 437.257, 'faces_added': 8, 'offsets': [1.981, 2.527, 4.541, 6.589, 6.0], 'faces_per_edge': 1}
+boss edge-pair route: {'done': True, 'valid': True}
+failing build (radius 15 on 10 high block): {'done': False, 'NbFaultyContours': 1, 'NbFaultyVertices': 0, 'HasResult': False, 'FaultyContour(1)': 1, 'StripeStatus': 'ChFiDS_StartsolFailure'}
+inspect NbContours: callable (1)
+inspect NbEdges: callable (1)
+inspect Edge: callable (TopoDS_Edge)
+inspect FirstVertex: callable (TopoDS_Vertex)
+inspect LastVertex: callable (TopoDS_Vertex)
+inspect Abscissa: callable (40.0)
+inspect NbFaultyContours: callable (0)
+inspect FaultyContour: callable (0)
+inspect StripeStatus: callable (ChFiDS_ErrorStatus.ChFiDS_Ok)
+inspect NbFaultyVertices: callable (0)
+inspect FaultyVertex: callable (TopoDS_Vertex)
+inspect HasResult: callable (False)
+block offsets at 0/25/50/75/100% (radii 2 -> 6; a straight line gives 2/3/4/5/6): [2.0, 2.77, 3.967, 5.184, 5.994]
+DECISION fillet route=vertex reset_contour=not_needed inspect=ok faces_per_edge=1 ease_25pct=2.770 ease_50pct=3.967 ease_75pct=5.184
+
+
+== ocp8.0.1.1 (python 3.12.11)
+block vertex-route reset: {'done': True, 'valid': True, 'volume_removed': 151.62, 'faces': 7, 'offsets': [1.999999999999993, 2.770046384877119, 3.967352269628546, 5.1839604397626635, 5.99420149906102], 'faces_per_edge': 1}
+block vertex-route no_reset: {'done': True, 'valid': True, 'volume_removed': 151.62, 'faces': 7, 'offsets': [1.999999999999993, 2.770046384877119, 3.967352269628546, 5.1839604397626635, 5.99420149906102], 'faces_per_edge': 1}
+block contours=1 edges_in_contour1=1
+block edge-pair route: {'done': True, 'valid': True, 'offsets': [1.999999999999993, 2.770046384877119, 3.967352269628546, 5.1839604397626635, 5.99420149906102], 'faces_per_edge': 1}
+boss contours=1 edges_in_contour1=8 closed=True
+boss contour vertices=8
+boss vertex-route reset: {'done': True, 'valid': True, 'volume_removed': 437.257, 'faces_added': 8, 'offsets': [1.981, 2.527, 4.541, 6.589, 6.0], 'faces_per_edge': 1}
+boss vertex-route no_reset: {'done': True, 'valid': True, 'volume_removed': 437.257, 'faces_added': 8, 'offsets': [1.981, 2.527, 4.541, 6.589, 6.0], 'faces_per_edge': 1}
+boss edge-pair route: {'done': True, 'valid': True}
+failing build (radius 15 on 10 high block): {'done': False, 'NbFaultyContours': 1, 'NbFaultyVertices': 0, 'HasResult': False, 'FaultyContour(1)': 1, 'StripeStatus': 'ChFiDS_StartsolFailure'}
+inspect NbContours: callable (1)
+inspect NbEdges: callable (1)
+inspect Edge: callable (TopoDS_Edge)
+inspect FirstVertex: callable (TopoDS_Vertex)
+inspect LastVertex: callable (TopoDS_Vertex)
+inspect Abscissa: callable (40.0)
+inspect NbFaultyContours: callable (0)
+inspect FaultyContour: callable (0)
+inspect StripeStatus: callable (ChFiDS_ErrorStatus.ChFiDS_Ok)
+inspect NbFaultyVertices: callable (0)
+inspect FaultyVertex: callable (TopoDS_Vertex)
+inspect HasResult: callable (False)
+block offsets at 0/25/50/75/100% (radii 2 -> 6; a straight line gives 2/3/4/5/6): [2.0, 2.77, 3.967, 5.184, 5.994]
+DECISION fillet route=vertex reset_contour=not_needed inspect=ok faces_per_edge=1 ease_25pct=2.770 ease_50pct=3.967 ease_75pct=5.184

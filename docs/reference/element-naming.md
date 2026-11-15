@@ -496,6 +496,32 @@ Each runner calls its kernel helper with `with_history=True` and then `name_feat
 * **Offset surface** (`OFS`, `/opt/freecad-src/src/Mod/Part/App/TopoShapeExpansion.cpp:2431`) names
   the new face from the picked face, adding the `OFS` fragment.
 
+### Rib
+
+A rib (`rib`, parallel to the sketch plane) has no FreeCAD counterpart (FreeCAD has no rib feature), so
+FreeShape seeds the names itself. Its faces come from a sketch curve swept twice: the curve is swept along
+the rib's direction into a planar sheet, and the sheet is swept along the sketch plane's normal into the slab.
+The first shape that ships freezes these names.
+
+1. `run_rib` builds one sheet face per sketch entity of the chain (and one per tangent line it adds to
+   lengthen an arc end, `<arc id>x0` and `<arc id>x1`). It seeds the sheet with `naming.seed`, op `SKT`
+   (the sketch op), tag the rib's feature id, labels keyed on the entity id `<id>`:
+   * `<id>` the sheet face;
+   * `<id>t` its edge on the sketch curve (the top of the rib);
+   * `<id>b` its far edge;
+   * `<id>s0`, `<id>s1` its side edges at the curve's first and last vertex (the ends of the rib);
+   * `<id>v0`, `<id>v1` the vertices on the curve and `<id>w0`, `<id>w1` the far vertices.
+2. The slab is `K.extrude(..., symmetric=True, with_history=True)` of the sheet faces, named by the extrude
+   rules. The rib's faces are then: side A (the face on the sketch normal's negative side, first cap) named
+   `<id>;SKT;...,F;:G0;XTR;...`, side B (last cap) `<id>;SKT;...,F;:M;XTR;...`, the top of each entity
+   `<id>t;SKT;...,E;:G;XTR;...`, and the ends `<id>s0` and `<id>s1` when the chain is not lengthened.
+3. `K.keep_piece_from` cuts the slab by the part. The faces of the piece that lie on the part have no history;
+   they take the role `end` under the sheet face nearest to them, as an up-to end does. Fusing the piece into
+   the part (`apply_body`, op `add`) keeps these names and adds `FUS` to the faces it merges.
+
+The names depend on the sketch entity ids and the rib's feature id only, so they survive a change to the part
+the rib grows from.
+
 ## 5. Split and merge
 
 Split and merge are the same mechanism read in two directions, so they are described together.

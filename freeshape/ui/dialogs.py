@@ -23,6 +23,21 @@ from .numparse import parse_number, fmt, has_vars
 from .viewport import Pick
 
 OP_LABELS = [("new", "New"), ("add", "Add"), ("remove", "Remove"), ("intersect", "Intersect")]
+SURFACE_OP_LABELS = OP_LABELS[:2]        # Remove and Intersect are not available for surfaces
+CREATE_LABELS = [("solid", "Solid"), ("surface", "Surface")]
+THIN_CREATE_LABELS = CREATE_LABELS + [("thin", "Thin")]            # Extrude, Revolve and Sweep
+
+
+def _thin_fields(what):
+    """The Thin rows of Extrude and Revolve, named as in Onshape. Thickness 2 and Flip wall go when Mid plane
+    splits Thickness 1 half each side."""
+    thin = lambda p: p.get("creation") == "thin"
+    return [
+        _check("mid_plane", "Mid plane", visible=thin),
+        _num("thickness1", "Thickness 1", minimum=0, visible=thin),
+        _num("thickness2", "Thickness 2", minimum=0, visible=lambda p: thin(p) and not p.get("mid_plane")),
+        _check("flip_wall", "Flip wall", visible=lambda p: thin(p) and not p.get("mid_plane")),
+    ]
 
 
 def _show(v):
@@ -60,6 +75,48 @@ def region_touching(sr, eid):
             if best is None or area < best[0]:
                 best = (area, ri)
     return None if best is None else best[1]
+
+
+def _cross(c, s):
+    """A three-axis cross of half-length `s` at point `c`, as one polyline."""
+    c = np.asarray(c, float)
+    pts = []
+    for d in (np.array((s, 0, 0)), np.array((0, s, 0)), np.array((0, 0, s))):
+        pts += [c - d, c + d, c]
+    return np.array(pts)
+
+
+def _fill_item(e):
+    """The selection item of one Fill edge: a model edge, or the chain of sketch curves a picked curve belongs to."""
+    ref = e.get("ref") or {}
+    return ("edge", ref["edge"]) if ref.get("kind") == "edge" else ("path", ref)
+
+
+def _fill_edge(k, r, prev=None):
+    """One Fill edge from a selection item; Position unless `prev` (the same edge before) says otherwise."""
+    return {"ref": {"kind": "edge", "edge": r} if k == "edge" else r,
+            "continuity": prev.get("continuity", "position") if prev else "position",
+            "faces": list(prev.get("faces") or []) if prev else []}
+
+
+def fill_gap_points(state, params):
+    """The loose end points of the boundary a Fill's edges make (empty when it closes or an edge is missing)."""
+    es = []
+    try:
+        for e in params.get("edges") or []:
+            ref = e.get("ref") or {}
+            if ref.get("kind") == "edge":
+                es.append(F.resolve(state, ref["edge"], "edge")[1])
+            else:
+                es += [x for _, x in F._ref_edges(state, ref)[1]]
+        return K.boundary_open_ends(es) if es else []
+    except (K.KernelError, KeyError):
+        return []
+
+
+def _split_item(tool):
+    """The selection item a Split tool shows as: a surface tool is a part pick."""
+    return ("part" if tool["kind"] == "surface" else tool["kind"], tool["ref"])
 
 
 def pick_to_item(vp, pick: Pick, want: set, state=None):
@@ -105,6 +162,9 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
                                   "origin": pl.origin.tolist(), "xdir": pl.xdir.tolist()})
         if "edge" in want:          # selecting a face selects all of its edges (fillet/chamfer)
             return ("edges", [F.make_ref(pid, e, "edge", shape, names(pid)) for e in K.edges(face)])
+        if "axis" in want and F.round_face_axis(face) is not None:      # a cylinder, cone, torus, disc or ring
+            return ("axis", {"kind": "face",
+                             "face": engine_named(F.make_ref(pid, face, "face", shape, names(pid)), pid, "face", fi)})
         if "part" in want:
             return ("part", pid)
     if k == "part" and "part" in want:
@@ -140,6 +200,9 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
             return ("path", {"kind": "edge", "edge": F.make_ref(pid, K.edges(shape)[ei], "edge", shape, names(pid))})
     if k == "sketch_line" and "axis" in want:
         fid, eid = pick.key
+        for sfid, sr, _ in vp.sketches:
+            if sfid == fid and sr.sketch.entities.get(eid, {}).get("type") in ("circle", "arc"):
+                return ("axis", {"kind": "sketch_circle", "sketch": fid, "entity": eid})
         return ("axis", {"kind": "sketch_line", "sketch": fid, "line": eid})
     if k == "vertex" and "vertex" in want:
         pid, vi = pick.key
@@ -159,7 +222,12 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
     # "axis_feature" and "connector"; revolve and the patterns do not)
     if k == "sketch_line" and "sketch_line" in want:
         fid, eid = pick.key
-        return ("sketch_line", {"kind": "sketch_line", "sketch": fid, "line": eid})
+        ref = {"kind": "sketch_line", "sketch": fid, "line": eid}
+        if "axis_connector" in want:        # the Plane tool: plane_role needs the entity type, it has no model state
+            for sfid, sr, _ in vp.sketches:
+                if sfid == fid:
+                    ref["etype"] = sr.sketch.entities.get(eid, {}).get("type", "line")
+        return ("sketch_line", ref)
     if k == "sketch_point" and "sketch_point" in want:
         return _sketch_point_item(vp, pick)
     if k == "axis" and ("axis_feature" in want or "axis" in want):
@@ -218,7 +286,7 @@ def item_label(doc, item):
         return "Sketch curves" if ref["kind"] == "sketch_chain" else "Edge"
     if kind == "sketch_line":            # the Axis tool's refs
         f = doc.feature(ref.get("sketch"))
-        return f"{f['name'] if f else 'Sketch'} line"
+        return f"{f['name'] if f else 'Sketch'} {ref.get('etype', 'line')}"
     if kind == "connector":
         f = doc.feature(ref.get("fid"))
         return f["name"] if f else "Mate connector"
@@ -233,6 +301,15 @@ def item_label(doc, item):
             return f"{ref['name']} axis"
         if ref["kind"] == "sketch_line":
             return "Sketch line"
+        if ref["kind"] == "sketch_circle":
+            return "Sketch circle"
+        if ref["kind"] == "face":
+            try:
+                _, face = F.resolve(doc.state, ref["face"], "face")
+                return "Cylinder axis" if K.face_axis(face) is not None and \
+                    K.face_info(face).get("type") == int(K.GeomAbs_Cylinder) else "Face axis"
+            except K.KernelError:
+                return "Face axis"
         return "Edge"
     return kind
 
@@ -295,15 +372,33 @@ def item_geometry(state, item, plane_half=40.0):
 
 # ---------------------------------------------------------------------- selection field widget
 
+class _RowWidget(QWidget):
+    """A selection-list row that holds a number box; tells the field when the pointer enters it."""
+    entered = Signal()
+
+    def enterEvent(self, e):
+        self.entered.emit()
+        super().enterEvent(e)
+
+
 class SelectionField(QFrame):
+    """A list of picked items. With `number` each row also has a number box (`numbers[i]`: a float, an expression
+    string, or None for "the default", which the box shows as `default_text()`); `number_parser(text)` reads
+    a box. Another field can reuse this: map `items` and `numbers` in params_to_fields / fields_to_params."""
     activated = Signal(object)
     changed = Signal()
+    number_changed = Signal()
+    hovered = Signal(int)
 
-    def __init__(self, key, label, want, multi=True, parent=None):
+    def __init__(self, key, label, want, multi=True, parent=None, number=False):
         super().__init__(parent)
         self.setObjectName("selField")
         self.key, self.want, self.multi = key, set(want), multi
         self.items: list = []
+        self.number = number
+        self.numbers: list = []
+        self.number_parser = None
+        self.default_text = lambda: ""
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 4, 6, 4)
         lay.setSpacing(2)
@@ -324,8 +419,16 @@ class SelectionField(QFrame):
         self._base_h = 22
         self.list.setStyleSheet("QListWidget { background: transparent; }")
         self.list.itemDoubleClicked.connect(self._remove_item)
+        if number:
+            self.list.setMouseTracking(True)
+            self.list.itemEntered.connect(lambda it: self.hovered.emit(self.list.row(it)))
         lay.addWidget(self.list)
         self.set_active(False)
+
+    def leaveEvent(self, e):
+        if self.number:
+            self.hovered.emit(-1)
+        super().leaveEvent(e)
 
     def mousePressEvent(self, e):
         self.activated.emit(self)
@@ -341,17 +444,55 @@ class SelectionField(QFrame):
             it = QListWidgetItem("Click to select" if self.property("active") == "true" else "—")
             it.setForeground(QColor("#8a94a3"))
             self.list.addItem(it)
+        if self.number:
+            self.numbers = (self.numbers + [None] * len(self.items))[:len(self.items)]
         for i, item in enumerate(self.items):
-            it = QListWidgetItem(item_label(doc, item))
+            it = QListWidgetItem("" if self.number else item_label(doc, item))
             if i in missing:
                 it.setForeground(QColor("#d93025"))
                 it.setToolTip("Reference could not be found — double-click to remove")
             else:
                 it.setToolTip("Double-click to remove")
             self.list.addItem(it)
+            if self.number:
+                self._number_row(it, i, item_label(doc, item))
         n = max(1, len(self.items))
-        self._base_h = min(6, n) * 20 + 4
+        self._base_h = min(6, n) * (28 if self.number else 20) + 4
         self.list.setFixedHeight(self._base_h + self.extra)
+
+    def _number_row(self, it, i, text):
+        w = _RowWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(2, 0, 2, 0)
+        h.addWidget(QLabel(f"{text} {i + 1}"), 1)
+        ed = QLineEdit(self.default_text() if self.numbers[i] is None else _show(self.numbers[i]))
+        ed.setFixedWidth(80)
+        ed.setAlignment(Qt.AlignRight)
+        ed.setToolTip("Radius at this vertex. Expressions and variables work: '#r * 2'. "
+                      "Empty means the default radius. The radius changes smoothly between vertices.")
+        ed.textEdited.connect(lambda t, i=i, ed=ed: self._number_edited(i, ed, t))
+        h.addWidget(ed)
+        w.entered.connect(lambda i=i: self.hovered.emit(i))
+        it.setSizeHint(QSize(0, 28))
+        self.list.setItemWidget(it, w)
+
+    def _number_edited(self, i, ed, txt):
+        txt = txt.strip()
+        v = None if not txt else (self.number_parser(txt) if self.number_parser else parse_number(txt))
+        bad = bool(txt) and (v is None or v <= 0)
+        ed.setProperty("invalid", "true" if bad else "false")
+        ed.style().unpolish(ed)
+        ed.style().polish(ed)
+        if bad or i >= len(self.numbers):
+            return
+        self.numbers[i] = None if not txt else (txt if has_vars(txt) else v)
+        self.number_changed.emit()
+
+    def remove_at(self, row):
+        if 0 <= row < len(self.items):
+            self.items.pop(row)
+            if row < len(self.numbers):
+                self.numbers.pop(row)
 
     def set_extra(self, px):
         self.extra = max(0, int(px))
@@ -362,11 +503,12 @@ class SelectionField(QFrame):
     def _remove_item(self, it):
         row = self.list.row(it)
         if 0 <= row < len(self.items):
-            self.items.pop(row)
+            self.remove_at(row)
             self.changed.emit()
 
     def clear(self):
         self.items = []
+        self.numbers = []
         self.activated.emit(self)           # an emptied field is the one the next click is meant for
         self.changed.emit()
 
@@ -378,13 +520,95 @@ class SelectionField(QFrame):
             return
         for i, ex in enumerate(self.items):
             if _same(ex, item):
+                if self.number:             # a picked vertex already listed selects its row; double-click removes it
+                    self.list.setCurrentRow(i)
+                    return
                 self.items.pop(i)
                 self.changed.emit()
                 return
         if not self.multi:
             self.items = []
         self.items.append(item)
+        if self.number:
+            self.numbers = (self.numbers + [None] * len(self.items))[:len(self.items)]
         self.changed.emit()
+
+
+class GuideListField(SelectionField):
+    """A selection list where one pick is one entry, shown as a numbered row with move-up, move-down and remove
+    buttons. A loft's guides use it (`guides`: one inner list of references per entry); the Boundary surface's U
+    and V lists can reuse it. `items` holds (kind, ref) as for any field; an entry that stands for several
+    references (a saved guide of more than one path piece) is ("group", [refs]) and is kept as it is."""
+
+    def __init__(self, key, label, want, multi=True, parent=None, number=False):
+        super().__init__(key, label, want, True, parent, False)
+        self.list.itemDoubleClicked.disconnect()
+        self.list.setToolTip("Each pick is one entry. Use the arrows to reorder and \u2715 to remove.")
+
+    def move(self, row, delta):
+        """Move an entry up (delta -1) or down (+1); False when it is already at that end."""
+        new = row + delta
+        if not (0 <= row < len(self.items) and 0 <= new < len(self.items)):
+            return False
+        self.items[row], self.items[new] = self.items[new], self.items[row]
+        self.changed.emit()
+        return True
+
+    def _row_label(self, doc, item, i):
+        kind, ref = item
+        what = f"{len(ref)} pieces" if kind == "group" else item_label(doc, item)
+        return f"{i + 1}. {what}"
+
+    def refresh(self, doc, missing=()):
+        self.list.clear()
+        if not self.items:
+            it = QListWidgetItem("Click to select" if self.property("active") == "true" else "—")
+            it.setForeground(QColor("#8a94a3"))
+            self.list.addItem(it)
+        for i, item in enumerate(self.items):
+            it = QListWidgetItem("")
+            self.list.addItem(it)
+            w = _RowWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(2, 0, 2, 0)
+            lab = QLabel(self._row_label(doc, item, i))
+            if i in missing:
+                lab.setStyleSheet("color:#d93025;")
+            h.addWidget(lab, 1)
+            for text, tip, fn, on in (("\u25b2", "Move up", lambda i=i: self.move(i, -1), i > 0),
+                                      ("\u25bc", "Move down", lambda i=i: self.move(i, 1), i < len(self.items) - 1),
+                                      ("\u2715", "Remove", lambda i=i: self._remove_row(i), True)):
+                b = QToolButton()
+                b.setText(text)
+                b.setToolTip(tip)
+                b.setEnabled(on)
+                b.clicked.connect(lambda _=False, fn=fn: fn())
+                h.addWidget(b)
+            it.setSizeHint(QSize(0, 28))
+            self.list.setItemWidget(it, w)
+        self._base_h = min(6, max(1, len(self.items))) * 28 + 4
+        self.list.setFixedHeight(self._base_h + self.extra)
+
+    def _remove_row(self, row):
+        self.remove_at(row)
+        self.changed.emit()
+
+
+def fillet_vertex_ends(state, edge_refs):
+    """Positions of the vertices a variable fillet of these edges can set a radius at: the ends of the edges and of
+    the edges tangent to them that the fillet pulls into the contour. [] when the edges do not resolve."""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    out = []
+    try:
+        for pid, es in F._group_by_part(state, edge_refs, "edge").items():
+            mk = BRepFilletAPI_MakeFillet(state.parts[pid].shape)
+            for e in es:
+                mk.Add(e)
+            for ic in range(1, mk.NbContours() + 1):
+                out += [K._vertex_xyz(v) for v in K._contour_vertices(mk, ic)]
+    except Exception:
+        return []
+    return out
 
 
 def _same(a, b):
@@ -465,12 +689,107 @@ def _check(key, label, visible=None):
     return {"t": "check", "key": key, "label": label, "visible": visible}
 
 
-def _sel(key, label, want, multi=True, visible=None):
-    return {"t": "sel", "key": key, "label": label, "want": want, "multi": multi, "visible": visible}
+def _sel(key, label, want, multi=True, visible=None, number=False, tip=None):
+    return {"t": "sel", "key": key, "label": label, "want": want, "multi": multi, "visible": visible,
+            "number": number, "tip": tip}
+
+
+def _sel_list(key, label, want, visible=None, tip=None):
+    """A list field where one pick is one entry (GuideListField)."""
+    return {**_sel(key, label, want, True, visible, False, tip), "list": True}
 
 
 SCOPE_OPS = ("add", "remove", "intersect")
 SCOPE_FEATURES = ("extrude", "revolve", "sweep", "loft")
+
+
+SWEEP_CONTROLS = [("", "None"), ("keep", "Keep profile orientation"), ("lock", "Lock profile direction")]
+LOFT_CONDITIONS = [("", "None"), ("normal", "Normal to profile"), ("tangent", "Tangent to profile")]
+LOFT_END_CHOICES = LOFT_CONDITIONS + [("match_tangent", "Match tangent")]     # I7.5: with Adjacent faces
+
+
+_LOFT_GUIDES_WHY = ("Guides, end conditions, a closed loft and a point profile cannot be combined yet: "
+                    "untick Guides and continuity, Closed, or take the point out first")
+
+
+_LOFT_SURFACE_WHY = "A surface loft takes no end conditions: choose Solid to set them"
+
+
+_BOUNDARY_TIP = ("A surface through curves in a U direction and, optionally, a V direction. It does not match "
+                 "tangent or curvature to neighbouring faces (use Fill for a patch with tangency), and has no "
+                 "magnitude, isocurve display or trimming. V curves need OpenCascade 8.0.")
+
+
+def _loft_surface(p):
+    """True when a loft is made as a surface (Create = Surface, I7.8)."""
+    return p.get("creation") == "surface"
+
+
+def _loft_point(p):
+    """True when a loft's profile list has a point (a vertex or a sketch point) in it (I7.7)."""
+    return any(isinstance(it, dict) and it.get("kind") in ("vertex", "sketch") for it in p.get("profiles") or [])
+
+
+def _loft_plain(p):
+    """True when nothing in a loft's params rules out end conditions and guides: no Closed, no point profile."""
+    return not (p.get("closed") or _loft_point(p))
+
+
+def _loft_unfold(p):
+    """The dialog edits a loft's `start` and `end` ({cond, mag, faces}) as flat fields start_cond, start_mag,
+    start_faces, ..."""
+    for end in ("start", "end"):
+        c = p.get(end) if isinstance(p.get(end), dict) else {}
+        p[f"{end}_cond"] = c.get("cond") or ""
+        p[f"{end}_mag"] = c.get("mag", 1.0)
+        p[f"{end}_faces"] = list(c.get("faces") or [])
+    p["guides_on"] = any(g for g in p.get("guides") or [])
+
+
+def _loft_fold(p, strip=False):
+    """The flat dialog fields back into `start` and `end`. No condition (or a ruled loft, which hides
+    them) leaves no key, so an old loft keeps the legacy route; strip=True drops the flat fields.
+    `guides` goes the same way: no tick, a ruled loft or no entries leaves no key. `closed` (I7.7) is
+    kept only when ticked, and a closed loft or a point profile (which grey the conditions and guides
+    out) leaves none of them."""
+    plain = _loft_plain(p)
+    if p.get("front") and any(p.get("guides") or []):
+        p["ruled"] = False               # a Boundary surface with V curves is smooth (the row is greyed out)
+    if not p.get("closed"):
+        p.pop("closed", None)
+    if not _loft_surface(p):
+        p.pop("curves", None)            # a solid loft saves no curves key
+    if "guides_on" in p:
+        if p.get("ruled") or not plain or not p["guides_on"] or not any(p.get("guides") or []):
+            p.pop("guides", None)
+        if strip:
+            p.pop("guides_on", None)
+    for end in ("start", "end"):
+        if f"{end}_cond" not in p:
+            continue
+        cond = "" if p.get("ruled") or not plain or _loft_surface(p) else p.get(f"{end}_cond") or ""
+        if cond:
+            p[end] = {"cond": cond, "mag": p.get(f"{end}_mag", 1.0)}
+            if cond == "match_tangent" and p.get(f"{end}_faces"):     # none picked: no key, the default faces
+                p[end]["faces"] = list(p[f"{end}_faces"])
+        else:
+            p.pop(end, None)
+        if strip:
+            p.pop(f"{end}_cond", None)
+            p.pop(f"{end}_mag", None)
+            p.pop(f"{end}_faces", None)
+
+
+def thicken_op_for(state, p):
+    """The operation a Thicken pick implies: "add" when a picked face belongs to a solid (the new solid joins
+    it), "new" when only surface parts, or faces of them, are picked, None with nothing picked."""
+    if not p.get("faces") and not p.get("parts"):
+        return None
+    for r in p.get("faces", []):
+        part = state.parts.get(r.get("part")) if isinstance(r, dict) else None
+        if part is not None and not K.is_surface(part.shape):
+            return "add"
+    return "new"
 
 
 def _scope():
@@ -548,8 +867,14 @@ SCHEMAS = {
         _num("radius", "Bend radius (inside)", visible=lambda p: p.get("own_radius"), minimum=0),
     ],
     "extrude": [
-        _ops(),
-        _sel("profiles", "Faces and sketch regions to extrude", {"region", "face"}),
+        {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
+        {"t": "ops", "key": "creation", "options": THIN_CREATE_LABELS, "default": "solid"},
+        _sel("profiles", "Faces and sketch regions to extrude", {"region", "face"},
+             visible=lambda p: p.get("creation") != "surface"),
+        _sel("curves", "Sketch curves to extrude", {"path"},
+             visible=lambda p: p.get("creation") in ("surface", "thin")),
+        *_thin_fields("extrude"),
         _choice("end", "End type", [("blind", "Blind"), ("symmetric", "Symmetric"), ("through", "Through all")]
                 + F.UP_TO_LABELS),
         _num("depth", "Depth", visible=lambda p: p.get("end") not in ("through",) + F.UP_TO, signed=True),
@@ -560,11 +885,22 @@ SCHEMAS = {
         _check("second", "Second end position", visible=lambda p: p.get("end") == "blind"),
         _num("depth2", "Second depth", visible=lambda p: p.get("end") == "blind" and p.get("second")),
         _check("both", "Both directions", visible=lambda p: p.get("end") == "through"),
+        _check("draft", "Draft", visible=lambda p: p.get("end") in ("blind", "symmetric")),
+        _num("draft_angle", "Draft angle", unit="deg", minimum=1e-6,
+             visible=lambda p: p.get("end") in ("blind", "symmetric") and p.get("draft")),
+        _check("draft_flip", "Draft the other way",
+               visible=lambda p: p.get("end") in ("blind", "symmetric") and p.get("draft")),
         _scope(),
     ],
     "revolve": [
-        _ops(),
-        _sel("profiles", "Faces and sketch regions to revolve", {"region", "face"}),
+        {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
+        {"t": "ops", "key": "creation", "options": THIN_CREATE_LABELS, "default": "solid"},
+        _sel("profiles", "Faces and sketch regions to revolve", {"region", "face"},
+             visible=lambda p: p.get("creation") != "surface"),
+        _sel("curves", "Sketch curves to revolve", {"path"},
+             visible=lambda p: p.get("creation") in ("surface", "thin")),
+        *_thin_fields("revolve"),
         _sel("axis_sel", "Revolve axis (axis, sketch line or edge)", {"axis"}, multi=False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _choice("end", "Revolve type", [("full", "Full"), ("one", "One direction"), ("symmetric", "Symmetric")]
@@ -579,7 +915,11 @@ SCHEMAS = {
     ],
     "fillet": [
         _sel("edges", "Edges or faces to fillet", {"edge"}),
+        _choice("fillet_type", "Type", [("constant", "Constant radius"), ("variable", "Variable radius")]),
         _num("radius", "Radius", minimum=1e-6),
+        _sel("vertices", "Vertices (a radius at each)", {"vertex"}, number=True,
+             tip="The radius changes smoothly between the vertices. Pick vertices at the ends of the selected edges.",
+             visible=lambda p: p.get("fillet_type") == "variable"),
     ],
     "chamfer": [
         _sel("edges", "Edges or faces to chamfer", {"edge"}),
@@ -615,6 +955,31 @@ SCHEMAS = {
         _num("distance", "Distance (outwards)"),
         _check("flip", "Flip direction"),
     ],
+    "thicken": [
+        _ops(),
+        _sel("faces", "Surface parts and faces to thicken", {"face", "part"}),
+        _num("thickness1", "Thickness 1", minimum=1e-6),
+        _num("thickness2", "Thickness 2", minimum=0, visible=lambda p: not p.get("mid_plane")),
+        _check("mid_plane", "Mid plane"),
+        _check("flip", "Opposite direction"),
+        _check("keep_tools", "Keep tools"),
+        {"t": "info", "key": "_info", "text": lambda p: "Thickness is the total, split half each side."
+         if p.get("mid_plane") else ""},
+        _scope(),
+    ],
+    "enclose": [
+        _ops(),
+        _sel("entities", "Surface parts, faces and planes that surround a volume", {"part", "face", "plane"}),
+        _check("keep_tools", "Keep tools"),
+        _scope(),
+    ],
+    "fill": [
+        _ops(SURFACE_OP_LABELS),
+        _sel("edges", "Edges and sketch curves around the hole", {"edge", "path"}),
+        {"t": "fill_rows", "key": "_fill_rows"},
+        _sel("guides", "Guide points the fill passes through (optional)", {"vertex"}),
+        _scope(),
+    ],
     "delete_part": [
         _sel("parts", "Parts to delete", {"part"}),
     ],
@@ -629,7 +994,8 @@ SCHEMAS = {
     ],
     "plane": [
         _choice("type", "Plane type", F.PLANE_TYPES),
-        _sel("refs_sel", "Planes, faces, edges, axes and vertices", {"plane", "face", "edge", "vertex", "axis_feature", "axis_connector"}),
+        _sel("refs_sel", "Planes, faces, edges, axes, sketch curves and points",
+             {"plane", "face", "edge", "vertex", "sketch_line", "sketch_point", "axis_feature", "axis_connector"}),
         {"t": "info", "key": "_info", "text": lambda p: _plane_info(p)},
         _num("offset", "Offset distance", visible=lambda p: F.plane_type(p) == "offset"),
         _num("angle", "Angle", unit="deg", visible=lambda p: F.plane_type(p) == "line_angle"),
@@ -675,15 +1041,77 @@ SCHEMAS = {
         _check("keep_tools", "Keep tools", visible=lambda p: p.get("op") != "union"),
     ],
     "sweep": [
-        _ops(),
-        _sel("profiles", "Faces and sketch regions to sweep", {"region", "face"}),
+        {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
+        {"t": "ops", "key": "creation", "options": THIN_CREATE_LABELS, "default": "solid"},
+        _sel("profiles", "Faces and sketch regions to sweep", {"region", "face"},
+             visible=lambda p: p.get("creation") != "surface"),
+        _sel("curves", "Sketch curves to sweep (open or closed)", {"path"},
+             visible=lambda p: p.get("creation") in ("surface", "thin")),
+        *_thin_fields("sweep"),
         _sel("path", "Sweep path (sketch curves or edges)", {"path"}),
+        _choice("control", "Profile control", SWEEP_CONTROLS),
+        _sel("lock_dir", "Direction (axis, edge or sketch line)", {"axis"}, multi=False,
+             visible=lambda p: p.get("control") == "lock"),
         _scope(),
     ],
+    "rib": [
+        _sel("path", "Sketch curves for the rib (an open chain of lines and arcs)", {"path"}),
+        _sel("parts", "Part for the rib", {"part"}, multi=False),
+        _num("thickness", "Thickness", minimum=1e-6),
+        _check("flip", "Opposite direction"),
+    ],
     "loft": [
-        _ops(),
-        _sel("profiles", "Profiles — pick them in order", {"region", "face"}),
+        {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
+        {"t": "ops", "key": "creation", "options": CREATE_LABELS, "default": "solid"},
+        _sel("profiles", "Profiles — pick them in order (a vertex or a sketch point may be the first or the last)",
+             {"region", "face", "vertex", "sketch_point"}, visible=lambda p: p.get("creation") != "surface"),
+        _sel("curves", "Sketch curves or edges to loft through — pick them in order", {"path"},
+             visible=lambda p: p.get("creation") == "surface"),
         _check("ruled", "Straight sides (ruled)"),
+        {**_choice("start_cond", "Start profile condition", LOFT_END_CHOICES, visible=lambda p: not p.get("ruled")),
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p) and not _loft_surface(p),
+         "why": _LOFT_GUIDES_WHY, "why_if": (_loft_surface, _LOFT_SURFACE_WHY)},
+        _num("start_mag", "Magnitude", unit="", signed=True,
+             visible=lambda p: not p.get("ruled") and bool(p.get("start_cond"))),
+        {**_sel("start_faces", "Adjacent faces", {"face"},
+                visible=lambda p: not p.get("ruled") and p.get("start_cond") == "match_tangent"),
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p) and not _loft_surface(p),
+         "why": _LOFT_GUIDES_WHY, "why_if": (_loft_surface, _LOFT_SURFACE_WHY)},
+        {**_choice("end_cond", "End profile condition", LOFT_END_CHOICES, visible=lambda p: not p.get("ruled")),
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p) and not _loft_surface(p),
+         "why": _LOFT_GUIDES_WHY, "why_if": (_loft_surface, _LOFT_SURFACE_WHY)},
+        _num("end_mag", "Magnitude", unit="", signed=True,
+             visible=lambda p: not p.get("ruled") and bool(p.get("end_cond"))),
+        {**_sel("end_faces", "Adjacent faces", {"face"},
+                visible=lambda p: not p.get("ruled") and p.get("end_cond") == "match_tangent"),
+         "enabled": lambda p: not p.get("guides_on") and _loft_plain(p) and not _loft_surface(p),
+         "why": _LOFT_GUIDES_WHY, "why_if": (_loft_surface, _LOFT_SURFACE_WHY)},
+        {**_check("guides_on", "Guides and continuity", visible=lambda p: not p.get("ruled")),
+         "enabled": lambda p: (_loft_surface(p) or not (p.get("start_cond") or p.get("end_cond"))) and _loft_plain(p),
+         "why": "Guides cannot be combined with end conditions, a closed loft or a point profile yet: "
+                "clear the start and end profile conditions, Closed and the point first"},
+        {**_check("closed", "Closed (the last profile joins the first)",
+                  visible=lambda p: len(p.get("curves" if _loft_surface(p) else "profiles") or []) >= 3),
+         "enabled": lambda p: not (p.get("start_cond") or p.get("end_cond") or p.get("guides_on") or _loft_point(p)),
+         "why": "A closed loft cannot be combined with end conditions, guides or a point profile yet: "
+                "clear those first"},
+        _sel_list("guides", "Guides — one pick is one guide (sketch curves or an edge)", {"path"},
+                  visible=lambda p: not p.get("ruled") and bool(p.get("guides_on"))),
+        _scope(),
+    ],
+    # I7.9: a surface loft opened through its front door (params["front"] == "boundary_surface"): the loft's
+    # `curves` are the U direction, its `guides` the V direction. Same runner, same saved keys.
+    "boundary_surface": [
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS},
+        _sel_list("curves", "U direction profiles — pick sketch curves or edges in order",
+                  {"path"}, tip=_BOUNDARY_TIP),
+        _sel_list("guides", "V direction profiles (optional; two or more, each touching every U curve)",
+                  {"path"}, tip=_BOUNDARY_TIP),
+        {**_check("ruled", "Straight sides (ruled)"),
+         "enabled": lambda p: not any(p.get("guides") or []),
+         "why": "Straight sides apply to U curves only: remove the V curves first"},
         _scope(),
     ],
     "draft": [
@@ -694,8 +1122,9 @@ SCHEMAS = {
     ],
     "split": [
         _sel("parts", "Parts to split", {"part"}),
-        _sel("tools", "Split with — planes, faces (flat or curved) or sketch curves", {"plane", "face", "path"}),
+        _sel("tools", "Split with — planes, faces, sketch curves or surfaces", {"plane", "face", "path", "part"}),
         {"t": "split_tools", "key": "_split_tools"},
+        _check("keep_tools", "Keep tools"),
         {"t": "info", "key": "_info", "text": lambda p: "" if F.split_tools(p) else
          "Pick one or more: each cuts right through. Untick “Keep both sides” to keep only the side its arrow "
          "points to."},
@@ -806,6 +1235,8 @@ def params_to_fields(ftype, p):
         f["upto_part"] = [("part", u["id"])] if u.get("kind") == "part" else []
     if ftype in ("extrude", "revolve", "sweep"):
         f["profiles"] = [("region", r) for r in p.get("regions", [])] + [("face", r) for r in p.get("faces", [])]
+    if ftype in ("extrude", "revolve", "sweep", "loft"):
+        f["curves"] = [("path", r) for r in p.get("curves", [])]
     if ftype in SCOPE_FEATURES:
         f["scope"] = [("part", i) for i in p.get("scope", [])]
     if ftype in ("sm_base", "sm_tab"):
@@ -816,8 +1247,17 @@ def params_to_fields(ftype, p):
         f["faces"] = [("face", r) for r in p.get("faces", [])]
     if ftype == "sweep":
         f["path"] = [("path", r) for r in p.get("path", [])]
+        d = p.get("lock_dir") or {}
+        f["lock_dir"] = [("axis", d)] if d and d.get("kind") != "std" else []
+    if ftype == "rib":
+        f["path"] = [("path", r) for r in p.get("path", [])]
+        f["parts"] = [("part", i) for i in p.get("parts", [])]
     if ftype == "loft":
         f["profiles"] = [(it["kind"], it["ref"]) for it in p.get("profiles", [])]
+        f["guides"] = [("path", g[0]) if len(g) == 1 else ("group", list(g)) for g in p.get("guides") or [] if g]
+        for end in ("start", "end"):
+            refs = p[f"{end}_faces"] if f"{end}_faces" in p else (p.get(end) or {}).get("faces")
+            f[f"{end}_faces"] = [("face", r) for r in refs or []]
     if ftype == "draft":
         f["faces"] = [("face", r) for r in p.get("faces", [])]
         f["neutral_sel"] = [("plane", p["neutral"])] if p.get("neutral") else []
@@ -827,7 +1267,7 @@ def params_to_fields(ftype, p):
         ref = p.get("ref")
         f["element"] = [(p.get("kind", "face"), ref)] if ref and not ref.get("origin") else []
     if ftype == "split":
-        f["tools"] = [(t["kind"], t["ref"]) for t in F.split_tools(p)]
+        f["tools"] = [_split_item(t) for t in F.split_tools(p)]
     if ftype == "move":
         a = p.get("axis") or {}
         f["axis_sel"] = [("axis", a)] if a and a.get("kind") != "std" else []
@@ -837,8 +1277,22 @@ def params_to_fields(ftype, p):
         f["axis_sel"] = [("axis", ax)] if ax and ax.get("kind") != "std" else []
     if ftype in ("fillet", "chamfer"):
         f["edges"] = [("edge", r) for r in p.get("edges", [])]
+    if ftype == "fillet":
+        rows = p.get("vertex_radii") or []
+        f["vertices"] = [("vertex", e["vertex"]) for e in rows]
+        f["vertices_numbers"] = [None if e.get("radius") == p.get("radius") else e.get("radius") for e in rows]
     if ftype in ("shell", "thread", "delete_face", "move_face", "offset_surface"):
         f["faces"] = [("face", r) for r in p.get("faces", [])]
+    if ftype == "thicken":              # one field holds faces and surface parts
+        f["faces"] = [("face", r) for r in p.get("faces", [])] + [("part", i) for i in p.get("parts", [])]
+        f["scope"] = [("part", i) for i in p.get("scope", [])]
+    if ftype == "fill":                 # one field holds model edges and sketch curves; guides are vertices
+        f["edges"] = [_fill_item(e) for e in p.get("edges", [])]
+        f["guides"] = [("vertex", r) for r in p.get("guides", [])]
+        f["scope"] = [("part", i) for i in p.get("scope", [])]
+    if ftype == "enclose":              # one field holds parts, faces and planes, one entity each
+        f["entities"] = [(e["kind"], e["ref"]) for e in p.get("entities", [])]
+        f["scope"] = [("part", i) for i in p.get("scope", [])]
     if ftype == "plane":
         f["refs_sel"] = [(k, r) for k, r in F.plane_items(p)]
     if ftype == "axis":
@@ -890,10 +1344,30 @@ def fields_to_params(ftype, fields, p):
     if ftype in ("extrude", "revolve", "sweep"):
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
         p["faces"] = [r for k, r in fields.get("profiles", []) if k == "face"]
+    if ftype in ("extrude", "revolve", "sweep", "loft"):
+        curves = [r for k, r in fields.get("curves", [])]
+        if curves:
+            p["curves"] = curves
+        else:
+            p.pop("curves", None)            # a solid feature saves no curves key
     if ftype == "sweep":
         p["path"] = [r for k, r in fields.get("path", [])]
+        lock = [r for k, r in fields.get("lock_dir", [])]
+        if p.get("control") == "lock" and lock:
+            p["lock_dir"] = lock[0]
+        else:
+            p.pop("lock_dir", None)
+        if not p.get("control"):
+            p.pop("control", None)           # None saves no key
+    if ftype == "rib":
+        p["path"] = [r for k, r in fields.get("path", [])]
+        p["parts"] = [r for k, r in fields.get("parts", [])]
     if ftype == "loft":
         p["profiles"] = [{"kind": k, "ref": r} for k, r in fields.get("profiles", [])]
+        p["guides"] = [list(r) if k == "group" else [r] for k, r in fields.get("guides", [])]
+        for end in ("start", "end"):
+            p[f"{end}_faces"] = [r for k, r in fields.get(f"{end}_faces", []) if k == "face"]
+        _loft_fold(p)
     if ftype == "draft":
         p["faces"] = [r for k, r in fields.get("faces", [])]
         sel = fields.get("neutral_sel", [])
@@ -910,11 +1384,15 @@ def fields_to_params(ftype, fields, p):
         old = list(F.split_tools(p))
         tools = []
         for k, r in fields.get("tools", []):
-            prev = next((t for t in old if t["kind"] == k and _same(t["ref"], r)), None)
+            k = "surface" if k == "part" else k           # a part pick is a surface part
+            prev = next((t for t in old if t["kind"] == k and _same((k, t["ref"]), (k, r))), None)
             if prev is not None:
                 old.remove(prev)
-            tools.append({"kind": k, "ref": r, "both": prev.get("both", True) if prev else True,
-                          "flip": prev.get("flip", False) if prev else False})
+            tool = {"kind": k, "ref": r, "both": prev.get("both", True) if prev else True,
+                    "flip": prev.get("flip", False) if prev else False}
+            if prev is not None and prev.get("trim"):
+                tool["trim"] = True
+            tools.append(tool)
         p["tools"] = tools
         p.pop("plane", None)                      # an older split's single plane is now its first tool
         p.pop("keep", None)
@@ -941,8 +1419,36 @@ def fields_to_params(ftype, fields, p):
             p["axis"] = {}
     if ftype in ("fillet", "chamfer"):
         p["edges"] = [r for k, r in fields.get("edges", [])]
+    if ftype == "fillet" and "vertices" in fields:
+        if p.get("fillet_type") == "variable":      # an empty number follows the default radius
+            nums = list(fields.get("vertices_numbers") or [])
+            nums += [None] * (len(fields["vertices"]) - len(nums))
+            p["vertex_radii"] = [{"vertex": r, "radius": p.get("radius", 1.0) if n is None else n}
+                                 for (k, r), n in zip(fields["vertices"], nums)]
+        else:                                       # a constant fillet saves what it always did
+            p.pop("vertex_radii", None)
+            if p.get("fillet_type") == "constant":
+                p.pop("fillet_type")
     if ftype in ("shell", "thread", "delete_face", "move_face", "offset_surface"):
         p["faces"] = [r for k, r in fields.get("faces", [])]
+    if ftype == "thicken":
+        p["faces"] = [r for k, r in fields.get("faces", []) if k == "face"]
+        p["parts"] = [r for k, r in fields.get("faces", []) if k == "part"]
+        p["scope"] = [r for k, r in fields.get("scope", [])]
+    if ftype == "fill":                 # the continuity of an edge that stays in the list is kept
+        old = list(p.get("edges") or [])
+        out = []
+        for k, r in fields.get("edges", []):
+            prev = next((e for e in old if _same(_fill_item(e), (k, r))), None)
+            if prev is not None:
+                old.remove(prev)
+            out.append(_fill_edge(k, r, prev))
+        p["edges"] = out
+        p["guides"] = [r for k, r in fields.get("guides", [])]
+        p["scope"] = [r for k, r in fields.get("scope", [])]
+    if ftype == "enclose":
+        p["entities"] = [{"kind": k, "ref": r} for k, r in fields.get("entities", [])]
+        p["scope"] = [r for k, r in fields.get("scope", [])]
     if ftype == "plane":
         p["refs"] = [{"k": k, "ref": r} for k, r in fields.get("refs_sel", [])]
         p.pop("ref", None)
@@ -1086,7 +1592,11 @@ class FeatureDialog(_ResizableFrame):
                 self.feature["params"].setdefault(k_, v_)
         except Exception:
             pass
-        self.schema = SCHEMAS.get(self.ftype, [])
+        if self.ftype == "loft":
+            _loft_unfold(self.feature["params"])
+            if F.front_kind(self.feature):
+                self.feature["params"]["guides_on"] = True       # the V list is always there: _loft_fold keeps it
+        self.schema = SCHEMAS.get(F.front_kind(self.feature) or self.ftype, [])
         if self.ftype.startswith("plugin:"):
             from .. import plugins
             self.schema = plugins.dialog_schema(self.ftype)
@@ -1108,8 +1618,12 @@ class FeatureDialog(_ResizableFrame):
         for k, items in params_to_fields(self.ftype, self.feature["params"]).items():
             if k in self.fields:
                 self.fields[k].items = list(items)
+            elif k.endswith("_numbers") and k[:-8] in self.fields:
+                self.fields[k[:-8]].numbers = list(items)
         if is_new and preselection:
             self._apply_preselection(preselection)
+        if self.ftype == "rib" and is_new:
+            self._default_rib_part()
         if self.ftype == "mate_connector":       # hover a face or edge: the same snap points the Assembly offers
             main.viewport.snap_provider = self.snap_candidates
         self._sync_visibility()              # also picks the field that takes the first click
@@ -1125,7 +1639,7 @@ class FeatureDialog(_ResizableFrame):
         lay.setSpacing(6)
         head = QHBoxLayout()
         ic = QLabel()
-        ic.setPixmap(icon(self.ftype).pixmap(20, 20))
+        ic.setPixmap(icon(F.door_kind(self.feature)).pixmap(20, 20))
         head.addWidget(ic)
         self.title = QLineEdit(self.feature["name"])
         self.title.setStyleSheet("QLineEdit { border: none; font-weight: 700; background: transparent; }"
@@ -1174,7 +1688,7 @@ class FeatureDialog(_ResizableFrame):
                 b.setObjectName("segment")
                 b.setText(lab)
                 b.setCheckable(True)
-                b.setChecked(p.get(spec["key"]) == val)
+                b.setChecked(p.get(spec["key"], spec.get("default")) == val)
                 b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 b.clicked.connect(lambda _=False, v=val: self._set(spec["key"], v))
                 grp.addButton(b)
@@ -1187,6 +1701,13 @@ class FeatureDialog(_ResizableFrame):
             v.setSpacing(2)
             self._split_box, self._split_sig = box, None
             return box
+        if t == "fill_rows":
+            box = QWidget()
+            v = QVBoxLayout(box)
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(2)
+            self._fill_box, self._fill_sig = box, None
+            return box
         if t == "info":
             lab = QLabel("")
             lab.setWordWrap(True)
@@ -1195,9 +1716,17 @@ class FeatureDialog(_ResizableFrame):
             self._info_rows.append((spec, lab))
             return lab
         if t == "sel":
-            f = SelectionField(spec["key"], spec["label"], spec["want"], spec["multi"])
+            f = (GuideListField if spec.get("list") else SelectionField)(
+                spec["key"], spec["label"], spec["want"], spec["multi"], number=spec.get("number", False))
             f.activated.connect(self.activate)
             f.changed.connect(self._fields_changed)
+            if spec.get("tip"):
+                f.setToolTip(spec["tip"])
+            if f.number:
+                f.number_parser = lambda t: parse_number(t, variables=self.base_state.vars)
+                f.default_text = lambda: _show(self.feature["params"].get("radius", 0))
+                f.number_changed.connect(self._numbers_changed)
+                f.hovered.connect(self._hover_row)
             self.fields[spec["key"]] = f
             return f
         if t == "derived_tabs":
@@ -1961,8 +2490,8 @@ class FeatureDialog(_ResizableFrame):
         if box is None:
             return
         tools = F.split_tools(self.feature["params"])
-        sig = tuple((t["kind"], bool(t.get("both", True)), json.dumps(t["ref"], sort_keys=True, default=str))
-                    for t in tools)
+        sig = tuple((t["kind"], bool(t.get("both", True)), bool(t.get("trim")),
+                     json.dumps(t["ref"], sort_keys=True, default=str)) for t in tools)
         if sig == self._split_sig:
             return
         self._split_sig = sig
@@ -1975,9 +2504,15 @@ class FeatureDialog(_ResizableFrame):
             row = QWidget()
             h = QHBoxLayout(row)
             h.setContentsMargins(4, 0, 0, 0)
-            name = QLabel(f"{i + 1}. {item_label(self.doc, (t['kind'], t['ref']))}")
+            name = QLabel(f"{i + 1}. {item_label(self.doc, _split_item(t))}")
             name.setStyleSheet("color:#4b5563;")
             h.addWidget(name, 1)
+            if t["kind"] == "face":
+                tr = QCheckBox("Trim to face boundaries")
+                tr.setToolTip("Split only as far as the face reaches. Off: the face is extended to cut right through.")
+                tr.setChecked(bool(t.get("trim")))
+                tr.toggled.connect(lambda on, i=i: self._split_set(i, "trim", on))
+                h.addWidget(tr)
             cb = QCheckBox("Keep both sides")
             cb.setChecked(bool(t.get("both", True)))
             cb.toggled.connect(lambda on, i=i: self._split_set(i, "both", on))
@@ -1990,12 +2525,60 @@ class FeatureDialog(_ResizableFrame):
             h.addWidget(fl)
             lay.addWidget(row)
 
+    def _fill_rows(self):
+        """One row per Fill edge with a Tangency tick (the per-row mechanism Split uses for Trim). A sketch curve
+        has no face beside it, so its row says Position and has no tick."""
+        box = getattr(self, "_fill_box", None)
+        if box is None:
+            return
+        edges = self.feature["params"].get("edges") or []
+        sig = tuple((e.get("continuity"), json.dumps(e.get("ref"), sort_keys=True, default=str)) for e in edges)
+        if sig == self._fill_sig:
+            return
+        self._fill_sig = sig
+        lay = box.layout()
+        while lay.count():
+            w = lay.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        for i, e in enumerate(edges):
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(4, 0, 0, 0)
+            name = QLabel(f"{i + 1}. {item_label(self.doc, _fill_item(e))}")
+            name.setStyleSheet("color:#4b5563;")
+            h.addWidget(name, 1)
+            if (e.get("ref") or {}).get("kind") == "edge":
+                tg = QCheckBox("Tangency")
+                tg.setToolTip("Aim the fill along the face beside this edge. Off: Position, the fill meets the edge only.")
+                tg.setChecked(e.get("continuity") == "tangency")
+                tg.toggled.connect(lambda on, i=i: self._fill_set(i, on))
+                h.addWidget(tg)
+            else:
+                pos = QLabel("Position")
+                pos.setToolTip("A sketch curve has no face beside it, so the fill meets it at Position only")
+                pos.setStyleSheet("color:#8a94a3;")
+                h.addWidget(pos)
+            lay.addWidget(row)
+
+    def _fill_set(self, i, tangency):
+        p = self.feature["params"]
+        edges = [dict(e) for e in p.get("edges") or []]
+        if i >= len(edges):
+            return
+        edges[i]["continuity"] = "tangency" if tangency else "position"
+        p["edges"] = edges
+        QTimer.singleShot(0, self._sync_visibility)
+        self.schedule_preview()
+
     def _split_set(self, i, key, value):
         tools = F.split_tools(self.feature["params"])
         if i >= len(tools):
             return
         tools = [dict(t) for t in tools]
         tools[i][key] = (not tools[i].get("flip")) if key == "flip" else bool(value)
+        if key == "trim" and not value:
+            tools[i].pop("trim", None)                # an extended face saves as it always did
         p = self.feature["params"]
         p["tools"] = tools
         p.pop("plane", None)
@@ -2009,6 +2592,8 @@ class FeatureDialog(_ResizableFrame):
             self.widgets["owner"].setItemText(0, OWNER_PICK if (p.get("ref") or {}).get("origin") else OWNER_SAME)
         if self.ftype == "split":
             self._split_rows()
+        if self.ftype == "fill":
+            self._fill_rows()
         for spec, lab in self._info_rows:
             txt = spec["text"](p)
             lab.setText(txt)
@@ -2020,6 +2605,14 @@ class FeatureDialog(_ResizableFrame):
         for spec, w in self.rows:
             vis = spec.get("visible")
             w.setVisible(True if vis is None else bool(vis(p)))
+            if spec.get("enabled"):             # greyed with the reason when another setting rules it out
+                ok = bool(spec["enabled"](p))
+                w.setEnabled(ok)
+                why_if = spec.get("why_if")          # (test, text): a more specific reason when `test(p)`
+                w.setToolTip("" if ok else why_if[1] if why_if and why_if[0](p) else spec["why"])
+            if spec["t"] == "ops":            # the buttons show the params (Surface limits the operation to New / Add)
+                for (val, _), b in zip(spec["options"], w.findChildren(QToolButton)):
+                    b.setChecked(p.get(spec["key"], spec.get("default")) == val)
         # clicks go to the active field, so it must be one the user can see: a row that has just been
         # hidden (Merge scope when the operation becomes New) hands over to the first visible empty field
         af = self.active_field
@@ -2058,6 +2651,8 @@ class FeatureDialog(_ResizableFrame):
             kinds |= {"edge", "face"}
         if "axis" in want or "path" in want:
             kinds |= {"edge", "sketch_line"}
+        if "axis" in want:
+            kinds.add("face")
         if "plane" in want:
             kinds.add("plane")
         if "sketch_line" in want:
@@ -2125,6 +2720,9 @@ class FeatureDialog(_ResizableFrame):
             key, i = pick.key
             fld = self.fields.get(key)
             if fld and i < len(fld.items):
+                if fld.number:                  # a listed vertex clicked in the view selects its row
+                    fld.list.setCurrentRow(i)
+                    return
                 fld.items.pop(i)
                 self._fields_changed()
             return
@@ -2132,6 +2730,14 @@ class FeatureDialog(_ResizableFrame):
         if fld is None:
             return
         item = pick_to_item(self.main.viewport, pick, fld.want, self.base_state)
+        if item is not None and self.ftype == "fillet" and fld.key == "vertices" and not self._fillet_vertex_ok(item):
+            try:
+                self.main.status.showMessage(
+                    "That vertex is not at the end of a selected edge (or an edge tangent to it), so it cannot "
+                    "take a radius. Pick a vertex where a selected edge ends.", 8000)
+            except Exception:
+                pass
+            return
         if item is not None and self.ftype == "axis" and item[0] == "face" and fld.key == "refs_sel" \
                 and not any(_same(ex, item) for ex in fld.items) and self.main.viewport.last_click \
                 and (self.feature["params"].get("type") == "face_point"
@@ -2151,6 +2757,14 @@ class FeatureDialog(_ResizableFrame):
                     pass
             return
         fld.toggle(item)
+
+    def _fillet_vertex_ok(self, item):
+        try:
+            pos = F.resolve_point(self.base_state, item[1])
+        except K.KernelError:
+            return False
+        ends = fillet_vertex_ends(self.base_state, self.feature["params"].get("edges", []))
+        return any(float(np.linalg.norm(np.asarray(pos, float) - q)) < 1e-6 for q in ends)
 
     # ------------------------------------------------------------------ mate connector
     def snap_candidates(self, pick: Pick):
@@ -2288,7 +2902,7 @@ class FeatureDialog(_ResizableFrame):
         used = set()
         for key, fld in self.fields.items():
             for i, pk in enumerate(picks):
-                if i in used or (not fld.multi and fld.items):
+                if i in used or (not fld.multi and fld.items) or fld.number:
                     continue
                 item = pick_to_item(self.main.viewport, pk, fld.want, self.base_state)
                 if item is None:
@@ -2299,9 +2913,43 @@ class FeatureDialog(_ResizableFrame):
                     self._stamp_connector(item, pk, None, None)
         self.main.viewport.clear_selection()
 
+    def _default_rib_part(self):
+        """The Rib's part field is filled when one part is the obvious choice: the only part in the studio, or
+        the only part the sketch plane of the picked curves cuts. A part the user picked is never replaced."""
+        fld = self.fields.get("parts")
+        if fld is None or fld.items:
+            return
+        parts = self.base_state.parts
+        pid = next(iter(parts)) if len(parts) == 1 else None
+        if pid is None and self.fields["path"].items:
+            sr = self.base_state.sketches.get(self.fields["path"].items[0][1].get("sketch"))
+            if sr is not None:
+                n = np.asarray(sr.plane.normal, float)
+                o = np.asarray(sr.plane.origin, float)
+                cut = []
+                for i, part in parts.items():
+                    lo, hi = K.bbox(part.shape)
+                    c, h = (lo + hi) / 2, (hi - lo) / 2
+                    if abs(float(n @ (c - o))) <= float(np.abs(n) @ h) + 1e-9:
+                        cut.append(i)
+                pid = cut[0] if len(cut) == 1 else None
+        if pid is not None:
+            fld.items = [("part", pid)]
+            self.feature["params"]["parts"] = [pid]
+
     def _fields_changed(self):
-        fields = {k: f.items for k, f in self.fields.items()}
+        fields = self._field_values()
+        before = thicken_op_for(self.base_state, self.feature["params"]) if self.ftype == "thicken" else None
         fields_to_params(self.ftype, fields, self.feature["params"])
+        if self.ftype == "thicken":
+            # the picks choose the operation (a solid's face: Add; surface parts: New) when what is picked changes
+            now = thicken_op_for(self.base_state, self.feature["params"])
+            if now is not None and now != before:
+                self.feature["params"]["op"] = now
+        if self.ftype == "rib" and not self.fields["parts"].items:
+            self._default_rib_part()
+            fields["parts"] = self.fields["parts"].items
+            fields_to_params(self.ftype, fields, self.feature["params"])
         self._sync_visibility()
         self.schedule_preview()
 
@@ -2317,15 +2965,53 @@ class FeatureDialog(_ResizableFrame):
             fk = {"up_to_face": "upto_face", "up_to_vertex": "upto_vertex", "up_to_part": "upto_part"}.get(value)
             if fk in self.fields:
                 QTimer.singleShot(0, lambda fk=fk: self.activate(self.fields[fk]))
+        if key == "creation" and self.ftype in ("extrude", "revolve", "sweep", "loft") and value == "surface" \
+                and p.get("op", "add") not in ("new", "add"):
+            p["op"] = "add"                    # Remove and Intersect are not available for surfaces
+        if key == "creation" and self.ftype == "loft" and value == "surface" and "curves" in self.fields:
+            QTimer.singleShot(0, lambda: self.activate(self.fields["curves"]))
+        if key == "creation" and self.ftype in ("extrude", "revolve", "sweep") and value == "thin":
+            for k, v in (("thickness1", 1.0), ("thickness2", 0.0)):       # not in default_params (goldens go through it)
+                if k not in p:
+                    p[k] = v
+                if k in self.widgets:
+                    self.widgets[k].setText(_show(p[k]))
+            QTimer.singleShot(0, lambda: self.activate(self.fields["curves"]))      # a thin wall is drawn as curves
+        if key == "control" and self.ftype == "sweep" and value == "lock" and "lock_dir" in self.fields:
+            QTimer.singleShot(0, lambda: self.activate(self.fields["lock_dir"]))      # the direction is picked next
+        if key == "draft" and value and self.ftype == "extrude" and not p.get("draft_angle"):
+            p["draft_angle"] = 5.0           # not in default_params (goldens are built through it), so seed it here
+            if "draft_angle" in self.widgets:
+                self.widgets["draft_angle"].setText(_show(5.0))
         if key in ("axis_std", "dir_std", "dir2_std") and value:
             # choosing a world axis replaces a picked axis
             fk = {"axis_std": "axis_sel", "dir_std": "dir_sel", "dir2_std": "dir2_sel"}[key]
             if fk in self.fields:
                 self.fields[fk].items = []
-        fields = {k: f.items for k, f in self.fields.items()}
+        fields = self._field_values()
         fields_to_params(self.ftype, fields, p)
+        if key == "guides_on" and value and "guides" in self.fields:
+            QTimer.singleShot(0, lambda: self.activate(self.fields["guides"]))
+        if key == "fillet_type" and value == "variable" and "vertices" in self.fields:
+            QTimer.singleShot(0, lambda: self.activate(self.fields["vertices"]))
         self._sync_visibility()
         self.schedule_preview()
+
+    def _field_values(self):
+        """{key: items}, plus {key_numbers: numbers} for a field with a number box."""
+        out = {k: f.items for k, f in self.fields.items()}
+        out.update({k + "_numbers": f.numbers for k, f in self.fields.items() if f.number})
+        return out
+
+    def _numbers_changed(self):
+        """A number box was edited: store it and rebuild the preview without redrawing the list being typed in."""
+        fields_to_params(self.ftype, self._field_values(), self.feature["params"])
+        self.schedule_preview()
+
+    def _hover_row(self, row):
+        self._hover = row
+        self.main.viewport.overlays = self.overlays()
+        self.main.viewport.update()
 
     def overlays(self):
         """Geometry of the current selections, in the pre-feature model, for highlighting."""
@@ -2338,8 +3024,12 @@ class FeatureDialog(_ResizableFrame):
                 g = item_geometry(self.base_state, item, half)
                 if g is not None:
                     out.append(((key, i), g))
+                    if fld.number and i == getattr(self, "_hover", -1):      # the hovered row's vertex, larger
+                        out.append((("hover", i), item_geometry(self.base_state, item, half * 2.5)))
         if self.ftype == "derived":
             out += self._derived_location_overlays()
+        for i, c in enumerate(getattr(self, "_gap_points", [])):     # a Fill's open ends, a cross each
+            out.append((("gap", i), ("poly", _cross(c, half * 0.15))))
         return out
 
     # ------------------------------------------------------------------ drag arrows
@@ -2466,7 +3156,17 @@ class FeatureDialog(_ResizableFrame):
         vp = self.main.viewport
         if vp._manip_drag is None:          # don't rebuild the arrow while it's being dragged
             vp.manipulators = self.manipulators()
+        if self.ftype == "fill":
+            self._gap_points = []
         err = self.main.show_preview(self.feature, self.index, self.overlays())
+        if self.ftype == "fill":             # an open boundary: mark the two open ends and hold OK back
+            gap = bool(err) and err.startswith(K.FILL_GAP)
+            if gap:
+                self._gap_points = fill_gap_points(self.base_state, self.feature["params"])
+                self.main.viewport.overlays = self.overlays()
+                self.main.viewport.update()
+            self.ok_button.setEnabled(not gap)
+            self.ok_button.setToolTip("The boundary has a gap: close it before accepting" if gap else "Accept (Enter)")
         if err:
             self.err.setText("⚠ " + err)
             self.err.setStyleSheet("")
@@ -2506,6 +3206,8 @@ class FeatureDialog(_ResizableFrame):
             self.err.show()
             return
         self.feature["name"] = self.title.text().strip() or self.feature["name"]
+        if self.ftype == "loft":
+            _loft_fold(self.feature["params"], strip=True)
         if self.ftype == "hole":
             import re as _re
             try:

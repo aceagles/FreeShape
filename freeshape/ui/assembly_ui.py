@@ -741,7 +741,7 @@ class InsertPanel(QFrame):
                 top.setIcon(0, icon("configs" if cfg else "part", 16))
                 top.setData(0, ROLE_KIND, "studio")
                 top.setData(0, ROLE_ID, (doc.uid, cfg))
-                shown = [p for p in st.parts.values() if not p.reference]    # Context bodies are not insertable
+                shown = [p for p in st.parts.values() if not p.reference and not K.is_surface(p.shape)]    # Context bodies and surfaces are not insertable
                 for p in shown:
                     it = QTreeWidgetItem([p.name])
                     it.setIcon(0, swatch(p.color))
@@ -2047,6 +2047,7 @@ class AssemblyController:
         self.panel = AssemblyPanel()
         self.insert_panel = None
         self.explode_panel = None
+        self.interf_panel = None     # the Interference detection panel while open
         self.mate_dialog = None
         self.relation_dialog = None
         self.move_dialog = None
@@ -2088,7 +2089,10 @@ class AssemblyController:
         parts = []
         sketches = []
         exploding = self.explode_panel is not None
+        only = getattr(self.w, "view_only_ids", None)
         for inst in doc.visible_instances():
+            if only is not None and inst["id"] not in only:
+                continue
             if doc.is_sketch_instance(inst["id"]):
                 # edges and points only, no faces: drawn by the viewport's sketch path, not as a part
                 T = np.array(inst["T"], float)
@@ -2101,7 +2105,6 @@ class AssemblyController:
             fc = p.face_colors if not inst.get("color") else None
             parts.append((inst["id"], K.located(p.shape, T), doc.instance_color(inst), fc, T, p.shape))
         self.vp.set_scene(parts, [], sketches)
-        self.vp.ghosts = self._interf or []
         self.update_triads()
 
     def _sketch_instance_result(self, iid, T):
@@ -2187,11 +2190,16 @@ class AssemblyController:
         self.vp.pick_points = points
         self.vp.update()
 
+    def _drop_interf(self):
+        """Forget the interference ghosts and take them off the viewport, unless another tool has put its own there."""
+        if self.vp.ghosts is self._interf:
+            self.vp.ghosts = []
+        self._interf = None
+
     def on_changed(self):
         if self._interf is not None:
             # parts may have moved: the old overlap display would be wrong
-            self._interf = None
-            self.vp.ghosts = []
+            self._drop_interf()
             if hasattr(self.w, "btn_interf"):
                 self.w.btn_interf.setChecked(False)
         editing = self.mate_dialog.mate["id"] if self.mate_dialog is not None and not self.mate_dialog.is_new \
@@ -2247,7 +2255,7 @@ class AssemblyController:
             return
         doc = self.doc
         st = studio.state_for(config) if config else studio.state
-        pids = part_ids or [p.id for p in st.parts.values() if not p.reference]
+        pids = part_ids or [p.id for p in st.parts.values() if not p.reference and not K.is_surface(p.shape)]
         if not pids:
             return
         doc.checkpoint()
@@ -3181,8 +3189,8 @@ class AssemblyController:
             C("hide", "Isolate", "Hide every part but the selected ones (Shift+I).", self.isolate_selected,
               "only visibility"),
             C("hide", "Show all", "Show every hidden part (Shift+Y).", self.show_all, "unhide visibility"),
-            C("interference", "Interference", "Show where parts overlap.", w.btn_interf.click,
-              "clash collision overlap check"),
+            C("interference", "Interference detection", "Show where parts overlap.", w.btn_interf.click,
+              "interference clash collision overlap check"),
             C("bom", "Bill of materials", "List the parts with quantities and mass.", self.show_bom,
               "bom parts list table"),
             C("bom", "Mass properties", "Mass by material, total mass and centre of mass of the whole assembly.",
@@ -3283,10 +3291,12 @@ class AssemblyController:
                      and f["params"].get("assembly") == asm.uid and f["params"].get("instance") == iid), None)
         try:
             if have is not None:
-                folder.update_context(tab.id, have["id"])
+                self.w.rename_session_parts(studio, folder.update_context(tab.id, have["id"]))
             else:
                 feat = studio.make_feature("context")
-                feat["params"].update(assembly=asm.uid, instance=iid, capture=studio.store_context(A.capture_context(asm, iid)))
+                # ids "instance": bodies are <fid>/<instance id>, so they keep their identity across Update context
+                feat["params"].update(assembly=asm.uid, instance=iid, ids="instance",
+                                      capture=studio.store_context(A.capture_context(asm, iid)))
                 studio.add_feature(feat)
         except K.KernelError as e:
             self.w.status.showMessage(str(e), 6000)
@@ -3296,52 +3306,31 @@ class AssemblyController:
 
     # ------------------------------------------------------------------ analysis
     def toggle_interference(self, on=None):
+        """Open or close the Interference detection panel (the toolbar button and the palette command)."""
         btn = self.w.btn_interf
         if on is None:
             on = btn.isChecked()
         if not on:
-            self._interf = None
-            self.vp.ghosts = []
-            self.vp.update()
+            self.close_interference()
+            return
+        if self.interf_panel is not None:
+            return
+        if self.w.mode != "idle":
             btn.setChecked(False)
             return
-        from PySide6.QtWidgets import QProgressDialog, QApplication
-        prog = QProgressDialog("Checking for interference…", None, 0, 0, self.w)
-        prog.setWindowModality(Qt.WindowModal)
-        prog.setMinimumDuration(400)
-
-        def step(n, total):
-            prog.setMaximum(max(total, 1))
-            prog.setValue(n)
-            QApplication.processEvents()
-        try:
-            res = self.doc.interferences(step)
-        finally:
-            prog.close()
-        doc = self.doc
-        if not res:
-            self._interf = None
-            btn.setChecked(False)
-            self.vp.ghosts = []
-            self.vp.update()
-            QMessageBox.information(self.w, "Interference", "No interference — no parts overlap.")
-            return
-        ghosts = []
-        lines = []
-        for a, b, v, ov in res:
-            try:
-                ghosts.append((K.tessellate(ov), (0.92, 0.15, 0.12, 0.55)))
-            except Exception:
-                pass
-            lines.append(f"• {doc.instance(a)['name']}  ×  {doc.instance(b)['name']}:  {fmt(v, 2)} mm³")
-        self._interf = ghosts
+        from .interference_ui import AssemblyHost, InterferencePanel
+        self.interf_panel = InterferencePanel(AssemblyHost(self))
+        self.interf_panel.closed.connect(self.close_interference)
         btn.setChecked(True)
-        self.vp.ghosts = ghosts
-        self.vp.update()
-        self.w.status.showMessage(f"{len(res)} interference(s) found — shown in red. Click the button again "
-                                  "to clear.", 8000)
-        QMessageBox.information(self.w, "Interference", f"{len(res)} pair(s) of parts overlap "
-                                "(shown in red):\n\n" + "\n".join(lines[:30]))
+
+    def close_interference(self):
+        p, self.interf_panel = self.interf_panel, None
+        if p is not None:
+            p.shutdown()
+            p.hide()
+            p.deleteLater()
+        if hasattr(self.w, "btn_interf"):
+            self.w.btn_interf.setChecked(False)
 
     def show_bom(self):
         if not self.doc.instances:
@@ -3379,9 +3368,9 @@ class AssemblyController:
         if self.animate_dialog is not None:
             self.animate_dialog.reject()
         self.close_insert()
+        self.close_interference()
         self._drag = None
         self.vp.triads = []
-        self.vp.ghosts = []
-        self._interf = None
+        self._drop_interf()
         if hasattr(self.w, "btn_interf"):
             self.w.btn_interf.setChecked(False)

@@ -212,6 +212,8 @@ class TabOutputs:
 @dataclass
 class StudioOutputs(TabOutputs):
     parts: list = field(default_factory=list)          # [PartOut], in the studio's part order
+    context: list = field(default_factory=list)        # [PartOut] of the Context bodies (reference parts), for the
+    #                                                    window only; never in `parts`, so no consumer takes them as the studio's
     sketches: list = field(default_factory=list)       # [SketchOut]
     connectors: list = field(default_factory=list)     # [MateConnectorOut], in feature order
     variables: dict = field(default_factory=dict)      # name -> number
@@ -220,6 +222,7 @@ class StudioOutputs(TabOutputs):
     # that rebuilt these itself from the finished parts would lose any whose face a later feature changed.
     planes: dict = field(default_factory=dict)
     axes: dict = field(default_factory=dict)
+    error_refs: dict = field(default_factory=dict)     # failed feature id -> [reference dicts] to where it failed
 
 
 @dataclass

@@ -2,10 +2,12 @@
 import copy
 import os
 import sys
+import types
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 from PySide6.QtCore import QSettings  # noqa: E402
 from PySide6.QtGui import QAction  # noqa: E402
@@ -19,8 +21,17 @@ from freeshape.ui import panels as P  # noqa: E402
 from tests.test_assembly import face, mate  # noqa: E402
 
 
-@pytest.fixture
-def rig(tmp_path, monkeypatch):
+def _at(x, y, z):
+    T = np.eye(4)
+    T[:3, 3] = (x, y, z)
+    return T
+
+
+def make_rig(tmp_path, monkeypatch):
+    """A window on a Document with a Plate studio (the part edited in context), a Pin studio and a Cap studio,
+    and an Assembly of the Plate and three neighbours: Pin A fastened on top of the plate, a second instance
+    Pin B of the same Pin part, and Cap C. Returns a namespace of the window, the tabs, the instance ids
+    (`ip`, `ia`, `ib`, `ic`) and the mate `m`."""
     app = QApplication.instance() or QApplication([])
     monkeypatch.setenv("FREESHAPE_DATA_DIR", str(tmp_path / "appdata"))
     monkeypatch.setattr(MW.MainWindow, "autosave_root", staticmethod(lambda: str(tmp_path / "autosave")))
@@ -40,25 +51,35 @@ def rig(tmp_path, monkeypatch):
     plate.doc.__dict__.update(block_doc(40, 20, 10).__dict__)
     pin = fd.add_tab("studio", "Pin")
     pin.doc.__dict__.update(block_doc(10, 10, 10).__dict__)
-    fd._attach(plate)
-    fd._attach(pin)
+    cap = fd.add_tab("studio", "Cap")
+    cap.doc.__dict__.update(block_doc(6, 6, 4).__dict__)
+    for t in (plate, pin, cap):
+        fd._attach(t)
     asm = fd.add_tab("assembly", "Asm")
     a = asm.doc
     ip = a.insert(L.studio_source(plate, f"{plate.doc.features[1]['id']}/1"), name="Plate")
-    ipin = a.insert(L.studio_source(pin, f"{pin.doc.features[1]['id']}/1"), name="Pin")
+    ia = a.insert(L.studio_source(pin, f"{pin.doc.features[1]['id']}/1"), name="Pin A")
+    ib = a.insert(L.studio_source(pin, f"{pin.doc.features[1]['id']}/1"), T=_at(0, 0, 40), name="Pin B")
+    ic = a.insert(L.studio_source(cap, f"{cap.doc.features[1]['id']}/1"), T=_at(30, 0, 60), name="Cap C")
     a.refresh(solve=False, notify=False)
     top = a.connector(ip, "face", face(a, ip, lambda f: f.get("n") and f["n"][2] > 0.9))
-    pb = a.connector(ipin, "face", face(a, ipin, lambda f: f.get("n") and f["n"][2] < -0.9))
+    pb = a.connector(ia, "face", face(a, ia, lambda f: f.get("n") and f["n"][2] < -0.9))
     m = mate(a, "fastened", top, pb)
-    for t in (pin, asm):
+    for t in (pin, cap, asm):
         w._add_tab(t.doc)
     app.processEvents()
     assert w.doc is asm.doc
     w.asm.selected_instance_ids = lambda: [w._sel]
     w._sel = ip
-    yield w, fd, plate, pin, asm, ip, ipin, m
-    w.folder = None
-    w.deleteLater()
+    return types.SimpleNamespace(w=w, fd=fd, plate=plate, pin=pin, cap=cap, asm=asm, ip=ip, ia=ia, ib=ib, ic=ic, m=m)
+
+
+@pytest.fixture
+def rig(tmp_path, monkeypatch):
+    r = make_rig(tmp_path, monkeypatch)
+    yield r.w, r.fd, r.plate, r.pin, r.asm, r.ip, r.ia, r.m
+    r.w.folder = None
+    r.w.deleteLater()
 
 
 def _contexts(studio):
@@ -113,11 +134,11 @@ def test_row_status_and_update_context(rig):
 def test_viewport_marks_context_body_as_reference(rig):
     w, fd, plate, pin, asm, ip, *_ = rig
     _trigger(w)
-    ref_id = f"{_contexts(plate.doc)[0]['id']}/1"
-    assert ref_id in w.viewport.reference_ids
-    assert any(pid == ref_id for pid, _m, _c in w.viewport.parts)       # still in the scene, so pickable
+    fid = _contexts(plate.doc)[0]["id"]
+    ref_ids = {f"{fid}/{i['id']}" for i in asm.doc.instances if i["id"] != ip}     # <fid>/<instance id> (I6.1)
+    assert len(ref_ids) == 3 and ref_ids == w.viewport.reference_ids
+    assert ref_ids <= {pid for pid, _m, _c in w.viewport.parts}          # still in the scene, so pickable
     assert w.viewport._batch["nsolid"] < w.viewport._batch["ntri"]       # drawn in the translucent pass
-    assert not (w.viewport.reference_ids - {ref_id})
 
 
 def test_refused_for_another_document(rig):

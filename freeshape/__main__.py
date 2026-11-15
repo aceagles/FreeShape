@@ -59,7 +59,7 @@ def _self_test(out_path):
         from PySide6 import QtOpenGLWidgets, QtSvg  # noqa: F401
         from OpenGL import GL  # noqa: F401
         from freeshape.ui import mainwindow, splash, drawing_ui  # noqa: F401
-        from freeshape import drawing, dxf, hlr_worker, sheetmetal  # noqa: F401
+        from freeshape import drawing, dxf, hlr_worker, interference_worker, sheetmetal  # noqa: F401
         assets = os.path.join(os.path.dirname(os.path.abspath(K.__file__)), "assets", "freeshape.ico")
         ok = abs(K.volume(box) - 6000) < 1e-6 and len(m.tris) > 0 and os.path.exists(assets)
         msg = "OK" if ok else "FAILED: wrong result"
@@ -141,6 +141,10 @@ def main():
     if len(sys.argv) >= 6 and sys.argv[1] == "--hlr-worker":
         from .hlr_worker import run as hlr_run
         hlr_run(*sys.argv[2:6])
+        return
+    if len(sys.argv) >= 3 and sys.argv[1] == "--interference-worker":
+        from .interference_worker import run as interference_run
+        interference_run(sys.argv[2])
         return
     if len(sys.argv) >= 3 and sys.argv[1] == "--self-test":
         sys.exit(_self_test(sys.argv[2]))

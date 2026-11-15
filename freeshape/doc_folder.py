@@ -173,11 +173,12 @@ class FolderDocument:
 
     def update_context(self, tab_id, fid):
         """Recapture Context feature `fid` of studio tab `tab_id` from its Assembly tab (see
-        document.update_context). Raises KernelError when the Assembly tab or instance is missing."""
+        document.update_context). Raises KernelError when the Assembly tab or instance is missing. Returns the
+        map of body ids an old Context's conversion renamed ({} when none)."""
         from .document import update_context
         self._check_writable()
         doc, asm = self._context_assembly(tab_id, fid)
-        update_context(doc, fid, asm)
+        return update_context(doc, fid, asm)
 
     def refresh_links(self):
         """Re-read every studio's, assembly's and drawing's links against the current tabs."""

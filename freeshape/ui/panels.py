@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QMenu, QHBoxLayout, QToolButton, QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 
+from .. import kernel as K
+from .. import features as F
 from .icons import icon
 from . import theme, pyfeature_ui
 
@@ -286,7 +288,7 @@ class FeatureList(_EyeMixin, QListWidget):
             prev_folder = fo
             if not (name_hit or folder_hit):
                 continue
-            it = QListWidgetItem(icon(f["type"]), f["name"])
+            it = QListWidgetItem(icon(F.door_kind(f)), f["name"])
             it.setData(ROLE_KIND, "feature")
             it.setData(ROLE_ID, f["id"])
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
@@ -509,7 +511,7 @@ class PartsList(_EyeMixin, QListWidget):
         self.setIconSize(QSize(14, 14))
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._ctx)
-        self.itemClicked.connect(lambda it: self.partClicked.emit(it.data(ROLE_ID), False))
+        self.itemClicked.connect(lambda it: it.data(ROLE_ID) and self.partClicked.emit(it.data(ROLE_ID), False))
         self._eye_setup()
 
     def mousePressEvent(self, e):
@@ -528,18 +530,56 @@ class PartsList(_EyeMixin, QListWidget):
         super().leaveEvent(e)
         self._eye_leave()
 
+    @staticmethod
+    def is_surface_part(p):
+        """A surface part: faces and no solid. A Context body is never listed as one (it keeps its marking under
+        Parts, whatever its shape)."""
+        return not p.reference and K.is_surface(p.shape)
+
+    def _header(self, text):
+        """A group header row: no part id, no eye, not selectable."""
+        it = QListWidgetItem(text)
+        it.setFlags(Qt.ItemIsEnabled)
+        f = it.font()
+        f.setBold(True)
+        it.setFont(f)
+        it.setForeground(QColor("#6b7280"))
+        it.setData(ROLE_KIND, "header")
+        self.addItem(it)
+
     def populate(self, doc):
         self.blockSignals(True)
         self.clear()
-        for p in doc.state.parts.values():
+        parts = list(doc.state.parts.values())
+        surfaces = [p for p in parts if self.is_surface_part(p)]
+        solids = [p for p in parts if not self.is_surface_part(p)]
+        for title, group in (("Parts", solids), ("Surfaces", surfaces)):
+            if not group:
+                continue
+            self._header(f"{title} ({len(group)})")
+            self._add_parts(doc, group)
+        self.blockSignals(False)
+
+    def _add_parts(self, doc, group):
+        for p in group:
             it = QListWidgetItem(swatch(p.color), p.name)
             it.setData(ROLE_ID, p.id)
             it.setData(ROLE_EYE, "hidden" if p.id in doc.hidden_parts else "shown")
             if p.id in doc.hidden_parts:
                 it.setForeground(QColor("#9aa3ae"))
                 it.setToolTip("Hidden")
+            if p.reference:             # a Context body: italic, named after its Context
+                cf = doc.feature(p.id.split("/")[0]) or {}
+                f = it.font()
+                f.setItalic(True)
+                it.setFont(f)
+                it.setToolTip(f"Context body of {cf.get('name', 'its Context')}"
+                              + (": hidden" if p.id in doc.hidden_parts else ""))
+                if cf.get("id") in doc.hidden_features:
+                    it.setData(ROLE_EYE, "hidden")
+                    it.setForeground(QColor("#9aa3ae"))
+                    it.setToolTip(it.toolTip() + ": the whole Context is hidden")
             self.addItem(it)
-        self.blockSignals(False)
 
     def _ctx(self, pos):
         it = self.itemAt(pos)

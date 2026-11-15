@@ -25,9 +25,9 @@ from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCP.GCPnts import GCPnts_QuasiUniformDeflection, GCPnts_TangentialDeflection
 from OCP.GC import GC_MakeArcOfCircle
 from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Line, GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_C1, GeomAbs_Cone, GeomAbs_Torus
-from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_SOLID, TopAbs_REVERSED, TopAbs_VERTEX
+from OCP.TopAbs import TopAbs_FACE, TopAbs_EDGE, TopAbs_SOLID, TopAbs_REVERSED, TopAbs_VERTEX, TopAbs_WIRE
 from OCP.TopExp import TopExp_Explorer, TopExp
-from OCP.TopoDS import TopoDS, TopoDS_Compound
+from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shell
 try:
     from OCP.TopTools import TopTools_ListOfShape, TopTools_IndexedMapOfShape
 except ImportError:  # OCP >= 8 exposes NCollection templates directly
@@ -150,6 +150,55 @@ def solids(shape):
         out.append(_as_solid(exp.Current()))
         exp.Next()
     return out
+
+
+def _loose(shape, what, inside):
+    """Sub-shapes of kind `what` that lie outside every shape of kind `inside`."""
+    out = []
+    exp = TopExp_Explorer(shape, what, inside)
+    while exp.More():
+        out.append(exp.Current())
+        exp.Next()
+    return out
+
+
+def bodies(shape):
+    """The bodies of a shape: its solids, then each shell outside a solid, then each face outside a shell
+    wrapped in a shell of its own. A body with no solid is a surface body (`is_surface`)."""
+    from OCP.TopAbs import TopAbs_SHELL
+    out = list(solids(shape))
+    out += [_as_shell(s) for s in _loose(shape, TopAbs_SHELL, TopAbs_SOLID)]
+    for f in _loose(shape, TopAbs_FACE, TopAbs_SHELL):
+        b = BRep_Builder()
+        sh = TopoDS_Shell()
+        b.MakeShell(sh)
+        b.Add(sh, f)
+        out.append(sh)
+    return out
+
+
+def is_surface(shape) -> bool:
+    """True for a shape that has faces and no solid: a surface body."""
+    return not solids(shape) and bool(faces(shape))
+
+
+def as_surface(shapes, tol=1e-6):
+    """Sew faces / shells into surface bodies: one shell per connected set of faces (a list of shells)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    sew = BRepBuilderAPI_Sewing(tol)
+    for s in shapes:
+        sew.Add(s)
+    sew.Perform()
+    return bodies(sew.SewedShape())
+
+
+def _solids_only(shape):
+    """`shape` itself, or a compound of just its solids when a shell or face outside them would add to its
+    volume integrals."""
+    from OCP.TopAbs import TopAbs_SHELL
+    if _loose(shape, TopAbs_SHELL, TopAbs_SOLID) or _loose(shape, TopAbs_FACE, TopAbs_SHELL):
+        return compound(solids(shape))
+    return shape
 
 
 def compound(shapes):
@@ -390,6 +439,9 @@ def volume(shape) -> float:
     surfaces such as threads where the quick method can be badly wrong. Free-form (e.g. thread)
     surfaces use a relative accuracy of 1e-4 — still 4+ significant figures — because the full
     accuracy is slow there. Results are cached per shape."""
+    if not solids(shape):
+        return 0.0                  # a surface body (or any shape with no solid) encloses no volume
+    shape = _solids_only(shape)
     key = hash(shape)
     hit = _VOLUME_CACHE.get(key)
     if hit is not None and hit[0].IsSame(shape) and hit[0].IsEqual(shape):
@@ -411,6 +463,11 @@ def rough_volume(shape) -> float:
 
 
 def mass_props(shape):
+    if not solids(shape):           # a surface body: no volume; the centroid is the area centroid
+        sa = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(shape, sa)
+        return {"volume": 0.0, "area": sa.Mass(), "centroid": _np(sa.CentreOfMass())}
+    shape = _solids_only(shape)
     g = GProp_GProps()
     # CGFlag: the adaptive integrator only computes the centre of mass when asked to
     BRepGProp.VolumePropertiesGK_s(_gk_shape(shape), g, 1e-4 if _has_freeform(shape) else 1e-6, False, False, True)
@@ -568,6 +625,16 @@ def surface_point_normal(face, pt=None):
 def vertex_points(shape):
     """Positions of a shape's vertices, in the same order the viewport numbers them."""
     return _vertices_np(shape)
+
+
+def make_vertex(pos):
+    """A vertex shape at `pos` (a point profile of a loft)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    return BRepBuilderAPI_MakeVertex(gp_Pnt(*[float(x) for x in pos])).Vertex()
+
+
+def is_vertex(shape):
+    return shape.ShapeType() == TopAbs_VERTEX
 
 
 def planar_face_plane(face) -> Plane | None:
@@ -933,12 +1000,21 @@ def _vertices_np(shape):
 
 # --------------------------------------------------------------------------- solid features
 
-def _swept(sweeps, with_history):
+def _swept(sweeps, with_history, surface=False):
     """The fused sweeps, one per profile, and (with_history) their history, starting at the profile
     faces the caller passed in: the placement that moved a profile, then its sweep, then fuse_all.
 
-    `sweeps` is one (maker, swept shape, profile face, placement maker or None) per profile."""
+    `sweeps` is one (maker, swept shape, profile face, placement maker or None) per profile.
+    With `surface` the profiles are wires and each sweep is a shell of its own: the shells are returned as
+    they are (one shell, or a compound of them), not fused and not sewn, so each keeps its history."""
     results = [mk.Shape() for mk, _, _, _ in sweeps]
+    if surface:
+        shape = results[0] if len(results) == 1 else compound(results)
+        if not with_history:
+            return shape
+        return shape, _chain(*[_chain(None if place is None else _maker_history(place, [f]),
+                                      _maker_history(mk, [start], caps=True))
+                               for mk, start, f, place in sweeps])
     if not with_history:
         return fuse_all(results)
     per_profile = [_chain(None if place is None else _maker_history(place, [f]),
@@ -950,8 +1026,13 @@ def _swept(sweeps, with_history):
 
 def extrude(profile_faces, direction: np.ndarray, depth: float, symmetric=False, depth2: float = 0.0,
             with_history=False):
+    """Extrude profile faces into a solid, or profile wires (open or closed) into a surface body: a prism of
+    a wire is a shell with one face per edge. Faces and wires are not mixed."""
     if not profile_faces:
         raise KernelError("Select sketch regions or a planar face to extrude")
+    surface = any(f.ShapeType() == TopAbs_WIRE for f in profile_faces)
+    if surface and not all(f.ShapeType() == TopAbs_WIRE for f in profile_faces):
+        raise KernelError("Extrude takes faces or curves, not both")
     if abs(depth) < 1e-9 and abs(depth2) < 1e-9:
         raise KernelError("Depth must be non-zero")
     d = np.asarray(direction, float)
@@ -973,12 +1054,17 @@ def extrude(profile_faces, direction: np.ndarray, depth: float, symmetric=False,
         if not mk.IsDone():
             raise KernelError("Extrude failed")
         sweeps.append((mk, start, f, place))
-    return _swept(sweeps, with_history)
+    return _swept(sweeps, with_history, surface)
 
 
 def revolve(profile_faces, axis_p, axis_d, angle_deg: float, symmetric=False, with_history=False):
+    """Revolve profile faces into a solid, or profile wires (open or closed) into a surface body: a revolved
+    wire is a shell with one face per edge. Faces and wires are not mixed."""
     if not profile_faces:
         raise KernelError("Select sketch regions to revolve")
+    surface = any(f.ShapeType() == TopAbs_WIRE for f in profile_faces)
+    if surface and not all(f.ShapeType() == TopAbs_WIRE for f in profile_faces):
+        raise KernelError("Revolve takes faces or curves, not both")
     ax = gp_Ax1(_pnt(axis_p), _dir(axis_d))
     sweeps = []
     ang = math.radians(angle_deg)
@@ -994,7 +1080,7 @@ def revolve(profile_faces, axis_p, axis_d, angle_deg: float, symmetric=False, wi
         if not mk.IsDone():
             raise KernelError("Revolve failed (does the profile cross the axis?)")
         sweeps.append((mk, start, f, place))
-    return _swept(sweeps, with_history)
+    return _swept(sweeps, with_history, surface)
 
 
 def _placed(shape, t: gp_Trsf):
@@ -1333,8 +1419,10 @@ def edge_faces(shape, edge):
     return out
 
 
-def _try_blend(make, shape, edge_list, size, with_history=False, two=None):
+def _try_blend(make, shape, edge_list, size, with_history=False, two=None, why=None):
     """The blended shape, or None. with_history=True returns (shape, history of this maker) or None.
+    `why`, a dict, is filled on a failure: "cause" is "exception" (Build raised; "exc" holds it), "not_done"
+    (IsDone() false) or "rejected" (_blend_ok refused the result), and "maker" is the maker, for _diagnose_blend.
     `two` is (kind, second, faces) for a chamfer with two distances ("two": second is the other
     distance) or a distance and an angle ("angle": second is the angle in radians); faces[i] is the
     face of edge_list[i] on which `size` is measured."""
@@ -1346,14 +1434,23 @@ def _try_blend(make, shape, edge_list, size, with_history=False, two=None):
             mk.Add(float(size), float(two[1]), e, _as_face(two[2][i]))
         else:
             mk.AddDA(float(size), float(two[1]), e, _as_face(two[2][i]))
+    if why is not None:
+        why.clear()
+        why["maker"] = mk
     try:
         mk.Build()
-    except Exception:
+    except Exception as exc:
+        if why is not None:
+            why.update(cause="exception", exc=exc)
         return None
     if not mk.IsDone():
+        if why is not None:
+            why["cause"] = "not_done"
         return None
     out = mk.Shape()
     if not _blend_ok(shape, out):
+        if why is not None:
+            why["cause"] = "rejected"
         return None
     return (out, _maker_history(mk, [shape])) if with_history else out
 
@@ -1387,12 +1484,276 @@ def fillet(shape, edge_list, radius: float, with_history=False):
         raise KernelError("Select edges to fillet")
     if radius <= 0:
         raise KernelError("Radius must be positive")
-    out = _try_blend(BRepFilletAPI_MakeFillet, shape, edge_list, radius, with_history)
+    why = {}
+    out = _try_blend(BRepFilletAPI_MakeFillet, shape, edge_list, radius, with_history, why=why)
     if out is None:
         best = _largest_blend(BRepFilletAPI_MakeFillet, shape, edge_list, radius)
         hint = f" — the largest that works here is about {_nice_down(best):g} mm" if best else ""
-        raise KernelError(f"Fillet radius too large for these edges (the rounds would overlap or not fit){hint}")
+        raise _fillet_failure(shape, edge_list, why, best is not None, hint)
     return out
+
+
+def fillet_prechecks(shape, edge_list):
+    """Checks before the kernel runs. Returns (edges to fillet, [warning text]); raises KernelError (with
+    `failed_edges`) when nothing is left to fillet. An edge with fewer than two distinct faces (a seam, where a
+    surface closes on itself, or an open edge) and an edge that is already smooth (continuity above C0) are
+    dropped with a warning when other edges remain: OpenCascade ignores a seam among other edges today, and a face
+    pick selects its seam too. A corner where four or more edges meet is only a warning here; the build decides
+    (and says so if it fails). A check never rejects a selection that builds today."""
+    from OCP.GeomAbs import GeomAbs_C0
+    one_face, smooth = [], []
+    for e in edge_list:
+        fs = edge_faces(shape, e)
+        if len(fs) < 2:
+            one_face.append(e)
+            continue
+        try:
+            if BRep_Tool.Continuity_s(e, _as_face(fs[0]), _as_face(fs[1])) != GeomAbs_C0:
+                smooth.append(e)
+        except Exception:
+            pass
+    keep = [e for e in edge_list if not any(e.IsSame(o) for o in one_face + smooth)]
+    warnings = []
+    for e in one_face:
+        warnings.append(f"{_edge_text(e)} is a seam or an open edge with only one face; it was left out")
+    for e in smooth:
+        warnings.append(f"{_edge_text(e)} is already smooth (it joins its faces tangentially); it was left out")
+    if not keep:
+        if one_face:
+            others = []
+            for e in one_face:
+                for f in edge_faces(shape, e):
+                    for o in edges(f):
+                        if len(edge_faces(shape, o)) >= 2 and not any(o.IsSame(x) for x in others):
+                            others.append(o)
+            msg = (f"{_edge_text(one_face[0])} is a seam or an open edge: it has only one face, so there is no "
+                   f"corner to round")
+            if others:
+                msg += ". The edges next to it that can be rounded are " + "; ".join(_edge_text(o) for o in others[:4])
+        else:
+            msg = f"{_edge_text(smooth[0])} is already smooth: there is no sharp edge to round"
+        err = KernelError(msg)
+        err.failed_edges, err.failed_vertices = list(one_face + smooth), []
+        raise err
+    try:
+        for corner in _crowded_corners(shape, keep):
+            warnings.append(_corner_text(corner))
+    except Exception:
+        pass
+    return keep, warnings
+
+
+def _edge_text(e):
+    """'the edge from (x, y, z) to (x, y, z)', or 'the curved edge near (x, y, z)' for one that is not a line."""
+    try:
+        info = edge_info(e)
+        if info["type"] == int(GeomAbs_Line):
+            a, b = _vertex_xyz(TopExp.FirstVertex_s(e)), _vertex_xyz(TopExp.LastVertex_s(e))
+            return "the edge from ({:.3f}, {:.3f}, {:.3f}) to ({:.3f}, {:.3f}, {:.3f})".format(*a, *b)
+        return "the curved edge near ({:.3f}, {:.3f}, {:.3f})".format(*info["c"])
+    except Exception:
+        return "an edge"
+
+
+# what OpenCascade's per-contour status means for a person (ChFiDS_ErrorStatus)
+def _status_text(status):
+    from OCP.ChFiDS import ChFiDS_StartsolFailure, ChFiDS_TwistedSurface, ChFiDS_WalkingFailure
+    if status == ChFiDS_StartsolFailure:
+        return "the radius does not fit at the start of this edge"
+    if status == ChFiDS_TwistedSurface:
+        return "the round would fold over itself here - the radius is larger than the curve of the neighbouring face"
+    if status == ChFiDS_WalkingFailure:
+        return "the round could not be followed along this edge"
+    return "OpenCascade could not build the round along this edge"
+
+
+def _diagnose_blend(mk):
+    """What a failed MakeFillet says about where and why: {"reasons": [text], "edges": [edge shapes],
+    "vertices": [xyz], "has_result": bool or None}. Reads only the inspection methods the I8.1 spike found callable
+    on both OCP builds. Runs after a failure only, and never raises: whatever cannot be read is left out."""
+    out = {"reasons": [], "edges": [], "vertices": [], "has_result": None}
+    try:
+        out["has_result"] = bool(mk.HasResult())
+    except Exception:
+        pass
+    try:
+        nc = mk.NbContours()
+        for i in range(1, mk.NbFaultyContours() + 1):
+            ic = mk.FaultyContour(i)
+            if not 1 <= ic <= nc:                  # OpenCascade would dereference a missing spine
+                continue
+            es = [mk.Edge(ic, j) for j in range(1, mk.NbEdges(ic) + 1)]
+            out["edges"] += es
+            where = " and ".join(_edge_text(e) for e in es[:3]) + (" ..." if len(es) > 3 else "")
+            out["reasons"].append(f"{where}: {_status_text(mk.StripeStatus(ic))}")
+    except Exception:
+        pass
+    try:
+        for i in range(1, mk.NbFaultyVertices() + 1):
+            xyz = tuple(float(x) for x in _vertex_xyz(mk.FaultyVertex(i)))
+            out["vertices"].append(xyz)
+            out["reasons"].append("the rounds could not be joined at this corner ({:.3f}, {:.3f}, {:.3f})".format(*xyz))
+    except Exception:
+        pass
+    return out
+
+
+def _crowded_corners(shape, edge_list):
+    """[(xyz, edges at it, selected edges at it)] for every vertex where four or more edges meet and a selected
+    edge ends or branches (not exactly two selected edges passing through). OpenCascade does not handle a round
+    contour that ends at such a corner (the header of BRepFilletAPI_MakeFillet.Build)."""
+    m = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_VERTEX, TopAbs_EDGE, m)
+    out, seen = [], []
+    for e in edge_list:
+        for v in (TopExp.FirstVertex_s(e), TopExp.LastVertex_s(e)):
+            if v.IsNull() or any(v.IsSame(o) for o in seen) or not m.Contains(v):
+                continue
+            seen.append(v)
+            at = []
+            for x in m.FindFromKey(v):
+                if not any(x.IsSame(o) for o in at) and not BRep_Tool.Degenerated_s(_as_edge(x)):
+                    at.append(x)
+            sel = [x for x in at if any(x.IsSame(o) for o in edge_list)]
+            if len(at) >= 4 and sel and len(sel) != 2:
+                out.append((tuple(float(c) for c in _vertex_xyz(v)), [_as_edge(x) for x in at], [_as_edge(x) for x in sel]))
+    return out
+
+
+def _corner_text(corner):
+    xyz, at, sel = corner
+    return ("{} edges meet at the vertex ({:.3f}, {:.3f}, {:.3f}); OpenCascade cannot end a round where four or "
+            "more edges meet".format(len(at), *xyz))
+
+
+def _fillet_failure(shape, edge_list, why, smaller_works, hint):
+    """The KernelError for a failed fillet. "Radius too large" is said only when `smaller_works` (the search found
+    a size that builds, `hint` says which); otherwise the reasons the maker gave are. The error carries the failing
+    edges (`failed_edges`, shapes of the shape that was filleted) and vertices (`failed_vertices`, xyz)."""
+    diag = {"reasons": [], "edges": [], "vertices": []}
+    try:
+        diag = _diagnose_blend(why["maker"]) if why.get("maker") is not None else diag
+    except Exception:
+        pass
+    reasons, fe, fv = list(diag["reasons"]), list(diag["edges"]), list(diag["vertices"])
+    try:
+        for corner in _crowded_corners(shape, edge_list):
+            reasons.append(_corner_text(corner))
+            fv.append(corner[0])
+            fe += [e for e in corner[2] if not any(e.IsSame(o) for o in fe)]
+    except Exception:
+        pass
+    if smaller_works:
+        msg = "Fillet radius too large for these edges (the rounds would overlap or not fit)" + hint
+    else:
+        msg = "Fillet failed on these edges, and no smaller radius works either"
+        if not reasons:
+            cause = why.get("cause")
+            if cause == "exception":
+                reasons.append(f"OpenCascade reported: {why.get('exc')}")
+            elif cause == "rejected":
+                reasons.append("the rounds overlap or fold over each other, so the result is not a valid solid")
+            else:
+                reasons.append("OpenCascade could not build the rounds")
+    if reasons:
+        msg += (". Where: " if smaller_works else ". ") + "; ".join(reasons)
+    err = KernelError(msg)
+    err.failed_edges, err.failed_vertices = fe, fv
+    return err
+
+
+def _contour_vertices(mk, ic):
+    """The distinct vertices of the edges of contour `ic` of a MakeFillet, in contour order."""
+    out = []
+    for j in range(1, mk.NbEdges(ic) + 1):
+        ex = TopExp_Explorer(mk.Edge(ic, j), TopAbs_VERTEX)
+        while ex.More():
+            v = _as_vertex(ex.Current())
+            if not any(v.IsSame(o) for o in out):
+                out.append(v)
+            ex.Next()
+    return out
+
+
+def _vertex_xyz(v):
+    return _np(BRep_Tool.Pnt_s(_as_vertex(v)))
+
+
+def _variable_build(shape, edge_list, default_radius, vertex_radii, scale):
+    """One variable-radius build with every radius times `scale`. Returns (maker, result or None, used)
+    where `used` flags the vertex_radii entries that sit on an end of a contour edge. The route is the
+    one scripts/spikes/op2_fillet.result.txt names: Add(E) per edge, then SetRadius(r, contour, vertex) once
+    per vertex of each contour (ResetContour is not needed). Radii are keyed by vertex, so edge direction
+    does not matter and the vertices of unselected edges a contour pulls in take the default radius."""
+    mk = BRepFilletAPI_MakeFillet(shape)
+    used = [False] * len(vertex_radii)
+    try:
+        for e in edge_list:
+            mk.Add(e)
+        for ic in range(1, mk.NbContours() + 1):
+            for v in _contour_vertices(mk, ic):
+                r = float(default_radius)
+                p = _vertex_xyz(v)
+                for i, (q, rq) in enumerate(vertex_radii):
+                    if float(np.linalg.norm(p - np.asarray(q, float))) < 1e-6:
+                        r, used[i] = float(rq), True
+                mk.SetRadius(r * scale, ic, v)
+        mk.Build()
+    except Exception:
+        return mk, None, used
+    if not mk.IsDone():
+        return mk, None, used
+    out = mk.Shape()
+    return mk, (out if _blend_ok(shape, out) else None), used
+
+
+def _faulty_corner(mk):
+    """A phrase naming the vertex a failed fillet maker blames, or ''."""
+    try:
+        if mk.NbFaultyVertices() > 0:
+            x, y, z = _vertex_xyz(mk.FaultyVertex(1))
+            return f" (it failed at the vertex ({x:.3f}, {y:.3f}, {z:.3f}))"
+    except Exception:
+        pass
+    return ""
+
+
+def fillet_variable(shape, edge_list, default_radius: float, vertex_radii, with_history=False):
+    """A fillet whose radius changes along the edges. `vertex_radii` is a list of (vertex, radius): the
+    vertex is a vertex shape or an xyz position, and the radius applies at that vertex. Every other
+    vertex of a contour (which can include edges that were not selected: tangent edges join in) takes
+    `default_radius`. OpenCascade eases the radius between vertices; there is no linear option.
+    with_history=True returns (shape, history of the maker whose result is used)."""
+    if not edge_list:
+        raise KernelError("Select edges to fillet")
+    if default_radius <= 0:
+        raise KernelError("Radius must be positive")
+    radii = []
+    for v, r in vertex_radii:
+        if r <= 0:
+            raise KernelError("Vertex radii must be positive")
+        radii.append((v if isinstance(v, (tuple, list, np.ndarray)) else _vertex_xyz(v), float(r)))
+    mk, out, used = _variable_build(shape, edge_list, default_radius, radii, 1.0)
+    if out is None:
+        lo, hi = 0.0, 1.0
+        if len(edge_list) <= 24:
+            for _ in range(9):
+                mid = (lo + hi) / 2
+                if _variable_build(shape, edge_list, default_radius, radii, mid)[1] is not None:
+                    lo = mid
+                else:
+                    hi = mid
+        pct = math.floor(lo * 100)
+        hint = f" — the largest that works here is about {pct} percent of these radii" if pct >= 1 else ""
+        why = {"maker": mk, "cause": "not_done" if not mk.IsDone() else "rejected"}
+        raise _fillet_failure(shape, edge_list, why, pct >= 1, hint)
+    for (q, _), ok in zip(radii, used):
+        if not ok:
+            import logging
+            logging.getLogger(__name__).warning(
+                "fillet: the vertex at (%.3f, %.3f, %.3f) is not an end of any filleted edge; its radius is ignored",
+                *[float(x) for x in q])
+    return (out, _maker_history(mk, [shape])) if with_history else out
 
 
 def chamfer(shape, edge_list, dist: float, with_history=False, kind="equal", second=None, faces=None):
@@ -1571,6 +1932,273 @@ def offset_surface(face, distance, with_history=False):
         raise KernelError("Couldn't offset that surface by this distance")
     out = compound(faces)
     return (out, _maker_history(mk, [face])) if with_history else out
+
+
+THICKEN_FAILED = "The thickness is larger than the surface's tightest curve allows"
+
+
+def thicken(shape_or_faces, t1, t2=0.0, with_history=False):
+    """A solid `t1` thick on the outward-normal side of a surface and `t2` thick on the other side (a
+    negative value reverses a side). `shape_or_faces` is one shell/face/compound or a list of faces; several
+    faces must make one connected shell. Returns the solid, or (solid, history) over the input faces.
+    One face or coplanar faces make a prism; anything else goes through BRepOffset_MakeOffset with
+    Thickening (spike I2.1: native, history from the maker)."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffsetShape
+    from OCP.BRepOffset import BRepOffset_MakeOffset, BRepOffset_Skin
+    from OCP.GeomAbs import GeomAbs_Intersection
+    shape = compound(list(shape_or_faces)) if isinstance(shape_or_faces, (list, tuple)) else shape_or_faces
+    fs = faces(shape)
+    if not fs:
+        raise KernelError("Select a surface or a face to thicken")
+    total = float(t1) + float(t2)
+    if abs(total) < 1e-6:
+        raise KernelError("The thickness must be more than zero")
+    planes = [planar_face_plane(f) for f in fs]
+    if len(fs) == 1 and planes[0] is not None:
+        res, hist = extrude([fs[0]], planes[0].normal, float(t1), depth2=float(t2), with_history=True)
+        sol = res
+    else:
+        h_move = None
+        src = shape
+        if abs(t2) > 1e-9:
+            try:
+                mv = BRepOffsetAPI_MakeOffsetShape()
+                mv.PerformByJoin(shape, -float(t2), 1e-6)
+                ok = mv.IsDone()
+            except Exception:
+                ok = False
+            if not ok or not faces(mv.Shape()):
+                raise KernelError(THICKEN_FAILED)
+            src = mv.Shape()
+            h_move = _maker_history(mv, [shape])
+        try:
+            mo = BRepOffset_MakeOffset()
+            mo.Initialize(src, total, 1e-6, BRepOffset_Skin, False, False, GeomAbs_Intersection, True)
+            mo.MakeOffsetShape()          # without this call the maker gives no valid solid
+            ok = mo.IsDone()
+            sol = mo.Shape() if ok else None
+        except Exception:
+            ok, sol = False, None
+        if not ok or sol is None:
+            raise KernelError(THICKEN_FAILED)
+        sol, h_clean = clean(sol, with_history=True)       # walls of coplanar free edges become one face
+        hist = _chain(h_move, _maker_history(mo, [src]), h_clean)
+    ss = solids(sol)
+    if len(ss) != 1 or not is_valid(ss[0]):
+        raise KernelError(THICKEN_FAILED)
+    out = ss[0]
+    v = volume(out)
+    if v < 0:
+        out = out.Reversed()
+        v = -v
+    if v <= 1e-9:
+        raise KernelError(THICKEN_FAILED)
+    return (out, hist) if with_history else out
+
+
+ENCLOSE_FAILED = "The selection does not close a volume"
+
+
+def sew_closed(shapes, tol=1e-6):
+    """Sew faces and shells at `tol` and return a solid for every shell that came out closed (a list, empty
+    when none closes). Closure is checked before BRepLib.OrientClosedSolid, which turns an open shell into
+    an invalid solid without complaint; a solid that comes out inside out is reversed."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
+    from OCP.BRepLib import BRepLib
+    from OCP.TopAbs import TopAbs_SHELL
+    sew = BRepBuilderAPI_Sewing(float(tol))
+    for s in shapes:
+        sew.Add(s)
+    sew.Perform()
+    out = []
+    ex = TopExp_Explorer(sew.SewedShape(), TopAbs_SHELL)
+    while ex.More():
+        shell = _as_shell(ex.Current())
+        ex.Next()
+        if not BRep_Tool.IsClosed_s(shell):
+            continue
+        mk = BRepBuilderAPI_MakeSolid()
+        mk.Add(shell)
+        if not mk.IsDone():
+            continue
+        sol = _as_solid(mk.Shape())
+        BRepLib.OrientClosedSolid_s(sol)
+        if volume(sol) < 0:
+            sol = _as_solid(sol.Reversed())
+        if is_valid(sol) and volume(sol) > 1e-9:
+            out.append(sol)
+    return out
+
+
+def enclose(shapes, with_history=False):
+    """The solids that surfaces surround: a list of solids (one per closed volume), or (solids, history over
+    the input faces). `shapes` are faces, shells and solids (a solid acts as a wall through its shells). They
+    may overhang each other or cross: BOPAlgo_MakerVolume intersects them and keeps the closed cells (spike
+    I2.1: makervolume, with the builder's History())."""
+    from OCP.BOPAlgo import BOPAlgo_MakerVolume
+    from OCP.TopAbs import TopAbs_SHELL
+    args = []
+    for s in shapes:
+        if solids(s):
+            ex = TopExp_Explorer(s, TopAbs_SHELL)
+            while ex.More():
+                args.append(ex.Current())
+                ex.Next()
+        elif faces(s):
+            args.append(s)
+    if not args:
+        raise KernelError(ENCLOSE_FAILED)
+    try:
+        mv = BOPAlgo_MakerVolume()
+        for a in args:
+            mv.AddArgument(a)
+        mv.SetRunParallel(False)
+        mv.SetIntersect(True)
+        mv.SetFuzzyValue(1e-6)
+        mv.SetAvoidInternalShapes(True)
+        mv.Perform()
+        bad = mv.HasErrors()
+        res = None if bad else mv.Shape()
+    except Exception:
+        bad, res = True, None
+    if bad or res is None or res.IsNull() or not solids(res):
+        raise KernelError(ENCLOSE_FAILED)
+    res, h_clean = clean(res, with_history=True)       # the intersection leaves coplanar faces split
+    hist = _chain(_maker_history(mv, args), h_clean)
+    out = []
+    for s in solids(res):
+        if volume(s) < 0:
+            s = _as_solid(s.Reversed())
+        if is_valid(s) and volume(s) > 1e-9:
+            out.append(s)
+    if not out:
+        raise KernelError(ENCLOSE_FAILED)
+    return (out, hist) if with_history else out
+
+
+FILL_GAP = "The boundary has a gap"
+FILL_FAILED = "Could not fill this boundary smoothly - try Position on some edges"
+FILL_TOL = 1e-3          # how far the fill's boundary may sit from an input edge
+# BRepFill_Filling(Degree, NbPtsOnCur, NbIter, Anisotropie, Tol2d, Tol3d, TolAng, TolCurv, MaxDeg, MaxSegments)
+FILL_SETTINGS = (3, 15, 2, False, 1e-5, 1e-4, 1e-2, 1e-1, 8, 9)      # the OCC defaults
+
+
+def boundary_open_ends(edge_list):
+    """The end points of a set of edges that should close into one loop and meet no other end (within the
+    tolerance `make_wire` uses): empty when the loop closes, else usually two points, one at each side of the gap."""
+    ends = []
+    for e in edge_list:
+        p = discretize_edge(e)
+        ends += [p[0].astype(float), p[-1].astype(float)]
+    scale = max([float(np.linalg.norm(a - b)) for a in ends for b in ends] + [1.0])
+    tol = max(1e-4, 1e-6 * scale) * 100
+    return [a for i, a in enumerate(ends)
+            if not any(j != i and np.linalg.norm(a - b) < tol for j, b in enumerate(ends))]
+
+
+def _boundary_gap(edge_list):
+    """The position of a gap in a set of edges that should close into one loop, or None when every end meets
+    another end."""
+    loose = boundary_open_ends(edge_list)
+    if not loose:
+        return None
+    return loose[0] if len(loose) == 1 else (loose[0] + loose[1]) / 2
+
+
+def fill(edges, supports=None, points=(), with_history=False):
+    """A face across a closed boundary. `edges` are the boundary edges in any order; `supports` has one
+    entry per edge, the face the fill should leave the edge tangent to, or None for Position; `points` are
+    guide points the face must pass through. Returns the face, or (face, history) (the face is new, so
+    the history is empty).
+
+    A planar boundary with every edge Position and no guide gets an exact plane (BRepBuilderAPI_MakeFace).
+    Otherwise BRepFill_Filling builds a plate through the edges (spike I2.1: filling=g1). A Tangency edge asks
+    BRepFill_Filling for G1 to its support; the filler treats that as a target, not a guarantee (the spike
+    measured 0.08 to 0.5 rad), so the angle actually reached is `fill_tangent_error`."""
+    from OCP.BRepFill import BRepFill_Filling
+    from OCP.GeomAbs import GeomAbs_C0, GeomAbs_G1
+    edges = list(edges)
+    if not edges:
+        raise KernelError("Select the edges of the boundary")
+    supports = list(supports) if supports is not None else [None] * len(edges)
+    if len(supports) != len(edges):
+        raise KernelError("Each fill edge needs a continuity")
+    gap = _boundary_gap(edges)
+    if gap is not None:
+        raise KernelError(f"{FILL_GAP} near ({gap[0]:.3f}, {gap[1]:.3f}, {gap[2]:.3f})")
+    try:
+        wire = make_wire(edges)
+    except KernelError as exc:
+        raise KernelError(f"The boundary is not one closed loop ({exc})") from exc
+    if not BRep_Tool.IsClosed_s(wire):
+        raise KernelError(FILL_GAP)
+    pts = [np.asarray(p, float) for p in points]
+    if all(s is None for s in supports) and not pts:
+        mk = BRepBuilderAPI_MakeFace(wire, True)           # only a plane: fails for a bent boundary
+        if mk.IsDone():
+            face = _as_face(mk.Face())
+            if is_valid(face):
+                return (face, BRepTools_History()) if with_history else face
+    mids = [discretize_edge(e)[len(discretize_edge(e)) // 2] for e in edges]
+    ordered = []                  # (edge in wire order, its support)
+    for w in _wire_edges(wire):
+        pm = discretize_edge(w)
+        pm = pm[len(pm) // 2]
+        i = min(range(len(edges)), key=lambda k: float(np.linalg.norm(mids[k] - pm)))
+        ordered.append((w, supports[i]))
+    try:
+        mk = BRepFill_Filling(*FILL_SETTINGS)
+        for w, sup in ordered:
+            if sup is None:
+                mk.Add(w, GeomAbs_C0, True)
+            else:
+                mk.Add(w, sup, GeomAbs_G1, True)
+        for p in pts:
+            mk.Add(_pnt(p))
+        mk.Build()
+        done = mk.IsDone()
+        face = _as_face(mk.Face()) if done else None
+    except Exception:
+        done, face = False, None
+    if not done or face is None or not is_valid(face) or fill_deviation(edges, face) > FILL_TOL:
+        raise KernelError(FILL_FAILED)
+    return (face, BRepTools_History()) if with_history else face
+
+
+def fill_deviation(edges, face):
+    """The largest distance from the input `edges` to the boundary of `face` (sampled along each edge)."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepTools import BRepTools
+    outer = BRepTools.OuterWire_s(face)
+    worst = 0.0
+    for e in edges:
+        pts = discretize_edge(e)
+        for p in pts[np.linspace(0, len(pts) - 1, min(len(pts), 12)).astype(int)]:
+            d = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(_pnt(p)).Vertex(), outer)
+            d.Perform()
+            worst = max(worst, d.Value())
+    return worst
+
+
+def fill_tangent_error(face, edges, support, samples=5):
+    """The angle (rad) between the normal of `face` and of `support` at `samples` points along `edges`
+    (normals compared as lines, so a reversed face counts as the same)."""
+    from OCP.BRepGProp import BRepGProp_Face
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+
+    def normal(f, p):
+        pr = GeomAPI_ProjectPointOnSurf(_pnt(p), BRep_Tool.Surface_s(f))
+        u, v = pr.LowerDistanceParameters()
+        pt, n = gp_Pnt(), gp_Vec()
+        BRepGProp_Face(f).Normal(u, v, pt, n)
+        n = _np(n)
+        return n / max(float(np.linalg.norm(n)), 1e-12)
+    pts = np.vstack([discretize_edge(e) for e in edges])
+    worst = 0.0
+    for p in pts[np.linspace(0, len(pts) - 1, samples).astype(int)]:
+        worst = max(worst, math.acos(min(1.0, abs(float(normal(face, p) @ normal(support, p))))))
+    return worst
 
 
 # --------------------------------------------------------------------------- tessellation
@@ -1988,22 +2616,288 @@ def make_wire(edge_list):
     return mk.Wire()
 
 
+def chain_wires(edge_list):
+    """One wire per connected chain of `edge_list` (edges that meet end to end), in the order the chains first
+    appear. A chain that branches raises, as `make_wire` does."""
+    ends = []
+    for e in edge_list:
+        p = discretize_edge(e)
+        ends.append((p[0].astype(float), p[-1].astype(float)))
+    scale = max([float(np.linalg.norm(b - a)) for a, b in ends] + [1.0])
+    tol = max(1e-4, 1e-6 * scale) * 100
+    group = list(range(len(edge_list)))
+
+    def root(i):
+        while group[i] != i:
+            i = group[i]
+        return i
+    for i in range(len(edge_list)):
+        for j in range(i):
+            if any(np.linalg.norm(a - b) < tol for a in ends[i] for b in ends[j]):
+                group[root(i)] = root(j)
+    chains = {}
+    for i, e in enumerate(edge_list):
+        chains.setdefault(root(i), []).append(e)
+    return [make_wire(c) for c in chains.values()]
+
+
+THIN_TOO_THICK = "The thickness is larger than this shape allows"
+
+
+def _travel_chain(wire):
+    """[[edge, points]] of `wire` in travel order, each edge's points running along the travel. The travel
+    starts at the free end of an open wire; which way a closed wire runs is the first edge's."""
+    from OCP.BRepTools import BRepTools_WireExplorer
+    items = []
+    ex = BRepTools_WireExplorer(wire)
+    while ex.More():
+        e = ex.Current()
+        items.append([e, discretize_edge(e).astype(float)])
+        ex.Next()
+    if not items or any(len(pts) < 2 for _, pts in items):
+        raise KernelError("The curve has no edges to make thin")
+    if len(items) == 1:
+        if items[0][0].Orientation() == TopAbs_REVERSED:
+            items[0][1] = items[0][1][::-1]
+        return items
+    a, b = items[0][1], items[1][1]
+    near = lambda p, q: min(np.linalg.norm(p - q[0]), np.linalg.norm(p - q[-1]))
+    if near(a[0], b) < near(a[-1], b):
+        items[0][1] = a[::-1]
+    for i in range(1, len(items)):
+        prev, pts = items[i - 1][1][-1], items[i][1]
+        if np.linalg.norm(prev - pts[0]) > np.linalg.norm(prev - pts[-1]):
+            items[i][1] = pts[::-1]
+    return items
+
+
+def _flat(plane, pts):
+    d = np.asarray(pts, float) - plane.origin
+    return np.stack([d @ plane.xdir, d @ plane.ydir], axis=1)
+
+
+def _signed_area(uv):
+    x, y = uv[:, 0], uv[:, 1]
+    return 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y))
+
+
+def _side_of(uv, q):
+    """+1 when the 2-D point q is right of the polyline `uv` (looking along it), -1 when left."""
+    best, side = 1e300, 0.0
+    for a, b in zip(uv[:-1], uv[1:]):
+        ab = b - a
+        L2 = float(ab @ ab)
+        if L2 < 1e-18:
+            continue
+        t = min(1.0, max(0.0, float((q - a) @ ab) / L2))
+        d = float(np.linalg.norm(q - (a + t * ab)))
+        if d < best - 1e-12:
+            best, side = d, ab[0] * (q[1] - a[1]) - ab[1] * (q[0] - a[0])
+    return 1 if side < 0 else -1
+
+
+def _offset_one_side(plane, wire, chain, uv, closed, right, dist):
+    """`wire` offset by `dist` towards its right (looking along the travel, `right` True) or left, with
+    sharp corners: (offset wire, the offset's history). The history maps each edge of `wire` to its image.
+
+    BRepOffsetAPI_MakeOffset(wire, GeomAbs_Intersection) takes its sign from a plane it finds from the wire
+    itself, so which side +d is on is not known in advance. A probe with a distance too small to harm
+    finds out, so the real offset only ever goes to the side the circle check below has cleared (OCC
+    crashes when an offset reaches past a circle's centre). A straight chain on one line has no plane
+    for OCC to find, and a lone line crashes it, so that case is a plain move."""
+    from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeOffset
+    from OCP.GeomAbs import GeomAbs_Intersection
+    n = plane.normal
+    straight = all(BRepAdaptor_Curve(e).GetType() == GeomAbs_Line for e, _ in chain)
+    pts = np.vstack([c[1] for c in chain])
+    if straight and not closed:
+        u = pts[-1] - pts[0]
+        u = u / np.linalg.norm(u)
+        if float(np.max(np.linalg.norm(np.cross(pts - pts[0], u), axis=1))) < 1e-7:
+            t = _trsf_translate((-np.cross(n, u) if right else np.cross(n, u)) * dist)    # left of u is n x u
+            moved, mk = _placed(wire, t)
+            return _as_wire(moved), _maker_history(mk, [wire])
+    radii = []
+    for e, ep in chain:
+        ad = BRepAdaptor_Curve(e)
+        if ad.GetType() != GeomAbs_Circle:
+            continue
+        r = ad.Circle().Radius()
+        radii.append(r)
+        m = min(len(ep) // 2, len(ep) - 2)
+        a2, b2 = _flat(plane, ep[m:m + 2])
+        c2 = _flat(plane, _np(ad.Circle().Location())[None, :])[0]
+        centre_right = (b2[0] - a2[0]) * (c2[1] - a2[1]) - (b2[1] - a2[1]) * (c2[0] - a2[0]) < 0
+        if centre_right == right and dist >= r - 1e-9:
+            raise KernelError(THIN_TOO_THICK)
+    probe_d = min(dist, 1e-3 * max(1e-3, min(radii + [float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))])))
+
+    def make(sign, d):
+        mk = BRepOffsetAPI_MakeOffset(wire, GeomAbs_Intersection, not closed)
+        mk.Perform(sign * d)
+        res = mk.Shape()
+        ws = _sub_shapes(res, TopAbs_WIRE) if res.ShapeType() != TopAbs_WIRE else [res]
+        if not ws and res.ShapeType() == TopAbs_EDGE:
+            ws = [BRepBuilderAPI_MakeWire(_as_edge(res)).Wire()]
+        return mk, ws
+
+    def side(ws):
+        if len(ws) != 1:
+            return None
+        ruv = _flat(plane, np.vstack([c[1] for c in _travel_chain(_as_wire(ws[0]))]))
+        if closed:                     # outside is the bigger loop
+            return (1 if abs(_signed_area(ruv)) > abs(_signed_area(uv)) else -1) * (1 if _signed_area(uv) > 0 else -1)
+        return _side_of(uv, ruv[0])
+    try:
+        mk, ws = make(1, probe_d)
+        got = side(ws)
+        if got is None:
+            raise KernelError(THIN_TOO_THICK)
+        sign = 1 if (got > 0) == right else -1
+        if not (probe_d >= dist and sign == 1):      # else the probe was the whole offset
+            mk, ws = make(sign, dist)
+        if len(ws) != 1 or side(ws) != (1 if right else -1):
+            raise KernelError(THIN_TOO_THICK)
+    except KernelError:
+        raise
+    except Exception as exc:            # OCC raises Standard_Failure for a wire it cannot offset
+        raise KernelError(THIN_TOO_THICK) from exc
+    return _as_wire(ws[0]), _maker_history(mk, [wire])
+
+
+def _open_wire_ends(wire):
+    """The two end vertices of an open wire: the vertices only one of its edges has."""
+    seen = []                                   # [vertex, number of edges that have it]
+    for e in edges(wire):
+        for v in _sub_shapes(e, TopAbs_VERTEX):
+            for item in seen:
+                if item[0].IsSame(v):
+                    item[1] += 1
+                    break
+            else:
+                seen.append([v, 1])
+    ends = [v for v, n in seen if n == 1]
+    if len(ends) != 2:
+        raise KernelError(THIN_TOO_THICK)
+    return ends[0], ends[1]
+
+
+def thin_profile(plane, wire, t1, t2):
+    """A thin face in `plane` from `wire`, a closed or open chain of sketch curves: (face, offset history, cap
+    edges). The face is the strip between the wire offset by `t1` and by `t2` on its other side, with sharp
+    corners.
+
+    Closed wire: `t1` outside, `t2` inside; the face is the ring between them. Open wire: `t1` on the right of
+    the travel along the wire (looking down the plane's normal), `t2` on the left; the two ends are closed with
+    straight edges square to the wire, which are the returned cap edges (none for a closed wire). A side of 0
+    keeps the wire itself there.
+
+    The history maps every edge and vertex of `wire` to its image in the face, to chain before the history of
+    the sweep made from the face. A wall that folds into itself (no single offset wire, or a face that is
+    not valid) raises "The thickness is larger than this shape allows"."""
+    t1, t2 = float(t1), float(t2)
+    if t1 < 0 or t2 < 0 or t1 + t2 < 1e-9:
+        raise KernelError("The thickness must be more than zero")
+    chain = _travel_chain(wire)
+    pts = np.vstack([chain[0][1]] + [c[1][1:] for c in chain[1:]])
+    uv = _flat(plane, pts)
+    tol = 1e-6 * max(1.0, float(np.ptp(pts, axis=0).max()))
+    closed = float(np.linalg.norm(pts[0] - pts[-1])) < tol
+    if closed:
+        ccw = _signed_area(uv) > 0              # the right of a counter-clockwise loop is outside
+        sides = {True: t1 if ccw else t2, False: t2 if ccw else t1}
+    else:
+        sides = {True: t1, False: t2}
+    made, hists = {}, []
+    for right, dist in sides.items():
+        if dist < 1e-9:
+            made[right] = wire
+            continue
+        made[right], h = _offset_one_side(plane, wire, chain, uv, closed, right, dist)
+        hists.append(h)
+    pln = gp_Pln(plane.gp_ax3())
+
+    def area_of(w):
+        return _signed_area(_flat(plane, np.vstack([c[1] for c in _travel_chain(w)])))
+
+    def facing(w, ccw_wanted):
+        return w if (area_of(w) > 0) == ccw_wanted else _as_wire(w.Reversed())
+    caps = []
+    if closed:
+        outer, inner = (made[True], made[False]) if ccw else (made[False], made[True])
+        mf = BRepBuilderAPI_MakeFace(pln, facing(outer, True), True)
+        mf.Add(facing(inner, False))
+        face = mf.Face()
+    else:
+        ends = []
+        for w in (made[True], made[False]):
+            a, b = _open_wire_ends(w)           # the wire's own vertices, so the caps join it exactly
+            if np.linalg.norm(_vertex_xyz(a) - pts[0]) + np.linalg.norm(_vertex_xyz(b) - pts[-1]) \
+                    > np.linalg.norm(_vertex_xyz(b) - pts[0]) + np.linalg.norm(_vertex_xyz(a) - pts[-1]):
+                a, b = b, a
+            ends.append((a, b))
+        caps = [BRepBuilderAPI_MakeEdge(_as_vertex(ends[0][0]), _as_vertex(ends[1][0])).Edge(),
+                BRepBuilderAPI_MakeEdge(_as_vertex(ends[0][1]), _as_vertex(ends[1][1])).Edge()]
+        loop = make_wire(edges(made[True]) + caps + edges(made[False]))
+        face = BRepBuilderAPI_MakeFace(pln, facing(loop, True), True).Face()
+    if not is_valid(face) or mass_props(face)["area"] < 1e-9:
+        raise KernelError(THIN_TOO_THICK)
+    return face, _chain(*hists), caps
+
+
 def _pipe_shell(path_wire, wire):
     return _pipe_maker(path_wire, wire).Shape()
 
 
-def _pipe_maker(path_wire, wire):
-    """The finished pipe-shell maker for `wire` swept along `path_wire`, already made into a solid."""
+SWEEP_NO_DIRECTION = "Pick a direction for Lock profile direction"
+SWEEP_KEEP_NEEDS_PLANE = "Keep profile orientation needs a flat profile"
+
+
+def _profile_normal(wire):
+    """(a point on, the unit normal of) the plane a profile wire lies in; None when it is not flat."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_FindPlane
+    fp = BRepBuilderAPI_FindPlane(wire)
+    if not fp.Found():
+        return None
+    pln = fp.Plane()
+    return _wire_centre(wire), _np(pln.Axis().Direction())
+
+
+def _set_pipe_mode(mk, wire, control):
+    """The pipe maker's orientation mode. No control: corrected Frenet, the profile follows the path. `keep`:
+    a fixed trihedron from the profile's plane, so every section stays parallel to the profile. `("lock", d)`:
+    a constant binormal along `d`."""
+    kind = control[0] if control else None
+    if kind is None:
+        mk.SetMode(False)                   # corrected Frenet: keeps the profile upright along the path
+    elif kind == "keep":
+        got = _profile_normal(wire)
+        if got is None:
+            raise KernelError(SWEEP_KEEP_NEEDS_PLANE)
+        mk.SetMode(gp_Ax2(_pnt(got[0]), _dir(got[1])))
+    elif kind == "lock":
+        if control[1] is None or np.linalg.norm(np.asarray(control[1], float)) < 1e-9:
+            raise KernelError(SWEEP_NO_DIRECTION)
+        d = np.asarray(control[1], float)
+        mk.SetMode(_dir(d / np.linalg.norm(d)))
+    else:
+        raise KernelError("Unknown profile control")
+
+
+def _pipe_maker(path_wire, wire, solid=True, control=None):
+    """The finished pipe-shell maker for `wire` swept along `path_wire`, made into a solid unless `solid` is
+    false (a surface sweep keeps the open shell). `control` is None, ("keep",) or ("lock", direction)."""
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
     from OCP.BRepBuilderAPI import BRepBuilderAPI_RightCorner
     mk = BRepOffsetAPI_MakePipeShell(path_wire)
-    mk.SetMode(False)                       # corrected Frenet: keeps the profile upright along the path
+    _set_pipe_mode(mk, wire, control)
     mk.SetTransitionMode(BRepBuilderAPI_RightCorner)   # clean mitred joins at sharp corners
     mk.Add(wire, False, False)
     mk.Build()
     if not mk.IsDone():
         raise KernelError("Sweep failed — the path may be too tight for the profile")
-    mk.MakeSolid()
+    if solid:
+        mk.MakeSolid()
     return mk
 
 
@@ -2030,23 +2924,28 @@ def _pipe_history(mk, face, wire):
     return hist
 
 
-def sweep(profile_faces, path_wire, with_history=False):
+def sweep(profile_faces, path_wire, with_history=False, control=None):
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_WIRE
     if not profile_faces:
         raise KernelError("Select a profile to sweep")
+    surface = any(f.ShapeType() == TopAbs_WIRE for f in profile_faces)
+    if surface and not all(f.ShapeType() == TopAbs_WIRE for f in profile_faces):
+        raise KernelError("Sweep takes faces or curves, not both")
+    if surface:
+        return _sweep_surface(profile_faces, path_wire, with_history, control)
     out, steps = [], []
     for f in profile_faces:
         outer = BRepTools.OuterWire_s(f)
         try:
-            mk = _pipe_maker(path_wire, outer)
+            mk = _pipe_maker(path_wire, outer, control=control)
             body = mk.Shape()
             hist = _pipe_history(mk, f, outer) if with_history else None
             exp = TopExp_Explorer(f, TopAbs_WIRE)
             while exp.More():                 # holes in the profile become tunnels
                 w = TopoDS.Wire(exp.Current()) if hasattr(TopoDS, "Wire") else exp.Current()
                 if not w.IsSame(outer):
-                    tmk = _pipe_maker(path_wire, w)
+                    tmk = _pipe_maker(path_wire, w, control=control)
                     if with_history:
                         body, cut_hist = cut(body, tmk.Shape(), with_history=True)
                         hist = _chain(hist, _pipe_history(tmk, None, w), cut_hist)
@@ -2068,6 +2967,25 @@ def sweep(profile_faces, path_wire, with_history=False):
     if volume(res) < 0:
         res = res.Reversed()
     return (res, _chain(_chain(*steps), fused)) if with_history else res
+
+
+def _sweep_surface(profile_wires, path_wire, with_history, control=None):
+    """Each profile wire (open or closed) swept along `path_wire` into a shell of its own, with a face per
+    profile edge and path segment. The shells are returned as they are (one shell, or a compound of them):
+    no hole tunnels, no solid check, no volume reversal, and no sewing, so each keeps its history."""
+    shells, steps = [], []
+    for w in profile_wires:
+        try:
+            mk = _pipe_maker(path_wire, w, solid=False, control=control)
+        except KernelError:
+            raise
+        except Exception as exc:
+            raise KernelError("Sweep failed — the path may be too tight for the profile") from exc
+        shells.append(mk.Shape())
+        if with_history:
+            steps.append(_pipe_history(mk, None, w))
+    shape = shells[0] if len(shells) == 1 else compound(shells)
+    return (shape, _chain(*steps)) if with_history else shape
 
 
 def _wire_centre(w) -> np.ndarray:
@@ -2115,11 +3033,19 @@ def _loft_hole_sets(profile_faces):
     return sets
 
 
-def _thru_sections(wires, ruled):
+def _thru_sections(wires, ruled, max_degree=None, solid=True):
+    """ThruSections over `wires`; an entry may be a vertex (a point profile, first or last only).
+    `max_degree` caps the degree of the surface along the loft; `solid` False (a surface loft, I7.8)
+    leaves the ends open instead of capping them."""
     from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
-    mk = BRepOffsetAPI_ThruSections(True, bool(ruled), 1e-6)
+    mk = BRepOffsetAPI_ThruSections(bool(solid), bool(ruled), 1e-6)
+    if max_degree:
+        mk.SetMaxDegree(max_degree)
     for w in wires:
-        mk.AddWire(w)
+        if w.ShapeType() == TopAbs_VERTEX:
+            mk.AddVertex(_as_vertex(w))
+        else:
+            mk.AddWire(w)
     try:
         mk.Build()
     except Exception as exc:
@@ -2129,20 +3055,27 @@ def _thru_sections(wires, ruled):
     return mk
 
 
-def _thru_sections_history(mk, wires, faces=None) -> BRepTools_History:
+def _thru_sections_history(mk, wires, faces=None, from_point=False) -> BRepTools_History:
     """Each profile edge generated the loft face that runs from it; with `faces`, the first and last
-    profile faces generated the two end caps (spec I1.7: FreeCAD's MapperThruSections)."""
+    profile faces generated the two end caps (spec I1.7: FreeCAD's MapperThruSections). A loft that
+    starts at a point (I7.7) has no face generated from the next profile's edges, so `from_point` asks
+    `Generated` for the face that ends on each edge."""
     hist = BRepTools_History()
     for w in wires:
         for e in _sub_shapes(w, TopAbs_EDGE):
             try:
                 g = mk.GeneratedFace(e)
+                if g.IsNull() and from_point:
+                    gen = mk.Generated(e)
+                    g = gen.First() if gen.Size() else g
                 if not g.IsNull():
                     hist.AddGenerated(e, g)
             except Exception:
                 pass            # an OCCT history failure degrades the names; it never fails the operation
     if faces:
         for f, cap in ((faces[0], mk.FirstShape), (faces[-1], mk.LastShape)):
+            if f is None:           # a point end has no cap
+                continue
             try:
                 c = cap()
                 if not c.IsNull() and not c.IsSame(f):
@@ -2152,15 +3085,42 @@ def _thru_sections_history(mk, wires, faces=None) -> BRepTools_History:
     return hist
 
 
-def loft(profile_faces, ruled=False, with_history=False):
+def loft(profile_faces, ruled=False, with_history=False, closed=False):
     """A loft through the profiles' outer wires. When every profile has the same number of holes,
-    each matched set of hole wires is lofted the same way and cut out, as sweep cuts its tunnels."""
+    each matched set of hole wires is lofted the same way and cut out, as sweep cuts its tunnels.
+    I7.7: a profile may be a vertex, the first or the last only (a point: no cap at that end); with
+    `closed` the first profile is added again as the last, so the loft is a closed shell with no caps."""
     from OCP.BRepTools import BRepTools
     if len(profile_faces) < 2:
         raise KernelError("Select at least two profiles, in order")
-    outers = [BRepTools.OuterWire_s(f) for f in profile_faces]
-    mk = _thru_sections(outers, ruled)
+    pts = [f.ShapeType() == TopAbs_VERTEX for f in profile_faces]
+    if any(pts[1:-1]):
+        raise KernelError("A point can only be the first or the last profile")
+    if all(pts):
+        raise KernelError("A loft needs at least one profile that is not a point")
+    if closed:
+        if len(profile_faces) < 3:
+            raise KernelError("A closed loft needs at least three profiles")
+        if any(pts):
+            raise KernelError("A closed loft cannot have a point profile")
+    if (closed or any(pts)) and any(len(_sub_shapes(f, TopAbs_WIRE)) > 1 for f, pt in zip(profile_faces, pts) if not pt):
+        raise KernelError("A closed loft or a loft to a point needs profiles without holes")
+    outers = [f if pt else BRepTools.OuterWire_s(f) for f, pt in zip(profile_faces, pts)]
+    # A closed loft is cubic along the loft: through 4 circles the default degree 4 curve swings 8 percent
+    # off the ring, the cubic stays within 2 percent of it.
+    mk = _thru_sections(outers + [outers[0]] if closed else outers, ruled, 3 if closed else None)
     body = mk.Shape()
+    if closed or any(pts):
+        if body.ShapeType() != TopAbs_SOLID and solids(body):
+            body = solids(body)[0]
+        if volume(body) < 0:
+            body = body.Reversed()
+        if len(solids(body)) != 1 or not is_valid(body):
+            raise KernelError("Loft failed — try profiles with similar shapes")
+        if not with_history:
+            return body
+        caps = None if closed else [None if pt else f for f, pt in zip(profile_faces, pts)]
+        return body, _thru_sections_history(mk, [o for o in outers if o.ShapeType() != TopAbs_VERTEX], caps, pts[0])
     hist = _thru_sections_history(mk, outers, profile_faces) if with_history else None
     for wires in _loft_hole_sets(profile_faces):
         tool = _thru_sections(wires, ruled)
@@ -2175,6 +3135,1038 @@ def loft(profile_faces, ruled=False, with_history=False):
         if len(solids(body)) != 1 or not is_valid(body):
             raise KernelError("Loft failed — a hole runs out through the side of the loft")
     return (body, hist) if with_history else body
+
+
+def loft_surface(wires, ruled=False, closed=False, with_history=False):
+    """A surface loft (I7.8): ThruSections(False, ruled) through `wires`, open or closed chains in order,
+    with no caps and no solid. A shell of one face per edge of the first wire and per gap between wires.
+    `closed` adds the first wire again as the last (three or more wires), as `loft` does. The shell is
+    returned as made (the faces are already shared along their edges), so the history keeps its names;
+    `apply_body` sews it to the surface parts it touches."""
+    if len(wires) < 2:
+        raise KernelError("Select at least two profiles, in order")
+    if closed and len(wires) < 3:
+        raise KernelError("A closed loft needs at least three profiles")
+    mk = _thru_sections(list(wires) + [wires[0]] if closed else list(wires), ruled, 3 if closed else None,
+                        solid=False)
+    shape = mk.Shape()
+    if not faces(shape) or solids(shape):
+        raise KernelError("Loft failed — try profiles with similar shapes")
+    return (shape, _thru_sections_history(mk, wires)) if with_history else shape
+
+
+# Loft end conditions (I7.2). The route was chosen by spike I7.1 (scripts/spikes/op2_loft.result.txt):
+#   OCP 7.9: DECISION loft skin=hermite skin_angle_deg=0.0000 gordon79=absent gordon80=absent one_guide=absent corner_guide=absent rational=absent
+#   OCP 8.0: DECISION loft skin=hermite skin_angle_deg=0.0000 gordon79=absent gordon80=ok one_guide=isocurve corner_guide=ok rational=direct
+# Hermite skinning is exact on both builds; ghost sections through ThruSections reached only 0.23
+# degree, so only the hermite route is built.
+LOFT_SKIN = "hermite"
+LOFT_CONDS = ("normal", "tangent", "match_tangent")      # Normal to profile, Tangent to profile, Match tangent
+LOFT_MATCH_ANGLE = 0.5      # degrees: the most a Match tangent loft's normal may differ from its adjacent face's
+LOFT_MATCH_TOL = 1e-4       # mm: how close an adjacent face must lie to a profile curve to touch it
+LOFT_MATCH_ROUNDS = 6       # knot refinements along the profile before Match tangent gives up
+LOFT_MATCH_ERR = "Could not match the adjacent faces smoothly"
+
+
+def _skin_arrays():
+    """The OCCT collection classes the skinning route needs; their Python names differ per build."""
+    try:
+        from OCP.TColgp import TColgp_Array1OfPnt as P1, TColgp_Array2OfPnt as P2
+        from OCP.TColStd import TColStd_Array1OfReal as R1, TColStd_Array1OfInteger as I1
+        from OCP.TopTools import TopTools_SequenceOfShape as Seq
+    except ImportError:  # OCP 8.0
+        from OCP.OCP.collections import (Array1_gp_Pnt as P1, Array2_gp_Pnt as P2, Array1_double as R1,
+                                         Array1_int as I1, Sequence_TopoDS_Shape as Seq)
+    return P1, P2, R1, I1, Seq
+
+
+def _bspline_basis(knots, p, t, ders=0):
+    """Values (row 0) and derivatives (rows 1..ders) at t of every degree-p B-spline basis function on
+    `knots` (the full, multiplicity-expanded knot vector)."""
+    k = np.asarray(knots, float)
+    m = len(k) - 1
+    lvl = [np.zeros(m)]
+    span = max(j for j in range(m) if k[j] < k[j + 1]) if t >= k[-1] else \
+        next(j for j in range(m) if k[j] <= t < k[j + 1])
+    lvl[0][span] = 1.0
+    for d in range(1, p + 1):
+        prev, cur = lvl[-1], np.zeros(m - d)
+        for i in range(m - d):
+            a, b = k[i + d] - k[i], k[i + d + 1] - k[i + 1]
+            cur[i] = ((t - k[i]) / a * prev[i] if a > 0 else 0.0) + ((k[i + d + 1] - t) / b * prev[i + 1] if b > 0 else 0.0)
+        lvl.append(cur)
+
+    def lift(d, lower):            # d/dt of the degree-d functions, from (derivatives of) degree d-1 ones
+        out = np.zeros(len(lower) - 1)
+        for i in range(len(out)):
+            a, b = k[i + d] - k[i], k[i + d + 1] - k[i + 1]
+            out[i] = d * ((lower[i] / a if a > 0 else 0.0) - (lower[i + 1] / b if b > 0 else 0.0))
+        return out
+    rows = [lvl[p]]
+    if ders >= 1:
+        rows.append(lift(p, lvl[p - 1]))
+    if ders >= 2:
+        rows.append(lift(p, lift(p - 1, lvl[p - 2])) if p >= 2 else np.zeros(len(lvl[p])))
+    return rows
+
+
+class _Section:
+    """One compatible profile wire as B-spline curves, one per edge, in wire order, each over [0, 1]."""
+
+    def __init__(self, wire):
+        from OCP.BRepTools import BRepTools_WireExplorer
+        self.wire = wire
+        self.edges, self.curves = [], []
+        ex = BRepTools_WireExplorer(wire)
+        while ex.More():
+            e = ex.Current()
+            self.edges.append(e)
+            self.curves.append(self._curve(e))
+            ex.Next()
+
+    @staticmethod
+    def _curve(edge):
+        from OCP.Geom import Geom_TrimmedCurve
+        from OCP.GeomConvert import GeomConvert, GeomConvert_ApproxCurve
+        from OCP.GeomAbs import GeomAbs_C2
+        ad = BRepAdaptor_Curve(edge)
+        r = BRep_Tool.Curve_s(edge, 0.0, 1.0)
+        c = r[0] if isinstance(r, tuple) else r
+        bs = GeomConvert.CurveToBSplineCurve_s(Geom_TrimmedCurve(c, ad.FirstParameter(), ad.LastParameter()))
+        if bs.IsPeriodic():
+            bs.SetNotPeriodic()
+        if edge.Orientation() == TopAbs_REVERSED:
+            bs.Reverse()
+        if bs.IsRational():         # arcs, circles, conics: non-rational within 1e-6 (the card's tolerance)
+            ap = GeomConvert_ApproxCurve(bs, 1e-6, GeomAbs_C2, 200, 8)
+            if not ap.HasResult():
+                raise KernelError("Loft failed — a profile curve could not be prepared for the end condition")
+            bs = ap.Curve()
+        return _bspline_data(bs)
+
+
+def _bspline_data(bs):
+    """(poles (n, 3), distinct knots normalised to [0, 1], multiplicities, degree) of a Geom_BSplineCurve."""
+    kn = np.array([bs.Knot(i) for i in range(1, bs.NbKnots() + 1)])
+    kn = (kn - kn[0]) / (kn[-1] - kn[0])
+    return {"poles": np.array([_np(bs.Pole(i)) for i in range(1, bs.NbPoles() + 1)]),
+            "knots": kn, "mults": [bs.Multiplicity(i) for i in range(1, bs.NbKnots() + 1)],
+            "deg": bs.Degree()}
+
+
+def _bspline_make(d):
+    from OCP.Geom import Geom_BSplineCurve
+    P1, _P2, R1, I1, _Seq = _skin_arrays()
+    poles, kn, mu = P1(1, len(d["poles"])), R1(1, len(d["knots"])), I1(1, len(d["knots"]))
+    for i, p in enumerate(d["poles"]):
+        poles.SetValue(i + 1, _pnt(p))
+    for i, (k, m) in enumerate(zip(d["knots"], d["mults"])):
+        kn.SetValue(i + 1, float(k))
+        mu.SetValue(i + 1, int(m))
+    return Geom_BSplineCurve(poles, kn, mu, int(d["deg"]))
+
+
+def _same_knots(curves):
+    """The curves of one edge column brought to one degree and one knot vector (exact: degree raising
+    and knot insertion do not move the curve)."""
+    deg = max(c["deg"] for c in curves)
+    bss = [_bspline_make(c) for c in curves]
+    for b in bss:
+        if b.Degree() < deg:
+            b.IncreaseDegree(deg)
+    want = {}
+    for b in bss:
+        for i in range(1, b.NbKnots() + 1):
+            u = round(b.Knot(i), 12)
+            want[u] = max(want.get(u, 0), b.Multiplicity(i))
+    for b in bss:
+        for u, m in sorted(want.items()):
+            if 0.0 < u < 1.0:
+                b.InsertKnot(u, m, 1e-10, False)
+    out = [_bspline_data(b) for b in bss]
+    n = len(out[0]["poles"])
+    if any(len(o["poles"]) != n or len(o["knots"]) != len(out[0]["knots"]) for o in out):
+        raise KernelError("Loft failed — the profiles could not be matched edge for edge")
+    return out
+
+
+def _wire_turn(points, normal):
+    """+1 when the closed polygon `points` runs anticlockwise about `normal`, else -1."""
+    a = sum(np.cross(points[i], points[(i + 1) % len(points)]) for i in range(len(points)))
+    return 1.0 if float(np.dot(a, normal)) >= 0 else -1.0
+
+
+def _outward(cols, normal):
+    """Per column, per pole: the unit outward in-plane normal of the profile curve at that pole's
+    Greville abscissa. A pole on a corner gets the mitre of its two edges' normals, the same in both
+    columns, so neighbouring side faces still share their edge."""
+    samples = [p for c in cols for p in c["poles"]]
+    turn = _wire_turn(samples, normal)
+    out, ends = [], []
+    for c in cols:
+        bs = _bspline_make(c)
+        flat = np.repeat(c["knots"], c["mults"])
+        deg = c["deg"]
+        dirs = []
+        for j in range(len(c["poles"])):
+            g = float(np.mean(flat[j + 1:j + deg + 1]))
+            pt, v = gp_Pnt(), gp_Vec()
+            bs.D1(g, pt, v)
+            t = _np(v)
+            t = t - np.dot(t, normal) * normal
+            nrm = np.cross(t, normal) * turn
+            ln = np.linalg.norm(nrm)
+            dirs.append(nrm / ln if ln > 1e-12 else np.zeros(3))
+        out.append(dirs)
+        ends.append((dirs[0], dirs[-1]))
+    for k in range(len(cols)):
+        a, b = ends[k - 1][1], ends[k][0]          # last pole of the previous column meets this first pole
+        s = 1.0 + float(np.dot(a, b))
+        mitre = (a + b) / s if s > 1e-6 else b
+        out[k - 1][-1] = mitre
+        out[k][0] = mitre
+    return out
+
+
+# Match tangent (I7.5): the end derivative of each column follows d(u), the direction that continues
+# the adjacent face across the profile curve (in the face's tangent plane, square to the curve).
+
+def _point_face_distance(p, face):
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    return BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(_pnt(p)).Vertex(), face).Value()
+
+
+def _face_normal_at(face, p):
+    """The unit normal of the face's surface at the point nearest p (as the surface has it, unflipped)."""
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.GeomLProp import GeomLProp_SLProps
+    surf = BRep_Tool.Surface_s(face)
+    u, v = GeomAPI_ProjectPointOnSurf(_pnt(p), surf).LowerDistanceParameters()
+    props = GeomLProp_SLProps(surf, u, v, 1, 1e-9)
+    if not props.IsNormalDefined():
+        raise KernelError(LOFT_MATCH_ERR)
+    return _np(props.Normal())
+
+
+def _match_setup(curves, faces, into):
+    """Which adjacent face each curve of an end section continues: per curve (face, sign) or None when
+    no face touches it, `sign` turning n x t away from the face. A face that touches no curve is refused."""
+    used, out = set(), []
+    for c in curves:
+        bs = _bspline_make(c)
+        pts = [_np(bs.Value(float(t))) for t in np.linspace(0.0, 1.0, 5)]
+        hit = next((i for i, f in enumerate(faces)
+                    if all(_point_face_distance(p, f) < LOFT_MATCH_TOL for p in pts)), None)
+        if hit is None:
+            out.append(None)
+            continue
+        used.add(hit)
+        pt, v = gp_Pnt(), gp_Vec()
+        bs.D1(0.5, pt, v)
+        p, t = _np(pt), _np(v)
+        d = np.cross(_face_normal_at(faces[hit], p), t)
+        d /= np.linalg.norm(d)
+        eps = max(1e-3 * np.linalg.norm(t), 1e-3)
+        ahead, behind = _point_face_distance(p + eps * d, faces[hit]), _point_face_distance(p - eps * d, faces[hit])
+        if abs(ahead - behind) > 0.1 * eps:          # the face lies behind the step that leaves it
+            sign = 1.0 if ahead > behind else -1.0
+        else:
+            sign = 1.0 if float(np.dot(d, into)) >= 0 else -1.0
+        out.append((faces[hit], sign))
+    if len(used) < len(faces):
+        raise KernelError("Pick faces that touch the profile")
+    return out
+
+
+def _match_dir(bs, entry, into, u):
+    """(d, n) at parameter u of curve `bs`: the unit continuing direction and the plane it must stay in
+    (the face's tangent plane; with no face, Normal to profile: d = into)."""
+    pt, v = gp_Pnt(), gp_Vec()
+    bs.D1(float(u), pt, v)
+    t = _np(v)
+    if entry is None:
+        n = np.cross(t, into)
+        return into, n / np.linalg.norm(n)
+    face, sign = entry
+    n = _face_normal_at(face, _np(pt))
+    d = sign * np.cross(n, t)
+    return d / np.linalg.norm(d), n
+
+
+def _match_samples(c, per_span):
+    kn = list(c["knots"])
+    return np.unique(np.concatenate([np.linspace(a, b, per_span + 1) for a, b in zip(kn, kn[1:])]))
+
+
+def _match_field(curves, entries, into):
+    """Per curve: the derivative poles (n, 3) whose B-spline field follows d(u), fitted by least squares
+    with the corner poles fixed, and the largest angle in degrees between the loft's normal and the face's."""
+    bss = [_bspline_make(c) for c in curves]
+    corners = []                                   # corners[k]: where curve k - 1 ends and curve k starts
+    for k in range(len(curves)):
+        da, na = _match_dir(bss[k - 1], entries[k - 1], into, 1.0)
+        db, nb = _match_dir(bss[k], entries[k], into, 0.0)
+        w, s = np.cross(na, nb), da + db
+        if np.linalg.norm(w) > 1e-6 and abs(float(np.dot(w, s))) > 1e-9:
+            w = w / np.linalg.norm(w) * np.sign(float(np.dot(w, s)))      # in both tangent planes
+        else:
+            w = s / np.linalg.norm(s) if np.linalg.norm(s) > 1e-9 else db
+        corners.append(w)
+    fields, worst = [], []
+    for k, (c, bs, entry) in enumerate(zip(curves, bss, entries)):
+        flat = np.repeat(c["knots"], c["mults"])
+        deg, n = c["deg"], len(c["poles"])
+        D = np.zeros((n, 3))
+        D[0], D[-1] = corners[k], corners[(k + 1) % len(curves)]
+        if n > 2:
+            us = _match_samples(c, 3 * (deg + 1))
+            B = np.array([_bspline_basis(flat, deg, float(u))[0] for u in us])
+            target = np.array([_match_dir(bs, entry, into, u)[0] for u in us])
+            rhs = target - np.outer(B[:, 0], D[0]) - np.outer(B[:, -1], D[-1])
+            D[1:-1] = np.linalg.lstsq(B[:, 1:-1], rhs, rcond=None)[0]
+        ang = 0.0
+        for u in _match_samples(c, 4 * (deg + 1) + 1):
+            pt, v = gp_Pnt(), gp_Vec()
+            bs.D1(float(u), pt, v)
+            nl = np.cross(_np(v), _bspline_basis(flat, deg, float(u))[0] @ D)
+            nf = _match_dir(bs, entry, into, u)[1]
+            ln = np.linalg.norm(nl)
+            cos = abs(float(np.dot(nl, nf))) / ln if ln > 1e-12 else 0.0
+            ang = max(ang, math.degrees(math.acos(min(1.0, cos))))
+        fields.append(D)
+        worst.append(ang)
+    return fields, worst
+
+
+def _refine_column(col):
+    """A knot mid-way in every span of one edge column, in every section's curve (exact)."""
+    mids = [(a + b) / 2 for a, b in zip(col[0]["knots"], col[0]["knots"][1:])]
+    for i, c in enumerate(col):
+        b = _bspline_make(c)
+        for u in mids:
+            b.InsertKnot(float(u), 1, 1e-10, False)
+        col[i] = _bspline_data(b)
+
+
+def _match_ends(cols, conds):
+    """The unit derivative poles per column at each Match tangent end (None at any other end), refining
+    the knots of a column along the profile until its angle is under LOFT_MATCH_ANGLE. Mutates `cols`."""
+    nsec, ncol = len(cols[0]), len(cols)
+    ends = [(e, i, c) for e, (i, c) in enumerate(((0, conds[0]), (nsec - 1, conds[1])))
+            if c is not None and c["cond"] == "match_tangent"]
+    if not ends:
+        return [None, None]
+    entries = {e: _match_setup([col[i] for col in cols], c["faces"], c["into"]) for e, i, c in ends}
+    for rnd in range(LOFT_MATCH_ROUNDS + 1):
+        out, bad = [None, None], set()
+        for e, i, c in ends:
+            out[e], worst = _match_field([col[i] for col in cols], entries[e], c["into"])
+            bad |= {k for k, w in enumerate(worst) if w > LOFT_MATCH_ANGLE}
+        if not bad:
+            return out
+        if rnd == LOFT_MATCH_ROUNDS:
+            raise KernelError(LOFT_MATCH_ERR)
+        for k in bad:
+            _refine_column(cols[k])
+        for i in range(nsec):                     # neighbouring columns still share their corner pole
+            for k in range(ncol):
+                cols[k][i]["poles"][-1] = cols[(k + 1) % ncol][i]["poles"][0]
+
+
+def _skin_solid(wires, conds, with_history, cap_faces=None):
+    """A loft through `wires` by Hermite skinning, as a solid, with the history of every input edge
+    (and, given `cap_faces`, of the first and last profile faces).
+
+    `conds` is (start, end); each is None or {"cond", "mag", "n", "into"}: `n` the unit normal of the
+    end profile's plane and `into` the unit normal pointing from that profile into the loft; Match
+    tangent adds "faces", the adjacent faces."""
+    from OCP.BRepFill import BRepFill_CompatibleWires
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
+    from OCP.Geom import Geom_BSplineSurface
+    from OCP.TopAbs import TopAbs_SHELL
+    _P1, P2, R1, I1, Seq = _skin_arrays()
+    seq = Seq()
+    for w in wires:
+        seq.Append(w)
+    cw = BRepFill_CompatibleWires(seq)
+    try:
+        cw.Perform()
+    except Exception as exc:
+        raise KernelError("Loft failed — try profiles with similar shapes") from exc
+    if not cw.IsDone():
+        raise KernelError("Loft failed — try profiles with similar shapes")
+    res = cw.Shape()
+    secs = [_Section(_as_wire(res.Value(i))) for i in range(1, res.Length() + 1)]
+    ncol = len(secs[0].curves)
+    if any(len(s.curves) != ncol for s in secs):
+        raise KernelError("Loft failed — try profiles with similar shapes")
+    cols = [_same_knots([s.curves[k] for s in secs]) for k in range(ncol)]   # cols[k][i]: column k, section i
+    for i in range(len(secs)):                     # neighbouring columns share their corner pole exactly
+        for k in range(ncol):
+            cols[k][i]["poles"][-1] = cols[(k + 1) % ncol][i]["poles"][0]
+    match = _match_ends(cols, conds)               # Match tangent may refine the columns' knots first
+    nsec = len(secs)
+    grid =[np.vstack([cols[k][i]["poles"] for k in range(ncol)]) for i in range(nsec)]
+    gaps = [float(np.mean(np.linalg.norm(grid[i] - grid[i - 1], axis=1))) for i in range(1, nsec)]
+    if min(gaps) < 1e-9:
+        raise KernelError("Loft failed — two profiles are in the same place")
+    v = np.concatenate([[0.0], np.cumsum(gaps)])   # a loft parameter per section: mean pole distance
+
+    # Each column of poles is a cubic through the sections. Its parameter runs in mm, so an end
+    # derivative of m * n per mm is the card's m * L * n per unit of the end span (L = that span).
+    vflat = np.concatenate([[v[0]] * 4, v[1:-1], [v[-1]] * 4])
+    nv = nsec + 2
+    A = np.zeros((nv, nv))
+    for i in range(nsec):
+        A[i] = _bspline_basis(vflat, 3, v[i])[0]
+    for row, (t, c) in zip((nsec, nsec + 1), ((v[0], conds[0]), (v[-1], conds[1]))):
+        A[row] = _bspline_basis(vflat, 3, t, 2)[1 if c else 2]     # no condition: zero second derivative
+    lu = np.linalg.inv(A)
+
+    def end_ders(i, c, sign):
+        """The derivative along the loft at every pole of section i, per column."""
+        if c is None:
+            return [np.zeros((len(cols[k][i]["poles"]), 3)) for k in range(ncol)]
+        if c["cond"] == "match_tangent":
+            return [sign * c["mag"] * d for d in match[0 if i == 0 else 1]]
+        if c["cond"] == "normal":
+            return [np.tile(sign * c["mag"] * c["into"], (len(cols[k][i]["poles"]), 1)) for k in range(ncol)]
+        out = _outward([cols[k][i] for k in range(ncol)], c["n"])
+        return [sign * c["mag"] * np.array(d) for d in out]
+    # A derivative leaves the start profile into the loft and arrives at the end profile out of it.
+    d0, d1 = end_ders(0, conds[0], 1.0), end_ders(nsec - 1, conds[1], -1.0)
+
+    vk, vm = R1(1, nsec), I1(1, nsec)
+    for i, t in enumerate(v):
+        vk.SetValue(i + 1, float(t))
+        vm.SetValue(i + 1, 4 if i in (0, nsec - 1) else 1)
+    sew = BRepBuilderAPI_Sewing(1e-6)
+    side = []
+    for k in range(ncol):
+        c0 = cols[k][0]
+        nu = len(c0["poles"])
+        poles = P2(1, nu, 1, nv)
+        for j in range(nu):
+            rhs = np.vstack([cols[k][i]["poles"][j] for i in range(nsec)] + [d0[k][j], d1[k][j]])
+            ctrl = lu @ rhs
+            for q in range(nv):
+                poles.SetValue(j + 1, q + 1, _pnt(ctrl[q]))
+        uk, um = R1(1, len(c0["knots"])), I1(1, len(c0["knots"]))
+        for i, (kv, mv) in enumerate(zip(c0["knots"], c0["mults"])):
+            uk.SetValue(i + 1, float(kv))
+            um.SetValue(i + 1, int(mv))
+        surf = Geom_BSplineSurface(poles, uk, vk, um, vm, int(c0["deg"]), 3)
+        f = BRepBuilderAPI_MakeFace(surf, 0.0, 1.0, float(v[0]), float(v[-1]), 1e-7).Face()
+        side.append(f)
+        sew.Add(f)
+    caps = []
+    for i in (0, nsec - 1):
+        mw = BRepBuilderAPI_MakeWire()
+        for k in range(ncol):
+            mw.Add(BRepBuilderAPI_MakeEdge(_bspline_make(cols[k][i])).Edge())
+        mf = BRepBuilderAPI_MakeFace(mw.Wire(), True) if mw.IsDone() else None
+        if mf is None or not mf.IsDone():
+            raise KernelError("End conditions need flat end profiles")
+        caps.append(mf.Face())
+        sew.Add(caps[-1])
+    sew.Perform()
+    ex = TopExp_Explorer(sew.SewedShape(), TopAbs_SHELL)
+    if not ex.More():
+        raise KernelError("Loft failed — the end condition made a surface that does not close")
+    body = BRepBuilderAPI_MakeSolid(_as_shell(ex.Current())).Solid()
+    ex.Next()
+    if ex.More() or not is_valid(body):
+        raise KernelError("Loft failed — the end condition made a surface that does not close")
+    if volume(body) < 0:
+        body.Reverse()
+    if not with_history:
+        return body, None
+    hist = BRepTools_History()
+    side = [sew.Modified(f) for f in side]
+    # Each edge of the first profile generated the side faces of its span. Only the first: that is
+    # all ThruSections' GeneratedFace answers for in `loft`, and a second source would change the names.
+    for w, sec in ((wires[0], secs[0]),):
+        for e in _sub_shapes(w, TopAbs_EDGE):
+            try:
+                gens = list(cw.GeneratedShapes(e))
+            except Exception:
+                gens = []
+            for g in gens or [e]:
+                for k, ce in enumerate(sec.edges):
+                    if ce.IsSame(g):
+                        hist.AddGenerated(e, side[k])
+    if cap_faces:
+        for f, cap in ((cap_faces[0], caps[0]), (cap_faces[-1], caps[1])):
+            hist.AddGenerated(f, sew.Modified(cap))
+    return body, hist
+
+
+def _skin_end(face, other, cond):
+    """An end condition made ready for `_skin_solid`: the profile's plane normal and the normal that
+    points from it towards its neighbouring profile."""
+    if cond is None:
+        return None
+    if cond.get("cond") not in LOFT_CONDS:
+        raise KernelError(f"Unknown loft end condition '{cond.get('cond')}'")
+    mag = float(cond.get("mag", 1.0))
+    if abs(mag) < 1e-9:
+        raise KernelError("A loft end condition needs a magnitude other than zero")
+    ad = BRepAdaptor_Surface(face)
+    if ad.GetType() != GeomAbs_Plane:
+        raise KernelError("End conditions need flat end profiles")
+    n = _np(ad.Plane().Axis().Direction())
+    d = np.asarray(face_info(other)["c"], float) - np.asarray(face_info(face)["c"], float)
+    into = n if float(np.dot(d, n)) >= 0 else -n
+    out = {"cond": cond["cond"], "mag": mag, "n": n, "into": into}
+    if cond["cond"] == "match_tangent":
+        out["faces"] = list(cond.get("faces") or [])
+        if not out["faces"]:
+            raise KernelError("Match tangent needs the adjacent faces — pick the faces that touch the profile")
+    return out
+
+
+def loft_skin(profile_faces, start=None, end=None, with_history=False):
+    """A loft whose ends leave the first profile and meet the last as `start` and `end` say: each is
+    None or {"cond": "normal" | "tangent" | "match_tangent", "mag": <signed magnitude, default 1>}, and
+    Match tangent also has "faces": the adjacent faces (TopoDS faces) the loft continues smoothly.
+
+    Built by the route spike I7.1 chose (LOFT_SKIN, Hermite skinning): the wires are made compatible,
+    each edge column becomes one B-spline face through every section with the end derivatives set
+    (Normal to profile m*L*n, Tangent to profile m*L*t with t the outward in-plane normal, Match tangent
+    m*L*d with d continuing the adjacent face across the profile curve), the two profile faces close it
+    as caps, and the faces are sewn into a solid. One side face per edge of the first profile, with the
+    same history as `loft`, so the faces get the same names on either route. Holes are matched as `loft`
+    matches them and lofted with the outer loop's conditions, except that a Match tangent end leaves
+    them with no condition there (with no condition at either end they are lofted as `loft` does)."""
+    from OCP.BRepTools import BRepTools
+    if len(profile_faces) < 2:
+        raise KernelError("Select at least two profiles, in order")
+    conds = (_skin_end(profile_faces[0], profile_faces[1], start),
+             _skin_end(profile_faces[-1], profile_faces[-2], end))
+    if conds[0] is None and conds[1] is None:
+        raise KernelError("loft_skin needs an end condition; use loft")
+    outers = [BRepTools.OuterWire_s(f) for f in profile_faces]
+    body, hist = _skin_solid(outers, conds, with_history, profile_faces)
+    hole_conds = tuple(None if c is not None and c["cond"] == "match_tangent" else c for c in conds)
+    for wires in _loft_hole_sets(profile_faces):
+        if hole_conds == (None, None):
+            tool = _thru_sections(wires, False)
+            core = tool.Shape()
+            if volume(core) < 0:
+                core = core.Reversed()
+            core_hist = _thru_sections_history(tool, wires) if with_history else None
+        else:
+            core, core_hist = _skin_solid(wires, hole_conds, with_history)
+        if with_history:
+            body, cut_hist = cut(body, core, with_history=True)
+            hist = _chain(hist, core_hist, cut_hist)
+        else:
+            body = cut(body, core)
+        if len(solids(body)) != 1 or not is_valid(body):
+            raise KernelError("Loft failed — a hole runs out through the side of the loft")
+    return (body, hist) if with_history else body
+
+
+# Loft guides (I7.3), on the route spike I7.1 measured on OCP 8.0 (gordon80=ok, one_guide=isocurve,
+# corner_guide=ok, rational=direct). GeomFill_Gordon is bound only in the 8.0 build.
+LOFT_GUIDE_TOL = 1e-5          # mm: how close a guide must come to each profile, and the surface to each curve
+LOFT_GUIDE_ANGLE = 1e-3        # radians: a larger turn where two guide edges meet is a sharp corner
+LOFT_ONE_GUIDE = "isocurve"    # one guide is joined by isocurves of the unguided loft (_network_side)
+
+
+def _gordon_class():
+    try:
+        from OCP.GeomFill import GeomFill_Gordon
+    except ImportError:
+        raise KernelError("Loft guides need OpenCascade 8.0 or newer") from None
+    return GeomFill_Gordon
+
+
+def _curve_array(curves):
+    try:
+        from OCP.TColGeom import TColGeom_Array1OfCurve as A
+    except ImportError:  # OCP 8.0
+        from OCP.OCP.collections import Array1_Geom_Curve as A
+    a = A(1, len(curves))
+    for i, c in enumerate(curves):
+        a.SetValue(i + 1, c)
+    return a
+
+
+def _curve_deviation(curve, surf, n=50):
+    """The largest distance from `n` + 1 evenly spaced points of `curve` to `surf`."""
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    a, b = curve.FirstParameter(), curve.LastParameter()
+    worst = 0.0
+    for k in range(n + 1):
+        pr = GeomAPI_ProjectPointOnSurf(curve.Value(a + (b - a) * k / n), surf)
+        worst = max(worst, pr.LowerDistance() if pr.NbPoints() else math.inf)
+    return worst
+
+
+def _is_rational(c):
+    from OCP.Geom import Geom_BSplineCurve, Geom_Conic
+    return (isinstance(c, Geom_BSplineCurve) and c.IsRational()) or isinstance(c, Geom_Conic)
+
+
+def _nonrational(c, tol, order):
+    """A rational curve as a non-rational B-spline within `tol`, C0 / C1 / C2 for `order` 0 / 1 / 2;
+    any other curve unchanged."""
+    from OCP.GeomConvert import GeomConvert_ApproxCurve
+    from OCP.GeomAbs import GeomAbs_C0, GeomAbs_C2
+    if not _is_rational(c):
+        return c
+    ap = GeomConvert_ApproxCurve(c, tol, (GeomAbs_C0, GeomAbs_C1, GeomAbs_C2)[order], 400, 8)
+    if not ap.HasResult():
+        raise KernelError("Loft failed — a guide or profile curve could not be prepared")
+    return ap.Curve()
+
+
+def network_surface(profile_curves, guide_curves, tol=LOFT_GUIDE_TOL):
+    """The one Gordon surface through a network of curves (open or closed), and its report
+    {"status", "approximate", "guide_dev", "profile_dev"}; it fails when the surface misses a curve by
+    more than `tol`. Every profile must cross every guide; both lists need two or more curves.
+
+    GeomFill_Gordon.Report() cannot be called from Python on OCP 8.0.1 (its BuildReport type is not
+    registered), so the deviations are measured by projecting points of each curve onto the surface."""
+    gordon = _gordon_class()
+    if len(profile_curves) < 2 or len(guide_curves) < 2:
+        raise KernelError("A guide network needs at least two profiles and two guides")
+
+    def build(profiles, guides):
+        g = gordon()
+        g.Init(_curve_array(profiles), _curve_array(guides), float(tol))
+        g.SetApproximationMode(gordon.ApproximationMode_e.ExactOnly)
+        try:
+            g.Perform()
+        except Exception:
+            return g, False
+        return g, bool(g.IsDone())
+    g, done = build(profile_curves, guide_curves)
+    rational = [c for c in list(profile_curves) + list(guide_curves) if _is_rational(c)]
+    if not done and rational:
+        # Spike I7.1 found rational profiles (circles) work as given (rational=direct), but rational
+        # guides with polygon profiles fail CurveCompatibilityFailed: retry with the rational curves
+        # made non-rational within tol / 10. Profiles keep their corners (C0), guides are smooth (C2).
+        g, done = build([_nonrational(c, tol / 10, 0) for c in profile_curves],
+                        [_nonrational(c, tol / 10, 2) for c in guide_curves])
+    if not done:
+        raise KernelError(f"Loft failed — the guides and profiles do not form a network ({g.Status().name})")
+    surf = g.Surface()
+    rep = {"status": g.Status().name, "approximate": bool(g.IsApproximate()),
+           "guide_dev": max(_curve_deviation(c, surf) for c in guide_curves),
+           "profile_dev": max(_curve_deviation(c, surf) for c in profile_curves)}
+    if rep["guide_dev"] > tol:
+        raise KernelError(f"Loft failed — the surface misses a guide by {rep['guide_dev']:.2g} mm")
+    if rep["profile_dev"] > tol:
+        raise KernelError(f"Loft failed — the surface misses a profile by {rep['profile_dev']:.2g} mm")
+    return surf, rep
+
+
+def _edge_bspline(edge):
+    """An edge's curve as a B-spline running in the edge's direction (rational for arcs and circles)."""
+    from OCP.Geom import Geom_TrimmedCurve
+    from OCP.GeomConvert import GeomConvert
+    ad = BRepAdaptor_Curve(edge)
+    r = BRep_Tool.Curve_s(edge, 0.0, 1.0)
+    c = r[0] if isinstance(r, tuple) else r
+    bs = GeomConvert.CurveToBSplineCurve_s(Geom_TrimmedCurve(c, ad.FirstParameter(), ad.LastParameter()))
+    if edge.Orientation() == TopAbs_REVERSED:
+        bs.Reverse()
+    return bs
+
+
+def _turn(prev, nxt):
+    """The angle between the end tangent of B-spline `prev` and the start tangent of `nxt`."""
+    pt, t0, t1 = gp_Pnt(), gp_Vec(), gp_Vec()
+    prev.D1(prev.LastParameter(), pt, t0)
+    nxt.D1(nxt.FirstParameter(), pt, t1)
+    if t0.Magnitude() < 1e-12 or t1.Magnitude() < 1e-12:
+        return math.pi
+    return t0.Angle(t1)
+
+
+def _join(curves, what):
+    """B-spline curves end to end as one (GeomConvert_CompCurveToBSplineCurve), corners kept as C0 knots."""
+    from OCP.GeomConvert import GeomConvert_CompCurveToBSplineCurve
+    if not curves:
+        raise KernelError(f"{what} is empty")
+    comp = GeomConvert_CompCurveToBSplineCurve(curves[0])
+    for c in curves[1:]:
+        if not comp.Add(c, 1e-6, True):         # True: append; the default prepends where it can
+            raise KernelError(f"{what} is not one connected chain")
+    return comp.BSplineCurve()
+
+
+def _wire_edges(wire):
+    from OCP.BRepTools import BRepTools_WireExplorer
+    out, ex = [], BRepTools_WireExplorer(wire)
+    while ex.More():
+        out.append(ex.Current())
+        ex.Next()
+    return out
+
+
+def _guide_bspline(wire, n):
+    """Guide `n` (1-based) as one B-spline; a sharp corner between two of its edges is refused."""
+    curves = [_edge_bspline(e) for e in _wire_edges(wire)]
+    for a, b in zip(curves, curves[1:]):
+        if _turn(a, b) > LOFT_GUIDE_ANGLE:
+            raise KernelError(f"Guide {n} has a sharp corner — a guide must be tangent-continuous")
+    return _join(curves, f"Guide {n}")
+
+
+def _slot_point(edges, s):
+    """The point a fraction s - k along edge k = floor(s) of a wire's edges (in wire order)."""
+    k = int(math.floor(s + 1e-12)) % len(edges)
+    f = min(max(s - math.floor(s + 1e-12), 0.0), 1.0)
+    e = edges[k]
+    ad = BRepAdaptor_Curve(e)
+    a, b = ad.FirstParameter(), ad.LastParameter()
+    return ad.Value(b - f * (b - a) if e.Orientation() == TopAbs_REVERSED else a + f * (b - a))
+
+
+def _slot_of(edges, p):
+    """Where on a wire's edges the point p lies, as edge index + fraction along it, in [0, len(edges))."""
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+    best = None
+    for k, e in enumerate(edges):
+        ad = BRepAdaptor_Curve(e)
+        a, b = ad.FirstParameter(), ad.LastParameter()
+        r = BRep_Tool.Curve_s(e, 0.0, 1.0)
+        pr = GeomAPI_ProjectPointOnCurve(p, r[0] if isinstance(r, tuple) else r, a, b)
+        if pr.NbPoints():
+            f = (pr.LowerDistanceParameter() - a) / (b - a)
+            if e.Orientation() == TopAbs_REVERSED:
+                f = 1.0 - f
+            if best is None or pr.LowerDistance() < best[0]:
+                best = (pr.LowerDistance(), k + min(max(f, 0.0), 1.0))
+    return best[1] % len(edges)
+
+
+def _iso(edge_lists, s):
+    """The unguided loft's isocurve at slot s: through the point at slot s of every profile."""
+    from OCP.GeomAPI import GeomAPI_Interpolate
+    try:
+        from OCP.TColgp import TColgp_HArray1OfPnt as H
+    except ImportError:  # OCP 8.0
+        from OCP.OCP.collections import HArray1_gp_Pnt as H
+    pts = H(1, len(edge_lists))
+    for i, edges in enumerate(edge_lists):
+        pts.SetValue(i + 1, _slot_point(edges, s))
+    it = GeomAPI_Interpolate(pts, False, 1e-9)
+    it.Perform()
+    if not it.IsDone():
+        raise KernelError("Loft failed — the profiles are too close together for guides")
+    return it.Curve()
+
+
+LOFT_GUIDE_GAP = 0.1           # edges: an isocurve this close to where a guide crosses a profile is left out
+LOFT_NETWORK_MIN = 4           # curves round a smooth loop; fewer leave GeomFill_Gordon's guide direction slack
+
+
+def _gap(a, b, n):
+    d = abs(a - b) % n
+    return min(d, n - d)
+
+
+def _loop_slots(n, crossed):
+    """For a profile loop with no sharp corner: the slots of the isocurves that join the guides (one
+    at every edge joint no guide crosses, then the middle of the widest gap until LOFT_NETWORK_MIN
+    curves go round), and the seam slot in the middle of the widest remaining gap."""
+    slots = [float(k) for k in range(n)
+             if all(_gap(k, s, n) > LOFT_GUIDE_GAP for row in crossed for s in row)]
+
+    def widest():
+        ring = sorted(slots + [row[0] for row in crossed])
+        widths = [(ring[(i + 1) % len(ring)] - ring[i]) % n or n for i in range(len(ring))]
+        i = int(np.argmax(widths))
+        return (ring[i] + widths[i] / 2) % n
+    while len(slots) + len(crossed) < LOFT_NETWORK_MIN:
+        slots.append(widest())
+    return slots, widest()
+
+
+def _loop_curve(edges, seam):
+    """A closed profile loop as one B-spline that starts and ends at slot `seam`."""
+    from OCP.Geom import Geom_TrimmedCurve
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnCurve
+    from OCP.GeomConvert import GeomConvert
+    n = len(edges)
+    k = int(math.floor(seam)) % n
+    bss = [_edge_bspline(e) for e in edges]
+    b = bss[k]
+    t = GeomAPI_ProjectPointOnCurve(_slot_point(edges, seam), b).LowerDistanceParameter()
+    a0, a1 = b.FirstParameter(), b.LastParameter()
+    head = [GeomConvert.CurveToBSplineCurve_s(Geom_TrimmedCurve(b, t, a1))] if a1 - t > 1e-9 * (a1 - a0) else []
+    tail = [GeomConvert.CurveToBSplineCurve_s(Geom_TrimmedCurve(b, a0, t))] if t - a0 > 1e-9 * (a1 - a0) else []
+    return _join(head + [bss[(k + i) % n] for i in range(1, n)] + tail, "A profile")
+
+
+def _network_faces(surf, joints, mid, closed):
+    """A Gordon surface cut into one face per profile edge: (faces, cap pieces at the first and the last
+    profile, each a list per face of the (curve, a, b) edges along that face's end). `joints` are the first profile's edge ends in
+    order (an open patch lists both of its ends) and `mid` a point inside its first edge."""
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    u0, u1, v0, v1 = surf.Bounds()
+
+    def uv(p):
+        return GeomAPI_ProjectPointOnSurf(p, surf).LowerDistanceParameters()
+    uvs = [uv(p) for p in joints] + [uv(mid)]
+    us, vs = np.array([q[0] for q in uvs]), np.array([q[1] for q in uvs])
+    along_u = (np.ptp(us) / (u1 - u0)) > (np.ptp(vs) / (v1 - v0))   # the profile runs along u
+    if along_u:
+        ts, lo, hi, bound, s_lo, s_hi = list(us), u0, u1, float(np.mean(vs)), v0, v1
+    else:
+        ts, lo, hi, bound, s_lo, s_hi = list(vs), v0, v1, float(np.mean(us)), u0, u1
+    span = hi - lo
+    t_mid = ts.pop()
+    ts = [lo if abs(t - lo) < 1e-7 * span else hi if abs(t - hi) < 1e-7 * span else t for t in ts]
+    if closed:
+        try:                # periodic, so a face may run across the seam
+            if along_u and not surf.IsUPeriodic():
+                surf.SetUPeriodic()
+            elif not along_u and not surf.IsVPeriodic():
+                surf.SetVPeriodic()
+        except Exception as exc:
+            raise KernelError("Loft failed — the guided surface does not close round the profile") from exc
+        ts = [lo if t == hi else t for t in ts]
+        if len(ts) == 1:
+            cuts = [ts[0], ts[0] + span]
+        else:               # the joints in wire order, unwrapped to run one way round from the first
+            sgn = 1.0 if (t_mid - ts[0]) % span < (ts[1] - ts[0]) % span else -1.0
+            cuts = [ts[0]]
+            for t in ts[1:]:
+                cuts.append(cuts[-1] + sgn * ((sgn * (t - cuts[-1])) % span))
+            cuts.append(ts[0] + sgn * span)
+    else:
+        cuts = ts
+        steps = np.diff(cuts)
+        if not (np.all(steps > 0) or np.all(steps < 0)) or {cuts[0], cuts[-1]} != {lo, hi}:
+            raise KernelError("Loft failed — the guides pull the profile edges out of order")
+    first_at_lo = abs(bound - s_lo) <= abs(bound - s_hi)
+    out, caps = [], ([], [])
+    for k in range(len(cuts) - 1):
+        a, b = sorted((cuts[k], cuts[k + 1]))
+        if b - a < 1e-9 * span:
+            raise KernelError("Loft failed — two profile corners meet on the guided surface")
+        if along_u:
+            out.append(BRepBuilderAPI_MakeFace(surf, a, b, s_lo, s_hi, 1e-7).Face())
+            iso = (surf.VIso(s_lo), surf.VIso(s_hi))
+        else:
+            out.append(BRepBuilderAPI_MakeFace(surf, s_lo, s_hi, a, b, 1e-7).Face())
+            iso = (surf.UIso(s_lo), surf.UIso(s_hi))
+        first, last = (iso[0], iso[1]) if first_at_lo else (iso[1], iso[0])
+        shift = math.floor((a - lo) / span + 1e-12) * span if closed else 0.0
+        a, b = a - shift, b - shift               # cap edges stay inside the curve's own period
+        pieces = [(a, b)] if b <= hi + 1e-12 * span else [(a, hi), (lo, b - span)]
+        caps[0].append([(first, p, q) for p, q in pieces])
+        caps[1].append([(last, p, q) for p, q in pieces])
+    return out, caps
+
+
+def _network_cap(pieces, profile_face):
+    mw = BRepBuilderAPI_MakeWire()
+    for c, a, b in (p for face in pieces for p in face):
+        mw.Add(BRepBuilderAPI_MakeEdge(c, a, b).Edge())
+    if not mw.IsDone():
+        raise KernelError("Loft failed — the guided surface's end does not close")
+    mf = BRepBuilderAPI_MakeFace(mw.Wire(), True)
+    if not mf.IsDone():                 # a profile face that is not flat: cap on its own surface
+        mf = BRepBuilderAPI_MakeFace(BRep_Tool.Surface_s(profile_face), mw.Wire(), True)
+    if not mf.IsDone():
+        raise KernelError("Loft failed — the guided surface's end does not close")
+    return mf.Face()
+
+
+def _network_side(edge_lists, wires, guides, guide_wires):
+    """The guided side faces, one per edge of the compatible profiles (in the first profile's wire
+    order), and the cap pieces at the first and the last profile.
+
+    Profiles with sharp corners are cut at the corners into patches; each patch is one open network
+    bounded by the unguided loft's isocurve at each corner (or the guide that crosses there) with the
+    guides inside it. One closed network round a sharp-cornered loop is very sensitive to where its
+    seam lies (measured on two bowed guides on squares: the far face 0.29 mm past its guide, or a face
+    pinched 2 mm inside); open patches are not. A smooth loop (a circle) is one closed network, joined
+    by isocurves (`_loop_slots`) and with its seam in the widest gap between them."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    n = len(edge_lists[0])
+    crossed = []                       # per guide, the slot where it crosses each profile
+    for gw in guide_wires:
+        crossed.append([_slot_of(edges, BRepExtrema_DistShapeShape(gw, w).PointOnShape2(1))
+                        for edges, w in zip(edge_lists, wires)])
+    curves = [[_edge_bspline(e) for e in edges] for edges in edge_lists]
+    corners = [k for k in range(n) if any(_turn(c[k - 1], c[k]) > LOFT_GUIDE_ANGLE for c in curves)]
+    first = edge_lists[0]
+    if not corners:
+        slots, seam = _loop_slots(n, crossed)
+        surf, _rep = network_surface([_loop_curve(edges, seam) for edges in edge_lists],
+                                     guides + [_iso(edge_lists, s) for s in slots])
+        return _network_faces(surf, [_slot_point(first, k) for k in range(n)], _slot_point(first, 0.5), True)
+
+    def at_corner(g, c):
+        near = [_gap(s, c, n) < LOFT_GUIDE_GAP for s in crossed[g]]
+        if not any(near):
+            return False
+        for m, edges in enumerate(edge_lists):
+            v = BRepBuilderAPI_MakeVertex(_slot_point(edges, c)).Vertex()
+            if BRepExtrema_DistShapeShape(guide_wires[g], v).Value() > LOFT_GUIDE_TOL:
+                raise KernelError(f"Guide {g + 1} passes close to a corner of profile {m + 1} — "
+                                  "put it on the corner or further away")
+        return True
+    faces, caps = [None] * n, ([None] * n, [None] * n)
+    for j, c in enumerate(corners):
+        d = corners[(j + 1) % len(corners)]
+        d = d + n if d <= c else d
+        ends = []
+        for s in (c, d):
+            hit = [g for g in range(len(guides)) if at_corner(g, s % n)]
+            ends.append(guides[hit[0]] if hit else _iso(edge_lists, float(s % n)))
+        inner = []
+        for g, row in enumerate(crossed):
+            inside = [LOFT_GUIDE_GAP <= (s - c) % n <= (d - c) - LOFT_GUIDE_GAP for s in row]
+            if any(inside) and not all(inside):
+                raise KernelError(f"Guide {g + 1} runs across a corner of the profiles — a guide must stay "
+                                  "on the same side of the loft from profile to profile")
+            if all(inside):
+                inner.append(((row[0] - c) % n, guides[g]))
+        idx = [k % n for k in range(c, d)]
+        surf, _rep = network_surface([_join([cs[k] for k in idx], "A profile") for cs in curves],
+                                     [ends[0]] + [g for _s, g in sorted(inner, key=lambda t: t[0])] + [ends[1]])
+        fs, cp = _network_faces(surf, [_slot_point(first, k) for k in range(c, d + 1)],
+                                _slot_point(first, c + 0.5), False)
+        for k, f, p0, p1 in zip(idx, fs, cp[0], cp[1]):
+            faces[k], caps[0][k], caps[1][k] = f, p0, p1
+    return faces, caps
+
+
+def loft_network(profile_faces, guide_wires, with_history=False):
+    """A solid loft whose outer loop passes through the guide wires (OCP 8.0 only).
+
+    Each guide becomes one B-spline (refused with a sharp corner) and must touch every profile. The
+    compatible profile wires and the guides make one network surface (`network_surface`) per run of
+    edges between sharp corners, joined at the corners by the unguided loft's isocurves
+    (`_network_side`); the surfaces are cut into one side face per first-profile edge (not at the
+    guides), capped with the profiles, sewn and made solid, with the same history as `loft` and
+    `loft_skin` so the faces get the same names on every route. One guide works the same way (spike
+    I7.1: one_guide=isocurve). Holes are matched as `loft` matches them and lofted unguided."""
+    from OCP.BRepTools import BRepTools
+    from OCP.BRepFill import BRepFill_CompatibleWires
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
+    from OCP.TopAbs import TopAbs_SHELL
+    _gordon_class()
+    if len(profile_faces) < 2:
+        raise KernelError("Select at least two profiles, in order")
+    if not guide_wires:
+        raise KernelError("loft_network needs a guide; use loft")
+    outers = [BRepTools.OuterWire_s(f) for f in profile_faces]
+    guides = [_guide_bspline(w, n + 1) for n, w in enumerate(guide_wires)]
+    for n, gw in enumerate(guide_wires):
+        for m, ow in enumerate(outers):
+            d = BRepExtrema_DistShapeShape(gw, ow)
+            if not d.IsDone() or d.Value() > LOFT_GUIDE_TOL:
+                raise KernelError(f"Guide {n + 1} does not touch profile {m + 1}")
+    _P1, _P2, _R1, _I1, Seq = _skin_arrays()
+    seq = Seq()
+    for w in outers:
+        seq.Append(w)
+    cw = BRepFill_CompatibleWires(seq)
+    try:
+        cw.Perform()
+    except Exception as exc:
+        raise KernelError("Loft failed — try profiles with similar shapes") from exc
+    if not cw.IsDone():
+        raise KernelError("Loft failed — try profiles with similar shapes")
+    res = cw.Shape()
+    wires = [_as_wire(res.Value(i)) for i in range(1, res.Length() + 1)]
+    edge_lists = [_wire_edges(w) for w in wires]
+    if any(len(r) != len(edge_lists[0]) for r in edge_lists):
+        raise KernelError("Loft failed — try profiles with similar shapes")
+    side, caps_at = _network_side(edge_lists, wires, guides, guide_wires)
+    sew = BRepBuilderAPI_Sewing(1e-6)
+    for f in side:
+        sew.Add(f)
+    caps = [_network_cap(caps_at[0], profile_faces[0]), _network_cap(caps_at[1], profile_faces[-1])]
+    for c in caps:
+        sew.Add(c)
+    sew.Perform()
+    sx = TopExp_Explorer(sew.SewedShape(), TopAbs_SHELL)
+    if not sx.More():
+        raise KernelError("Loft failed — the guided surface does not close")
+    body = BRepBuilderAPI_MakeSolid(_as_shell(sx.Current())).Solid()
+    sx.Next()
+    if sx.More() or not is_valid(body):
+        raise KernelError("Loft failed — the guided surface does not close")
+    if volume(body) < 0:
+        body.Reverse()
+    hist = None
+    if with_history:
+        hist = BRepTools_History()
+        side = [sew.Modified(f) for f in side]
+        # Each edge of the first profile generated the side face of its span, as in `_skin_solid`.
+        for e in _sub_shapes(outers[0], TopAbs_EDGE):
+            try:
+                gens = list(cw.GeneratedShapes(e))
+            except Exception:
+                gens = []
+            for g in gens or [e]:
+                for k, ce in enumerate(edge_lists[0]):
+                    if ce.IsSame(g):
+                        hist.AddGenerated(e, side[k])
+        for f, cap in ((profile_faces[0], caps[0]), (profile_faces[-1], caps[1])):
+            hist.AddGenerated(f, sew.Modified(cap))
+    for hole in _loft_hole_sets(profile_faces):      # holes are lofted unguided, as `loft` lofts them
+        tool = _thru_sections(hole, False)
+        core = tool.Shape()
+        if volume(core) < 0:
+            core = core.Reversed()
+        if with_history:
+            body, cut_hist = cut(body, core, with_history=True)
+            hist = _chain(hist, _thru_sections_history(tool, hole), cut_hist)
+        else:
+            body = cut(body, core)
+        if len(solids(body)) != 1 or not is_valid(body):
+            raise KernelError("Loft failed — a hole runs out through the side of the loft")
+    return (body, hist) if with_history else body
+
+
+def loft_surface_network(profile_wires, guide_wires, with_history=False):
+    """A surface loft through open profile curves and guides (I7.8, OCP 8.0 only): the one face
+    `network_surface` builds from the curves, no caps and no solid. Each profile is one B-spline (its
+    corners kept as C0 knots), each guide one B-spline (refused with a sharp corner) and every guide must
+    touch every profile. The profiles' own order is kept: it is the order the Gordon network is built in.
+    The first profile's edges all generated the one face, so each names it."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    _gordon_class()
+    if len(profile_wires) < 2:
+        raise KernelError("Select at least two profiles, in order")
+    if len(guide_wires) < 2:
+        raise KernelError("Add a second guide: a surface loft with guides needs at least two")
+    profiles = []
+    for m, w in enumerate(profile_wires):
+        b = _join([_edge_bspline(e) for e in _wire_edges(w)], f"Profile {m + 1}")
+        if b.StartPoint().Distance(b.EndPoint()) < 1e-6:
+            raise KernelError("A surface loft with guides takes open profile curves, not closed ones, yet")
+        profiles.append(b)
+    guides = [_guide_bspline(w, n + 1) for n, w in enumerate(guide_wires)]
+    for n, gw in enumerate(guide_wires):
+        for m, pw in enumerate(profile_wires):
+            d = BRepExtrema_DistShapeShape(gw, pw)
+            if not d.IsDone() or d.Value() > LOFT_GUIDE_TOL:
+                raise KernelError(f"Guide {n + 1} does not touch profile {m + 1}")
+    surf, _rep = network_surface(profiles, guides)
+    face = BRepBuilderAPI_MakeFace(surf, 1e-7).Face()
+    if not is_valid(face):
+        raise KernelError("Loft failed — the guided surface is not valid")
+    if not with_history:
+        return face
+    hist = BRepTools_History()
+    for e in _sub_shapes(profile_wires[0], TopAbs_EDGE):
+        hist.AddGenerated(e, face)
+    return face, hist
 
 
 def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=False):
@@ -2200,22 +4192,25 @@ def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=Fa
 
 def section_cut(shape, p0, n):
     """The model with everything in front of the cutting plane removed (the side `n` points to), for a section
-    view. Each solid is cut on its own, so a multi-part model stays separate parts."""
+    view. Each body is cut on its own, so a multi-part model stays separate parts; a surface body keeps the
+    pieces whose centroid is on the kept side."""
     p0, n = np.asarray(p0, float), _unit_np(n)
     lo, hi = bbox(shape)
     size = float(np.linalg.norm(hi - lo)) * 2 + 10
     pl = Plane(p0, _any_perp(n), n)
     tool = BRepBuilderAPI_MakeFace(gp_Pln(pl.gp_ax3()), -size, size, -size, size).Face()
     keep = []
-    for sol in solids(shape) or [shape]:
+    for sol in bodies(shape) or [shape]:
         sp = BRepAlgoAPI_Splitter()
         sp.SetArguments(_list([sol]))
         sp.SetTools(_list([tool]))
         sp.SetFuzzyValue(1e-7)
         sp.Build()
-        pieces = solids(sp.Shape()) if sp.IsDone() else [sol]
+        pieces = []
+        for b in (bodies(sp.Shape()) if sp.IsDone() else [sol]):
+            pieces += _cut_apart(b, [tool]) if is_surface(b) else [b]
         for q in pieces:
-            c = interior_point_solid(q)
+            c = mass_props(q)["centroid"] if is_surface(q) else interior_point_solid(q)
             if float((c - p0) @ n) < 0:
                 keep.append(q)
     return compound(keep)
@@ -2421,25 +4416,74 @@ def side_of(point, tool) -> float:
 def piece_side(piece, tool) -> float:
     """Which side of a cutting surface a piece cut off by it lies on (+ = the side the surface's normal points
     to). A piece the surface cut has a face lying on it, facing away from the piece: that settles it exactly.
-    Otherwise a point inside the piece is tested."""
+    Otherwise a point inside the piece is tested; for a shell piece (a surface body) that is its area centroid."""
+    if is_surface(piece):
+        return side_of(mass_props(piece)["centroid"], tool)
     lo, hi = bbox(piece)
     tol = float(np.linalg.norm(hi - lo)) * 1e-6 + 1e-7
-    for f in faces(piece):
-        try:
-            q, n = surface_point_normal(f)
-        except KernelError:
-            continue
-        got = _tool_normal_at(q, tool)
-        if got is None or got[0] > tol:
-            continue
-        dot = float(n @ got[2])
-        if abs(dot) > 0.5:
-            return -dot              # the piece's outside faces against the tool's normal: it's on the + side
+    tool_faces = faces(tool)
+    # a tool of several faces (a surface body): "front" is the first face's side wherever the piece has a face
+    # on it; otherwise the face the piece lies against decides (a V-shaped tool has opposing normals)
+    for ts in ([tool_faces[0], tool] if len(tool_faces) > 1 else [tool]):
+        for f in faces(piece):
+            try:
+                q, n = surface_point_normal(f)
+            except KernelError:
+                continue
+            got = _tool_normal_at(q, ts)
+            if got is None or got[0] > tol:
+                continue
+            dot = float(n @ got[2])
+            if abs(dot) > 0.5:
+                return -dot          # the piece's outside faces against the tool's normal: it's on the + side
     return side_of(interior_point_solid(piece), tool)
 
 
+def _cut_apart(body, tools):
+    """The pieces of a surface body that a split has left in one shell: faces stay together across an edge
+    unless that edge lies on one of the cutting surfaces `tools`. A body no edge of which lies on a tool is
+    returned as it is."""
+    fs = faces(body)
+    if len(fs) < 2:
+        return [body]
+    tol = float(np.linalg.norm(bbox(body)[1] - bbox(body)[0])) * 1e-6 + 1e-7
+    parent = list(range(len(fs)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for e in edges(body):
+        pair = edge_faces(body, e)
+        if len(pair) != 2 or any(_dist(e, t) <= tol for t in tools):
+            continue
+        a, b = (next(i for i, f in enumerate(fs) if f.IsSame(x)) for x in pair)
+        parent[find(a)] = find(b)
+    groups = {}
+    for i, f in enumerate(fs):
+        groups.setdefault(find(i), []).append(f)
+    if len(groups) == 1:
+        return [body]
+    out = []
+    for g in groups.values():
+        b, sh = BRep_Builder(), TopoDS_Shell()
+        b.MakeShell(sh)
+        for f in g:
+            b.Add(sh, f)
+        out.append(sh)
+    return out
+
+
+def _dist(a, b) -> float:
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    d = BRepExtrema_DistShapeShape(a, b)
+    return float(d.Value()) if d.IsDone() else float("inf")
+
+
 def split_with(shape, tools, with_history=False):
-    """The solids a shape is cut into by any number of cutting surfaces (faces or shells).
+    """The bodies a shape is cut into by any number of cutting surfaces (faces or shells): solids, and the
+    shells a surface body is cut into.
     with_history=True returns (pieces, history): the splitter's history over the shape and the tools, in that
     order, which is what naming needs (as split_by_plane gives for one plane)."""
     tools = list(tools)
@@ -2450,7 +4494,9 @@ def split_with(shape, tools, with_history=False):
     sp.Build()
     if not sp.IsDone():
         raise KernelError("Split failed")
-    pieces = solids(sp.Shape())
+    pieces = []
+    for b in bodies(sp.Shape()):
+        pieces += _cut_apart(b, tools) if is_surface(b) else [b]
     return (pieces, _maker_history(sp, [shape] + tools)) if with_history else pieces
 
 

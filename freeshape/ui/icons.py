@@ -158,6 +158,23 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(ORANGE, 2.2))
         p.drawLine(QPointF(8, 9), QPointF(22, 9))
         p.drawLine(QPointF(22, 9), QPointF(27, 6))
+    elif name == "thicken":
+        p.setPen(_pen(ORANGE, 2.2))
+        p.drawLine(QPointF(5, 9), QPointF(20, 9))
+        p.drawLine(QPointF(20, 9), QPointF(27, 5))
+        _box(p, 4, 15, 18, 6, 6)
+    elif name == "enclose":
+        _box(p, 5, 6, 22, 20, 6)
+        p.setPen(_pen(ORANGE, 2.2))
+        p.drawLine(QPointF(5, 6), QPointF(27, 26))
+        p.drawLine(QPointF(27, 6), QPointF(5, 26))
+    elif name == "fill":
+        p.setPen(_pen(INK, 1.6))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QPointF(16, 16), 11, 8)
+        p.setPen(_pen(ORANGE, 2.2))
+        p.setBrush(QColor(ORANGE).lighter(160))
+        p.drawEllipse(QPointF(16, 16), 6.5, 4.5)
     elif name == "delete_part":
         _box(p, 4, 10, 18, 16, 6)
         p.setPen(_pen(RED, 2.8))
@@ -258,6 +275,13 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(INK, 1.4))
         p.setBrush(QColor("#eef3fa"))
         p.drawEllipse(QPointF(6, 27), 4, 2.2)
+    elif name == "rib":
+        _box(p, 4, 14, 24, 14, 6)
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(FACE)
+        p.drawPolygon(QPolygonF([QPointF(11, 17), QPointF(15, 17), QPointF(15, 5), QPointF(11, 5)]))
+        p.setPen(_pen(ORANGE, 1.6))
+        p.drawLine(QPointF(25, 20), QPointF(13, 7))
     elif name == "loft":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(FACE)
@@ -267,6 +291,17 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(ORANGE, 1.6))
         p.setBrush(Qt.NoBrush)
         p.drawRect(QRectF(5, 24, 22, 4))
+    elif name == "boundary_surface":
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(QColor("#eef3fa"))
+        p.drawPolygon(QPolygonF([QPointF(4, 22), QPointF(10, 8), QPointF(28, 10), QPointF(26, 25)]))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(_pen(ORANGE, 1.8))
+        p.drawLine(QPointF(4, 22), QPointF(26, 25))
+        p.drawLine(QPointF(10, 8), QPointF(28, 10))
+        p.setPen(_pen(INK, 1.6))
+        p.drawLine(QPointF(4, 22), QPointF(10, 8))
+        p.drawLine(QPointF(26, 25), QPointF(28, 10))
     elif name == "draft":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(FACE)

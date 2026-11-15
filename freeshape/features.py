@@ -9,8 +9,10 @@ in the common cases.
 from __future__ import annotations
 
 import base64
+import json
 import math
 import os
+import re
 import tempfile
 import types
 from dataclasses import dataclass, field
@@ -43,6 +45,40 @@ def palette_color(n):
     """Colour for the n-th part (1-based) created in a replay."""
     return PART_PALETTE[(n - 1) % len(PART_PALETTE)]
 
+# Front doors (I7.9): a named way in to a feature type, stored as the type plus a `front` marker in its params.
+# A Boundary surface is a surface loft; `run_loft` ignores the marker. This is the one place that reads it:
+# a label, icon, dialog or error that depends on the door asks `front_kind`.
+FRONT_DOORS = {"boundary_surface": ("loft", "Boundary surface")}
+
+
+def front_kind(feature):
+    """The front door a feature was made through ("boundary_surface"), or None for a plain feature."""
+    kind = (feature.get("params") or {}).get("front") if isinstance(feature, dict) else None
+    return kind if kind in FRONT_DOORS and FRONT_DOORS[kind][0] == feature.get("type") else None
+
+
+def door_kind(feature):
+    """What to show for a feature: its front door when it has one, else its type. Picks labels, icons, schemas."""
+    return front_kind(feature) or feature["type"]
+
+
+def boundary_wording(msg):
+    """A surface loft's error in the Boundary surface's words (U curves are the loft's curves, V curves its guides)."""
+    for old, new in (("Add a second guide: a surface loft with guides needs at least two",
+                      "Add a second V curve: a Boundary surface with V curves needs at least two"),
+                     ("Loft guides need OpenCascade 8.0 or newer",
+                      "Boundary surface with V curves needs OpenCascade 8.0 or newer"),
+                     ("Select at least two profiles, in order", "Select at least two U curves, in order"),
+                     ("Select sketch curves to loft", "Select the U curves"),
+                     ("Guides need a smooth loft — untick Straight sides (ruled)",
+                      "V curves need a smooth surface — untick Straight sides (ruled)"),
+                     ("A closed surface loft and guides cannot be combined yet",
+                      "A Boundary surface cannot have V curves and be closed")):
+        msg = msg.replace(old, new)
+    msg = re.sub(r"\b[Gg]uide (\d+)", r"V curve \1", msg)
+    return re.sub(r"\b[Pp]rofile (\d+)", r"U curve \1", msg)
+
+
 FEATURE_LABELS = {
     "sketch": "Sketch", "extrude": "Extrude", "revolve": "Revolve", "fillet": "Fillet",
     "chamfer": "Chamfer", "shell": "Shell", "plane": "Plane", "axis": "Axis", "mirror": "Mirror",
@@ -52,9 +88,10 @@ FEATURE_LABELS = {
     "derived": "Derived",
     "mate_connector": "Mate connector",
     "context": "Context",
-    "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
+    "sweep": "Sweep", "rib": "Rib", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "sm_hem": "Hem", "sm_jog": "Jog", "sm_tab": "Tab",
     "sm_convert": "Convert to sheet metal", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
+    "thicken": "Thicken", "enclose": "Enclose", "fill": "Fill",
     "delete_part": "Delete part",
 }
 
@@ -254,12 +291,14 @@ class ModelState:
     history: dict = field(default_factory=dict)
     # axis feature id -> {o, d, span}: a construction axis (origin, unit direction, stretch of the source along d).
     axes: dict = field(default_factory=dict)
+    # surface bodies made through new_part(surface=True) so far: numbers `Surface n`, apart from `Part n`
+    surface_counter: int = 0
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
                           set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts},
-                          dict(self.connectors), dict(self.history), dict(self.axes))
+                          dict(self.connectors), dict(self.history), dict(self.axes), self.surface_counter)
 
     def named(self, pid):
         """The element map of part `pid`, or None when it has none or the part's shape has since been
@@ -275,7 +314,19 @@ class ModelState:
         else:
             self.names[pid] = named
 
-    def new_part(self, shape, fid, color=None):
+    def new_part(self, shape, fid, color=None, surface=False):
+        """A new part for `shape`. With `surface` it is a surface body, named `Surface n` (counted apart from
+        `Part n`, which it leaves alone)."""
+        if surface:
+            self.surface_counter += 1
+            if color is None:
+                color = palette_color(self.part_counter + self.surface_counter)
+            n = self.feature_part_counts.get(fid, 0) + 1
+            self.feature_part_counts[fid] = n
+            pid = f"{fid}/{n}"
+            p = Part(pid, f"Surface {self.surface_counter}", shape, color)
+            self.parts[pid] = p
+            return p
         self.part_counter += 1
         if color is None:
             color = palette_color(self.part_counter)
@@ -342,14 +393,14 @@ def _named_lookup(state, ref, letter):
     """(part id, sub-shape or vertex) of the element a name refers to, or None when no part's element
     map has that name. A reference's own part is searched first when it still exists, then the other
     pieces a cut severed from the same solid (`set_part_shape` ids `<pid>.<i>`): the element may now
-    be on any of them. Every part is searched when the reference's own part is gone."""
+    be on any of them. Every part but a Context body is searched when the reference's own part is gone."""
     own = ref.get("part")
     if own in state.parts:
         head, slash, tail = own.rpartition("/")
         root = head + slash + tail.split(".")[0]          # "<fid>/<n>.<i>.<j>" -> "<fid>/<n>"
         pids = [own] + [p for p in state.parts if slash and p != own and (p == root or p.startswith(root + "."))]
-    else:
-        pids = list(state.parts)
+    else:       # a Context body is never a stand-in: twin neighbours carry the same names (I6.3)
+        pids = [p for p, pt in state.parts.items() if not pt.reference]
     for pid in pids:
         nm = state.named(pid)
         if nm is None:
@@ -494,7 +545,7 @@ def resolve_point(state: ModelState, ref, fid=None) -> np.ndarray:
 PLANE_TYPES = [
     ("auto", "Automatic"), ("offset", "Offset"), ("plane_point", "Plane + point"), ("line_angle", "Line + angle"),
     ("point_normal", "Point + edge normal"), ("three_point", "Three points"), ("mid_plane", "Mid plane"),
-    ("curve_point", "Curve + point"), ("tangent", "Tangent"),
+    ("curve_point", "Curve point"), ("tangent", "Tangent"),
 ]
 PLANE_TYPE_NAMES = dict(PLANE_TYPES)
 
@@ -510,10 +561,12 @@ def plane_items(p):
 
 
 def plane_role(kind, ref):
-    if kind == "vertex":
+    if kind in ("vertex", "sketch"):    # a sketch point is a point
         return "point"
     if kind == "plane":
         return "plane"
+    if kind == "sketch_line":       # a sketch line is straight; an arc, circle, spline or ellipse is a curve
+        return "line" if ref.get("etype", "line") == "line" else "curve"
     if kind == "axis":              # an axis feature stands where a straight edge does
         return "line"
     if kind == "face":
@@ -574,6 +627,24 @@ def _frame(origin, normal, xhint=None):
     raise K.KernelError("Can't orient that plane")
 
 
+def _sketch_entity_edge(state, ref):
+    """The OCC edge of the one sketch entity a `sketch_line` reference names (not its chain). A construction
+    entity counts: the user picked it. A deleted sketch or entity is an error (ADR 0011), never a near match."""
+    import copy
+    res = state.sketches.get(ref["sketch"])
+    eid = ref["line"]
+    if res is None:
+        raise K.KernelError(f"Sketch {ref['sketch']} is gone: the plane has no curve to stand on")
+    if eid not in res.sketch.entities:
+        raise K.KernelError(f"Sketch entity {eid} is gone: the plane has no curve to stand on")
+    one = copy.copy(res.sketch)
+    one.entities = {eid: {**res.sketch.entities[eid], "construction": False}}
+    edges = K.make_sketch_edges(res.plane, one.curves())
+    if len(edges) != 1:
+        raise K.KernelError(f"Sketch entity {eid} has no usable curve")
+    return edges[0]
+
+
 def build_plane(state, p):
     """The datum plane a plane feature describes."""
     items = plane_items(p)
@@ -587,6 +658,12 @@ def build_plane(state, p):
 
     def face_plane(k, ref):
         return resolve_plane(state, ref if k == "plane" else {"kind": "face", "face": ref})
+
+    def point_of(k, ref):               # the world point of a vertex or a sketch point
+        return resolve_point(state, ref) if k == "vertex" else _axis_point(state, k, ref)
+
+    def edge_of(k, ref):                # the OCC edge of an edge or of the single picked sketch entity
+        return resolve(state, ref, "edge")[1] if k == "edge" else _sketch_entity_edge(state, ref)
 
     def one(role, what, n=1):
         got = by[role] if isinstance(role, str) else [x for r in role for x in by[r]]
@@ -602,21 +679,21 @@ def build_plane(state, p):
         return base.offset(float(p.get("offset", 10)) * (-1 if flip else 1))
     if typ == "plane_point":
         base = face_plane(*one("plane", "a plane or planar face")[0])
-        pt = resolve_point(state, one("point", "a vertex for the plane to pass through")[0][1])
+        pt = point_of(*one("point", "a vertex for the plane to pass through")[0])
         return done(K.Plane(pt, base.xdir, base.normal))
     if typ in ("point_normal", "curve_point"):
         ek, eref = one(("line", "curve"), "an edge")[0]
-        pt = resolve_point(state, one("point", "a vertex")[0][1])
+        pt = point_of(*one("point", "a vertex")[0])
         if ek == "axis":                                       # perpendicular to the axis, through the point
             return done(_frame(pt, resolve_axis(state, eref)[1]))
-        _, e = resolve(state, eref, "edge")
-        if typ == "point_normal" and eref.get("type") == int(K.GeomAbs_Line):
+        e = edge_of(ek, eref)
+        if typ == "point_normal" and plane_role(ek, eref) == "line":
             n = np.array(K.edge_info(e)["d"], float)          # perpendicular to a straight edge, through the point
             return done(_frame(pt, n))
         on, n = K.edge_closest(e, pt)                          # perpendicular to the curve where the point lies on it
         return done(_frame(on, n))
     if typ == "three_point":
-        pts = [resolve_point(state, r) for _, r in one("point", "three vertices", 3)]
+        pts = [point_of(k, r) for k, r in one("point", "three vertices", 3)]
         n = np.cross(pts[1] - pts[0], pts[2] - pts[0])
         if np.linalg.norm(n) < 1e-9 * max(1.0, float(np.linalg.norm(pts[1] - pts[0]))):
             raise K.KernelError("The three points are in a straight line")
@@ -974,6 +1051,29 @@ def region_ref(state_or_result, sketch_fid, face):
     return ref
 
 
+def round_face_axis(face):
+    """(point, unit direction) of the axis of a round face, or None when the face has none.
+
+    A cylinder, cone or torus gives the surface's own axis. A flat face qualifies only when every edge of its
+    outer wire is a circle or arc and they all share one centre (disc, annulus, arc-bounded face); the axis then
+    runs through that centre along the outward normal, not through the centroid."""
+    fa = K.face_axis(face)
+    if fa is not None:
+        return np.array(fa[0], float), np.array(fa[1], float)
+    if K.planar_face_plane(face) is None:
+        return None
+    from OCP.BRepTools import BRepTools
+    centres = []
+    for e in K.edges(BRepTools.OuterWire_s(face)):
+        info = K.edge_info(e)
+        if "center" not in info:
+            return None
+        centres.append(np.array(info["center"], float))
+    if not centres or any(np.linalg.norm(c - centres[0]) > 1e-6 for c in centres):
+        return None
+    return centres[0], K.face_outward_normal(face)
+
+
 def resolve_axis(state: ModelState, ref):
     kind = ref.get("kind")
     if kind == "std":
@@ -990,6 +1090,20 @@ def resolve_axis(state: ModelState, ref):
         if np.linalg.norm(d) < 1e-9:
             raise K.KernelError("Axis has zero length")
         return a, d / np.linalg.norm(d)
+    if kind == "sketch_circle":
+        sk = state.sketches.get(ref["sketch"])
+        if sk is None or ref["entity"] not in sk.sketch.entities:
+            raise K.KernelError("Missing axis")
+        e = sk.sketch.entities[ref["entity"]]
+        if e.get("type") not in ("circle", "arc"):
+            raise K.KernelError("Pick a circle or an arc as the axis")
+        return sk.plane.to_world(*sk.sketch.points[e["c"]]), np.array(sk.plane.normal, float)
+    if kind == "face":
+        _, face = resolve(state, ref["face"], "face")
+        ax = round_face_axis(face)
+        if ax is None:
+            raise K.KernelError("Pick a round face, an edge, a sketch line or an axis")
+        return ax
     if kind == "edge":
         _, e = resolve(state, ref["edge"], "edge")
         ln = K.edge_line(e)
@@ -1016,9 +1130,9 @@ def set_part_shape(state: ModelState, part: Part, shape, named=None):
 
     `named` is the NamedShape of `shape` (from `name_feature`): each piece keeps the names of its own
     elements. Without it the part has no names until a feature names it."""
-    pieces = K.solids(shape)
+    pieces = K.bodies(shape)
     if len(pieces) <= 1:
-        one = pieces[0] if pieces else shape
+        one = pieces[0] if K.solids(shape) else shape      # an open result with no solid keeps its form
         state.parts[part.id] = Part(part.id, part.name, one, part.color)
         state.set_named(part.id, named.restrict(one) if named is not None and named.shape is not None else None)
         return
@@ -1121,14 +1235,23 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=Non
     if body is None:
         raise K.KernelError("Feature produced no geometry")
     sols = K.solids(body)
-    if not sols:
+    surfs = [b for b in K.bodies(body) if not K.solids(b)]
+    if not sols and not surfs:
         raise K.KernelError("Feature produced no solid")
     tool = [] if named is None else list(named) if isinstance(named, (list, tuple)) else [named]
     targets = [state.parts[p] for p in (scope or [i for i, q in state.parts.items() if not q.reference])
                if p in state.parts]      # an unscoped feature leaves Context bodies alone (I5.3)
+    if not sols:
+        if op in ("remove", "intersect"):
+            raise K.KernelError("Remove and Intersect are not available for surfaces")
+        _apply_surfaces(state, surfs, op, fid, [p for p in targets if K.is_surface(p.shape)], tool)
+        return
+    targets = [p for p in targets if not K.is_surface(p.shape)]    # parts merge with parts, surfaces with surfaces
     if op == "new" or (op == "add" and not targets):
         for s in sols:
             state.set_named(state.new_part(s, fid).id, _piece(tool, s))
+        _apply_surfaces(state, surfs, op, fid, [p for p in state.parts.values() if K.is_surface(p.shape)
+                        and (not scope or p.id in scope) and not p.reference] if op == "add" else [], tool)
         return
     if op == "add":
         remaining = []
@@ -1151,6 +1274,8 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=Non
             targets[targets.index(keep)] = state.parts[keep.id]
         for s in remaining:
             state.set_named(state.new_part(s, fid).id, _piece(tool, s))
+        _apply_surfaces(state, surfs, op, fid, [p for p in state.parts.values() if K.is_surface(p.shape)
+                        and (not scope or p.id in scope) and not p.reference], tool)
         return
     hit_any = False
     for p in list(targets):
@@ -1166,6 +1291,32 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=Non
         set_part_shape(state, p, res, result)
     if not hit_any:
         raise K.KernelError("Feature does not intersect any part")
+
+
+def _apply_surfaces(state, surfs, op, fid, targets, tool):
+    """The surface bodies of a tool body (new / add): `new` makes one `Surface n` part each; `add` sews each
+    to the surface parts in `targets` it shares an edge with (the first keeps its id) and makes a new part
+    when it touches none."""
+    for s in surfs:
+        if op != "add":
+            state.set_named(state.new_part(s, fid, surface=True).id, _piece(tool, s))
+            continue
+        hit = [p for p in targets if p.id in state.parts and len(K.as_surface([p.shape, s])) < 2]
+        if not hit:
+            state.set_named(state.new_part(s, fid, surface=True).id, _piece(tool, s))
+            continue
+        keep = hit[0]
+        merged = K.as_surface([p.shape for p in hit] + [s])
+        for p in hit[1:]:
+            state.parts.pop(p.id, None)
+            state.names.pop(p.id, None)
+            targets.remove(p)
+        shape = merged[0] if len(merged) == 1 else K.compound(merged)
+        state.parts[keep.id] = Part(keep.id, keep.name, shape, keep.color)
+        state.set_named(keep.id, None)
+        targets[targets.index(keep)] = state.parts[keep.id]
+        if len(merged) > 1:
+            set_part_shape(state, state.parts[keep.id], shape)
 
 
 def _piece(tool, solid):
@@ -1187,7 +1338,8 @@ NUMERIC_KEYS = {"depth", "depth2", "angle", "radius", "distance", "thickness", "
                 "countersink_dia", "k", "relief_scale",
                 "scale",
                 "count2", "spacing2",
-                "distance2"}
+                "distance2",
+                "thickness1", "thickness2"}
 
 
 # numeric params of plugin features: feature type -> set of keys (filled in by freeshape.plugins)
@@ -1266,10 +1418,10 @@ def saved_copy_key(f):
 def saved_copy_record(state, fid, key):
     """(entry, blobs) of the parts feature `fid` made in `state`, for a document's `python_builds`: per part its
     BREP and name map as blobs (pyfeature.host.build_record) plus its name and colour; `key` is saved_copy_key.
-    None when a part is not one solid (restoring takes one solid per part) or the feature made no part."""
+    None when a part is not one body, solid or surface (restoring takes one solid per part) or the feature made no part."""
     from .pyfeature import host
     entry, blobs = host.build_record(state, fid, {})
-    if not entry["parts"] or any(len(K.solids(state.parts[r["id"]].shape)) != 1 for r in entry["parts"]):
+    if not entry["parts"] or any(len(K.bodies(state.parts[r["id"]].shape)) != 1 for r in entry["parts"]):
         return None
     del entry["plugin"]
     entry["key"] = key
@@ -1555,8 +1707,11 @@ def context_listing(get, key):
 
 
 def run_context(state, f):
-    """Restore the neighbours of a stored capture (ADR 0004) as reference parts `<fid>/<k>`, each placed as
-    captured relative to the edited instance, its element names carried with a CTX fragment. Reads only blobs
+    """Restore the neighbours of a stored capture (ADR 0004) as reference parts, each placed as captured
+    relative to the edited instance, its element names carried with a CTX fragment. With params["ids"] ==
+    "instance" a body's id is `<fid>/<Assembly instance id>` (e.g. "F7/I3"), so hidden flags, overrides and
+    references stay on the same instance when Update context reorders the capture. Without the key it is
+    `<fid>/<k>`, k the neighbour's position in the capture (Contexts made before I6.1). Reads only blobs
     (PartStudioDoc.compute hands in `get` as params["resolved"]) and never the Assembly or its source studios."""
     from . import blobstore as B
     from .pyfeature import host
@@ -1564,6 +1719,9 @@ def run_context(state, f):
     get = p.get("resolved")
     if not p.get("capture") or get is None:
         raise K.KernelError("Context has no stored capture")
+    by_instance = p.get("ids") is not None
+    if by_instance and p["ids"] != "instance":
+        raise K.KernelError(f"Context has an unknown ids setting {p['ids']!r}")
     try:
         top = context_listing(get, p["capture"])
         loaded = []
@@ -1574,11 +1732,73 @@ def run_context(state, f):
             loaded.append((n, shape, named))
     except Exception as e:      # BlobError, a malformed listing or names blob, or a parser failure
         raise K.KernelError(f"Context capture is missing or damaged ({e})") from e
+    if by_instance:
+        # an instance id becomes the middle of a part id: "/" or "." would break the "<fid>/<n>.<i>" parse
+        iids = [n["id"] for n, _s, _n in loaded]
+        if len(set(iids)) != len(iids) or not all(i and all(c.isalnum() or c == "_" for c in i) for i in iids):
+            raise K.KernelError("Context capture is missing or damaged (bad or repeated instance ids)")
     for n, shape, named in loaded:
-        part = state.new_part(shape, fid)
-        state.parts[part.id] = Part(part.id, n["name"], shape, part.color, None, True)
+        part = state.new_part(shape, fid)       # numbering and colour as before, whatever the id
+        pid = part.id
+        if by_instance:
+            del state.parts[pid]
+            state.old_ids[f"{fid}/{n['id']}"] = state.old_ids.pop(pid)
+            pid = f"{fid}/{n['id']}"
+        state.parts[pid] = Part(pid, n["name"], shape, part.color, None, True)
         label = "".join(c for c in n["id"] if c.isalnum() or c == "_") + "_"
-        state.set_named(part.id, N.name_context(shape, named.names, fid, label))
+        state.set_named(pid, N.name_context(shape, named.names, fid, label))
+
+
+# Param keys that name parts of this Part Studio by id (I6.2): a string under one of these keys is a part id, and so
+# is each string in a list under one (a dict in such a list, a Split tool say, is walked like any other). A
+# {"kind": "part", "id": ...} dict (an extrude's up_to) names one by "id". Every other string is left alone.
+PART_ID_KEYS = ("part", "owner", "parts", "scope", "tools", "targets")
+# Feature types whose params name no part of this studio: a Derived and a Variable Studio reference name ids of
+# their source studio, a Context names an Assembly instance.
+NO_PART_REFS = ("derived", "variable_studio_ref", "context")
+
+
+def renamed_part_id(pid, ids):
+    """`pid` under the map `ids` (old part id -> new one): a mapped id, or a piece `<old>.<i>[.<j>...]` a cut
+    severed from one as `<new>.<i>...`. Any other value is returned unchanged."""
+    if not isinstance(pid, str):
+        return pid
+    if pid in ids:
+        return ids[pid]
+    root, dot, tail = pid.partition(".")
+    if dot and root in ids and all(t.isdigit() for t in tail.split(".")):
+        return ids[root] + dot + tail
+    return pid
+
+
+def rename_part_refs(feature, ids):
+    """A copy of `feature` whose params name each part of the map `ids` by its new id: every part id under a
+    PART_ID_KEYS key, at any depth (a face or edge reference's "part", a sketch entity's Use source, a Boolean's
+    tools and targets, a pattern's parts, a Split's tools, a mate connector's ref and owner, an extrude's scope and
+    up-to part). The one walker Update context uses to convert a Context's positional body ids. `feature` is not
+    changed; a feature of a NO_PART_REFS type comes back as it is."""
+    def one(v):
+        return renamed_part_id(v, ids) if isinstance(v, str) else walk(v)
+
+    def walk(x):
+        if isinstance(x, list):
+            return [walk(v) for v in x]
+        if not isinstance(x, dict):
+            return x
+        out = {}
+        for k, v in x.items():
+            if k in PART_ID_KEYS:
+                out[k] = [one(i) for i in v] if isinstance(v, list) else one(v)
+            elif k == "id" and x.get("kind") == "part":
+                out[k] = renamed_part_id(v, ids)
+            else:
+                out[k] = walk(v)
+        return out
+
+    f = dict(feature)
+    if f.get("type") not in NO_PART_REFS and isinstance(f.get("params"), dict):
+        f["params"] = walk(f["params"])
+    return f
 
 
 def project_edge(plane, edge):
@@ -1730,12 +1950,65 @@ def run_sketch(state, f):
                                            named, names)
 
 
-def _profiles(state, p, fid=None):
+def _profiles(state, p, fid=None, labels=None):
+    if p.get("creation", "solid") == "surface":      # a surface extrude takes sketch curves: one wire per chain
+        return _curve_wires(state, p.get("curves", []), labels)
     profs = resolve_regions(state, p.get("regions", []), fid)
     for fr in p.get("faces", []):
         _, face = resolve(state, fr, "face")
         profs.append(face)
     return profs
+
+
+def _thin_thicknesses(p):
+    """(thickness 1, thickness 2) of a thin feature. Mid plane splits thickness 1 half each side; Flip wall swaps
+    the two."""
+    t1, t2 = float(p.get("thickness1", 1.0)), float(p.get("thickness2", 0.0))
+    if p.get("mid_plane"):
+        return t1 / 2, t1 / 2
+    return (t2, t1) if p.get("flip_wall") else (t1, t2)
+
+
+def _thin_profiles(state, p, fid=None):
+    """The profile faces of a thin extrude or revolve, in place of `_profiles`: (faces, history, seeded names).
+
+    Each sketch chain of `p["curves"]` (open or closed), the outer loop of each region of `p["regions"]` and
+    the outer loop of each planar face of `p["faces"]` becomes one thin face in its own plane
+    (K.thin_profile). `history` chains each wire's offset (the part's names reach the face's edges through
+    it) ahead of the sweep's history; `seeded` are the NamedShapes of what no sketch region names: each
+    sketch curve (named `<sketch fid>_<curve id>`) and the two end-cap edges of an open chain. Thickness 1 is
+    on the right of the curve's direction of travel, outside a closed one (docs/reference/document-format.md)."""
+    t1, t2 = _thin_thicknesses(p)
+    wires, curve_labels, seen, by_sketch = [], [], set(), {}
+    for r in p.get("curves", []):
+        if r.get("kind") != "sketch_chain":
+            raise K.KernelError("A thin feature needs sketch curves, not a model edge")
+        key, pairs = _ref_edges(state, r)
+        if key is not None and key not in seen:
+            seen.add(key)
+            by_sketch.setdefault(r["sketch"], []).extend(pairs)
+    for sid, pairs in by_sketch.items():
+        curve_labels += [(lab, e) for lab, e in pairs if lab]
+        wires += [(state.sketches[sid].plane, w, True) for w in K.chain_wires([e for _, e in pairs])]
+    faces = resolve_regions(state, p.get("regions", []), fid) + [resolve(state, fr, "face")[1]
+                                                                   for fr in p.get("faces", [])]
+    for face in faces:
+        plane = K.planar_face_plane(face)
+        if plane is None:
+            raise K.KernelError("Profile face must be planar")
+        wires.append((plane, K.BRepTools_OuterWire(face), False))
+    out, hists, seeds, cap_labels = [], [], [], []
+    for i, (plane, wire, _curve) in enumerate(wires):
+        face, hist, caps = K.thin_profile(plane, wire, t1, t2)
+        out.append(face)
+        hists.append(hist)
+        cap_labels += [(f"{fid}_thin{i}{'ab'[j]}", c) for j, c in enumerate(caps)]
+    if fid:
+        for names in (_curve_names(fid, [w for _, w, curve in wires if curve], curve_labels) if curve_labels else None,
+                      _curve_names(fid, [c for _, c in cap_labels], cap_labels) if cap_labels else None):
+            if names is not None:
+                seeds.append(names)
+    return out, K._chain(*hists), seeds
 
 
 def _profile_names(state, p):
@@ -1748,10 +2021,34 @@ def _profile_names(state, p):
         if sk is not None and sk.named is not None and all(o is not sk.named for o in out):
             out.append(sk.named)
     out.extend(dict.fromkeys(fr["part"] for fr in p.get("faces", []) if fr.get("part") in state.parts))
+    for r in p.get("curves", []) if p.get("creation") in ("surface", "thin") else []:
+        sk = state.sketches.get(r.get("sketch"))
+        if sk is not None and sk.named is not None and all(o is not sk.named for o in out):
+            out.append(sk.named)
     return out
 
 
+def _curve_normal(state, p):
+    """The extrude direction of a surface extrude's curves: the normal of their sketch plane. The curves of
+    several sketches must lie on parallel planes. A model edge has no plane, so it needs an explicit
+    direction, which this card does not offer."""
+    refs = p.get("curves", [])
+    if any(r.get("kind") != "sketch_chain" for r in refs):
+        raise K.KernelError("A surface extrude of a model edge needs a direction: pick sketch curves")
+    normals = []
+    for r in refs:
+        sr = state.sketches.get(r["sketch"])
+        if sr is None:
+            raise K.KernelError("Missing sketch")
+        normals.append(np.asarray(sr.plane.normal, float))
+    if any(abs(float(np.dot(normals[0], m))) < 1 - 1e-6 for m in normals[1:]):
+        raise K.KernelError("The curves are on sketches that are not parallel")
+    return normals[0]
+
+
 def _profile_normal(state, p, profs):
+    if p.get("creation", "solid") == "surface":
+        return _curve_normal(state, p)
     if p.get("regions"):
         return state.sketches[p["regions"][0]["sketch"]].plane.normal
     pl = K.planar_face_plane(profs[0])
@@ -1823,20 +2120,110 @@ def _up_to_blind(state, p, profs, n):
     return dist - offset if dist > 0 else dist + offset
 
 
+def _drafted_tool(profs, direction, body, hist, angle, flip):  # hist: the extrude's, names the side faces
+    """The extrude tool body with its side faces drafted, and the draft's history.
+
+    Onshape's meaning: the sketch plane is the neutral plane and the extrude direction is the pull
+    direction. A positive angle makes the far end smaller; `flip` makes it larger. The side faces are the
+    ones the extrude history generates from the profile edges, so inner loops are drafted by the same
+    call (a hole grows where the outside shrinks). The draft runs on the tool body, before the boolean."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone
+    angle = float(angle)
+    if not 0 < angle < 90:
+        raise K.KernelError("Draft angle must be more than 0 and less than 90 degrees")
+    made = [g for pf in profs for e in K.edges(pf) for g in hist.Generated(e)]
+    side = [f for f in K.faces(body) if any(f.IsSame(g) for g in made)]
+    if not side:
+        raise K.KernelError("Draft found no side faces to draft")
+    for f in side:
+        if BRepAdaptor_Surface(f).GetType() not in (GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone):
+            raise K.KernelError("Draft works on straight and circular profile edges")
+    neutral = K.planar_face_plane(profs[0])
+    if neutral is None:
+        raise K.KernelError("Draft needs a flat profile")
+    body, h2 = K.draft(body, side, np.asarray(direction, float), -angle if flip else angle, neutral,
+                       with_history=True)
+    return body, h2
+
+
+def _named_after_draft(named, body, draft_hist):
+    """`named` (the extrude's map of the undrafted tool body) carried one to one onto the drafted `body`.
+
+    Chaining the draft's history into the extrude's would name every drafted face a modification of the
+    extrude's (":M" and a new fragment), so turning draft on would rename the side faces and break what
+    refers to them. The draft only reshapes the faces, so each keeps its name."""
+    out = N.NamedShape(body, {})
+    for letter in N.KINDS:
+        for sub, name in named.named(letter):
+            images = list(draft_hist.Modified(sub)) + list(draft_hist.Generated(sub))
+            for img in images or [sub]:
+                key = out.el.key(img)
+                if key is not None:
+                    out.names.setdefault(key, name)
+    out.stamped_from = named.stamped_from
+    return out
+
+
+def _drafted_two_ways(state, fid, p, profs, direction, depth, depth2, symmetric, thin=(None, ())):
+    """Draft with Symmetric, or with a second blind direction: (body, its element map).
+
+    One prism across the sketch plane cannot be drafted in one call, since the plane is the neutral plane
+    and the draft grows away from it. So each half is extruded from the plane (half the depth each when
+    symmetric; the first depth along `direction` and the second against it otherwise), drafted away from
+    the plane by I1.4's `_drafted_tool` with the one angle, named like a plain extrude (`_named_after_draft`)
+    and the halves fused with their history. A side face is two faces here, one per half."""
+    da, db = (depth / 2, depth / 2) if symmetric else (depth, depth2)
+    if da <= 1e-9 or db <= 1e-9:
+        raise K.KernelError("Draft with two directions needs both depths to be more than 0")
+    sources = _profile_names(state, p) + list(thin[1])
+    pieces = []
+    for d, dist in ((np.asarray(direction, float), da), (-np.asarray(direction, float), db)):
+        half, hist = K.extrude(profs, d, dist, with_history=True)
+        named = name_feature(state, fid, sources, half, K._chain(thin[0], hist) if thin[0] is not None else hist,
+                             "extrude")
+        half, h2 = _drafted_tool(profs, d, half, hist, p.get("draft_angle", 5.0), p.get("draft_flip", False))
+        pieces.append((half, _named_after_draft(named, half, h2)))
+    body, fused = K.fuse_all([b for b, _ in pieces], with_history=True)
+    return body, name_feature(state, fid, [n for _, n in pieces], body, fused, "fuse_all", stamp=False)
+
+
 def run_extrude(state, f):
     p = legacy_up_to(f["params"])
-    profs = _profiles(state, p, f["id"])
+    creation = p.get("creation", "solid")
+    thin = creation == "thin"                   # runs the solid path on a thin face (every end, op and up-to works)
+    surface = creation == "surface"
+    if surface:
+        if p.get("op", "add") in ("remove", "intersect"):
+            raise K.KernelError("Remove and Intersect are not available for surfaces")
+        if p.get("end") in UP_TO or p.get("end") == "to_face":
+            raise K.KernelError("A surface extrude needs a Blind, Symmetric or Through all end")
+        if p.get("draft"):
+            raise K.KernelError("Draft is not available for a surface extrude")
+    curve_labels = []
+    thin_hist, thin_seeds = None, []
+    if thin:
+        profs, thin_hist, thin_seeds = _thin_profiles(state, p, f["id"])
+    else:
+        profs = _profiles(state, p, f["id"], curve_labels)
     if not profs:
-        raise K.KernelError("Select sketch regions or a planar face")
+        raise K.KernelError("Select sketch curves to extrude" if surface or thin
+                            else "Select sketch regions or a planar face")
     n = _profile_normal(state, p, profs)
     op = p.get("op", "add")
     end = p.get("end", "blind")
     depth, flip = signed_extent(p.get("depth", 10), p.get("flip", False))
     symmetric = end == "symmetric"
     cutting = op in ("remove", "intersect")
-    if cutting and not p.get("regions"):
+    from_sketch = bool(p.get("regions") or (thin and p.get("curves")))
+    if cutting and not from_sketch:
         # cutting from a face goes into the part by default
         flip = not flip
+
+    drafted = {}     # set by make() when the tool body was drafted: the undrafted body and the draft's history
+    #                  (the two-halves path stores its finished `named` map instead)
+    if p.get("draft") and end not in ("blind", "symmetric"):
+        raise K.KernelError("Draft works with Blind and Symmetric ends")
 
     def make(direction):
         if end == "to_face":     # up to a planar face (any part, a Context body included), measured along `direction`
@@ -1855,22 +2242,35 @@ def run_extrude(state, f):
                 a, b = K.bbox(part.shape)
                 lo, hi = np.minimum(lo, a), np.maximum(hi, b)
             dd = float(np.linalg.norm(hi - lo)) * 2 + 10 if state.parts else depth
-            both = p.get("both", False) or (cutting and p.get("regions"))
+            both = p.get("both", False) or (cutting and from_sketch)
             return K.extrude(profs, direction, dd, depth2=dd if both else 0.0, with_history=True)
         depth2 = float(p.get("depth2", 0)) if p.get("second", False) and not symmetric else 0.0
         if depth + depth2 <= 0 and depth2:
             raise K.KernelError("The second depth cancels the first")
-        return K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
+        drafted.clear()
+        if p.get("draft") and (symmetric or depth2):
+            body, named = _drafted_two_ways(state, f["id"], p, profs, direction, depth, depth2, symmetric,
+                                            (thin_hist, thin_seeds))
+            drafted.update(named=named)
+            return body, None
+        body, hist = K.extrude(profs, direction, depth, symmetric=symmetric, depth2=depth2, with_history=True)
+        if p.get("draft") and not symmetric and not depth2:
+            undrafted = body
+            body, h2 = _drafted_tool(profs, direction, body, hist, p.get("draft_angle", 5.0),
+                                     p.get("draft_flip", False))
+            drafted.update(undrafted=undrafted, history=h2)
+        return body, hist
 
     d = -n if flip else n
     if end in UP_TO:
         dist = _up_to_blind(state, p, profs, n)
         if dist is not None:
             body, hist = K.extrude(profs, n if dist > 0 else -n, abs(dist), with_history=True)
-            named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "extrude")
+            named = name_feature(state, f["id"], _profile_names(state, p) + thin_seeds, body,
+                                 K._chain(thin_hist, hist) if thin else hist, "extrude")
             apply_body(state, body, op, f["id"], p.get("scope"), named)
             return
-        body, named = _named_up_to(state, f["id"], p, profs, "extrude", d)
+        body, named = _named_up_to(state, f["id"], p, profs, "extrude", d, (thin_hist, thin_seeds))
         apply_body(state, body, op, f["id"], p.get("scope"), named)
         return
     body, hist = make(d)
@@ -1878,10 +2278,22 @@ def run_extrude(state, f):
         # like Onshape, a cut that misses everything is tried in the other direction
         targets = [state.parts[i] for i in (p.get("scope") or state.parts) if i in state.parts]
         if not any(K.intersects(t.shape, body) for t in targets):
+            first = dict(drafted)
             alt, alt_hist = make(-d)
             if any(K.intersects(t.shape, alt) for t in targets):
                 body, hist = alt, alt_hist
-    named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "extrude")
+            else:
+                drafted.clear()
+                drafted.update(first)
+    if "named" in drafted:
+        named = drafted["named"]
+    else:
+        seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
+        named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []) + thin_seeds,
+                             drafted.get("undrafted", body), K._chain(thin_hist, hist) if thin else hist,
+                             "extrude")
+        if drafted:
+            named = _named_after_draft(named, body, drafted["history"])
     apply_body(state, body, op, f["id"], p.get("scope"), named)
 
 
@@ -1893,17 +2305,19 @@ def _model_size(state, extra=()):
     return float(np.linalg.norm(hi - lo)) if np.all(hi >= lo) else 100.0
 
 
-def _named_up_to(state, fid, p, profs, kind, how):
+def _named_up_to(state, fid, p, profs, kind, how, thin=(None, ())):
     """The up-to sweep of every profile, fused, and its element map: (body, NamedShape).
 
     Each profile's piece is named from the profile's map through the sweep-and-trim history, as a blind
     extrude is (op `extrude` / `revolve`); its end cap on the target takes the role `end` under the
     profile face's name, so it keeps its name when the target moves. Several pieces are then fused and
     named from their maps, as `apply_body` names a fuse."""
-    sources = _profile_names(state, p)
+    sources = _profile_names(state, p) + list(thin[1])
     pieces = []
     for prof in profs:
         body, hist, ends = _sweep_up_to(state, p, prof, kind, how)
+        if thin[0] is not None:
+            hist = K._chain(thin[0], hist)
         pieces.append((body, name_feature(state, fid, sources, body, hist, kind,
                                           roles=[(e, prof, "end") for e in ends])))
     if len(pieces) == 1:
@@ -1973,20 +2387,56 @@ def _sweep_up_to(state, p, face, kind, how):
     return K.keep_piece_from(long_body, tool, seed, hist)
 
 
+def _surface_creation(p, what, ends_msg):
+    """True for a surface feature (`creation` "surface"); False for a solid or thin one, and raises for the
+    options a surface does not take: Remove and Intersect, and the ends `ends_msg` names."""
+    creation = p.get("creation", "solid")
+    if creation == "thin":
+        return False                              # a thin extrude, revolve or sweep is the solid path on a thin face
+    if creation != "surface":
+        return False
+    if p.get("op", "add") in ("remove", "intersect"):
+        raise K.KernelError("Remove and Intersect are not available for surfaces")
+    if ends_msg and (p.get("end") in UP_TO or p.get("end") == "to_face"):
+        raise K.KernelError(ends_msg)
+    return True
+
+
 def run_revolve(state, f):
     p = f["params"]
-    profs = _profiles(state, p, f["id"])
+    surface = _surface_creation(p, "revolve", "A surface revolve needs a Full, One direction or Symmetric end")
+    curve_labels = []
+    thin = p.get("creation") == "thin"
+    thin_hist, thin_seeds = None, []
+    if thin:
+        profs, thin_hist, thin_seeds = _thin_profiles(state, p, f["id"])
+        if not profs:
+            raise K.KernelError("Select sketch curves or regions to revolve")
+    else:
+        profs = _profiles(state, p, f["id"], curve_labels)
+    if surface and not profs:
+        raise K.KernelError("Select sketch curves to revolve")
     a, d = resolve_axis(state, p.get("axis", {}))
+    for r in (p.get("curves", []) if surface else []):          # a model edge has no sketch plane to check
+        sr = state.sketches.get(r.get("sketch"))
+        if sr is not None and abs(float(np.asarray(sr.plane.normal, float) @ d)) > 1 - 1e-9:
+            raise K.KernelError("The axis must not be perpendicular to the sketch plane")
+    for prof in ([] if surface else profs):
+        pl = K.planar_face_plane(prof)
+        if pl is not None and abs(float(pl.normal @ d)) > 1 - 1e-9:
+            raise K.KernelError("The axis must not be perpendicular to the sketch plane")
     end = p.get("end", "full")
     angle, flip = signed_extent(360.0 if end == "full" else p.get("angle", 180), p.get("flip", False))
     if flip:
         d = -d
     if end in UP_TO:
-        body, named = _named_up_to(state, f["id"], p, profs, "revolve", (a, d))
+        body, named = _named_up_to(state, f["id"], p, profs, "revolve", (a, d), (thin_hist, thin_seeds))
         apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
         return
     body, hist = K.revolve(profs, a, d, angle, symmetric=(end == "symmetric"), with_history=True)
-    named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "revolve")
+    seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
+    named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []) + thin_seeds,
+                         body, K._chain(thin_hist, hist) if thin else hist, "revolve")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 
@@ -1994,8 +2444,29 @@ def _group_by_part(state, refs, kind):
     groups = {}
     for r in refs:
         pid, sub = resolve(state, r, kind)
+        _need_solid_part(state, pid)
         groups.setdefault(pid, []).append(sub)
     return groups
+
+
+def _need_solid_part(state, pid):
+    """Raise when part `pid` is a surface body: features that need a solid do not run on one."""
+    part = state.parts.get(pid)
+    if part is not None and K.is_surface(part.shape):
+        raise K.KernelError(f"{part.name} is a surface - this needs a solid part up front")
+
+
+def _attach_failure_refs(err, state, pid, part):
+    """Put the failing edges and vertices of a fillet error on it as references (`err.refs`), for the window
+    to highlight. A diagnostics problem here must not hide the real error."""
+    try:
+        named = state.named(pid)
+        refs = [make_ref(pid, e, "edge", part.shape, named) for e in getattr(err, "failed_edges", None) or []]
+        refs += [make_vertex_ref(pid, v, part.shape, named) for v in getattr(err, "failed_vertices", None) or []]
+        if refs:
+            err.refs = refs
+    except Exception:
+        pass
 
 
 def run_fillet(state, f):
@@ -2003,9 +2474,42 @@ def run_fillet(state, f):
     groups = _group_by_part(state, p.get("edges", []), "edge")
     if not groups:
         raise K.KernelError("Select edges to fillet")
+    variable = p.get("fillet_type") == "variable"
+    if p.get("fillet_type") not in (None, "constant", "variable"):
+        raise K.KernelError(f"Unknown fillet type '{p.get('fillet_type')}'")
+    vradii = []
+    if variable:                    # [(position, radius)]: a radius may be an expression, like chamfer's distance2
+        for i, item in enumerate(p.get("vertex_radii") or []):
+            r = item.get("radius")
+            if isinstance(r, str):
+                val = parse_number(r, variables=state.vars)
+                if val is None:
+                    bad = [n for n in var_names(r) if n not in state.vars]
+                    raise K.KernelError(f"Unknown variable #{bad[0]}" if bad else f"Can't read '{r}'")
+                r = val
+            try:
+                pos = resolve_point(state, item["vertex"])
+            except K.KernelError as exc:
+                c = item["vertex"].get("c")
+                where = f" at ({c[0]:.3f}, {c[1]:.3f}, {c[2]:.3f})" if c else ""
+                err = K.KernelError(f"Fillet vertex {i + 1}{where}: {exc}")
+                err.element_name = getattr(exc, "element_name", None)
+                raise err from exc
+            vradii.append((pos, float(r)))
     for pid, es in groups.items():
         part = state.parts[pid]
-        res, hist = K.fillet(part.shape, es, float(p.get("radius", 1)), with_history=True)
+        try:
+            es, warns = K.fillet_prechecks(part.shape, es)      # a seam or smooth edge is left out, with a warning
+            for w in warns:
+                import logging
+                logging.getLogger(__name__).warning("fillet %s: %s", f["id"], w)
+            if variable:
+                res, hist = K.fillet_variable(part.shape, es, float(p.get("radius", 1)), vradii, with_history=True)
+            else:
+                res, hist = K.fillet(part.shape, es, float(p.get("radius", 1)), with_history=True)
+        except K.KernelError as err:
+            _attach_failure_refs(err, state, pid, part)
+            raise
         named = name_feature(state, f["id"], [pid], res, hist, "fillet")
         state.parts[pid] = Part(pid, part.name, res, part.color)
         state.set_named(pid, named)
@@ -2111,6 +2615,191 @@ def run_offset_surface(state, f):
         state.set_named(state.new_part(res, f["id"]).id, named)
 
 
+def run_thicken(state, f):
+    """Thicken surface parts and picked faces into solids. Connected faces make one solid; the surface parts
+    used are deleted unless keep_tools (a face picked from a solid is never deleted)."""
+    p = f["params"]
+    fid = f["id"]
+    units, used = [], []         # (shape, source part id) per input; surface parts that were used
+    for pid in p.get("parts", []):
+        part = state.parts.get(pid)
+        if part is None or not K.is_surface(part.shape):
+            raise K.KernelError("Thicken needs surface parts here: pick a surface part, or a face")
+        units.append((part.shape, pid))
+        used.append(pid)
+    from_solid = False
+    for r in p.get("faces", []):
+        pid, face = resolve(state, r, "face")
+        units.append((face, pid))
+        if K.is_surface(state.parts[pid].shape):
+            if pid not in used:
+                used.append(pid)
+        else:
+            from_solid = True
+    if not units:
+        raise K.KernelError("Select a surface or a face to thicken")
+    op = p.get("op") or ("add" if from_solid else "new")
+    t1 = float(p.get("thickness1", 2.0))
+    t2 = 0.0 if p.get("mid_plane") else float(p.get("thickness2", 0.0))
+    if p.get("mid_plane"):
+        t1 = t2 = t1 / 2
+    if p.get("flip"):
+        t1, t2 = -t1, -t2
+    if len(units) == 1:
+        groups = [([units[0][0]], [units[0][1]])]
+    else:                         # sewing keeps no element names: the group's result is named from its parts
+        sewn = K.as_surface([u[0] for u in units])
+        groups = [([sh], list(dict.fromkeys(u[1] for u in units))) for sh in sewn]
+    for shapes, pids in groups:
+        solid, hist = K.thicken(shapes[0], t1, t2, with_history=True)
+        named = name_feature(state, fid, pids, solid, hist, "thicken")
+        apply_body(state, solid, op, fid, p.get("scope"), named)
+    if not p.get("keep_tools"):
+        for pid in used:          # as run_delete_part does, once per part
+            state.parts.pop(pid, None)
+            state.names.pop(pid, None)
+            state.sheet.pop(pid, None)
+
+
+def run_enclose(state, f):
+    """Enclose: a solid for every volume the entities surround. Entities are `{kind: part | face | plane, ref}`:
+    a part (a surface part, or a solid acting as a wall), a face, or a plane (cut to the size of the other
+    entities). The surface parts used are deleted unless keep_tools; a solid part is never deleted."""
+    p = f["params"]
+    fid = f["id"]
+    shapes, pids, used, planes = [], [], [], []
+    for e in p.get("entities", []):
+        kind, ref = e.get("kind"), e.get("ref")
+        if kind == "part":
+            part = state.parts.get(ref)
+            if part is None:
+                raise K.KernelError("Missing part reference")
+            shapes.append(part.shape)
+            pids.append(ref)
+            if K.is_surface(part.shape) and ref not in used:
+                used.append(ref)
+        elif kind == "face":
+            pid, face = resolve(state, ref, "face")
+            shapes.append(face)
+            if pid not in pids:
+                pids.append(pid)
+            if K.is_surface(state.parts[pid].shape) and pid not in used:
+                used.append(pid)
+        elif kind == "plane":
+            planes.append(resolve_plane(state, ref))
+        else:
+            raise K.KernelError("Enclose entities are parts, faces or planes")
+    if not shapes:
+        raise K.KernelError("Select the surfaces that surround a volume")
+    if planes:                    # a plane is cut to the size of the other entities, with room to overhang
+        lo, hi = np.full(3, 1e18), np.full(3, -1e18)
+        for s in shapes:
+            a, b = K.bbox(s)
+            lo, hi = np.minimum(lo, a), np.maximum(hi, b)
+        around, size = (lo + hi) / 2, max(float(np.linalg.norm(hi - lo)), 1.0)
+        shapes = shapes + [K.plane_face(pl, around, size) for pl in planes]
+    op = p.get("op") or "new"
+    solids, hist = K.enclose(shapes, with_history=True)
+    for solid in solids:
+        named = name_feature(state, fid, pids, solid, hist, "enclose")
+        apply_body(state, solid, op, fid, p.get("scope"), named)
+    if not p.get("keep_tools"):
+        for pid in used:          # as run_delete_part does, once per part
+            state.parts.pop(pid, None)
+            state.names.pop(pid, None)
+            state.sheet.pop(pid, None)
+
+
+def _fill_support(state, ref_faces, pid, edge):
+    """The face a Tangency fill edge leaves tangent to: the first of the picked `faces` that holds the edge, else
+    the picked one, else (no pick) the largest face of the edge's own part that holds it. None for a sketch curve."""
+    picked = [resolve(state, r, "face")[1] for r in ref_faces or []]
+    if picked:
+        for face in picked:
+            if any(edge.IsSame(e) for e in K.edges(face)):
+                return face
+        return picked[0]
+    if pid is None:
+        return None
+    around = [K._as_face(x) for x in K.edge_faces(state.parts[pid].shape, edge)]
+    return max(around, key=lambda x: K.face_info(x)["area"]) if around else None
+
+
+def run_fill(state, f):
+    """Fill: a face across a closed boundary. `edges` is a list of `{ref, continuity: position | tangency, faces}`
+    (`ref` a model edge or a sketch curve; a sketch curve has no support face and counts as Position), `guides` are
+    vertex references the face passes through. New makes a surface part. Add sews the face to the surface parts in
+    scope it connects to, at 1e-4 (the plate's edge is near the input edge, not on it); when they close a volume the
+    result is a solid part."""
+    p = f["params"]
+    fid = f["id"]
+    edges, supports, seen = [], [], set()
+    for item in p.get("edges") or []:
+        ref = item.get("ref") or {}
+        cont = item.get("continuity") or "position"
+        if cont not in ("position", "tangency"):
+            raise K.KernelError(f"Unknown continuity '{cont}'")
+        if ref.get("kind") == "edge":
+            pid, e = resolve(state, ref["edge"], "edge")
+            pairs = [(pid, e)]
+            key = ("edge", json.dumps(ref["edge"], sort_keys=True, default=str))
+        else:
+            key, es = _ref_edges(state, ref)
+            pairs = [(None, e) for _, e in es]
+        if key is None:
+            raise K.KernelError("Fill edges are model edges or sketch curves")
+        if key in seen:
+            continue
+        seen.add(key)
+        for pid, e in pairs:
+            edges.append(e)
+            supports.append(_fill_support(state, item.get("faces"), pid, e) if cont == "tangency" else None)
+    if not edges:
+        raise K.KernelError("Select the edges of the boundary")
+    points = [resolve_point(state, g) for g in p.get("guides") or []]
+    face, hist = K.fill(edges, supports, points, with_history=True)
+    named = _tool_names(state, fid, face, "fill")
+    op = p.get("op") or "new"
+    if op not in ("new", "add"):
+        raise K.KernelError("Fill makes a new surface or adds to the surfaces in scope")
+    if op == "new":
+        apply_body(state, face, "new", fid, p.get("scope"), named)
+        return
+    scope = p.get("scope")
+    pool = [q for i, q in state.parts.items() if (not scope or i in scope) and not q.reference
+            and K.is_surface(q.shape)]
+    group, grew = [], True
+    while grew:                   # the surface parts the face reaches, one shared edge after another
+        grew = False
+        for q in list(pool):
+            if len(K.as_surface([x.shape for x in group] + [face, q.shape], 1e-4)) < len(
+                    K.as_surface([x.shape for x in group] + [face], 1e-4)) + 1:
+                group.append(q)
+                pool.remove(q)
+                grew = True
+    shapes = [q.shape for q in group] + [face]
+    closed = K.sew_closed(shapes, 1e-4)
+    if closed:                    # the surfaces and the face surround a volume: a solid part, as Onshape does
+        for q in group:
+            state.parts.pop(q.id, None)
+            state.names.pop(q.id, None)
+            state.sheet.pop(q.id, None)
+        for s in closed:
+            state.set_named(state.new_part(s, fid).id, _tool_names(state, fid, s, "fill"))
+        return
+    merged = K.as_surface(shapes, 1e-4)
+    if not group:
+        apply_body(state, face, "new", fid, scope, named)
+        return
+    keep = group[0]
+    for q in group[1:]:
+        state.parts.pop(q.id, None)
+        state.names.pop(q.id, None)
+    shape = merged[0] if len(merged) == 1 else K.compound(merged)
+    state.parts[keep.id] = Part(keep.id, keep.name, shape, keep.color)
+    state.set_named(keep.id, None)
+
+
 def run_delete_part(state, f):
     ids = _selected_parts(state, f["params"])
     for i in ids:
@@ -2189,8 +2878,8 @@ def _repeat_features(state, f, copies, op):
         part = state.parts.get(pid)
         if part is None:                      # the feature made a part that has since gone: new parts
             for s_, _ in adds.get(pid, []):
-                for sol in K.solids(s_):
-                    state.new_part(sol, f["id"])
+                for sol in K.bodies(s_):
+                    state.new_part(sol, f["id"], surface=K.is_surface(sol))
             continue
         # through the named boolean helpers, so the part keeps its element names (as apply_body does)
         shape, named = part.shape, state.named(pid)
@@ -2321,6 +3010,8 @@ def run_boolean(state, f):
     op = p.get("op", "union")
     tools = [i for i in p.get("tools", []) if i in state.parts]
     targets = [i for i in p.get("targets", []) if i in state.parts]
+    for i in tools + targets:
+        _need_solid_part(state, i)
     if op == "union":
         allp = tools + targets
         if len(allp) < 2:
@@ -2428,6 +3119,9 @@ def _tool_names(state, fid, shape, label):
 def run_hole(state, f):
     """Holes at sketch points: simple, counterbored or countersunk; custom size or ISO metric."""
     p = f["params"]
+    live = [i for i, q in state.parts.items() if not q.reference]
+    if live and not any(K.solids(state.parts[i].shape) for i in live):
+        _need_solid_part(state, live[0])        # holes need a solid: every part is a surface body
     sk = state.sketches.get(p.get("sketch"))
     if sk is None:
         raise K.KernelError("Select a sketch with points or circles for the hole centres (click it, or pick it above)")
@@ -2447,7 +3141,7 @@ def run_hole(state, f):
         a_, b_ = K.bbox(part.shape)
         lo, hi = np.minimum(lo, a_), np.maximum(hi, b_)
     big = float(np.linalg.norm(hi - lo)) * 2 + 10
-    shapes = [pt.shape for pt in state.parts.values()]
+    shapes = [pt.shape for pt in state.parts.values() if not K.is_surface(pt.shape)]
     back = max(dia * 0.02, 1e-3)      # start a hair above the surface for clean cuts
 
     def material_on(direction):
@@ -2613,55 +3307,511 @@ def run_thread(state, f):
 
 # --------------------------------------------------------------------------- sweep / loft / draft / split / move
 
-def _path_wire(state, refs):
+def _ref_edges(state, r):
+    """The edges one path reference stands for: (a key that is the same for every reference to the same
+    chain, [(label, edge)]). A `sketch_chain` is the whole chain of sketch curves the picked curve belongs
+    to, each edge labelled "<sketch feature id>_<curve id>"; a model edge has the label None."""
     from . import sketch_ops
+    if r.get("kind") == "sketch_chain":
+        sr = state.sketches.get(r["sketch"])
+        if sr is None or r["entity"] not in sr.sketch.entities:
+            raise K.KernelError("Missing sweep path")
+        sk = sr.sketch
+        e0 = sk.entities[r["entity"]]
+        if e0["type"] == "circle":
+            curves = [{"type": "circle", "id": r["entity"], "c": sk.points[e0["c"]], "r": e0["r"]}]
+            ids = {r["entity"]}
+        else:
+            if sketch_ops._ends(e0) is None:          # a closed curve on its own (ellipse, closed spline)
+                ids = {r["entity"]}
+            else:
+                chain, _closed = sketch_ops._chain(sk, r["entity"], splines=True)
+                ids = {k for k, _ in chain}
+            tmp = Sketch.from_dict(sk.to_dict())
+            tmp.entities = {k: dict(v, construction=False) for k, v in tmp.entities.items() if k in ids}
+            curves = tmp.curves()
+        pairs = K.make_sketch_edges(sr.plane, curves, with_ids=True)
+        return (r["sketch"], frozenset(ids)), [(f"{r['sketch']}_{i}" if i else None, e) for i, e in pairs]
+    if r.get("kind") == "edge":
+        _, e = resolve(state, r["edge"], "edge")
+        return ("edge", json.dumps(r["edge"], sort_keys=True, default=str)), [(None, e)]
+    return None, []
+
+
+def _path_wire(state, refs):
     edges = []
     for r in refs:
-        if r.get("kind") == "sketch_chain":
-            sr = state.sketches.get(r["sketch"])
-            if sr is None or r["entity"] not in sr.sketch.entities:
-                raise K.KernelError("Missing sweep path")
-            sk = sr.sketch
-            e0 = sk.entities[r["entity"]]
-            if e0["type"] == "circle":
-                curves = [{"type": "circle", "c": sk.points[e0["c"]], "r": e0["r"]}]
-            else:
-                if sketch_ops._ends(e0) is None:          # a closed curve on its own (ellipse, closed spline)
-                    ids = {r["entity"]}
-                else:
-                    chain, _closed = sketch_ops._chain(sk, r["entity"], splines=True)
-                    ids = {k for k, _ in chain}
-                tmp = Sketch.from_dict(sk.to_dict())
-                tmp.entities = {k: dict(v, construction=False) for k, v in tmp.entities.items() if k in ids}
-                curves = tmp.curves()
-            edges += K.make_sketch_edges(sr.plane, curves)
-        elif r.get("kind") == "edge":
-            _, e = resolve(state, r["edge"], "edge")
-            edges.append(e)
+        edges += [e for _, e in _ref_edges(state, r)[1]]
     return K.make_wire(edges)
+
+
+def _curve_wires(state, refs, labels=None):
+    """One wire per connected chain of the curves `refs` name (`sketch_chain` and `edge` references, as
+    `_path_wire` reads them). A chain named twice, or by two of its curves, is used once. `labels`, a list,
+    receives (label, edge) for every sketch curve, for `_curve_names`."""
+    seen, pairs = set(), []
+    for r in refs:
+        key, es = _ref_edges(state, r)
+        if key is not None and key not in seen:
+            seen.add(key)
+            pairs += es
+    if not pairs:
+        raise K.KernelError("Select sketch curves to extrude")
+    if labels is not None:
+        labels += [(lab, e) for lab, e in pairs if lab]
+    return K.chain_wires([e for _, e in pairs])
+
+
+def _curve_names(fid, profs, labels):
+    """The NamedShape of a surface extrude's profile wires: each sketch curve's edge is named by the curve's
+    id (as a sketch names its edges), so the side face made from it keeps its name when the depth, or the
+    curve's place, changes. None when a label cannot go in a name."""
+    comp = K.compound(profs)
+    keys = N.NamedShape(comp, {}).el
+    by_key = {}
+    for lab, e in labels:
+        k = keys.key(e)
+        if k is not None:
+            by_key[k] = lab
+    try:
+        return N.seed(comp, fid, N.OP_SKETCH, by_key)
+    except N.NamingError:
+        return None
+
+
+THIN_SWEEP_BEND = "The wall is thicker than the path's tightest bend allows"
+
+
+def _check_thin_sweep_bends(profs, path_wire):
+    """Raise THIN_SWEEP_BEND when a thin profile reaches as far from the path as a bend of the path is tight.
+
+    A profile point swept round a bend turns about the bend's axis at the radius (bend radius - its distance
+    from the axis towards the centre); once that distance reaches the bend radius the wall folds into itself.
+    Each bend is sampled along the path (a line has none) for its radius and axis; the reach is
+    the largest distance, in the bend's plane, from a profile sample to the path point nearest the profile.
+    Conservative: a point on the outside of the bend counts as well, since the profile's side of the path is
+    not tracked round the path."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomLProp import GeomLProp_CLProps
+    from OCP.gp import gp_Dir
+    bends = []                                   # (radius, unit axis of the bend)
+    for e in K.edges(path_wire):
+        try:
+            a, b = BRep_Tool.Range_s(e)
+            crv = BRep_Tool.Curve_s(e, a, b)
+        except Exception:
+            continue
+        if crv is None:
+            continue
+        props = GeomLProp_CLProps(crv, 2, 1e-9)
+        for k in range(33):
+            props.SetParameter(a + (b - a) * k / 32)
+            try:
+                if not props.IsTangentDefined() or props.Curvature() < 1e-9:
+                    continue
+                t, n = gp_Dir(), gp_Dir()
+                props.Tangent(t)
+                props.Normal(n)
+                axis = np.cross([t.X(), t.Y(), t.Z()], [n.X(), n.Y(), n.Z()])
+                bends.append((1.0 / props.Curvature(), axis / np.linalg.norm(axis)))
+            except Exception:
+                continue
+    if not bends:
+        return
+    for face in profs:
+        try:
+            q0 = BRepExtrema_DistShapeShape(face, path_wire).PointOnShape2(1)
+            origin = np.array([q0.X(), q0.Y(), q0.Z()])
+        except Exception:                       # no single nearest point: the face meets the path
+            origin = K.discretize_edge(K.edges(path_wire)[0], 0.05)[0]
+        pts = np.vstack([K.discretize_edge(edge, 0.05) for edge in K.edges(face)]) - origin
+        for r, axis in bends:
+            reach = float(np.linalg.norm(pts - np.outer(pts @ axis, axis), axis=1).max())
+            if reach >= r * (1 - 1e-9):
+                raise K.KernelError(THIN_SWEEP_BEND)
+
+
+def _sweep_control(state, p):
+    """The sweep's profile control for the kernel: None (absent or empty: the profile follows the path),
+    ("keep",) or ("lock", unit direction of `lock_dir`)."""
+    c = p.get("control") or ""
+    if c == "":
+        return None
+    if c == "keep":
+        return ("keep",)
+    if c == "lock":
+        if not p.get("lock_dir"):
+            raise K.KernelError(K.SWEEP_NO_DIRECTION)
+        return ("lock", resolve_axis(state, p["lock_dir"])[1])
+    raise K.KernelError("Unknown profile control")
 
 
 def run_sweep(state, f):
     p = f["params"]
-    profs = _profiles(state, p, f["id"])
+    surface = _surface_creation(p, "sweep", None)
+    curve_labels = []
+    thin = p.get("creation") == "thin"
+    thin_hist, thin_seeds = None, []
+    if thin:
+        profs, thin_hist, thin_seeds = _thin_profiles(state, p, f["id"])
+        if not profs:
+            raise K.KernelError("Select sketch curves or regions to sweep")
+    else:
+        profs = _profiles(state, p, f["id"], curve_labels)
+    if surface and not profs:
+        raise K.KernelError("Select sketch curves to sweep")
     if not p.get("path"):
         raise K.KernelError("Select the path to sweep along")
-    body, hist = K.sweep(profs, _path_wire(state, p["path"]), with_history=True)
-    named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "sweep")
+    path_wire = _path_wire(state, p["path"])
+    if thin:
+        _check_thin_sweep_bends(profs, path_wire)
+    body, hist = K.sweep(profs, path_wire, with_history=True, control=_sweep_control(state, p))
+    seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
+    named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []) + thin_seeds,
+                         body, K._chain(thin_hist, hist) if thin else hist, "sweep")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
+
+
+# --------------------------------------------------------------------------- rib
+
+RIB_OUTSIDE = "The rib must be entirely within the bounds of the part"
+
+
+def _rib_chain(state, ref, extend, size):
+    """One `sketch_chain` reference as the curves of a rib's centre line: (plane, [(id, curve)] in order,
+    the chain's middle point and chord in sketch coordinates, the two ends of the lengthened chain).
+
+    Only an open chain of lines and arcs. With `extend` the chain is lengthened at both ends by `size`
+    along its tangents: an end line grows in place, an end arc gets a tangent line `<arc id>x0` / `x1`."""
+    from . import sketch_ops
+    sr = state.sketches.get(ref.get("sketch"))
+    if sr is None or ref.get("entity") not in sr.sketch.entities:
+        raise K.KernelError("Missing rib profile")
+    sk = sr.sketch
+    kinds_ok = ("line", "arc")
+    if sk.entities[ref["entity"]]["type"] not in kinds_ok:
+        raise K.KernelError("A rib profile is a chain of lines and arcs")
+    chain, closed = sketch_ops._chain(sk, ref["entity"])
+    if closed:
+        raise K.KernelError("A rib profile must be an open chain")
+    curves = {c["id"]: c for c in sk.curves()}
+    rows = []                           # [id, curve, start, end, tangent at start, tangent at end], in travel order
+    for eid, fwd in chain:
+        e = sk.entities[eid]
+        if e["type"] not in kinds_ok:
+            raise K.KernelError("A rib profile is a chain of lines and arcs")
+        a, b = np.array(sk.P(e["p1"]), float), np.array(sk.P(e["p2"]), float)
+        curve = dict(curves[eid])
+        if e["type"] == "line":
+            ta = tb = (b - a) / np.linalg.norm(b - a)
+        else:                           # an arc runs anticlockwise from p1 to p2
+            c = np.array(sk.P(e["c"]), float)
+            ra, rb = a - c, b - c
+            ta = np.array([-ra[1], ra[0]]) / np.linalg.norm(ra)
+            tb = np.array([-rb[1], rb[0]]) / np.linalg.norm(rb)
+        if not fwd:
+            a, b, ta, tb = b, a, -tb, -ta
+        if e["type"] == "line":
+            curve["p1"], curve["p2"] = a.tolist(), b.tolist()
+        rows.append([eid, curve, a, b, ta, tb])
+    mid_row = rows[len(rows) // 2]
+    mid = np.array(mid_row[1]["pm"], float) if mid_row[1]["type"] == "arc" else (mid_row[2] + mid_row[3]) / 2
+    chord = rows[-1][3] - rows[0][2]
+    start, end = rows[0][2], rows[-1][3]
+    out = [(r[0], r[1]) for r in rows]
+    if extend:
+        far0, far1 = start - rows[0][4] * size, end + rows[-1][5] * size
+        for k, (row, pt, far) in enumerate(((rows[0], start, far0), (rows[-1], end, far1))):
+            if row[1]["type"] == "line":
+                row[1]["p1" if k == 0 else "p2"] = far.tolist()
+            else:
+                tail = {"type": "line", "id": f"{row[0]}x{k}",
+                        "p1": (far if k == 0 else pt).tolist(), "p2": (pt if k == 0 else far).tolist()}
+                out.insert(0, (tail["id"], tail)) if k == 0 else out.append((tail["id"], tail))
+        start, end = far0, far1
+    return sr.plane, out, mid, chord, (start, end)
+
+
+def _rib_direction(part_shape, plane, mid, chord, size, flip):
+    """The way a rib's sheet is swept, in world space: in the sketch plane, perpendicular to the chord, towards
+    the part (the side whose ray from the chain's middle meets the part first); `flip` reverses it."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    if np.linalg.norm(chord) < 1e-9:
+        raise K.KernelError("The rib profile has no length")
+    perp = np.array([-chord[1], chord[0]]) / np.linalg.norm(chord)
+
+    def first_hit(d):
+        def hit(t):
+            seg = K.make_sketch_edges(plane, [{"type": "line", "p1": mid.tolist(), "p2": (mid + d * t).tolist()}])[0]
+            ext = BRepExtrema_DistShapeShape(part_shape, seg)
+            return ext.IsDone() and ext.Value() <= 1e-6
+        if not hit(size):
+            return None
+        lo, hi = 0.0, size
+        for _ in range(40):
+            m = (lo + hi) / 2
+            lo, hi = (lo, m) if hit(m) else (m, hi)
+        return hi
+    reached = [(t, d) for t, d in ((first_hit(d), d) for d in (perp, -perp)) if t is not None]
+    d = min(reached, key=lambda x: x[0])[1] if reached else perp
+    d3 = plane.xdir * d[0] + plane.ydir * d[1]
+    return -d3 if flip else d3
+
+
+def _shape_distance(a, b):
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    ext = BRepExtrema_DistShapeShape(a, b)
+    return ext.Value() if ext.IsDone() else 1e18
+
+
+def _rib_sheet(plane, curves, d3, size, fid, outer_ends):
+    """The sheet of a rib: every curve swept `size` along `d3`. Returns (faces, their NamedShape, the edges
+    that bound the sheet away from the sketch curves: the far edges and, with `outer_ends` (the world points
+    where a lengthened chain stops), the sheet's ends there).
+
+    The names are keyed on the sketch entity id (docs/reference/element-naming.md, "Rib"): `<id>` the sheet
+    face, `<id>t` its edge on the curve, `<id>b` the far edge, `<id>s0` and `<id>s1` the side edges at the
+    curve's first and last vertex, `<id>v0`, `<id>v1` and `<id>w0`, `<id>w1` the vertices."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.TopAbs import TopAbs_VERTEX
+    faces, made = [], []
+    for eid, curve in curves:
+        pairs = K.make_sketch_edges(plane, [curve], with_ids=True)
+        if not pairs:
+            raise K.KernelError("The rib profile has a zero-length piece")
+        mk = BRepPrimAPI_MakePrism(pairs[0][1], K._vec(d3 * size))
+        mk.Build()
+        if not mk.IsDone():
+            raise K.KernelError("Rib failed")
+        faces.append(mk.Shape())
+        made.append((eid, mk))
+    comp = K.compound(faces)
+    el = N._Elements(comp)
+    labels, outer = {}, []
+
+    def label(sub, text):
+        key = el.key(sub)
+        if key is not None:
+            labels[key] = text
+
+    for (eid, mk), face in zip(made, faces):
+        base, far = mk.FirstShape(), mk.LastShape()
+        label(face, eid)
+        label(base, f"{eid}t")
+        label(far, f"{eid}b")
+        outer.append(far)
+        for k, v in enumerate(K._sub_shapes(base, TopAbs_VERTEX)[:2]):
+            label(v, f"{eid}v{k}")
+            side = list(mk.Generated(v))
+            if not side:
+                continue
+            label(side[0], f"{eid}s{k}")
+            for w in K._sub_shapes(side[0], TopAbs_VERTEX):
+                if not w.IsSame(v):
+                    label(w, f"{eid}w{k}")
+            vp = np.array(K.vertex_points(v)[0], float)
+            if any(np.linalg.norm(vp - q) < 1e-6 for q in outer_ends):
+                outer.append(side[0])
+    return faces, N.seed(comp, fid, N.OP_SKETCH, labels), outer
+
+
+def run_rib(state, f):
+    """Rib, parallel to the sketch plane (docs/reference/element-naming.md, "Rib").
+
+    Each chain's centre line is swept towards the part into a planar sheet, the sheet is thickened about the
+    sketch plane into a slab, the slab is cut by the part, and the piece next to the chain is fused in."""
+    p = f["params"]
+    fid = f["id"]
+    if p.get("mode", "parallel") != "parallel":
+        raise K.KernelError("Only a rib parallel to the sketch plane is available")
+    if not p.get("path"):
+        raise K.KernelError("Select the sketch curves for the rib")
+    pid = next((i for i in p.get("parts", []) if i in state.parts), None)
+    if pid is None:
+        raise K.KernelError("Select the part for the rib")
+    t = float(p.get("thickness", 2.0))
+    if t <= 1e-9:
+        raise K.KernelError("Rib thickness must be positive")
+    extend = bool(p.get("extend", True))
+    for ref in p["path"]:
+        part = state.parts[pid]
+        size = _model_size(state) * 2 + 10
+        plane, curves, mid, chord, ends2d = _rib_chain(state, ref, extend, size)
+        d3 = _rib_direction(part.shape, plane, mid, chord, size, p.get("flip", False))
+        stops = [plane.to_world(*q) for q in ends2d] if extend else []
+        sheets, sheet_named, outer = _rib_sheet(plane, curves, d3, size, fid, stops)
+        slab, hist = K.extrude(sheets, np.asarray(plane.normal, float), t, symmetric=True, with_history=True)
+        if len(K.solids(slab)) != 1:
+            raise K.KernelError("Rib failed")
+        seed = plane.to_world(*mid) + d3 * max(size * 1e-5, 1e-4)
+        try:
+            piece, hist2, caps = K.keep_piece_from(slab, part.shape, seed, hist)
+        except K.KernelError:
+            raise K.KernelError(RIB_OUTSIDE) from None
+        if _shape_distance(piece, K.compound(outer)) <= 1e-6:
+            raise K.KernelError(RIB_OUTSIDE)
+        roles = [(c, min(sheets, key=lambda s: _shape_distance(c, s)), "end") for c in caps]
+        roles = [r for r in roles if sheet_named.name_of(r[1]) is not None]
+        named = name_feature(state, fid, [sheet_named], piece, hist2, "extrude", roles=roles)
+        apply_body(state, piece, "add" if p.get("merge", True) else "new", fid, [pid], named)
 
 
 def run_loft(state, f):
+    """A loft; a Boundary surface (I7.9) is the same loft with the `front` marker, only its errors are reworded."""
+    if front_kind(f) is None:
+        return _run_loft(state, f)
+    try:
+        return _run_loft(state, f)
+    except K.KernelError as e:
+        raise K.KernelError(boundary_wording(str(e))) from e
+
+
+def _run_loft(state, f):
     p = f["params"]
-    profs = []
+    if _surface_creation(p, "loft", None):       # I7.8: a surface loft takes sketch curves and part edges
+        return _run_loft_surface(state, f)
+    profs, owners = [], []
     for item in p.get("profiles", []):
         if item["kind"] == "region":
-            profs += resolve_regions(state, [item["ref"]], f["id"])
+            got = resolve_regions(state, [item["ref"]], f["id"])
+            profs += got
+            owners += [None] * len(got)
+        elif item["kind"] in ("vertex", "sketch"):      # a point profile (I7.7): a model vertex or a sketch point
+            profs.append(K.make_vertex(_axis_point(state, item["kind"], item["ref"])))
+            owners.append(None)
         else:
-            profs.append(resolve(state, item["ref"], "face")[1])
-    body, hist = K.loft(profs, p.get("ruled", False), with_history=True)
+            pid, face = resolve(state, item["ref"], "face")
+            profs.append(face)
+            owners.append(pid)
+    point = any(K.is_vertex(x) for x in profs)
+    start = _loft_end(state, p.get("start"), profs[0] if profs and not K.is_vertex(profs[0]) else None,
+                      owners[0] if owners else None)
+    end = _loft_end(state, p.get("end"), profs[-1] if profs and not K.is_vertex(profs[-1]) else None,
+                    owners[-1] if owners else None)
+    guides = [g for g in (p.get("guides") or []) if g]
+    closed = bool(p.get("closed"))
+    if closed or point:                          # I7.7: the legacy maker only
+        what = "A closed loft" if closed else "A point profile"
+        if start is not None or end is not None:
+            raise K.KernelError(f"{what} and end conditions cannot be combined yet")
+        if guides:
+            raise K.KernelError(f"{what} and guides cannot be combined yet")
+        body, hist = K.loft(profs, p.get("ruled", False), with_history=True, closed=closed)
+        named = name_feature(state, f["id"], _loft_names(state, p), body, hist, "loft")
+        apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
+        return
+    if guides:                                   # the network route (I7.3), OpenCascade 8.0 only
+        if start is not None or end is not None:
+            raise K.KernelError("Guides and end conditions cannot be combined yet")
+        if p.get("ruled"):
+            raise K.KernelError("Guides need a smooth loft — untick Straight sides (ruled)")
+        body, hist = K.loft_network(profs, _loft_guides(state, guides), with_history=True)
+    elif start is None and end is None:          # no new option: the legacy route, exactly as before I7.2
+        body, hist = K.loft(profs, p.get("ruled", False), with_history=True)
+    else:
+        if p.get("ruled"):
+            raise K.KernelError("End conditions need a smooth loft — untick Straight sides (ruled)")
+        body, hist = K.loft_skin(profs, start, end, with_history=True)
     named = name_feature(state, f["id"], _loft_names(state, p), body, hist, "loft")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
+
+
+def _loft_curve_wires(state, refs, labels):
+    """One wire per curve chain of a surface loft's `curves`, in pick order (`_curve_wires` for each
+    reference in turn; a chain picked twice is used once). `labels` receives (label, edge) of sketch curves."""
+    seen, out = set(), []
+    for r in refs:
+        key, _es = _ref_edges(state, r)
+        if key is not None and key in seen:
+            continue
+        seen.add(key)
+        out += _curve_wires(state, [r], labels)
+    return out
+
+
+def _run_loft_surface(state, f):
+    """A loft as a surface (`creation` "surface", I7.8): the `curves` (sketch chains and part edges, open or
+    closed) are the profiles in pick order. Takes three routes: no guides, ThruSections with no solid
+    (`ruled`, and `closed` with three or more curves, work as on a solid loft); two or more `guides`,
+    one Gordon face from `K.network_surface` on OpenCascade 8.0 (open curves, not ruled, not closed). End
+    conditions are refused. The result is the shell as the kernel built it: `apply_body` sews it on Add,
+    which keeps the face names that sewing here would lose."""
+    p = f["params"]
+    for end in ("start", "end"):
+        if isinstance(p.get(end), dict) and p[end].get("cond"):
+            raise K.KernelError("A surface loft takes no end conditions")
+    guides = [g for g in (p.get("guides") or []) if g]
+    closed = bool(p.get("closed"))
+    refs = p.get("curves") or []
+    if not refs:
+        raise K.KernelError("Select sketch curves to loft")
+    if guides and len(guides) < 2:
+        raise K.KernelError("Add a second guide: a surface loft with guides needs at least two")
+    if guides and closed:
+        raise K.KernelError("A closed surface loft and guides cannot be combined yet")
+    if guides and p.get("ruled"):
+        raise K.KernelError("Guides need a smooth loft — untick Straight sides (ruled)")
+    curve_labels = []
+    wires = _loft_curve_wires(state, refs, curve_labels)
+    if len(wires) < 2:
+        raise K.KernelError("Select at least two profiles, in order")
+    if guides:
+        body, hist = K.loft_surface_network(wires, _loft_guides(state, guides), with_history=True)
+    else:
+        body, hist = K.loft_surface(wires, p.get("ruled", False), closed, with_history=True)
+    seeded = _curve_names(f["id"], wires, curve_labels)
+    parts = [{"part": r["edge"].get("part")} for r in refs if r.get("kind") == "edge" and isinstance(r.get("edge"), dict)]
+    named = name_feature(state, f["id"], _profile_names(state, {"creation": "surface", "curves": refs, "faces": parts})
+                         + ([seeded] if seeded else []), body, hist, "loft")
+    apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
+
+
+def _loft_end(state, c, profile=None, owner=None):
+    """A loft's `start` or `end` param as `K.loft_skin` takes it: None when there is no condition (a
+    missing key, {} and {"cond": ""} alike), else {"cond", "mag"} with the magnitude evaluated.
+    Match tangent adds "faces": its `faces` references resolved, or, with none picked and a `profile`
+    face picked from part `owner`, the faces of that part that share the profile's outer edges."""
+    if not isinstance(c, dict) or not c.get("cond"):
+        return None
+    out = {"cond": c["cond"], "mag": _loft_mag(state, c)}
+    if c["cond"] == "match_tangent":
+        faces = [resolve(state, r, "face")[1] for r in c.get("faces") or []]
+        out["faces"] = faces or _loft_adjacent(state, profile, owner)
+    return out
+
+
+def _loft_adjacent(state, profile, owner):
+    """The faces of part `owner` that share an edge of `profile`'s outer wire (Match tangent's default)."""
+    from OCP.BRepTools import BRepTools
+    if profile is None or owner not in state.parts:
+        return []
+    rim = K.edges(BRepTools.OuterWire_s(profile))
+    return [f for f in K.faces(state.parts[owner].shape)
+            if not f.IsSame(profile) and any(e.IsSame(r) for e in K.edges(f) for r in rim)]
+
+
+def _loft_mag(state, c):
+    mag = c.get("mag", 1.0)
+    if isinstance(mag, str):
+        val = parse_number(mag, variables=state.vars)
+        if val is None:
+            bad = [n for n in var_names(mag) if n not in state.vars]
+            raise K.KernelError(f"Unknown variable #{bad[0]}" if bad else f"Can't read '{mag}'")
+        mag = val
+    return float(mag)
+
+
+def _loft_guides(state, guides):
+    """A loft's `guides` param (one list of path refs per guide, as a sweep's `path`) as one wire each."""
+    out = []
+    for n, refs in enumerate(guides, 1):
+        try:
+            out.append(_path_wire(state, refs))
+        except K.KernelError as exc:
+            msg = f"Missing loft guide {n}" if str(exc) == "Missing sweep path" else f"Guide {n}: {exc}"
+            raise K.KernelError(msg) from None
+    return out
 
 
 def _loft_names(state, p):
@@ -2671,6 +3821,8 @@ def _loft_names(state, p):
     for item in p.get("profiles", []):
         if item["kind"] == "region":
             regions.append(item["ref"])
+        elif item["kind"] == "sketch":           # a sketch point names nothing: its sketch is no input
+            continue
         else:
             faces.append({"part": item["ref"].get("part")})
     return _profile_names(state, {"regions": regions, "faces": faces})
@@ -2692,8 +3844,9 @@ def run_draft(state, f):
 
 
 def split_tools(p):
-    """The Split feature's cutting tools: [{"kind": plane|face|path, "ref", "both", "flip"}]. Splits made before
-    2.0 had one plane and a "keep" choice; they read as one tool."""
+    """The Split feature's cutting tools: [{"kind": plane|face|path|surface, "ref", "both", "flip", "trim"}].
+    A surface tool's ref is a surface part's id; a face tool's "trim" (default false) passes the face as it is
+    instead of extending it. Splits made before 2.0 had one plane and a "keep" choice; they read as one tool."""
     tools = p.get("tools")
     if tools:
         return tools
@@ -2704,12 +3857,21 @@ def split_tools(p):
 
 
 def split_tool_shape(state, tool, around, size):
-    """The surface a Split tool cuts with, made big enough to go right through."""
+    """The surface a Split tool cuts with, made big enough to go right through (a surface part, or a face
+    with "trim", is used as it is)."""
     kind, ref = tool["kind"], tool["ref"]
     if kind == "plane":
         return K.plane_face(resolve_plane(state, ref), around, size)
     if kind == "face":
-        return K.extended_face(resolve(state, ref, "face")[1], size)
+        face = resolve(state, ref, "face")[1]
+        return face if tool.get("trim") else K.extended_face(face, size)
+    if kind == "surface":
+        part = state.parts.get(ref)
+        if part is None:
+            raise K.KernelError("The surface to split with is gone - pick it again")
+        if not K.is_surface(part.shape):
+            raise K.KernelError(f"{part.name} is a solid - pick a surface part, or one of its faces")
+        return part.shape
     if kind == "path":
         if ref.get("kind") != "sketch_chain":
             raise K.KernelError("To split along a curve, pick a sketch curve (it is pushed out both ways "
@@ -2719,17 +3881,21 @@ def split_tool_shape(state, tool, around, size):
         n = np.asarray(state.sketches[ref["sketch"]].plane.normal, float)
         wire = K.translate(wire, -n * size)
         return BRepPrimAPI_MakePrism(wire, K._vec(n * 2 * size)).Shape()
-    raise K.KernelError("Pick planes, faces or sketch curves to split with")
+    raise K.KernelError("Pick planes, faces, sketch curves or surfaces to split with")
 
 
 def run_split(state, f):
-    """Cut parts with any number of planes, faces (flat or curved — extended to cut right through) or sketch
-    curves (pushed out into a surface). Each tool keeps both sides, or only the side its arrow points to."""
+    """Cut parts with any number of planes, faces (flat or curved — extended to cut right through, unless
+    "trim"), surface parts (as they are) or sketch curves (pushed out into a surface). Each tool keeps both
+    sides, or only the side its arrow points to. keep_tools leaves the surface parts; otherwise they go."""
     p = f["params"]
-    ids = _selected_parts(state, p)
     tools = split_tools(p)
     if not tools:
-        raise K.KernelError("Pick planes, faces or sketch curves to split with")
+        raise K.KernelError("Pick planes, faces, sketch curves or surfaces to split with")
+    tool_parts = {t["ref"] for t in tools if t["kind"] == "surface"}
+    ids = [i for i in _selected_parts(state, p) if i not in tool_parts]
+    if not ids:
+        raise K.KernelError("Select parts")
     lo, hi = np.full(3, 1e18), np.full(3, -1e18)
     for pid in ids:
         a, b = K.bbox(state.parts[pid].shape)
@@ -2737,11 +3903,14 @@ def run_split(state, f):
     size = float(np.linalg.norm(hi - lo)) * 2 + 10
     around = (lo + hi) / 2
     shapes = [split_tool_shape(state, t, around, size) for t in tools]
+    all_both = all(t.get("both", True) for t in tools)
+    bounded = any(t["kind"] == "surface" or (t["kind"] == "face" and t.get("trim")) for t in tools)
+    done = []
     for pid in ids:
         part = state.parts[pid]
         pieces, hist = K.split_with(part.shape, shapes, with_history=True)
-        if len(pieces) < 2 and all(t.get("both", True) for t in tools):
-            raise K.KernelError("The splitting surfaces don't cut through the part")
+        if len(pieces) < 2 and all_both:
+            continue                       # this part is missed; the feature fails only if every part is
         for t, sh in zip(tools, shapes):
             if t.get("both", True):
                 continue
@@ -2749,13 +3918,27 @@ def run_split(state, f):
             pieces = [pc for pc in pieces if K.piece_side(pc, sh) * want > 0]
         if not pieces:
             raise K.KernelError("Nothing is left — every piece is on a side that isn't kept (flip an arrow)")
+        done.append((pid, part, pieces, hist))
+    if not done:
+        if bounded:
+            raise K.KernelError("The surface must pass completely through the part - make it larger, or pick "
+                                "one of its faces to use the extended face")
+        raise K.KernelError("The splitting surfaces don't cut through the part")
+    for pid, part, pieces, hist in done:
         whole = K.compound(pieces) if len(pieces) > 1 else pieces[0]
         # the splitter's pieces are named together; set_part_shape gives each piece the names of its own
         # elements. The first tool keeps the label "cut" a one-plane split always had; the rest are numbered.
-        tool_names = [_tool_names(state, f["id"], sh, "cut" if i == 0 else f"cut{i + 1}")
-                      for i, sh in enumerate(shapes)]
+        # A surface part brings its own names, so the cut faces keep them when the surface is edited.
+        tool_names = [(state.named(t["ref"]) if t["kind"] == "surface" else None)
+                      or _tool_names(state, f["id"], sh, "cut" if i == 0 else f"cut{i + 1}")
+                      for i, (t, sh) in enumerate(zip(tools, shapes))]
         named = name_feature(state, f["id"], [pid] + tool_names, whole, hist, "split")
         set_part_shape(state, part, whole, named)
+    if not p.get("keep_tools"):
+        for i in tool_parts:                      # as run_delete_part does, once per part
+            state.parts.pop(i, None)
+            state.names.pop(i, None)
+            state.sheet.pop(i, None)
 
 
 def run_move(state, f):
@@ -2952,10 +4135,11 @@ RUNNERS = {
     "derived": run_derived,
     "mate_connector": run_mate_connector,
     "context": run_context,
-    "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
+    "sweep": run_sweep, "rib": run_rib, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "sm_hem": run_sm_hem, "sm_jog": run_sm_jog, "sm_tab": run_sm_tab, "sm_convert": run_sm_convert,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
+    "thicken": run_thicken, "enclose": run_enclose, "fill": run_fill,
     "delete_part": run_delete_part,
 }
 
@@ -2978,6 +4162,10 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "delete_face": {"faces": [], "mode": "heal"},
         "move_face": {"faces": [], "distance": 2.0, "flip": False},
         "offset_surface": {"faces": [], "distance": 2.0, "flip": False},
+        "thicken": {"faces": [], "parts": [], "thickness1": 2.0, "thickness2": 0.0, "mid_plane": False,
+                    "flip": False, "keep_tools": False, "op": "new", "scope": []},
+        "enclose": {"entities": [], "keep_tools": False, "op": "new", "scope": []},
+        "fill": {"edges": [], "guides": [], "op": "new", "scope": []},
         "delete_part": {"parts": []},
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
         "axis": {"type": "auto", "refs": [], "click": None, "flip": False, "connector_axis": "z"},
@@ -3002,6 +4190,8 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
                  "depth": 10.0, "end": "through", "style": "simple", "tip": True,
                  "counterbore_dia": 9.0, "counterbore_depth": 3.0, "countersink_dia": 10.0},
         "sweep": {"regions": [], "faces": [], "path": [], "op": op},
+        "rib": {"path": [], "parts": [], "thickness": 2.0, "mode": "parallel", "flip": False,
+                "extend": True, "merge": True},
         "loft": {"profiles": [], "ruled": False, "op": op},
         "draft": {"faces": [], "neutral": {"kind": "std", "name": "Top"}, "angle": 3.0, "flip": False},
         "split": {"parts": [], "tools": []},

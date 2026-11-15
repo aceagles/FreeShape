@@ -1,0 +1,71 @@
+DECISION import warn=1500 confirm=4000
+
+Drag step = copy of the sketch, one point of the constrained line moved, Sketch.solve(weights).
+Thresholds: warn = largest size with drag < 0.3 s, confirm = largest < 3 s (cap 5000); min over builds.
+peak_mb = growth of process peak RSS (VmHWM, reset before the operation) over the RSS before it; time is the median of up to 3 reps.
+
+## build OCP 7.9.3.1
+# BUILD OCP 7.9.3.1: warn=2000 confirm=4000
+load average before/after: 3.98 6.04 (12 cores)
+points  vars   op       time_s     peak_mb  svd full_matrices output shapes (U, s, Vt)
+500     1000   solve0   0.004      0        no svd call
+500     1000   solve1   0.014      16       [[1, 1], [1], [1000, 1000]]
+500     1000   drag     0.014      16       [[1, 1], [1], [1000, 1000]]
+500     1000   regions  0.059      8        no svd call  regions=50
+1000    2000   solve0   0.008      0        no svd call
+1000    2000   solve1   0.066      62       [[1, 1], [1], [2000, 2000]]
+1000    2000   drag     0.070      62       [[1, 1], [1], [2000, 2000]]
+1000    2000   regions  0.181      10       no svd call  regions=100
+1500    3000   solve0   0.013      1        no svd call
+1500    3000   solve1   0.143      139      [[1, 1], [1], [3000, 3000]]
+1500    3000   drag     0.097      139      [[1, 1], [1], [3000, 3000]]
+1500    3000   regions  0.174      12       no svd call  regions=150
+2000    4000   solve0   0.016      1        no svd call
+2000    4000   solve1   0.207      246      [[1, 1], [1], [4000, 4000]]
+2000    4000   drag     0.187      246      [[1, 1], [1], [4000, 4000]]
+2000    4000   regions  0.308      15       no svd call  regions=200
+3000    6000   solve0   0.028      2        no svd call
+3000    6000   solve1   0.918      552      [[1, 1], [1], [6000, 6000]]
+3000    6000   drag     0.937      552      [[1, 1], [1], [6000, 6000]]
+3000    6000   regions  0.488      19       no svd call  regions=300
+4000    8000   solve0   0.038      2        no svd call
+4000    8000   solve1   2.558      980      [[1, 1], [1], [8000, 8000]]
+4000    8000   drag     2.272      981      [[1, 1], [1], [8000, 8000]]
+4000    8000   regions  0.691      24       no svd call  regions=400
+5000    10000  solve0   0.046      3        no svd call
+5000    10000  solve1   3.579      1529     [[1, 1], [1], [10000, 10000]]
+5000    10000  drag     3.546      1530     [[1, 1], [1], [10000, 10000]]
+5000    10000  regions  0.802      28       no svd call  regions=500
+
+## build OCP 8.0.1.1
+# BUILD OCP 8.0.1.1: warn=1500 confirm=4000
+load average before/after: 6.27 7.86 (12 cores)
+points  vars   op       time_s     peak_mb  svd full_matrices output shapes (U, s, Vt)
+500     1000   solve0   0.004      0        no svd call
+500     1000   solve1   0.013      16       [[1, 1], [1], [1000, 1000]]
+500     1000   drag     0.020      16       [[1, 1], [1], [1000, 1000]]
+500     1000   regions  0.054      9        no svd call  regions=50
+1000    2000   solve0   0.009      0        no svd call
+1000    2000   solve1   0.049      63       [[1, 1], [1], [2000, 2000]]
+1000    2000   drag     0.050      62       [[1, 1], [1], [2000, 2000]]
+1000    2000   regions  0.112      11       no svd call  regions=100
+1500    3000   solve0   0.022      1        no svd call
+1500    3000   solve1   0.231      139      [[1, 1], [1], [3000, 3000]]
+1500    3000   drag     0.259      139      [[1, 1], [1], [3000, 3000]]
+1500    3000   regions  0.197      13       no svd call  regions=150
+2000    4000   solve0   0.017      1        no svd call
+2000    4000   solve1   0.346      246      [[1, 1], [1], [4000, 4000]]
+2000    4000   drag     0.438      246      [[1, 1], [1], [4000, 4000]]
+2000    4000   regions  0.252      16       no svd call  regions=200
+3000    6000   solve0   0.026      2        no svd call
+3000    6000   solve1   1.413      552      [[1, 1], [1], [6000, 6000]]
+3000    6000   drag     1.222      552      [[1, 1], [1], [6000, 6000]]
+3000    6000   regions  0.538      19       no svd call  regions=300
+4000    8000   solve0   0.040      2        no svd call
+4000    8000   solve1   2.431      980      [[1, 1], [1], [8000, 8000]]
+4000    8000   drag     2.387      981      [[1, 1], [1], [8000, 8000]]
+4000    8000   regions  0.565      25       no svd call  regions=400
+5000    10000  solve0   0.053      3        no svd call
+5000    10000  solve1   3.583      1530     [[1, 1], [1], [10000, 10000]]
+5000    10000  drag     3.391      1530     [[1, 1], [1], [10000, 10000]]
+5000    10000  regions  0.869      28       no svd call  regions=500

@@ -75,8 +75,10 @@ TOOL_HINTS = {
     "trim": "Click a segment of a line to remove it up to the nearest intersections.",
     "extend": "Click near one end of a line to lengthen it to the nearest line, circle or arc beyond it.",
     "sk_fillet": "Click a corner where two lines meet, then type the radius.",
-    "offset": "Click a line, arc or circle to offset its whole chain; type the distance (negative = other side).",
-    "slot": "Click the two end centres of the slot, then type its width.",
+    "offset": "Click a line, arc or circle to offset its whole chain; type the distance (negative = other side). "
+              "Switch on Both sides to offset to both sides at once.",
+    "slot": "Click the two end centres of the slot, then type its width — or click an existing line, arc or chain "
+            "to wrap a slot round it.",
     "sk_mirror": "Select geometry, then click the line to mirror it about.",
     "sk_lpattern": "Select geometry, then click a line for the direction; type the count and spacing.",
     "sk_cpattern": "Select geometry, then click the centre point; type the count and angle.",
@@ -101,6 +103,7 @@ class Sketcher:
         self.on_tool_changed = on_tool_changed
         self.tool = "select"
         self.construction = False
+        self.offset_both = False           # the Offset tool's Both sides toggle, kept for the sketch session
         self.selection: list = []          # ids of points / entities / constraints
         self.hover = None
         self.popup_factory = _default_popup      # (vp, x, y, rows, on_hover, on_choose, on_close); tests swap it
@@ -1762,12 +1765,23 @@ class Sketcher:
             if not h or sk.entities[h[1]]["type"] == "point":
                 return True
             eid = h[1]
+            both = self.offset_both
             self._prompt(vp, uv, "Offset distance (negative = other side)", self._nice(vp, 30),
-                         lambda d: OPS.offset(self.sk, eid, d), allow_negative=True,
+                         lambda d: OPS.offset(self.sk, eid, d, both=both), allow_negative=True,
                          expr_target=lambda: next((c for c in reversed(self.sk.constraints)
                                                    if c["type"] == "offset"), None))
             return True
         if t == "slot":
+            if not self.temp and self.hit(vp, x, y, kinds=("point",)) is None:
+                h = self.hit(vp, x, y, kinds=("entity",))
+                if h and sk.entities[h[1]]["type"] in ("line", "arc"):
+                    # a click on existing geometry: a slot round the whole chain (offset both sides, round caps)
+                    eid = h[1]
+                    self._prompt(vp, uv, "Slot width", self._nice(vp, 20),
+                                 lambda w: OPS.offset(self.sk, eid, w / 2, both=True, caps="round"),
+                                 expr_target=lambda: next((c for c in reversed(self.sk.constraints)
+                                                           if c["type"] == "offset"), None), expr_scale=0.5)
+                    return True
             _uv, snap = self.snap(vp, x, y, self.temp[0][0] if self.temp else None)
             if not self.temp:
                 self.temp = [(_uv, snap)]

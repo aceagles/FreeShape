@@ -182,8 +182,8 @@ The view turns to face the sketch plane.
 | Use (project) | `U` | project part edges into the sketch (edges seen side-on, like a cylinder's rim, become straight lines) |
 | Trim | | removes a line segment up to its intersections |
 | Sketch fillet | | click a corner where two lines meet, type the radius — the shape keeps its dimensions |
-| Offset | `O` | click a line, arc or circle to offset its whole connected outline; type the distance (negative = inside) |
-| Slot | | click the two end centres, type the width |
+| Offset | `O` | click a line, arc or circle to offset its whole connected outline; type the distance (negative = inside). The Both sides button (shown while Offset is active) offsets to both sides at once |
+| Slot | | click the two end centres, type the width; or click an existing line, arc or chain and type the width to get a closed slot round it (the chain becomes construction geometry) |
 | Mirror | | select geometry, then click the line to mirror about — the copy stays linked to the original |
 | Linear / circular pattern | | select geometry, then click a direction line (copies go towards where you click) or a centre point; type the count and spacing / angle |
 

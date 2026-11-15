@@ -704,8 +704,8 @@ class MainWindow(QMainWindow):
         ("arc_center", "Center-point arc", "centre point"), ("spline", "Spline", "curve through points"),
         ("ellipse", "Ellipse", "oval"), ("text", "Text", "letters font engrave"), ("point", "Point", "vertex"),
         ("dimension", "Dimension", "smart dimension size measure"),
-        ("sk_fillet", "Sketch fillet", "round corner radius"), ("offset", "Offset", "parallel copy"),
-        ("slot", "Slot", "obround stadium"), ("sk_mirror", "Mirror", "symmetry"),
+        ("sk_fillet", "Sketch fillet", "round corner radius"), ("offset", "Offset", "parallel copy both sides"),
+        ("slot", "Slot", "obround stadium offset both sides bi-directional offset wall and slot from curve"), ("sk_mirror", "Mirror", "symmetry"),
         ("sk_lpattern", "Linear pattern", "array copies"), ("sk_cpattern", "Circular pattern", "array copies polar"),
         ("use", "Use", "project convert intersect part edges"), ("trim", "Trim", "cut remove"),
         ("extend", "Extend", "lengthen"))
@@ -1062,6 +1062,15 @@ class MainWindow(QMainWindow):
                           ("sk_cpattern", "Circular pattern — select geometry, then the centre point")):
             self._sketch_buttons[name] = self._tb(h, name, tip, lambda _=False, n=name: self._sk_tool(n),
                                                   checkable=True)
+        b = QToolButton()
+        b.setText("Both sides")
+        b.setToolTip("Offset to both sides of the line, arc or chain at once")
+        b.setCheckable(True)
+        b.setAutoRaise(True)
+        b.toggled.connect(self._set_offset_both)
+        b.setVisible(False)
+        h.addWidget(b)
+        self._offset_both_btn = b
         h.addWidget(_sep())
         b = self._tb(h, "use", "Use (project) part edges (U)", lambda: self._sk_tool("use"), checkable=True)
         self._sketch_buttons["use"] = b
@@ -1597,9 +1606,18 @@ class MainWindow(QMainWindow):
                 b.setChecked(bool(self.sketcher and self.sketcher.construction))
             else:
                 b.setChecked(name == tool)
+        b = getattr(self, "_offset_both_btn", None)
+        if b is not None:
+            b.setVisible(tool == "offset")
+            if self.sketcher:
+                b.setChecked(self.sketcher.offset_both)
         if self.sketcher:
             self.viewport.status_text = self.sketcher.hint()
             self.viewport.update()
+
+    def _set_offset_both(self, on):
+        if self.sketcher:
+            self.sketcher.offset_both = bool(on)
 
     def _sk(self, method):
         if self.sketcher:

@@ -326,7 +326,13 @@ def offset(sk: Sketch, eid: str, dist: float, both: bool = False, caps=None):
         cap_start = sk.add_arc(c_start, pids_p[0], pids_m[0], cons)
         for cap, a, b in ((cap_start, ids_p[0], ids_m[0]), (cap_end, ids_p[-1], ids_m[-1])):
             sk.add_constraint("tangent", cap, a)
+            if sk.entities[a]["type"] == "arc":      # arc-to-arc tangency needs its internal/external sign
+                d = np.linalg.norm(sk.P(sk.entities[cap]["c"]) - sk.P(sk.entities[a]["c"]))
+                sk.constraints[-1]["value"] = -1.0 if d < max(sk.radius(cap), sk.radius(a)) else 1.0
             sk.add_constraint("tangent", cap, b)
+            if sk.entities[b]["type"] == "arc":
+                d = np.linalg.norm(sk.P(sk.entities[cap]["c"]) - sk.P(sk.entities[b]["c"]))
+                sk.constraints[-1]["value"] = -1.0 if d < max(sk.radius(cap), sk.radius(b)) else 1.0
         for k, _fwd in chain:
             sk.entities[k]["construction"] = True
         new += [cap_start, cap_end]

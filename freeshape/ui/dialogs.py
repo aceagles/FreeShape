@@ -315,15 +315,33 @@ def item_geometry(state, item, plane_half=40.0):
 
 # ---------------------------------------------------------------------- selection field widget
 
+class _RowWidget(QWidget):
+    """A selection-list row that holds a number box; tells the field when the pointer enters it."""
+    entered = Signal()
+
+    def enterEvent(self, e):
+        self.entered.emit()
+        super().enterEvent(e)
+
+
 class SelectionField(QFrame):
+    """A list of picked items. With `number` each row also has a number box (`numbers[i]`: a float, an expression
+    string, or None for "the default", which the box shows as `default_text()`); `number_parser(text)` reads
+    a box. Another field can reuse this: map `items` and `numbers` in params_to_fields / fields_to_params."""
     activated = Signal(object)
     changed = Signal()
+    number_changed = Signal()
+    hovered = Signal(int)
 
-    def __init__(self, key, label, want, multi=True, parent=None):
+    def __init__(self, key, label, want, multi=True, parent=None, number=False):
         super().__init__(parent)
         self.setObjectName("selField")
         self.key, self.want, self.multi = key, set(want), multi
         self.items: list = []
+        self.number = number
+        self.numbers: list = []
+        self.number_parser = None
+        self.default_text = lambda: ""
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 4, 6, 4)
         lay.setSpacing(2)
@@ -344,8 +362,16 @@ class SelectionField(QFrame):
         self._base_h = 22
         self.list.setStyleSheet("QListWidget { background: transparent; }")
         self.list.itemDoubleClicked.connect(self._remove_item)
+        if number:
+            self.list.setMouseTracking(True)
+            self.list.itemEntered.connect(lambda it: self.hovered.emit(self.list.row(it)))
         lay.addWidget(self.list)
         self.set_active(False)
+
+    def leaveEvent(self, e):
+        if self.number:
+            self.hovered.emit(-1)
+        super().leaveEvent(e)
 
     def mousePressEvent(self, e):
         self.activated.emit(self)
@@ -361,17 +387,55 @@ class SelectionField(QFrame):
             it = QListWidgetItem("Click to select" if self.property("active") == "true" else "—")
             it.setForeground(QColor("#8a94a3"))
             self.list.addItem(it)
+        if self.number:
+            self.numbers = (self.numbers + [None] * len(self.items))[:len(self.items)]
         for i, item in enumerate(self.items):
-            it = QListWidgetItem(item_label(doc, item))
+            it = QListWidgetItem("" if self.number else item_label(doc, item))
             if i in missing:
                 it.setForeground(QColor("#d93025"))
                 it.setToolTip("Reference could not be found — double-click to remove")
             else:
                 it.setToolTip("Double-click to remove")
             self.list.addItem(it)
+            if self.number:
+                self._number_row(it, i, item_label(doc, item))
         n = max(1, len(self.items))
-        self._base_h = min(6, n) * 20 + 4
+        self._base_h = min(6, n) * (28 if self.number else 20) + 4
         self.list.setFixedHeight(self._base_h + self.extra)
+
+    def _number_row(self, it, i, text):
+        w = _RowWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(2, 0, 2, 0)
+        h.addWidget(QLabel(f"{text} {i + 1}"), 1)
+        ed = QLineEdit(self.default_text() if self.numbers[i] is None else _show(self.numbers[i]))
+        ed.setFixedWidth(80)
+        ed.setAlignment(Qt.AlignRight)
+        ed.setToolTip("Radius at this vertex. Expressions and variables work: '#r * 2'. "
+                      "Empty means the default radius. The radius changes smoothly between vertices.")
+        ed.textEdited.connect(lambda t, i=i, ed=ed: self._number_edited(i, ed, t))
+        h.addWidget(ed)
+        w.entered.connect(lambda i=i: self.hovered.emit(i))
+        it.setSizeHint(QSize(0, 28))
+        self.list.setItemWidget(it, w)
+
+    def _number_edited(self, i, ed, txt):
+        txt = txt.strip()
+        v = None if not txt else (self.number_parser(txt) if self.number_parser else parse_number(txt))
+        bad = bool(txt) and (v is None or v <= 0)
+        ed.setProperty("invalid", "true" if bad else "false")
+        ed.style().unpolish(ed)
+        ed.style().polish(ed)
+        if bad or i >= len(self.numbers):
+            return
+        self.numbers[i] = None if not txt else (txt if has_vars(txt) else v)
+        self.number_changed.emit()
+
+    def remove_at(self, row):
+        if 0 <= row < len(self.items):
+            self.items.pop(row)
+            if row < len(self.numbers):
+                self.numbers.pop(row)
 
     def set_extra(self, px):
         self.extra = max(0, int(px))
@@ -382,11 +446,12 @@ class SelectionField(QFrame):
     def _remove_item(self, it):
         row = self.list.row(it)
         if 0 <= row < len(self.items):
-            self.items.pop(row)
+            self.remove_at(row)
             self.changed.emit()
 
     def clear(self):
         self.items = []
+        self.numbers = []
         self.activated.emit(self)           # an emptied field is the one the next click is meant for
         self.changed.emit()
 
@@ -398,13 +463,35 @@ class SelectionField(QFrame):
             return
         for i, ex in enumerate(self.items):
             if _same(ex, item):
+                if self.number:             # a picked vertex already listed selects its row; double-click removes it
+                    self.list.setCurrentRow(i)
+                    return
                 self.items.pop(i)
                 self.changed.emit()
                 return
         if not self.multi:
             self.items = []
         self.items.append(item)
+        if self.number:
+            self.numbers = (self.numbers + [None] * len(self.items))[:len(self.items)]
         self.changed.emit()
+
+
+def fillet_vertex_ends(state, edge_refs):
+    """Positions of the vertices a variable fillet of these edges can set a radius at: the ends of the edges and of
+    the edges tangent to them that the fillet pulls into the contour. [] when the edges do not resolve."""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    out = []
+    try:
+        for pid, es in F._group_by_part(state, edge_refs, "edge").items():
+            mk = BRepFilletAPI_MakeFillet(state.parts[pid].shape)
+            for e in es:
+                mk.Add(e)
+            for ic in range(1, mk.NbContours() + 1):
+                out += [K._vertex_xyz(v) for v in K._contour_vertices(mk, ic)]
+    except Exception:
+        return []
+    return out
 
 
 def _same(a, b):
@@ -485,8 +572,9 @@ def _check(key, label, visible=None):
     return {"t": "check", "key": key, "label": label, "visible": visible}
 
 
-def _sel(key, label, want, multi=True, visible=None):
-    return {"t": "sel", "key": key, "label": label, "want": want, "multi": multi, "visible": visible}
+def _sel(key, label, want, multi=True, visible=None, number=False, tip=None):
+    return {"t": "sel", "key": key, "label": label, "want": want, "multi": multi, "visible": visible,
+            "number": number, "tip": tip}
 
 
 SCOPE_OPS = ("add", "remove", "intersect")
@@ -604,7 +692,11 @@ SCHEMAS = {
     ],
     "fillet": [
         _sel("edges", "Edges or faces to fillet", {"edge"}),
+        _choice("fillet_type", "Type", [("constant", "Constant radius"), ("variable", "Variable radius")]),
         _num("radius", "Radius", minimum=1e-6),
+        _sel("vertices", "Vertices (a radius at each)", {"vertex"}, number=True,
+             tip="The radius changes smoothly between the vertices. Pick vertices at the ends of the selected edges.",
+             visible=lambda p: p.get("fillet_type") == "variable"),
     ],
     "chamfer": [
         _sel("edges", "Edges or faces to chamfer", {"edge"}),
@@ -872,6 +964,10 @@ def params_to_fields(ftype, p):
         f["axis_sel"] = [("axis", ax)] if ax and ax.get("kind") != "std" else []
     if ftype in ("fillet", "chamfer"):
         f["edges"] = [("edge", r) for r in p.get("edges", [])]
+    if ftype == "fillet":
+        rows = p.get("vertex_radii") or []
+        f["vertices"] = [("vertex", e["vertex"]) for e in rows]
+        f["vertices_numbers"] = [None if e.get("radius") == p.get("radius") else e.get("radius") for e in rows]
     if ftype in ("shell", "thread", "delete_face", "move_face", "offset_surface"):
         f["faces"] = [("face", r) for r in p.get("faces", [])]
     if ftype == "plane":
@@ -979,6 +1075,16 @@ def fields_to_params(ftype, fields, p):
             p["axis"] = {}
     if ftype in ("fillet", "chamfer"):
         p["edges"] = [r for k, r in fields.get("edges", [])]
+    if ftype == "fillet" and "vertices" in fields:
+        if p.get("fillet_type") == "variable":      # an empty number follows the default radius
+            nums = list(fields.get("vertices_numbers") or [])
+            nums += [None] * (len(fields["vertices"]) - len(nums))
+            p["vertex_radii"] = [{"vertex": r, "radius": p.get("radius", 1.0) if n is None else n}
+                                 for (k, r), n in zip(fields["vertices"], nums)]
+        else:                                       # a constant fillet saves what it always did
+            p.pop("vertex_radii", None)
+            if p.get("fillet_type") == "constant":
+                p.pop("fillet_type")
     if ftype in ("shell", "thread", "delete_face", "move_face", "offset_surface"):
         p["faces"] = [r for k, r in fields.get("faces", [])]
     if ftype == "plane":
@@ -1146,6 +1252,8 @@ class FeatureDialog(_ResizableFrame):
         for k, items in params_to_fields(self.ftype, self.feature["params"]).items():
             if k in self.fields:
                 self.fields[k].items = list(items)
+            elif k.endswith("_numbers") and k[:-8] in self.fields:
+                self.fields[k[:-8]].numbers = list(items)
         if is_new and preselection:
             self._apply_preselection(preselection)
         if self.ftype == "rib" and is_new:
@@ -1235,9 +1343,16 @@ class FeatureDialog(_ResizableFrame):
             self._info_rows.append((spec, lab))
             return lab
         if t == "sel":
-            f = SelectionField(spec["key"], spec["label"], spec["want"], spec["multi"])
+            f = SelectionField(spec["key"], spec["label"], spec["want"], spec["multi"], number=spec.get("number", False))
             f.activated.connect(self.activate)
             f.changed.connect(self._fields_changed)
+            if spec.get("tip"):
+                f.setToolTip(spec["tip"])
+            if f.number:
+                f.number_parser = lambda t: parse_number(t, variables=self.base_state.vars)
+                f.default_text = lambda: _show(self.feature["params"].get("radius", 0))
+                f.number_changed.connect(self._numbers_changed)
+                f.hovered.connect(self._hover_row)
             self.fields[spec["key"]] = f
             return f
         if t == "derived_tabs":
@@ -2167,6 +2282,9 @@ class FeatureDialog(_ResizableFrame):
             key, i = pick.key
             fld = self.fields.get(key)
             if fld and i < len(fld.items):
+                if fld.number:                  # a listed vertex clicked in the view selects its row
+                    fld.list.setCurrentRow(i)
+                    return
                 fld.items.pop(i)
                 self._fields_changed()
             return
@@ -2174,6 +2292,14 @@ class FeatureDialog(_ResizableFrame):
         if fld is None:
             return
         item = pick_to_item(self.main.viewport, pick, fld.want, self.base_state)
+        if item is not None and self.ftype == "fillet" and fld.key == "vertices" and not self._fillet_vertex_ok(item):
+            try:
+                self.main.status.showMessage(
+                    "That vertex is not at the end of a selected edge (or an edge tangent to it), so it cannot "
+                    "take a radius. Pick a vertex where a selected edge ends.", 8000)
+            except Exception:
+                pass
+            return
         if item is not None and self.ftype == "axis" and item[0] == "face" and fld.key == "refs_sel" \
                 and not any(_same(ex, item) for ex in fld.items) and self.main.viewport.last_click \
                 and (self.feature["params"].get("type") == "face_point"
@@ -2193,6 +2319,14 @@ class FeatureDialog(_ResizableFrame):
                     pass
             return
         fld.toggle(item)
+
+    def _fillet_vertex_ok(self, item):
+        try:
+            pos = F.resolve_point(self.base_state, item[1])
+        except K.KernelError:
+            return False
+        ends = fillet_vertex_ends(self.base_state, self.feature["params"].get("edges", []))
+        return any(float(np.linalg.norm(np.asarray(pos, float) - q)) < 1e-6 for q in ends)
 
     # ------------------------------------------------------------------ mate connector
     def snap_candidates(self, pick: Pick):
@@ -2330,7 +2464,7 @@ class FeatureDialog(_ResizableFrame):
         used = set()
         for key, fld in self.fields.items():
             for i, pk in enumerate(picks):
-                if i in used or (not fld.multi and fld.items):
+                if i in used or (not fld.multi and fld.items) or fld.number:
                     continue
                 item = pick_to_item(self.main.viewport, pk, fld.want, self.base_state)
                 if item is None:
@@ -2366,7 +2500,7 @@ class FeatureDialog(_ResizableFrame):
             self.feature["params"]["parts"] = [pid]
 
     def _fields_changed(self):
-        fields = {k: f.items for k, f in self.fields.items()}
+        fields = self._field_values()
         fields_to_params(self.ftype, fields, self.feature["params"])
         if self.ftype == "rib" and not self.fields["parts"].items:
             self._default_rib_part()
@@ -2396,10 +2530,28 @@ class FeatureDialog(_ResizableFrame):
             fk = {"axis_std": "axis_sel", "dir_std": "dir_sel", "dir2_std": "dir2_sel"}[key]
             if fk in self.fields:
                 self.fields[fk].items = []
-        fields = {k: f.items for k, f in self.fields.items()}
+        fields = self._field_values()
         fields_to_params(self.ftype, fields, p)
+        if key == "fillet_type" and value == "variable" and "vertices" in self.fields:
+            QTimer.singleShot(0, lambda: self.activate(self.fields["vertices"]))
         self._sync_visibility()
         self.schedule_preview()
+
+    def _field_values(self):
+        """{key: items}, plus {key_numbers: numbers} for a field with a number box."""
+        out = {k: f.items for k, f in self.fields.items()}
+        out.update({k + "_numbers": f.numbers for k, f in self.fields.items() if f.number})
+        return out
+
+    def _numbers_changed(self):
+        """A number box was edited: store it and rebuild the preview without redrawing the list being typed in."""
+        fields_to_params(self.ftype, self._field_values(), self.feature["params"])
+        self.schedule_preview()
+
+    def _hover_row(self, row):
+        self._hover = row
+        self.main.viewport.overlays = self.overlays()
+        self.main.viewport.update()
 
     def overlays(self):
         """Geometry of the current selections, in the pre-feature model, for highlighting."""
@@ -2412,6 +2564,8 @@ class FeatureDialog(_ResizableFrame):
                 g = item_geometry(self.base_state, item, half)
                 if g is not None:
                     out.append(((key, i), g))
+                    if fld.number and i == getattr(self, "_hover", -1):      # the hovered row's vertex, larger
+                        out.append((("hover", i), item_geometry(self.base_state, item, half * 2.5)))
         if self.ftype == "derived":
             out += self._derived_location_overlays()
         return out

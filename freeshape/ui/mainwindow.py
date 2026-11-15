@@ -584,7 +584,10 @@ class MainWindow(QMainWindow):
             C("rib", "Rib", "Add a rib, web or gusset to a part from open sketch curves, grown until it meets the "
               "part.", lambda: F_("rib"), "gusset web stiffener support"),
             C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"), "blend transition"),
-            C("fillet", "Fillet", "Round off edges or faces with a radius.", lambda: F_("fillet"), "round blend corner"),
+            C("fillet", "Fillet", "Round off edges or faces with a radius.", lambda: F_("fillet"),
+              "round blend corner variable fillet variable radius"),
+            C("variable_fillet", "Variable fillet", "Round off edges with a radius that changes from vertex to vertex.",
+              lambda: self.start_variable_fillet(), "fillet variable radius round blend corner"),
             C("chamfer", "Chamfer", "Create beveled edges or faces with a distance.", lambda: F_("chamfer"),
               "bevel"),
             C("draft", "Draft", "Angle side faces so a part releases from a mould.", lambda: F_("draft"), "taper"),
@@ -1337,6 +1340,14 @@ class MainWindow(QMainWindow):
         self.viewport.pick_handler = self.dialog.handle_pick
         self.measure.hide()
         self._populate_lists()
+
+    def start_variable_fillet(self):
+        """The Fillet dialog with Type set to Variable radius."""
+        self.start_feature("fillet")
+        d = self.dialog
+        if self.mode == "dialog" and d is not None and d.ftype == "fillet":
+            cb = d.widgets["fillet_type"]
+            cb.setCurrentIndex(cb.findData("variable"))
 
     def show_preview(self, feature, index, overlays):
         st, err = self.doc.preview(feature, index)

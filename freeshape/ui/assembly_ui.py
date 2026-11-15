@@ -384,7 +384,7 @@ class AssemblyPanel(QWidget):
         self.vis_btn = QToolButton()
         self.vis_btn.setObjectName("asm_visibility")
         self.vis_btn.setText("Show")
-        self.vis_btn.setToolTip("Show or hide mate connectors, mates and sketches")
+        self.vis_btn.setToolTip("Show or hide mate connectors (K), mates (J) and sketches (Shift+H)")
         self.vis_btn.setPopupMode(QToolButton.InstantPopup)
         vm = QMenu(self.vis_btn)
         vm.setToolTipsVisible(True)
@@ -3126,8 +3126,9 @@ class AssemblyController:
         if ids:
             self.hide_instances(ids, True)
 
-    def isolate_selected(self):
-        ids = self._need_selection()
+    def isolate_selected(self, ids=None):
+        """Hide every instance but `ids`; the selected ones when no ids are given."""
+        ids = self._need_selection() if ids is None else [i for i in ids if self.doc.instance(i) is not None]
         if len(ids) == 1:
             self.isolate(ids[0])
         elif ids:
@@ -3176,16 +3177,25 @@ class AssemblyController:
               lambda: self.suppress_selected(True), "disable deactivate exclude"),
             C("suppress", "Unsuppress", "Put the selected suppressed parts back.",
               lambda: self.suppress_selected(False), "enable activate include restore"),
-            C("hide", "Hide", "Hide the selected parts.", self.hide_selected, "visibility"),
-            C("hide", "Isolate", "Hide every part but the selected ones.", self.isolate_selected, "only visibility"),
-            C("hide", "Show all", "Show every hidden part.", self.show_all, "unhide visibility"),
+            C("hide", "Hide", "Hide the selected parts (Y).", self.hide_selected, "visibility"),
+            C("hide", "Isolate", "Hide every part but the selected ones (Shift+I).", self.isolate_selected,
+              "only visibility"),
+            C("hide", "Show all", "Show every hidden part (Shift+Y).", self.show_all, "unhide visibility"),
             C("interference", "Interference", "Show where parts overlap.", w.btn_interf.click,
               "clash collision overlap check"),
             C("bom", "Bill of materials", "List the parts with quantities and mass.", self.show_bom,
               "bom parts list table"),
             C("bom", "Mass properties", "Mass by material, total mass and centre of mass of the whole assembly.",
               lambda: w._mass_props_assembly(self.doc), "weight centre of mass volume density"),
-            C("section", "Section view", "Cut the assembly open with a plane to see inside (Ctrl+Shift+X).",
+            C("hide", "Make transparent", "Make the selected parts see-through, or solid again (Shift+T).",
+              lambda: w.vis_command("transparent"), "see through translucent visibility"),
+            C("hide", "Show or hide mate connectors", "Show or hide the mate connectors (K).",
+              lambda: w.vis_command("connectors"), "visibility triad", "View"),
+            C("hide", "Show or hide mates", "Show or hide the two connectors of every mate (J).",
+              lambda: w.vis_command("mates"), "visibility", "View"),
+            C("hide", "Show or hide sketches", "Show or hide the sketches inserted into this Assembly (Shift+H).",
+              lambda: w.vis_command("sketches"), "visibility", "View"),
+            C("section", "Section view", "Cut the assembly open with a plane to see inside (Shift+X).",
               w.toggle_section, "cross cut", "View"),
             C("fit", "Zoom to fit", "Fit the whole assembly in the view (F).", lambda: self.vp.fit(), "", "View"),
             C("iso", "Isometric view", "Look from the isometric corner (Shift+7).",

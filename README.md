@@ -155,6 +155,11 @@ start over empty space — a small blue marker shows the centre of rotation; Vie
 always the model centre or always the origin), middle-drag or Ctrl+right-drag to pan, wheel to zoom at the cursor. The arrow keys turn the view 15° at a time. The view cube works like Onshape's: click a face, edge or corner for that view, the arrows turn the view 90°, the curved arrows roll it, and ▾ lists the named views. `F` zooms to fit,
 `Shift+1…7` = Front, Back, Left, Right, Top, Bottom, Isometric.
 
+**Showing and hiding** — Onshape's keys, in a Part Studio or an Assembly (not inside a sketch): `P` planes,
+`Shift+P` planes, axes and mate connectors together, `K` mate connectors, `Shift+H` sketches, `J` mates (Assembly),
+`Y` hide the selected things or the one under the mouse, `Shift+Y` show all parts, `Shift+I` isolate, `Shift+T`
+make transparent (again to undo; with nothing selected or under the mouse, every part goes solid), `Shift+X` section view.
+
 **Selecting** — hover pre-highlights faces, edges, sketch regions and planes; click to add to the
 selection, click empty space (or press `Space`) to clear. Drag a box on empty space to box-select (left-to-right:
 only what is fully inside; right-to-left: also what it touches), and use the **Select** menu in the top bar to
@@ -238,7 +243,7 @@ parts (here or in the 3D view) and right-click to hide, isolate, export or **Aut
 **Measure** — select anything and its size shows bottom-right: face area, edge length and radius, part volume,
 mass and centre of mass. Select two things for the minimum distance, the X/Y/Z offsets, and the angle between them.
 
-**Section view** — the section button (or Ctrl+Shift+X) slices the model so you can see inside. Pick the Top / Front /
+**Section view** — the section button (or Shift+X) slices the model so you can see inside. Pick the Top / Front /
 Right plane, or select a face first to cut exactly there; drag the slider or type an offset, and tick *Flip* for the
 other side.
 

@@ -147,6 +147,7 @@ class Viewport(QOpenGLWidget):
         self.cam = Camera()
         self.parts = []          # list of (pid, mesh, color)
         self.reference_ids = set()   # ids of reference (Context) bodies among self.parts
+        self.transparent_ids = set() # ids the user made transparent (Shift+T): view state only, set by the window
         self.part_shapes = {}    # pid -> shape
         self.planes = []         # list of (key_tuple, Plane, label, half_size)
         self.axes = []           # list of (key_tuple, origin, direction, span or None, label); key = ("axis", fid)
@@ -307,6 +308,16 @@ class Viewport(QOpenGLWidget):
             self.selectionChanged.emit()
         if self.hover and not self._pick_exists(self.hover):
             self.hover = None
+        self.update()
+
+    def set_transparent(self, ids):
+        """Draw the parts with these ids translucent (Onshape's Shift+T). Only the drawing changes: they are
+        still picked, measured and sectioned like any other part, and they are not reference bodies."""
+        ids = set(ids)
+        if ids == self.transparent_ids:
+            return
+        self.transparent_ids = ids
+        self._build_batch(None)
         self.update()
 
     def _pick_exists(self, p: Pick):
@@ -662,13 +673,13 @@ class Viewport(QOpenGLWidget):
         ranges = {}
         nv = nt = 0
         fcols = self.face_colors
-        ref = self.reference_ids
+        ref = self.reference_ids | self.transparent_ids      # both draw in the translucent pass
         nsolid = None
         for pid, m, color in [x for x in self.parts if x[0] not in ref] + [x for x in self.parts if x[0] in ref]:
             if len(m.verts) == 0:
                 continue
             if nsolid is None and pid in ref:
-                nsolid = nt          # reference bodies come last in the batch so they draw in a translucent pass
+                nsolid = nt          # translucent bodies come last in the batch so they draw in a translucent pass
             col = np.empty((len(m.verts), 3), np.float32)
             col[:] = color[:3]
             fc = fcols.get(pid)
@@ -882,7 +893,7 @@ class Viewport(QOpenGLWidget):
             self._use_shiny(True)
             self._bind_batch(colors=True)
             GL.glDrawElements(GL.GL_TRIANGLES, b["nsolid"] * 3, GL.GL_UNSIGNED_INT, self._idx_ptr(0))
-            if b["nsolid"] < b["ntri"]:        # reference (Context) bodies: translucent, no depth write
+            if b["nsolid"] < b["ntri"]:        # reference (Context) and transparent bodies: translucent, no depth write
                 GL.glBlendColor(0.0, 0.0, 0.0, self.REFERENCE_FACE_ALPHA)
                 GL.glBlendFuncSeparate(GL.GL_CONSTANT_ALPHA, GL.GL_ONE_MINUS_CONSTANT_ALPHA,
                                        GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)

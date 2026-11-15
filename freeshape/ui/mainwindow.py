@@ -5,10 +5,11 @@ import base64
 import copy
 import os
 import sys
+import weakref
 
 import numpy as np
-from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QShortcut, QColor
+from PySide6.QtCore import Qt, QSize, QTimer, QEvent
+from PySide6.QtGui import QAction, QKeyEvent, QKeySequence, QShortcut, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolButton, QLabel, QFrame, QSplitter, QMenu,
     QStackedWidget, QFileDialog, QMessageBox, QInputDialog, QColorDialog, QTabBar, QSizePolicy, QApplication, QDialog,
@@ -160,6 +161,12 @@ class MainWindow(QMainWindow):
         self.sketch_waiting_for_plane = False
         self._sketch_buttons = {}
         self.section_panel = None
+        # view state of the visibility keys: none of it is saved with the file
+        self.show_axes = True                               # construction axes (Shift+P)
+        self.show_connectors = True                         # a Part Studio's mate connectors (K, Shift+P)
+        self._transparent = weakref.WeakKeyDictionary()     # document -> ids of the parts made transparent (Shift+T)
+        self._passing_key = False
+        self._shown = None                                  # what _show_state last drew in a Part Studio
         from PySide6.QtCore import QSettings
         self.settings = QSettings("FreeShape", "FreeShape")
         self.resolver = links.LinkResolver(find_open_studio=self._find_open_studio,
@@ -416,7 +423,7 @@ class MainWindow(QMainWindow):
         self.act_section = self._add_action(vm, "Section view", self.toggle_section, "Ctrl+Shift+X")
         self.act_section.setCheckable(True)
         self._add_action(vm, "Zoom to fit", lambda: self.dwg.canvas.fit() if self.is_dwg else self.viewport.fit(), "F")
-        self.act_planes = self._add_action(vm, "Show default planes", self._toggle_planes)
+        self.act_planes = self._add_action(vm, "Show planes\tP", self._toggle_planes)
         self.act_planes.setCheckable(True)
         self.act_planes.setChecked(True)
         self._add_action(vm, "Show all parts", self._show_all_parts)
@@ -645,8 +652,24 @@ class MainWindow(QMainWindow):
               lambda: self._auto_color(list(self.doc.state.parts)), "color colours appearance", "View"),
             C("undo", "Undo", "Undo the last change (Ctrl+Z).", self.undo, "", "Edit"),
             C("redo", "Redo", "Redo what was undone (Ctrl+Y).", self.redo, "", "Edit"),
-            C("section", "Section view", "Cut the model open with a plane to see inside (Ctrl+Shift+X).",
+            C("section", "Section view", "Cut the model open with a plane to see inside (Shift+X).",
               self.toggle_section, "cross", "View"),
+            C("hide", "Show or hide planes", "Show or hide the default planes and the planes you made (P).",
+              lambda: self.vis_command("planes"), "visibility datum", "View"),
+            C("hide", "Show or hide construction geometry", "Show or hide planes, axes and mate connectors "
+              "together (Shift+P).", lambda: self.vis_command("construction"), "visibility planes axes datum", "View"),
+            C("hide", "Show or hide mate connectors", "Show or hide the mate connectors (K).",
+              lambda: self.vis_command("connectors"), "visibility triad", "View"),
+            C("hide", "Show or hide sketches", "Hide every sketch, or show them all when none is showing "
+              "(Shift+H).", lambda: self.vis_command("sketches"), "visibility", "View"),
+            C("hide", "Hide", "Hide the selected parts, sketches, planes and axes (Y).",
+              lambda: self.vis_command("hide"), "visibility", "View"),
+            C("hide", "Isolate", "Hide every part but the selected ones (Shift+I).",
+              lambda: self.vis_command("isolate"), "only visibility", "View"),
+            C("hide", "Show all parts", "Show every hidden part (Shift+Y).",
+              lambda: self.vis_command("show_all"), "unhide visibility", "View"),
+            C("hide", "Make transparent", "Make the selected parts see-through, or solid again (Shift+T).",
+              lambda: self.vis_command("transparent"), "see through translucent visibility", "View"),
             C("fit", "Zoom to fit", "Fit the whole model in the view (F).", lambda: self.viewport.fit(), "", "View"),
             C("iso", "Isometric view", "Look at the model from the isometric corner (Shift+7).",
               lambda: self.viewport.set_standard_view("Isometric"), "", "View"),
@@ -869,7 +892,7 @@ class MainWindow(QMainWindow):
         self._tb(h, "import", "Import STEP (opens in a new tab)", lambda: self.import_step())
         self._tb(h, "export", "Export STEP / STL / 3MF / OBJ / BREP", lambda: self.export(None, None))
         h.addStretch(1)
-        self.btn_section = self._tb(h, "section", "Section view (Ctrl+Shift+X) — select a face or plane first to cut there",
+        self.btn_section = self._tb(h, "section", "Section view (Shift+X) — select a face or plane first to cut there",
                                     self.toggle_section, checkable=True)
         self._tb(h, "fit", "Zoom to fit (F)", lambda: self.viewport.fit())
         self._tb(h, "iso", "Isometric (Shift+7)", lambda: self.viewport.set_standard_view("Isometric"))
@@ -908,7 +931,7 @@ class MainWindow(QMainWindow):
         self._tb(h, "export", "Export the assembly (STEP keeps the parts, names and colours)",
                  lambda: self.export(None, None))
         h.addStretch(1)
-        self.btn_asection = self._tb(h, "section", "Section view (Ctrl+Shift+X)", self.toggle_section, checkable=True)
+        self.btn_asection = self._tb(h, "section", "Section view (Shift+X)", self.toggle_section, checkable=True)
         self._tb(h, "fit", "Zoom to fit (F)", lambda: self.viewport.fit())
         self._tb(h, "iso", "Isometric (Shift+7)", lambda: self.viewport.set_standard_view("Isometric"))
         return w
@@ -1075,6 +1098,13 @@ class MainWindow(QMainWindow):
         sc("Shift+F", lambda: self.asm.start_mate("fastened") if self.is_asm else self.start_feature("fillet"))
 
         sc("N", lambda: self.dwg.set_tool("note") if self.is_dwg else self._normal_key())
+        # Onshape's visibility keys. Window shortcuts, so they work with the focus in a list as well as in the
+        # 3D view; where a key does not apply (_vis_key) the widget that would have had it gets it instead.
+        self._vis_shortcuts = {}
+        for key, what in self.VIS_KEYS:
+            s = sc(key, lambda k=key, n=what: self._vis_key(k, n))
+            s.setAutoRepeat(False)
+            self._vis_shortcuts[key] = s
         sc("Delete", self._delete_key)
         sc("Escape", self._escape)
 
@@ -1174,9 +1204,13 @@ class MainWindow(QMainWindow):
         picked = set(self.left.features.selected_feature_ids())
         if self._hl_hover:
             picked.add(self._hl_hover)
+        # switched off (K): only the ones picked in the list or used by the open feature dialog still show
+        keep = None if self.show_connectors else picked | self._dialog_feature_ids()
         out = []
         for fid, c in getattr(state, "connectors", {}).items():
             if fid in self.doc.hidden_features or c["part"] in self.doc.hidden_parts:
+                continue
+            if keep is not None and fid not in keep:
                 continue
             fr = c["frame"]
             z, x = np.asarray(fr["z"], float), np.asarray(fr["x"], float)
@@ -1186,13 +1220,30 @@ class MainWindow(QMainWindow):
             out.append(tri)
         return out
 
+    def _dialog_feature_ids(self):
+        """The open feature dialog's own feature id and every id its parameters name."""
+        feat = getattr(self.dialog, "feature", None) if self.mode == "dialog" else None
+        if not isinstance(feat, dict):
+            return set()
+        out, todo = {feat.get("id")}, [feat.get("params")]
+        while todo:
+            v = todo.pop()
+            if isinstance(v, str):
+                out.add(v)
+            elif isinstance(v, dict):
+                todo.extend(v.values())
+            elif isinstance(v, (list, tuple)):
+                todo.extend(v)
+        return out
+
     def _planes_for(self, state):
         half = self.viewport.plane_half()
         planes = []
-        if self.act_planes.isChecked():
-            for name in STD_PLANES:
-                if name not in self.doc.hidden_features:
-                    planes.append((("std", name), K.std_plane(name), name, half))
+        if not self.act_planes.isChecked():         # View > Show planes (P): the default planes and your own
+            return planes
+        for name in STD_PLANES:
+            if name not in self.doc.hidden_features:
+                planes.append((("std", name), K.std_plane(name), name, half))
         for fid, pl in state.planes.items():
             if fid not in self.doc.hidden_features:
                 f = self.doc.feature(fid)
@@ -1201,6 +1252,8 @@ class MainWindow(QMainWindow):
 
     def _axes_for(self, state):
         axes = []
+        if not self.show_axes:
+            return axes
         for fid, ax in getattr(state, "axes", {}).items():
             if fid not in self.doc.hidden_features:
                 f = self.doc.feature(fid)
@@ -1211,9 +1264,11 @@ class MainWindow(QMainWindow):
     def _show_state(self, state, active_sketch=None, also_show=()):
         if self.is_dwg:
             return
+        self.viewport.transparent_ids = set(self._transparent.get(self.doc, ()))
         if self.is_asm:
             self.asm.show_scene()
             return
+        self._shown = (self.doc, state, active_sketch, also_show)
         parts = [(p.id, self._flat_or_folded(state, p), p.color,
                   None if self._flat_on(state, p) else p.face_colors, None, None, p.reference)
                  for p in state.parts.values() if p.id not in self.doc.hidden_parts]
@@ -3487,7 +3542,259 @@ class MainWindow(QMainWindow):
         self.doc.notify()
 
     def _toggle_planes(self):
-        self._show_state(self.doc.state)
+        self._reshow()
+
+    def _reshow(self):
+        """Draw the 3D view again after a view switch changed (planes, axes, connectors): the same state as
+        before, so an open feature dialog keeps its preview and a sketch being edited stays on screen."""
+        if self.doc is None or getattr(self.doc, "kind", None) not in ("studio", "assembly"):
+            return
+        shown = self._shown
+        if self.is_asm or self.mode == "idle" or shown is None or shown[0] is not self.doc:
+            self._show_state(getattr(self.doc, "state", None))
+        else:
+            self._show_state(*shown[1:])
+        self.viewport.update()
+
+    # ================================================================== Onshape's visibility keys
+    # (key, command): bound in _bind_shortcuts
+    VIS_KEYS = (("P", "planes"), ("Shift+P", "construction"), ("Y", "hide"), ("Shift+Y", "show_all"),
+                ("Shift+I", "isolate"), ("Shift+T", "transparent"), ("Shift+X", "section"),
+                ("K", "connectors"), ("Shift+H", "sketches"), ("J", "mates"))
+
+    def _vis_keys_apply(self):
+        """The visibility keys act in the 3D view of a Part Studio or an Assembly, except inside a sketch
+        (the sketch tools own those letters)."""
+        return (self.doc is not None and self.mode != "sketch"
+                and getattr(self.doc, "kind", None) in ("studio", "assembly")
+                and self.view_stack.currentWidget() is self.viewport)
+
+    def _vis_key(self, seq, what):
+        if what != "section" and not self._vis_keys_apply():
+            self._pass_key(seq)
+            return
+        self.vis_command(what)
+
+    def _pass_key(self, seq):
+        """A window shortcut took a key that is not ours here: give it to the widget that would have had it.
+        Qt looks a key event sent from code up in the shortcuts again and would swallow it there, so this key's
+        shortcut is switched off while the event is delivered; the flag stops any loop regardless."""
+        if self._passing_key:
+            return
+        if self.is_dwg:
+            target = self.dwg.canvas
+        elif self.mode == "sketch":
+            target = self.viewport
+        else:
+            target = QApplication.focusWidget()
+        if target is None:
+            return
+        combo = QKeySequence(seq)[0]
+        key, mods = combo.key(), combo.keyboardModifiers()
+        text = seq.split("+")[-1]                   # "Shift+P" types P, "P" types p
+        if not mods & Qt.ShiftModifier:
+            text = text.lower()
+        shortcut = self._vis_shortcuts[seq]
+        self._passing_key = True
+        shortcut.setEnabled(False)
+        try:
+            for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+                QApplication.sendEvent(target, QKeyEvent(kind, key, mods, text))
+        finally:
+            shortcut.setEnabled(True)
+            self._passing_key = False
+
+    def vis_command(self, what):
+        """Run a visibility command (the keys and Search tools both call this) and say in the status bar what
+        happened and how to get back."""
+        if what == "section":
+            before = self.section_panel is not None
+            self.toggle_section()
+            after = self.section_panel is not None
+            msg = None if before == after else \
+                "Section view on: Shift+X closes it" if after else "Section view off: Shift+X opens it again"
+        elif self.doc is None or getattr(self.doc, "kind", None) not in ("studio", "assembly"):
+            return
+        elif what == "transparent":
+            msg = self._vis_transparent()
+        else:
+            msg = getattr(self, ("_avis_" if self.is_asm else "_svis_") + what)()
+        if msg:
+            self.status.showMessage(msg, 6000)
+
+    def _pick_target(self, pk):
+        """("part", id) or ("feature", id): what a pick in the 3D view stands for when hiding it; None if nothing.
+        In an Assembly the part id is the instance's."""
+        if pk is None:
+            return None
+        k = pk.kind
+        if self.is_asm:
+            if k in ("face", "edge", "vertex", "part", "region", "sketch_line", "sketch_point") \
+                    and self.doc.instance(pk.key[0]) is not None:
+                return ("part", pk.key[0])
+            return None
+        if k in ("face", "edge", "vertex", "part"):
+            return ("part", pk.key[0]) if pk.key[0] in self.doc.state.parts else None
+        if k == "plane":
+            return ("feature", pk.key[1])
+        if k in ("region", "sketch_line", "sketch_point", "axis", "connector"):
+            return ("feature", pk.key[0])
+        return None
+
+    def _vis_targets(self):
+        """What Y, Shift+I and Shift+T act on, as ([part or instance ids], [feature ids]): the selection (in the
+        3D view and the lists) or, when nothing selected is still showing, the thing under the mouse. While a
+        feature dialog is open the selection is the dialog's picks, so only the thing under the mouse counts."""
+        doc, vp = self.doc, self.viewport
+        parts, feats = [], []
+
+        def add(t):
+            into = parts if t and t[0] == "part" else feats
+            if t is not None and t[1] not in into:
+                into.append(t[1])
+        if self.mode != "dialog":
+            if self.is_asm:
+                for i in self.asm.selected_instance_ids():
+                    add(("part", i))
+            else:
+                for pid in self.left.parts.selected_part_ids():
+                    if pid in doc.state.parts:
+                        add(("part", pid))
+                for fid in self.left.features.selected_feature_ids():
+                    if (doc.feature(fid) or {}).get("type") in ("sketch", "plane", "axis", "mate_connector"):
+                        add(("feature", fid))
+            for pk in vp.selection:
+                add(self._pick_target(pk))
+            if self.is_asm:
+                parts[:] = [i for i in parts if not doc.instance(i).get("hidden")]
+            else:
+                parts[:] = [p for p in parts if p not in doc.hidden_parts]
+                feats[:] = [f for f in feats if f not in doc.hidden_features]
+        if not parts and not feats:
+            add(self._pick_target(vp.hover))
+        return parts, feats
+
+    @staticmethod
+    def _count(n, noun="part"):
+        return f"{n} {noun}" + ("" if n == 1 else "s")
+
+    def _vis_transparent(self):
+        parts, _ = self._vis_targets()
+        cur = self._transparent.setdefault(self.doc, set())
+        if not parts:
+            if not cur:
+                return "Nothing to make transparent: select a part or point at it, then press Shift+T"
+            cur.clear()
+            msg = "No part is transparent now"
+        elif all(p in cur for p in parts):
+            cur.difference_update(parts)
+            msg = f"{self._count(len(parts))} solid again"
+        else:
+            cur.update(parts)
+            msg = f"{self._count(len(parts))} transparent: Shift+T with nothing selected or under the mouse " \
+                  "makes every part solid again"
+        self.viewport.set_transparent(cur)
+        return msg
+
+    # ---- in a Part Studio
+    def _svis_planes(self):
+        on = not self.act_planes.isChecked()
+        self.act_planes.setChecked(on)
+        self._reshow()
+        return "Planes shown: P hides them again" if on else "Planes hidden: P shows them again"
+
+    def _svis_construction(self):
+        on = not (self.act_planes.isChecked() or self.show_axes or self.show_connectors)
+        self.act_planes.setChecked(on)
+        self.show_axes = self.show_connectors = on
+        self._reshow()
+        return ("Planes, axes and mate connectors shown: Shift+P hides them again" if on else
+                "Planes, axes and mate connectors hidden: Shift+P shows them again")
+
+    def _svis_connectors(self):
+        self.show_connectors = on = not self.show_connectors
+        self._reshow()
+        return "Mate connectors shown: K hides them again" if on else "Mate connectors hidden: K shows them again"
+
+    def _svis_sketches(self):
+        fids = list(self.doc.state.sketches)
+        if not fids:
+            return "There are no sketches to show or hide"
+        hide = any(f not in self.doc.hidden_features for f in fids)
+        self.doc.set_features_hidden(fids, hide)
+        return "Sketches hidden: Shift+H shows them again" if hide else "Sketches shown: Shift+H hides them again"
+
+    def _svis_mates(self):
+        return "J shows or hides mates in an Assembly: there are none in a Part Studio"
+
+    def _svis_hide(self):
+        parts, feats = self._vis_targets()
+        if not parts and not feats:
+            return "Nothing to hide: select something or point at it, then press Y"
+        self.doc.hidden_features = self.doc.hidden_features | set(feats)
+        self.doc.set_parts_hidden(parts, True)
+        back = []
+        if parts:
+            back.append("Shift+Y shows all parts")
+        if feats:
+            back.append("right-click a sketch, plane or axis in the feature list to show it again")
+        what = " and ".join(([self._count(len(parts))] if parts else [])
+                            + ([self._count(len(feats), "sketch, plane or axis item")] if feats else []))
+        return f"Hid {what}: " + "; ".join(back)
+
+    def _svis_show_all(self):
+        self._show_all_parts()
+        return "All parts shown"
+
+    def _svis_isolate(self):
+        parts, _ = self._vis_targets()
+        if not parts:
+            return "Nothing to isolate: select a part or point at it, then press Shift+I"
+        self._isolate(parts)
+        return f"Isolated {self._count(len(parts))}: Shift+Y shows the others again"
+
+    # ---- in an Assembly
+    def _avis_switch(self, keys, label, key_name):
+        """Tick or untick entries of the Assembly's Show dropdown: any ticked -> untick them all, else tick all."""
+        acts = [self.asm.panel.vis_actions[k] for k in keys]
+        on = not any(a.isChecked() for a in acts)
+        for a in acts:
+            a.setChecked(on)
+        return f"{label} shown: {key_name} hides them again" if on else \
+            f"{label} hidden: {key_name} shows them again"
+
+    def _avis_planes(self):
+        return "An Assembly shows no planes: P does nothing here"
+
+    def _avis_construction(self):
+        return self._avis_switch(("connectors", "mates"), "Mate connectors and mates", "Shift+P")
+
+    def _avis_connectors(self):
+        return self._avis_switch(("connectors",), "Mate connectors", "K")
+
+    def _avis_sketches(self):
+        return self._avis_switch(("sketches",), "Sketches", "Shift+H")
+
+    def _avis_mates(self):
+        return self._avis_switch(("mates",), "Mates", "J")
+
+    def _avis_hide(self):
+        ids, _ = self._vis_targets()
+        if not ids:
+            return "Nothing to hide: select a part or point at it, then press Y"
+        self.asm.hide_instances(ids, True)
+        return f"Hid {self._count(len(ids))}: Shift+Y shows all parts"
+
+    def _avis_show_all(self):
+        self.asm.show_all()
+        return "All parts shown"
+
+    def _avis_isolate(self):
+        ids, _ = self._vis_targets()
+        if not ids:
+            return "Nothing to isolate: select a part or point at it, then press Shift+I"
+        self.asm.isolate_selected(ids)
+        return f"Isolated {self._count(len(ids))}: Shift+Y shows the others again"
 
     def _mass_props(self, pid):
         p = self.doc.state.parts[pid]
@@ -3840,6 +4147,7 @@ class MainWindow(QMainWindow):
             if self.doc.kind != "drawing":
                 self._views[id(self.doc)] = self.viewport.cam.state()
         self.doc = doc
+        self.viewport.transparent_ids = set(self._transparent.get(doc, ()))
         self.viewport.clear_selection()
         self.measure.hide()
         if self.var_tabs.is_variables(doc):
@@ -4407,6 +4715,10 @@ class MainWindow(QMainWindow):
             "Shift+1…7: Front, Back, Left, Right, Top, Bottom, Isometric · N: normal to sketch<br><br>"
             "<b>Selecting</b><br>Space: deselect all · Drag a box: left-to-right selects what is fully inside, "
             "right-to-left also what it touches · Shift / Ctrl: add<br><br>"
+            "<b>Showing and hiding</b> (not inside a sketch)<br>P: planes · Shift+P: planes, axes and mate "
+            "connectors · K: mate connectors · Shift+H: sketches · J: mates (Assembly)<br>"
+            "Y: hide the selected or the one under the mouse · Shift+Y: show all parts · Shift+I: isolate · "
+            "Shift+T: transparent · Shift+X: section view<br><br>"
             "<b>Features</b><br>Alt+C or Ctrl+Space: search tools · "
             "Shift+S: sketch · Shift+E: extrude · Shift+W: revolve · Shift+F: fillet<br>"
             "Ctrl+Z / Ctrl+Y: undo / redo · Enter: accept dialog · Esc: cancel<br><br>"

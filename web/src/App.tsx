@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { fetchHealth } from './health'
+import type { ConnectionStore } from './net/connection'
+import { ConnectionPanel } from './net/react'
 
 type State = { kind: 'loading' } | { kind: 'ready'; version: string } | { kind: 'failed' }
 
 /** Placeholder first page: shows the server version from /health. The app shell replaces it. */
-export function App() {
+export function App({ store }: { store?: ConnectionStore }) {
   const [state, setState] = useState<State>({ kind: 'loading' })
   useEffect(() => {
     let live = true
@@ -24,6 +26,7 @@ export function App() {
         {state.kind === 'ready' && `Server version ${state.version}`}
         {state.kind === 'failed' && 'The server did not answer.'}
       </p>
+      {store && <ConnectionPanel store={store} />}
     </main>
   )
 }

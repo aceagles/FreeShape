@@ -20,6 +20,21 @@ Routes (an exact table; no part of a request is ever joined to a file path):
     GET  /tabs/<id>/mesh.json   display meshes, see `mesh_document`
     POST /tabs/<id>/edit        body: a contract edit dict, e.g. {"op": "set_param", ...}; reply {"rebuilt": [ids]}
     POST /save                  body: {} ; reply {"saved": [ids]}
+    GET  /ws                    the live channel (WebSocket, JSON text messages; see `_Server._socket`)
+
+The live channel (I1.5). `GET /ws?client=<id>` (the id is 8..64 of letters, digits, `_`, `-`; the server makes one
+when it is missing) upgrades after the same Host and Origin checks as every route. The server sends
+    {"type": "hello", "client", "document": {"id", "name"}, "tabs": [tab entries + "revision"]}
+and then pushes, to every connected socket,
+    {"type": "changed", "client": <id that made the edit or null>, "base": <its base revision or null>,
+     "rebuilt": [tab ids], "revisions": {tab id: revision}, "saved": [tab ids]}   after an edit or a save
+    {"type": "tabs", "tabs": [...]}                                               when a tab's state/error/dirty changed
+A client may send {"type": "hello"} (answered with hello), {"type": "ping", "t": x} (answered with
+{"type": "pong", "t": x}) and {"type": "edit", "id", "tab", "edit", "base"} (answered with {"type": "edited", "id",
+"rebuilt"} or {"type": "error", "id", "message"}). An HTTP edit names its sender with the headers X-Client-Id and
+X-Base-Revision (both optional). The server records both and does not yet act on a stale base revision.
+State of one person lives in `ClientRegistry`, keyed by client id, kept `client_ttl` seconds (default 600, option
+`--client-expiry`) after the client's last socket closes; a reconnect with the same id finds its entry.
 
 Every call into the session holds one lock (the session has none) and runs on a thread pool, never on the event
 loop; /health and the other routes that need no session never wait for it. Errors are JSON {"error": message}: 400 a bad edit or body, 403/421 a wrong Host
@@ -36,6 +51,7 @@ import signal
 import socket
 import sys
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -64,6 +80,10 @@ _CLIENT_DIR = Path(__file__).resolve().parent / "static" / "app"     # `npm --pr
 _CLIENT_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _NOT_BUILT = (b"The FreeShape client is not built.\n\nBuild it with:\n\n    npm --prefix web run build\n\n"
               b"then reload this page. The old viewer is at /viewer.\n")
+_CLIENT_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+CLIENT_TTL = 600.0              # seconds a client's registry entry outlives its last socket
+WS_HEARTBEAT = 25.0             # seconds between protocol pings that keep a tunnel open and find dead sockets
+WS_SEND_TIMEOUT = 5.0           # seconds a slow socket gets for one pushed message before it is dropped
 _REMOTE_MESSAGE = ("remote access needs authentication that does not exist yet; "
                    "serve binds 127.0.0.1 only (use a port forward or the tunnel)")
 
@@ -199,12 +219,74 @@ def check_host_origin(host, origin, hosts, origins):
     return None
 
 
+class ClientEntry:
+    """What the server keeps for one client id: `data` is for later cards (an open dialog, a sketch session)."""
+
+    def __init__(self, client):
+        self.client = client
+        self.data = {}
+        self.sockets = 0
+        self.last_edit = None            # {"tab", "base", "revision"} of this client's latest edit
+        self._timer = None
+
+
+class ClientRegistry:
+    """Per-client state, keyed by client id and never by socket. An entry is made by the first `attach`, survives
+    while the client has a socket and for `ttl` seconds after the last one closes; a reconnect in that time gets
+    the same entry. When it expires it is dropped and `on_expire(entry)` runs. Event-loop thread only."""
+
+    def __init__(self, ttl=CLIENT_TTL, on_expire=None):
+        self.ttl = ttl
+        self.on_expire = on_expire
+        self._entries = {}
+
+    def get(self, client):
+        return self._entries.get(client)
+
+    def ids(self):
+        return sorted(self._entries)
+
+    def attach(self, client):
+        entry = self._entries.get(client)
+        if entry is None:
+            entry = self._entries[client] = ClientEntry(client)
+        if entry._timer is not None:
+            entry._timer.cancel()
+            entry._timer = None
+        entry.sockets += 1
+        return entry
+
+    def detach(self, client):
+        entry = self._entries.get(client)
+        if entry is None:
+            return
+        entry.sockets = max(0, entry.sockets - 1)
+        if entry.sockets == 0 and entry._timer is None:
+            entry._timer = asyncio.get_running_loop().call_later(self.ttl, self._expire, entry)
+
+    def _expire(self, entry):
+        entry._timer = None
+        if entry.sockets == 0 and self._entries.get(entry.client) is entry:
+            del self._entries[entry.client]
+            if self.on_expire is not None:
+                try:
+                    self.on_expire(entry)
+                except Exception as e:                           # noqa: BLE001
+                    _log(f"client-expired callback failed: {type(e).__name__}: {_clean(str(e), 200)}")
+
+    def cancel_timers(self):
+        for entry in self._entries.values():
+            if entry._timer is not None:
+                entry._timer.cancel()
+                entry._timer = None
+
+
 class _Server:
     """The aiohttp server: bound to 127.0.0.1 when made, running once `serve_forever` is called (it blocks, on its
     own event loop, until `shutdown`). `lock` serialises every session call; those calls run on `pool`, never on
     the event loop."""
 
-    def __init__(self, session, port=0, allow_origins=()):
+    def __init__(self, session, port=0, allow_origins=(), client_ttl=CLIENT_TTL, client_expired=None):
         from .session import SessionError
         self.session = session
         self.session_error = SessionError
@@ -228,6 +310,10 @@ class _Server:
             o, h = parse_allow_origin(value)
             self.origins |= o
             self.hosts |= h
+        self.clients = ClientRegistry(client_ttl, client_expired)
+        self._sockets = {}                                       # live WebSocketResponse -> client id
+        self._revisions = {}                                     # tab id -> last known revision (under `lock`)
+        self._tabs_sig = None                                    # last pushed tab states, to push `tabs` on change
         self._loop = None
         self._stop = None
         self._stop_asked = False
@@ -256,7 +342,10 @@ class _Server:
             if not self._stop_asked:
                 await self._stop.wait()
         finally:
+            await asyncio.gather(*(ws.close(code=1001, message=b"server stopping") for ws in list(self._sockets)),
+                                 return_exceptions=True)
             await runner.cleanup()
+            self.clients.cancel_timers()
 
     def wait_started(self, timeout=30.0):
         return self._started.wait(timeout)
@@ -322,6 +411,10 @@ class _Server:
         # the route comes from the raw request target, never from a decoded or normalised path
         path = request.raw_path.split("?", 1)[0]
         tab = None
+        if path == "/ws":
+            if method != "GET":
+                return self._fail(405, "method not allowed", [("Allow", "GET")])
+            return await self._socket(request)
         if path in _FIXED:
             route, want = path, _FIXED[path][0]
         elif path == "/" or (_TAB_PATH.match(path) is None and path in (files := _client_files())):
@@ -340,7 +433,7 @@ class _Server:
             body = await self._body(request)
             if not isinstance(body, dict):
                 return body                                        # the refusal response
-        return await self._route(route, tab, body)
+        return await self._route(route, tab, body, request)
 
     async def _body(self, request):
         """The JSON object of a POST body, or the refusal response."""
@@ -377,7 +470,7 @@ class _Server:
                 return fn()
         return await asyncio.get_running_loop().run_in_executor(self.pool, locked)
 
-    async def _route(self, route, tab, body):
+    async def _route(self, route, tab, body, request=None):
         session = self.session
         if route == "client":
             if tab is None:                                      # `tab` carries (file, content type) for this route
@@ -407,18 +500,168 @@ class _Server:
                 return self._fail(404, f"tab {tab!r} ({out.kind}) has no mesh")
             return self._json(200, doc)
         if route == "edit":
-            rebuilt = await self._in_session(lambda: session.submit_edit(tab, body))
+            client, base = self._edit_meta(request.headers.get("X-Client-Id"), request.headers.get("X-Base-Revision"))
+            rebuilt = await self._edit(tab, body, client, base)
             return self._json(200, {"rebuilt": rebuilt})
         if route == "/save":
-            saved = await self._in_session(session.save)
+            client, _ = self._edit_meta(request.headers.get("X-Client-Id"), None)
+            saved = await self._save(client)
             return self._json(200, {"saved": saved})
         return self._fail(404, "not found")
 
+    # ------------------------------------------------------------------ edits, pushes
+    def _edit_meta(self, client, base):
+        """(client id or None, base revision or None) from an edit's header or field values; SessionError if bad."""
+        if client is not None and (not isinstance(client, str) or _CLIENT_ID.match(client) is None):
+            raise self.session_error("the client id must be 8..64 letters, digits, '_' or '-'")
+        if base is not None:
+            text = base.strip() if isinstance(base, str) else base
+            if isinstance(text, str) and text.isascii() and text.isdigit() and len(text) <= 12:
+                base = int(text)
+            elif isinstance(text, int) and not isinstance(text, bool) and 0 <= text < 10 ** 12:
+                base = text
+            else:
+                raise self.session_error("the base revision must be a non-negative integer")
+        return client, base
 
-def make_server(session, port=0, allow_origins=()):
+    def _tab_view(self, rebuilt=()):
+        """Session lock held. session.tabs() with each tab's "revision" (None when unknown); the revisions of the
+        `rebuilt` tabs are read again, the others come from the cache."""
+        tabs = self.session.tabs()
+        for t in tabs:
+            tid = t["id"]
+            if tid in rebuilt or tid not in self._revisions:
+                try:
+                    self._revisions[tid] = None if t["state"] in ("failed", "crashed") else self.session.outputs(tid).revision
+                except Exception:                                # noqa: BLE001  (a tab that cannot answer has none)
+                    self._revisions[tid] = None
+            t["revision"] = self._revisions.get(tid)
+        return tabs
+
+    async def _edit(self, tab, edit, client, base):
+        """Apply one edit, record who made it, push `changed` (and `tabs` when states moved); the rebuilt ids."""
+        def work():
+            rebuilt = self.session.submit_edit(tab, edit)
+            return rebuilt, self._tab_view(rebuilt)
+        rebuilt, tabs = await self._in_session(work)
+        revisions = {t["id"]: t["revision"] for t in tabs if t["id"] in rebuilt}
+        entry = self.clients.get(client) if client else None
+        if entry is not None:
+            entry.last_edit = {"tab": tab, "base": base, "revision": revisions.get(tab)}
+        await self._announce({"type": "changed", "client": client, "base": base, "rebuilt": rebuilt,
+                              "revisions": revisions, "saved": []}, tabs)
+        return rebuilt
+
+    async def _save(self, client):
+        def work():
+            saved = self.session.save()
+            return saved, self._tab_view()
+        saved, tabs = await self._in_session(work)
+        await self._announce({"type": "changed", "client": client, "base": None, "rebuilt": [], "revisions": {},
+                              "saved": saved}, tabs)
+        return saved
+
+    async def _announce(self, changed, tabs):
+        await self._broadcast(changed)
+        sig = json.dumps([{k: v for k, v in t.items() if k != "revision"} for t in tabs], sort_keys=True)
+        if sig != self._tabs_sig:
+            self._tabs_sig = sig
+            await self._broadcast({"type": "tabs", "tabs": tabs})
+
+    async def _broadcast(self, message):
+        """`message` as JSON text to every connected socket; one that is slow or dead is dropped."""
+        sockets = list(self._sockets)
+        if not sockets:
+            return
+        text = json.dumps(message)
+
+        async def one(ws):
+            try:
+                await asyncio.wait_for(ws.send_str(text), WS_SEND_TIMEOUT)
+            except Exception:                                    # noqa: BLE001
+                await ws.close()
+        await asyncio.gather(*(one(ws) for ws in sockets), return_exceptions=True)
+
+    # ------------------------------------------------------------------ the live channel
+    async def _hello(self, client):
+        tabs = await self._in_session(self._tab_view)
+        if self._tabs_sig is None:
+            self._tabs_sig = json.dumps([{k: v for k, v in t.items() if k != "revision"} for t in tabs], sort_keys=True)
+        return {"type": "hello", "client": client, "document": {"id": self.session.id, "name": self.session.name},
+                "tabs": tabs}
+
+    async def _socket(self, request):
+        """GET /ws: upgrade, then serve one socket until it closes. The Host and Origin rules apply before the upgrade."""
+        from aiohttp import WSMsgType, web
+        refused = check_host_origin(request.headers.get("Host"), request.headers.get("Origin"), self.hosts, self.origins)
+        if refused is not None:
+            return self._fail(*refused)
+        client = request.query.get("client")
+        if client is None:
+            client = uuid.uuid4().hex
+        elif _CLIENT_ID.match(client) is None:
+            return self._fail(400, "the client id must be 8..64 letters, digits, '_' or '-'")
+        ws = web.WebSocketResponse(heartbeat=WS_HEARTBEAT, max_msg_size=MAX_BODY)
+        if not ws.can_prepare(request).ok:
+            return self._fail(400, "a WebSocket upgrade is required")
+        await ws.prepare(request)
+        self.clients.attach(client)
+        self._sockets[ws] = client
+        try:
+            await self._push(ws, await self._hello(client))
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    await self._message(ws, client, msg.data)
+                elif msg.type == WSMsgType.BINARY:
+                    await self._push(ws, {"type": "error", "message": "messages are JSON text"})
+        except Exception as e:                                   # noqa: BLE001
+            _log(f"socket {_clean(client, 16)}: {type(e).__name__}: {_clean(str(e), 300)}")
+        finally:
+            self._sockets.pop(ws, None)
+            self.clients.detach(client)
+            if not ws.closed:
+                await ws.close()
+        return ws
+
+    @staticmethod
+    async def _push(ws, message):
+        try:
+            await asyncio.wait_for(ws.send_str(json.dumps(message)), WS_SEND_TIMEOUT)
+        except Exception:                                        # noqa: BLE001
+            await ws.close()
+
+    async def _message(self, ws, client, text):
+        try:
+            msg = json.loads(text)
+        except ValueError:
+            msg = None
+        kind = msg.get("type") if isinstance(msg, dict) else None
+        if kind == "ping":
+            await self._push(ws, {"type": "pong", "t": msg.get("t")})
+        elif kind == "hello":
+            await self._push(ws, await self._hello(client))
+        elif kind == "edit":
+            ident = msg.get("id")
+            try:
+                tab = msg.get("tab")
+                if not isinstance(tab, str) or tab not in self.tab_ids:
+                    raise self.session_error("unknown tab")
+                if not isinstance(msg.get("edit"), dict):
+                    raise self.session_error("an edit is a dict with an 'op' key")
+                _, base = self._edit_meta(None, msg.get("base"))
+                rebuilt = await self._edit(tab, msg["edit"], client, base)
+            except self.session_error as e:
+                await self._push(ws, {"type": "error", "id": ident, "message": str(e)})
+            else:
+                await self._push(ws, {"type": "edited", "id": ident, "rebuilt": rebuilt})
+        else:
+            await self._push(ws, {"type": "error", "message": "unknown message"})
+
+
+def make_server(session, port=0, allow_origins=(), client_ttl=CLIENT_TTL, client_expired=None):
     """A server on 127.0.0.1:`port` over `session` (bound, not yet serving). Callers run `serve_forever` (it
     blocks) and, at the end, `shutdown`, `server_close` and close the session; `close_all` does the last three."""
-    return _Server(session, port, allow_origins)
+    return _Server(session, port, allow_origins, client_ttl, client_expired)
 
 
 def close_all(server, session, wait=10.0):
@@ -441,7 +684,12 @@ def main(argv=None):
     ap.add_argument("--host", default=BIND_HOST, help="only 127.0.0.1 or localhost; anything else is refused")
     ap.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
                     help="also accept this public https://host[:port] origin (repeatable; none by default)")
+    ap.add_argument("--client-expiry", type=float, default=CLIENT_TTL, metavar="SECONDS",
+                    help="seconds a client's state is kept after its last socket closes (default 600)")
     args = ap.parse_args(argv)
+    if not args.client_expiry >= 0:
+        print("freeshape serve: --client-expiry must be 0 or more.", file=sys.stderr)
+        return 2
     for value in args.allow_origin:
         try:
             parse_allow_origin(value)
@@ -465,7 +713,7 @@ def main(argv=None):
         print(f"freeshape serve: cannot open the Document: {e}", file=sys.stderr)
         return 1
     try:
-        server = make_server(session, args.port, args.allow_origin)
+        server = make_server(session, args.port, args.allow_origin, args.client_expiry)
     except OSError as e:
         session.close()
         print(f"freeshape serve: cannot listen on {BIND_HOST}:{args.port}: {e}", file=sys.stderr)

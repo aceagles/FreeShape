@@ -634,7 +634,7 @@ class MainWindow(QMainWindow):
               lambda: F_("circular_pattern"), "array copies polar"),
             C("boolean", "Boolean", "Add, subtract or intersect parts.", lambda: F_("boolean"),
               "union subtract intersect combine merge"),
-            C("split", "Split", "Cut parts with planes, faces (flat or curved) or sketch curves; keep both sides or one.", lambda: F_("split"), "cut"),
+            C("split", "Split", "Cut parts with planes, faces (flat or curved) or sketch curves; keep both sides or one.", lambda: F_("split"), "cut split with surface cut with surface"),
             C("move", "Move", "Move, rotate or copy parts by exact amounts.", lambda: F_("move"), "translate"),
             C("mate_connector", "Mate connector", "Put a named frame (origin, Z and X) on a face or edge, with the "
               "same snap points as an Assembly. Assemblies can mate to it.", lambda: F_("mate_connector"),

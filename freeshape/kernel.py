@@ -3639,17 +3639,21 @@ def piece_side(piece, tool) -> float:
         return side_of(mass_props(piece)["centroid"], tool)
     lo, hi = bbox(piece)
     tol = float(np.linalg.norm(hi - lo)) * 1e-6 + 1e-7
-    for f in faces(piece):
-        try:
-            q, n = surface_point_normal(f)
-        except KernelError:
-            continue
-        got = _tool_normal_at(q, tool)
-        if got is None or got[0] > tol:
-            continue
-        dot = float(n @ got[2])
-        if abs(dot) > 0.5:
-            return -dot              # the piece's outside faces against the tool's normal: it's on the + side
+    tool_faces = faces(tool)
+    # a tool of several faces (a surface body): "front" is the first face's side wherever the piece has a face
+    # on it; otherwise the face the piece lies against decides (a V-shaped tool has opposing normals)
+    for ts in ([tool_faces[0], tool] if len(tool_faces) > 1 else [tool]):
+        for f in faces(piece):
+            try:
+                q, n = surface_point_normal(f)
+            except KernelError:
+                continue
+            got = _tool_normal_at(q, ts)
+            if got is None or got[0] > tol:
+                continue
+            dot = float(n @ got[2])
+            if abs(dot) > 0.5:
+                return -dot          # the piece's outside faces against the tool's normal: it's on the + side
     return side_of(interior_point_solid(piece), tool)
 
 

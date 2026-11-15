@@ -64,6 +64,11 @@ def region_touching(sr, eid):
     return None if best is None else best[1]
 
 
+def _split_item(tool):
+    """The selection item a Split tool shows as: a surface tool is a part pick."""
+    return ("part" if tool["kind"] == "surface" else tool["kind"], tool["ref"])
+
+
 def pick_to_item(vp, pick: Pick, want: set, state=None):
     """Convert a viewport pick into a (kind, ref) item for a selection field.
 
@@ -948,8 +953,9 @@ SCHEMAS = {
     ],
     "split": [
         _sel("parts", "Parts to split", {"part"}),
-        _sel("tools", "Split with — planes, faces (flat or curved) or sketch curves", {"plane", "face", "path"}),
+        _sel("tools", "Split with — planes, faces, sketch curves or surfaces", {"plane", "face", "path", "part"}),
         {"t": "split_tools", "key": "_split_tools"},
+        _check("keep_tools", "Keep tools"),
         {"t": "info", "key": "_info", "text": lambda p: "" if F.split_tools(p) else
          "Pick one or more: each cuts right through. Untick “Keep both sides” to keep only the side its arrow "
          "points to."},
@@ -1087,7 +1093,7 @@ def params_to_fields(ftype, p):
         ref = p.get("ref")
         f["element"] = [(p.get("kind", "face"), ref)] if ref and not ref.get("origin") else []
     if ftype == "split":
-        f["tools"] = [(t["kind"], t["ref"]) for t in F.split_tools(p)]
+        f["tools"] = [_split_item(t) for t in F.split_tools(p)]
     if ftype == "move":
         a = p.get("axis") or {}
         f["axis_sel"] = [("axis", a)] if a and a.get("kind") != "std" else []
@@ -1185,11 +1191,15 @@ def fields_to_params(ftype, fields, p):
         old = list(F.split_tools(p))
         tools = []
         for k, r in fields.get("tools", []):
-            prev = next((t for t in old if t["kind"] == k and _same(t["ref"], r)), None)
+            k = "surface" if k == "part" else k           # a part pick is a surface part
+            prev = next((t for t in old if t["kind"] == k and _same((k, t["ref"]), (k, r))), None)
             if prev is not None:
                 old.remove(prev)
-            tools.append({"kind": k, "ref": r, "both": prev.get("both", True) if prev else True,
-                          "flip": prev.get("flip", False) if prev else False})
+            tool = {"kind": k, "ref": r, "both": prev.get("both", True) if prev else True,
+                    "flip": prev.get("flip", False) if prev else False}
+            if prev is not None and prev.get("trim"):
+                tool["trim"] = True
+            tools.append(tool)
         p["tools"] = tools
         p.pop("plane", None)                      # an older split's single plane is now its first tool
         p.pop("keep", None)
@@ -2260,8 +2270,8 @@ class FeatureDialog(_ResizableFrame):
         if box is None:
             return
         tools = F.split_tools(self.feature["params"])
-        sig = tuple((t["kind"], bool(t.get("both", True)), json.dumps(t["ref"], sort_keys=True, default=str))
-                    for t in tools)
+        sig = tuple((t["kind"], bool(t.get("both", True)), bool(t.get("trim")),
+                     json.dumps(t["ref"], sort_keys=True, default=str)) for t in tools)
         if sig == self._split_sig:
             return
         self._split_sig = sig
@@ -2274,9 +2284,15 @@ class FeatureDialog(_ResizableFrame):
             row = QWidget()
             h = QHBoxLayout(row)
             h.setContentsMargins(4, 0, 0, 0)
-            name = QLabel(f"{i + 1}. {item_label(self.doc, (t['kind'], t['ref']))}")
+            name = QLabel(f"{i + 1}. {item_label(self.doc, _split_item(t))}")
             name.setStyleSheet("color:#4b5563;")
             h.addWidget(name, 1)
+            if t["kind"] == "face":
+                tr = QCheckBox("Trim to face boundaries")
+                tr.setToolTip("Split only as far as the face reaches. Off: the face is extended to cut right through.")
+                tr.setChecked(bool(t.get("trim")))
+                tr.toggled.connect(lambda on, i=i: self._split_set(i, "trim", on))
+                h.addWidget(tr)
             cb = QCheckBox("Keep both sides")
             cb.setChecked(bool(t.get("both", True)))
             cb.toggled.connect(lambda on, i=i: self._split_set(i, "both", on))
@@ -2295,6 +2311,8 @@ class FeatureDialog(_ResizableFrame):
             return
         tools = [dict(t) for t in tools]
         tools[i][key] = (not tools[i].get("flip")) if key == "flip" else bool(value)
+        if key == "trim" and not value:
+            tools[i].pop("trim", None)                # an extended face saves as it always did
         p = self.feature["params"]
         p["tools"] = tools
         p.pop("plane", None)

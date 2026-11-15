@@ -3369,8 +3369,9 @@ def run_draft(state, f):
 
 
 def split_tools(p):
-    """The Split feature's cutting tools: [{"kind": plane|face|path, "ref", "both", "flip"}]. Splits made before
-    2.0 had one plane and a "keep" choice; they read as one tool."""
+    """The Split feature's cutting tools: [{"kind": plane|face|path|surface, "ref", "both", "flip", "trim"}].
+    A surface tool's ref is a surface part's id; a face tool's "trim" (default false) passes the face as it is
+    instead of extending it. Splits made before 2.0 had one plane and a "keep" choice; they read as one tool."""
     tools = p.get("tools")
     if tools:
         return tools
@@ -3381,12 +3382,21 @@ def split_tools(p):
 
 
 def split_tool_shape(state, tool, around, size):
-    """The surface a Split tool cuts with, made big enough to go right through."""
+    """The surface a Split tool cuts with, made big enough to go right through (a surface part, or a face
+    with "trim", is used as it is)."""
     kind, ref = tool["kind"], tool["ref"]
     if kind == "plane":
         return K.plane_face(resolve_plane(state, ref), around, size)
     if kind == "face":
-        return K.extended_face(resolve(state, ref, "face")[1], size)
+        face = resolve(state, ref, "face")[1]
+        return face if tool.get("trim") else K.extended_face(face, size)
+    if kind == "surface":
+        part = state.parts.get(ref)
+        if part is None:
+            raise K.KernelError("The surface to split with is gone - pick it again")
+        if not K.is_surface(part.shape):
+            raise K.KernelError(f"{part.name} is a solid - pick a surface part, or one of its faces")
+        return part.shape
     if kind == "path":
         if ref.get("kind") != "sketch_chain":
             raise K.KernelError("To split along a curve, pick a sketch curve (it is pushed out both ways "
@@ -3396,17 +3406,21 @@ def split_tool_shape(state, tool, around, size):
         n = np.asarray(state.sketches[ref["sketch"]].plane.normal, float)
         wire = K.translate(wire, -n * size)
         return BRepPrimAPI_MakePrism(wire, K._vec(n * 2 * size)).Shape()
-    raise K.KernelError("Pick planes, faces or sketch curves to split with")
+    raise K.KernelError("Pick planes, faces, sketch curves or surfaces to split with")
 
 
 def run_split(state, f):
-    """Cut parts with any number of planes, faces (flat or curved — extended to cut right through) or sketch
-    curves (pushed out into a surface). Each tool keeps both sides, or only the side its arrow points to."""
+    """Cut parts with any number of planes, faces (flat or curved — extended to cut right through, unless
+    "trim"), surface parts (as they are) or sketch curves (pushed out into a surface). Each tool keeps both
+    sides, or only the side its arrow points to. keep_tools leaves the surface parts; otherwise they go."""
     p = f["params"]
-    ids = _selected_parts(state, p)
     tools = split_tools(p)
     if not tools:
-        raise K.KernelError("Pick planes, faces or sketch curves to split with")
+        raise K.KernelError("Pick planes, faces, sketch curves or surfaces to split with")
+    tool_parts = {t["ref"] for t in tools if t["kind"] == "surface"}
+    ids = [i for i in _selected_parts(state, p) if i not in tool_parts]
+    if not ids:
+        raise K.KernelError("Select parts")
     lo, hi = np.full(3, 1e18), np.full(3, -1e18)
     for pid in ids:
         a, b = K.bbox(state.parts[pid].shape)
@@ -3414,11 +3428,14 @@ def run_split(state, f):
     size = float(np.linalg.norm(hi - lo)) * 2 + 10
     around = (lo + hi) / 2
     shapes = [split_tool_shape(state, t, around, size) for t in tools]
+    all_both = all(t.get("both", True) for t in tools)
+    bounded = any(t["kind"] == "surface" or (t["kind"] == "face" and t.get("trim")) for t in tools)
+    done = []
     for pid in ids:
         part = state.parts[pid]
         pieces, hist = K.split_with(part.shape, shapes, with_history=True)
-        if len(pieces) < 2 and all(t.get("both", True) for t in tools):
-            raise K.KernelError("The splitting surfaces don't cut through the part")
+        if len(pieces) < 2 and all_both:
+            continue                       # this part is missed; the feature fails only if every part is
         for t, sh in zip(tools, shapes):
             if t.get("both", True):
                 continue
@@ -3426,13 +3443,27 @@ def run_split(state, f):
             pieces = [pc for pc in pieces if K.piece_side(pc, sh) * want > 0]
         if not pieces:
             raise K.KernelError("Nothing is left — every piece is on a side that isn't kept (flip an arrow)")
+        done.append((pid, part, pieces, hist))
+    if not done:
+        if bounded:
+            raise K.KernelError("The surface must pass completely through the part - make it larger, or pick "
+                                "one of its faces to use the extended face")
+        raise K.KernelError("The splitting surfaces don't cut through the part")
+    for pid, part, pieces, hist in done:
         whole = K.compound(pieces) if len(pieces) > 1 else pieces[0]
         # the splitter's pieces are named together; set_part_shape gives each piece the names of its own
         # elements. The first tool keeps the label "cut" a one-plane split always had; the rest are numbered.
-        tool_names = [_tool_names(state, f["id"], sh, "cut" if i == 0 else f"cut{i + 1}")
-                      for i, sh in enumerate(shapes)]
+        # A surface part brings its own names, so the cut faces keep them when the surface is edited.
+        tool_names = [(state.named(t["ref"]) if t["kind"] == "surface" else None)
+                      or _tool_names(state, f["id"], sh, "cut" if i == 0 else f"cut{i + 1}")
+                      for i, (t, sh) in enumerate(zip(tools, shapes))]
         named = name_feature(state, f["id"], [pid] + tool_names, whole, hist, "split")
         set_part_shape(state, part, whole, named)
+    if not p.get("keep_tools"):
+        for i in tool_parts:                      # as run_delete_part does, once per part
+            state.parts.pop(i, None)
+            state.names.pop(i, None)
+            state.sheet.pop(i, None)
 
 
 def run_move(state, f):

@@ -62,6 +62,10 @@ class SessionError(Exception):
     open. The message says which and why; the session stays usable."""
 
 
+class SaveRefused(SessionError, EngineError):
+    """A `save` edit sent to `submit_edit`: both a SessionError (serve answers 400) and an EngineError."""
+
+
 class DocumentSession:
     """See the module docstring. `store` is a DocumentStore or the path of a Document folder; `spares` and
     `meshes` go to the ProcessEngine; `edit_timeout` (seconds, None for none) bounds how long `submit_edit` waits
@@ -225,6 +229,10 @@ class DocumentSession:
         self._need_open(tab)
         if not isinstance(edit, dict):
             raise SessionError("an edit is a dict with an 'op' key")
+        if edit.get("op") == "save":
+            # the worker writes a save edit wherever its `path` points (or over the tab's file, behind the store's
+            # back); a session saves through `save()` only
+            raise SaveRefused(f"tab {tab!r}: a save edit is refused; use the session's save()")
         try:
             self._retry(tab, lambda: self._eng.submit(tab, edit).result(self.edit_timeout))
             try:

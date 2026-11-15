@@ -10,7 +10,7 @@ license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "Richard Willmott" }]
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["cadquery-ocp>=7.7", "PySide6>=6.5", "PyOpenGL>=3.1", "numpy>=1.24", "ezdxf>=1.1", "fonttools>=4.40"]
+dependencies = ["cadquery-ocp>=7.7", "PySide6>=6.5", "PyOpenGL>=3.1", "numpy>=1.24", "ezdxf>=1.1", "fonttools>=4.40", "aiohttp>=3.14.5,<4"]
 
 [project.scripts]
 freeshape = "freeshape.__main__:main"

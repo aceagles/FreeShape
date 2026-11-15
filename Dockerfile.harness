@@ -54,7 +54,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /usr/local/bin/uv
 # Two venvs, one per supported OCP kernel, named as the docs and acceptance
 # criteria name them. Every pin is the exact version found in the host venvs
 # /home/ncr/freeshape/test-venvs/{ocp7.9.3.1.1,ocp8.0.1.1.0} on 2026-11-12;
-# the two differ only in cadquery-ocp and its proxy. vtk and matplotlib are
+# the two differ only in cadquery-ocp and its proxy. aiohttp (and its eight
+# dependencies) was added on 2026-11-15 for `freeshape serve` (ADR 0014). vtk and matplotlib are
 # not imported by FreeShape but cadquery-ocp requires vtk, which requires
 # matplotlib, so they cannot be left out.
 #
@@ -68,17 +69,25 @@ RUN set -eu; \
     export UV_CACHE_DIR=/opt/uv-cache UV_LINK_MODE=hardlink; \
     uv python install 3.12.11; \
     printf '%s\n' \
+      'aiohappyeyeballs==2.7.1' \
+      'aiohttp==3.14.5' \
+      'aiosignal==1.4.0' \
+      'attrs==26.1.0' \
       'contourpy==1.4.0' \
       'cycler==0.12.1' \
       'ezdxf==1.4.5' \
       'fonttools==4.68.0' \
+      'frozenlist==1.8.0' \
+      'idna==3.20' \
       'iniconfig==2.3.1' \
       'kiwisolver==1.5.1' \
       'matplotlib==3.11.2' \
+      'multidict==7.2.1' \
       'numpy==2.5.4' \
       'packaging==26.3' \
       'pillow==13.0.0' \
       'pluggy==1.7.0' \
+      'propcache==0.5.4' \
       'pygments==2.21.0' \
       'pyopengl==3.1.10' \
       'pyparsing==3.3.3' \
@@ -93,6 +102,7 @@ RUN set -eu; \
       'typing-extensions==4.16.0' \
       'tzdata==2026.6' \
       'vtk==9.6.2' \
+      'yarl==1.25.1' \
       > /opt/requirements-common.txt; \
     for ocp in 7.9.3.1.1 8.0.1.1.0; do \
       venv="/opt/venvs/ocp${ocp}"; \

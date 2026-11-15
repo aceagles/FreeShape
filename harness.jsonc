@@ -11,9 +11,11 @@
 // anything. A dependency the image does not have cannot be added during a Run;
 // change the pins in Dockerfile.harness instead.
 //
-// `serve` is omitted: FreeShape is a desktop app with nothing to serve. A
-// capability a manifest names but this file omits is recorded as skipped,
-// never as a pass.
+// `serve` is omitted: the harness has no capability that starts a server and
+// drives it from a browser. `freeshape serve` (aiohttp, ADR 0014) exists and is
+// covered by tests/test_serve.py. aiohttp is baked into both
+// venvs by Dockerfile.harness. A capability a manifest names but this file
+// omits is recorded as skipped, never as a pass.
 {
   "capabilities": {
     // Import every module of the package, headless, on both venvs. This is

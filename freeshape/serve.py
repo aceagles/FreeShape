@@ -1,4 +1,4 @@
-"""Headless serve (I5.4, ADR 0010): one Document session over loopback HTTP. Standard library only, no Qt.
+"""Headless serve (I5.4, ADR 0010; aiohttp since ADR 0014): one Document session over loopback HTTP. No Qt.
 
     python -m freeshape serve <Document folder> [--port N]
 
@@ -17,26 +17,27 @@ Routes (an exact table; no part of a request is ever joined to a file path):
     POST /tabs/<id>/edit        body: a contract edit dict, e.g. {"op": "set_param", ...}; reply {"rebuilt": [ids]}
     POST /save                  body: {} ; reply {"saved": [ids]}
 
-Every call into the session holds one lock (the session has none); /health and the other routes that need no
-session never wait for it. Errors are JSON {"error": message}: 400 a bad edit or body, 403/421 a wrong Host
+Every call into the session holds one lock (the session has none) and runs on a thread pool, never on the event
+loop; /health and the other routes that need no session never wait for it. Errors are JSON {"error": message}: 400 a bad edit or body, 403/421 a wrong Host
 or Origin, 404 an unknown route or tab, 405 a wrong method, 411 no Content-Length on a POST, 413 a body over
 1 MB, 415 a POST that is not application/json, 500 anything unexpected (generic body; detail on stderr).
 """
 from __future__ import annotations
 
 import argparse
-import http.client
+import asyncio
 import json
 import re
 import signal
+import socket
 import sys
 import threading
-import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from concurrent.futures import ThreadPoolExecutor
 
 BIND_HOST = "127.0.0.1"
 MAX_BODY = 1024 * 1024
-CONNECTION_TIMEOUT = 15.0       # seconds a client may stay silent on one socket call
+CONNECTION_TIMEOUT = 15.0       # seconds an idle keep-alive connection is kept open
+SESSION_THREADS = 8             # threads for session calls (they queue on the session lock, one runs at a time)
 BODY_DEADLINE = 30.0            # seconds for the whole body of one request
 DEFAULT_PORT = 8765
 READY_PREFIX = "FREESHAPE_SERVE_READY"
@@ -65,6 +66,14 @@ def _qt_modules():
 def _clean(text, limit=200):
     """`text` safe for a log line: control characters dropped, length capped."""
     return "".join(c for c in text if c.isprintable())[:limit]
+
+
+def _log(line):
+    try:
+        sys.stderr.write(f"[serve] {line}\n")
+        sys.stderr.flush()
+    except Exception:                                    # noqa: BLE001
+        pass
 
 
 def _vec(a):
@@ -110,224 +119,215 @@ def mesh_document(out):
             "errors": {str(k): str(v) for k, v in (out.errors or {}).items()}, "meshes": meshes}
 
 
-class _Server(ThreadingHTTPServer):
-    address_family = __import__("socket").AF_INET
-    daemon_threads = True
-    allow_reuse_address = True
+class _Server:
+    """The aiohttp server: bound to 127.0.0.1 when made, running once `serve_forever` is called (it blocks, on its
+    own event loop, until `shutdown`). `lock` serialises every session call; those calls run on `pool`, never on
+    the event loop."""
 
     def __init__(self, session, port=0):
         from .session import SessionError
         self.session = session
         self.session_error = SessionError
         self.lock = threading.Lock()
+        self.pool = ThreadPoolExecutor(max_workers=SESSION_THREADS, thread_name_prefix="serve-session")
         self.tab_ids = frozenset(t["id"] for t in session.tabs())     # the manifest is fixed for a session
-        super().__init__((BIND_HOST, port), _Handler)
-        self.port = self.server_address[1]
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((BIND_HOST, port))
+            sock.listen(128)
+        except BaseException:
+            sock.close()
+            self.pool.shutdown(wait=False)
+            raise
+        self.socket = sock
+        self.port = sock.getsockname()[1]
         self.hosts = {f"{BIND_HOST}:{self.port}", f"localhost:{self.port}"}
         self.origins = {f"http://{h}" for h in self.hosts}
+        self._loop = None
+        self._stop = None
+        self._stop_asked = False
+        self._entered = False
+        self._started = threading.Event()
+        self._finished = threading.Event()
 
-
-class _Handler(BaseHTTPRequestHandler):
-    server_version = "freeshape-serve"
-    sys_version = ""
-    timeout = CONNECTION_TIMEOUT
-
-    # ------------------------------------------------------------------ plumbing
-    def __getattr__(self, name):
-        if name.startswith("do_"):          # any other method (PUT, DELETE, HEAD, OPTIONS, ...) is refused
-            return self._not_allowed
-        raise AttributeError(name)
-
-    def log_request(self, code="-", size="-"):
-        self._log(f"{self.command} {_clean(self.path or '')} {code}")
-
-    def log_message(self, format, *args):                   # noqa: A002  (http.server's own messages)
-        self._log(_clean(format % args))
-
-    def log_error(self, format, *args):                     # noqa: A002
-        self._log(_clean(format % args))
-
-    def _log(self, line):
+    # ------------------------------------------------------------------ life cycle
+    def serve_forever(self, poll_interval=None):                 # poll_interval: kept for the old signature
+        self._entered = True
         try:
-            sys.stderr.write(f"[serve] {line}\n")
-            sys.stderr.flush()
-        except Exception:                                    # noqa: BLE001
-            pass
+            asyncio.run(self._main())
+        finally:
+            self._finished.set()
 
-    def send_error(self, code, message=None, explain=None):
-        """http.server's own errors (bad request line, too long, ...) as JSON, never reflecting the request."""
-        self._json(code, {"error": http.client.responses.get(code, "error")}, close=True)
+    async def _main(self):
+        from aiohttp import web
+        self._loop = asyncio.get_running_loop()
+        self._stop = asyncio.Event()
+        runner = web.ServerRunner(web.Server(self._handle, access_log=None, keepalive_timeout=CONNECTION_TIMEOUT),
+                                  handle_signals=False)
+        await runner.setup()
+        try:
+            await web.SockSite(runner, self.socket).start()
+            self._started.set()
+            if not self._stop_asked:
+                await self._stop.wait()
+        finally:
+            await runner.cleanup()
 
-    def _send(self, code, body, ctype, headers=(), close=False):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Cache-Control", "no-store")
+    def wait_started(self, timeout=30.0):
+        return self._started.wait(timeout)
+
+    def shutdown(self):
+        """Stop `serve_forever` and wait for it to return (a no-op wait if it was never called)."""
+        self._stop_asked = True
+        loop, stop = self._loop, self._stop
+        if loop is not None and stop is not None:
+            try:
+                loop.call_soon_threadsafe(stop.set)
+            except RuntimeError:                                  # the loop has already closed
+                pass
+        if self._entered:
+            self._finished.wait(30)
+
+    def server_close(self):
+        self.socket.close()
+        self.pool.shutdown(wait=False)
+
+    # ------------------------------------------------------------------ responses
+    @staticmethod
+    def _send(code, body, ctype, headers=(), close=False):
+        from aiohttp import web
+        resp = web.Response(status=code, body=body)
+        resp.headers["Content-Type"] = ctype
+        resp.headers["Server"] = "freeshape-serve"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Cache-Control"] = "no-store"
         for k, v in headers:
-            self.send_header(k, v)
+            resp.headers[k] = v
         if close:
-            self.send_header("Connection", "close")
-            self.close_connection = True
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+            resp.force_close()
+        return resp
 
     def _json(self, code, obj, headers=(), close=False):
-        self._send(code, json.dumps(obj).encode("utf-8"), "application/json; charset=utf-8", headers, close)
+        return self._send(code, json.dumps(obj).encode("utf-8"), "application/json; charset=utf-8", headers, close)
 
     def _fail(self, code, message, headers=()):
-        self._json(code, {"error": message}, headers, close=True)
+        return self._json(code, {"error": message}, headers, close=True)
 
-    def _not_allowed(self):
-        if self._guard():
-            self._fail(405, "method not allowed", [("Allow", "GET, POST")])
-
-    # ------------------------------------------------------------------ checks
-    def _guard(self):
-        """Host and Origin checks; sends the refusal and returns False when the request fails them."""
-        if self.headers.get("Host") not in self.server.hosts:
-            self._fail(421, "unexpected Host header")          # DNS rebinding: a name that is not ours
-            return False
-        origin = self.headers.get("Origin")
-        if origin is not None and origin not in self.server.origins:
-            self._fail(403, "cross-origin requests are refused")
-            return False
-        return True
-
-    def _route(self, method):
-        """(route name, tab id or None) for this request, or sends 404 / 405 and returns None."""
-        path = self.path.split("?", 1)[0]
-        if path in _FIXED:
-            if method not in _FIXED[path]:
-                self._fail(405, "method not allowed", [("Allow", _FIXED[path][0])])
-                return None
-            return path, None
-        m = _TAB_PATH.match(path)
-        if m is None or m.group(1) not in self.server.tab_ids:
-            self._fail(404, "not found")
-            return None
-        want = _EDGE_METHODS[m.group(2)]
-        if method != want:
-            self._fail(405, "method not allowed", [("Allow", want)])
-            return None
-        return m.group(2), m.group(1)
-
-    def _body(self):
-        """The JSON object of a POST body, or None after sending the refusal."""
-        ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        if ctype != "application/json":
-            self._fail(415, "Content-Type must be application/json")
-            return None
-        if self.headers.get("Transfer-Encoding") is not None or self.headers.get("Content-Length") is None:
-            self._fail(411, "Content-Length is required")
-            return None
-        raw = self.headers.get("Content-Length").strip()
-        if not raw.isascii() or not raw.isdigit():
-            self._fail(400, "Content-Length is not a number")
-            return None
-        n = int(raw)
-        if n > MAX_BODY:
-            self._fail(413, f"body over {MAX_BODY} bytes")
-            return None
-        chunks, got, deadline = [], 0, time.monotonic() + BODY_DEADLINE
-        while got < n:
-            if time.monotonic() > deadline:
-                self._fail(408, "request body too slow")
-                return None
-            try:
-                part = self.rfile.read(min(n - got, 65536))
-            except OSError:
-                self.close_connection = True
-                return None
-            if not part:
-                self._fail(400, "body shorter than Content-Length")
-                return None
-            chunks.append(part)
-            got += len(part)
+    # ------------------------------------------------------------------ one request
+    async def _handle(self, request):
         try:
-            obj = json.loads(b"".join(chunks).decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
-            self._fail(400, "body is not valid JSON")
-            return None
-        if not isinstance(obj, dict):
-            self._fail(400, "body must be a JSON object")
-            return None
-        return obj
+            resp = await self._respond(request)
+        except self.session_error as e:
+            resp = self._fail(400, str(e))
+        except Exception as e:                                   # noqa: BLE001
+            import traceback
+            _log(f"500 {request.method} {_clean(request.raw_path)}: {type(e).__name__}: {_clean(str(e), 500)}")
+            traceback.print_exc(file=sys.stderr)
+            resp = self._fail(500, "internal error")
+        _log(f"{request.method} {_clean(request.raw_path)} {resp.status}")
+        return resp
 
-    # ------------------------------------------------------------------ methods
-    def do_GET(self):
-        self._dispatch("GET")
-
-    def do_POST(self):
-        self._dispatch("POST")
-
-    def _dispatch(self, method):
-        if not self._guard():
-            return
-        found = self._route(method)
-        if found is None:
-            return
-        route, tab = found
+    async def _respond(self, request):
+        method = request.method
+        if request.headers.get("Host") not in self.hosts:
+            return self._fail(421, "unexpected Host header")      # DNS rebinding: a name that is not ours
+        origin = request.headers.get("Origin")
+        if origin is not None and origin not in self.origins:
+            return self._fail(403, "cross-origin requests are refused")
+        if method not in ("GET", "POST"):                         # PUT, DELETE, HEAD, OPTIONS, ... are refused
+            return self._fail(405, "method not allowed", [("Allow", "GET, POST")])
+        # the route comes from the raw request target, never from a decoded or normalised path
+        path = request.raw_path.split("?", 1)[0]
+        tab = None
+        if path in _FIXED:
+            route, want = path, _FIXED[path][0]
+        else:
+            m = _TAB_PATH.match(path)
+            if m is None or m.group(1) not in self.tab_ids:
+                return self._fail(404, "not found")
+            route, tab = m.group(2), m.group(1)
+            want = _EDGE_METHODS[route]
+        if method != want:
+            return self._fail(405, "method not allowed", [("Allow", want)])
         body = None
         if method == "POST":
-            body = self._body()
-            if body is None:
-                return
-        try:
-            self._handle(route, tab, body)
-        except self.server.session_error as e:
-            self._fail(400, str(e))
-        except (BrokenPipeError, ConnectionResetError):
-            self.close_connection = True
-        except Exception as e:                               # noqa: BLE001
-            import traceback
-            self._log(f"500 {self.command} {_clean(self.path)}: {type(e).__name__}: {_clean(str(e), 500)}")
-            traceback.print_exc(file=sys.stderr)
-            self._fail(500, "internal error")
+            body = await self._body(request)
+            if not isinstance(body, dict):
+                return body                                        # the refusal response
+        return await self._route(route, tab, body)
 
-    def _handle(self, route, tab, body):
-        srv = self.server
+    async def _body(self, request):
+        """The JSON object of a POST body, or the refusal response."""
+        ctype = (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/json":
+            return self._fail(415, "Content-Type must be application/json")
+        raw = request.headers.get("Content-Length")
+        if request.headers.get("Transfer-Encoding") is not None or raw is None:
+            return self._fail(411, "Content-Length is required")
+        raw = raw.strip()
+        if not raw.isascii() or not raw.isdigit():
+            return self._fail(400, "Content-Length is not a number")
+        n = int(raw)
+        if n > MAX_BODY:
+            return self._fail(413, f"body over {MAX_BODY} bytes")
+        try:
+            data = await asyncio.wait_for(request.content.readexactly(n), BODY_DEADLINE)
+        except asyncio.TimeoutError:
+            return self._fail(408, "request body too slow")
+        except asyncio.IncompleteReadError:
+            return self._fail(400, "body shorter than Content-Length")
+        try:
+            obj = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._fail(400, "body is not valid JSON")
+        if not isinstance(obj, dict):
+            return self._fail(400, "body must be a JSON object")
+        return obj
+
+    async def _in_session(self, fn):
+        """`fn()` on the session thread pool while holding the session lock."""
+        def locked():
+            with self.lock:
+                return fn()
+        return await asyncio.get_running_loop().run_in_executor(self.pool, locked)
+
+    async def _route(self, route, tab, body):
+        session = self.session
         if route == "/":
             page = _viewer_page()
             if page is None:
-                self._send(404, b"The viewer page is not installed; see /tabs and /tabs/<id>/mesh.json.\n",
-                           "text/plain; charset=utf-8")
-            else:
-                self._send(200, page, "text/html; charset=utf-8", [("Content-Security-Policy", _VIEWER_CSP)])
-        elif route == "/health":
+                return self._send(404, b"The viewer page is not installed; see /tabs and /tabs/<id>/mesh.json.\n",
+                                  "text/plain; charset=utf-8")
+            return self._send(200, page, "text/html; charset=utf-8", [("Content-Security-Policy", _VIEWER_CSP)])
+        if route == "/health":                                   # needs no session, so never waits for the lock
             from . import __version__
             qt = _qt_modules()
-            self._json(200, {"ok": True, "version": __version__, "qt_imported": bool(qt), "qt_modules": qt})
-        elif route == "/tabs":
-            with srv.lock:
-                tabs = srv.session.tabs()
-            self._json(200, {"document": {"id": srv.session.id, "name": srv.session.name}, "tabs": tabs})
-        elif route == "outputs":
-            with srv.lock:
-                data = srv.session.outputs_wire(tab)
-            self._send(200, bytes(data), "application/octet-stream")
-        elif route == "mesh.json":
-            with srv.lock:
-                out = srv.session.outputs(tab)
-            doc = mesh_document(out)
+            return self._json(200, {"ok": True, "version": __version__, "qt_imported": bool(qt), "qt_modules": qt})
+        if route == "/tabs":
+            tabs = await self._in_session(session.tabs)
+            return self._json(200, {"document": {"id": session.id, "name": session.name}, "tabs": tabs})
+        if route == "outputs":
+            data = await self._in_session(lambda: session.outputs_wire(tab))
+            return self._send(200, bytes(data), "application/octet-stream")
+        if route == "mesh.json":
+            out = await self._in_session(lambda: session.outputs(tab))
+            doc = await asyncio.get_running_loop().run_in_executor(self.pool, mesh_document, out)
             if doc is None:
-                self._fail(404, f"tab {tab!r} ({out.kind}) has no mesh")
-            else:
-                self._json(200, doc)
-        elif route == "edit":
-            with srv.lock:
-                rebuilt = srv.session.submit_edit(tab, body)
-            self._json(200, {"rebuilt": rebuilt})
-        elif route == "/save":
-            with srv.lock:
-                saved = srv.session.save()
-            self._json(200, {"saved": saved})
+                return self._fail(404, f"tab {tab!r} ({out.kind}) has no mesh")
+            return self._json(200, doc)
+        if route == "edit":
+            rebuilt = await self._in_session(lambda: session.submit_edit(tab, body))
+            return self._json(200, {"rebuilt": rebuilt})
+        if route == "/save":
+            saved = await self._in_session(session.save)
+            return self._json(200, {"saved": saved})
+        return self._fail(404, "not found")
 
 
 def make_server(session, port=0):
-    """A server on 127.0.0.1:`port` over `session` (not started). Callers run `serve_forever` and, at the end,
-    `shutdown`, `server_close` and close the session."""
+    """A server on 127.0.0.1:`port` over `session` (bound, not yet serving). Callers run `serve_forever` (it
+    blocks) and, at the end, `shutdown`, `server_close` and close the session; `close_all` does the last three."""
     return _Server(session, port)
 
 
@@ -380,6 +380,7 @@ def main(argv=None):
         signal.signal(sig, lambda *_: stop.set())
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
     thread.start()
+    server.wait_started()
     print(f"{READY_PREFIX} port={server.port} url=http://{BIND_HOST}:{server.port}/", flush=True)
     try:
         while not stop.wait(0.5):

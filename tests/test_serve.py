@@ -1,7 +1,7 @@
 """I5.4: the loopback serve command (freeshape/serve.py, ADR 0010).
 
 The read routes run against one in-process server on port 0; the edit routes against another, on their own
-Document. The command line runs as a subprocess. Every server and session is closed by a fixture finaliser, so no
+Document. The command line runs as a subprocess. The server is aiohttp (ADR 0014). Every server and session is closed by a fixture finaliser, so no
 worker survives a failing assertion."""
 import http.client
 import json
@@ -18,9 +18,10 @@ from test_document_session import _alive, _layout_document
 
 from freeshape import docstore as DS
 from freeshape import serve as SV
+from freeshape.engine import EngineError
 from freeshape.engine import process as P
 from freeshape.engine import wire
-from freeshape.session import DocumentSession
+from freeshape.session import DocumentSession, SessionError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -34,8 +35,9 @@ class Served:
         self.session = DocumentSession(folder, spares=0)
         self.server = SV.make_server(self.session, 0)
         self.port = self.server.port
-        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
+        assert self.server.wait_started(30)
 
     def request(self, method, path, body=None, headers=None, raw=None):
         """(status, headers, body bytes). `body` is JSON-encoded unless `raw` bytes are given."""
@@ -207,9 +209,10 @@ def test_every_response_has_the_safe_headers_and_no_cors(served):
 
 def test_a_foreign_host_header_is_refused(served):
     for host in ("evil.example", "evil.example:%d" % served.port, "127.0.0.1", "localhost:1",
-                 "127.0.0.1:%d.evil.example" % served.port, None):
+                 "127.0.0.1:%d.evil.example" % served.port):
         status, _h, _b = served.request("GET", "/health", headers={"Host": host})
         assert status == 421, host
+    assert served.request("GET", "/health", headers={"Host": None})[0] == 400      # aiohttp's parser refuses it
     for host in (f"localhost:{served.port}", f"127.0.0.1:{served.port}"):
         assert served.request("GET", "/health", headers={"Host": host})[0] == 200
 
@@ -237,8 +240,9 @@ def test_options_is_not_answered_so_there_is_no_preflight(served):
 
 
 def test_other_methods_are_405(served):
-    for m in ("PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "FOO"):
+    for m in ("PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"):
         assert served.request(m, "/health")[0] == 405, m
+    assert served.request("FOO", "/health")[0] == 400                    # aiohttp's parser refuses a method it does not know
     assert served.request("POST", "/health", {})[0] == 405
     assert served.request("GET", "/save")[0] == 405
     assert served.request("GET", f"/tabs/{served.ids['a']}/edit")[0] == 405
@@ -261,7 +265,7 @@ def test_body_limits(served):
 
 
 def test_a_short_body_is_400_and_a_stalled_client_is_dropped(served, monkeypatch):
-    monkeypatch.setattr(SV._Handler, "timeout", 0.5)
+    monkeypatch.setattr(SV, "BODY_DEADLINE", 0.5)
     c = socket.create_connection(("127.0.0.1", served.port), timeout=10)
     try:
         c.sendall(f"POST /save HTTP/1.1\r\nHost: 127.0.0.1:{served.port}\r\nContent-Type: application/json\r\n"
@@ -366,6 +370,48 @@ def test_save_writes_the_edit_and_a_fresh_session_sees_it(editable):
         assert len(fresh.outputs(ids["a"]).parts) == 1
         assert round(fresh.outputs(ids["a"]).parts[0].mesh.verts[:, 2].max() - fresh.outputs(ids["a"]).parts[0]
                      .mesh.verts[:, 2].min()) == 5
+
+
+def test_a_save_edit_is_refused_and_writes_no_file(editable, tmp_path):
+    target = tmp_path / "x"
+    ids = editable.ids
+    for edit in ({"op": "save", "path": str(target)}, {"op": "save"}):
+        status, _h, body = editable.request("POST", f"/tabs/{ids['a']}/edit", edit)
+        assert status == 400 and "save" in json.loads(body)["error"], edit
+    assert not target.exists() and os.listdir(tmp_path) == []
+    # straight to the session: an EngineError (and a SessionError), and the tab carries on
+    with pytest.raises(EngineError):
+        editable.session.submit_edit(ids["a"], {"op": "save", "path": str(target)})
+    with pytest.raises(SessionError):
+        editable.session.submit_edit(ids["a"], {"op": "save", "path": str(target)})
+    assert not target.exists()
+    assert editable.get_json("/tabs")["tabs"][1]["dirty"] is False
+    assert editable.request("POST", "/save", {})[0] == 200                   # POST /save is the way to save
+
+
+def test_a_slow_rebuild_does_not_delay_health(editable, monkeypatch):
+    real = editable.session.submit_edit
+
+    def slow(tab, edit):
+        time.sleep(2.0)
+        return real(tab, edit)
+    monkeypatch.setattr(editable.session, "submit_edit", slow)
+    result = {}
+    edit = {"op": "set_param", "feature": editable.ext["a"], "key": "depth", "value": 5}
+    t = threading.Thread(target=lambda: result.update(e=editable.request("POST", f"/tabs/{editable.ids['a']}/edit",
+                                                                         edit)), daemon=True)
+    t.start()
+    time.sleep(0.3)
+    assert t.is_alive()                                                       # the edit is in its 2 s
+    worst = 0.0
+    for _ in range(5):
+        t0 = time.monotonic()
+        assert editable.request("GET", "/health")[0] == 200
+        worst = max(worst, time.monotonic() - t0)
+        time.sleep(0.1)
+    assert t.is_alive() and worst < 0.2, worst
+    t.join(60)
+    assert result["e"][0] == 200
 
 
 # =========================================================================== the command line

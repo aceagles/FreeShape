@@ -265,6 +265,8 @@ def pytest_configure(config):
     _REPORT["path"] = config.getoption("--golden-diff-report")
     config.addinivalue_line("markers", "golden: compares against stored golden values")
     config.addinivalue_line("markers", "slow: over ~1.5 s; skipped by `-m 'not slow'` while iterating, always run at landing")
+    config.addinivalue_line("markers", "needs_occt8: needs OpenCascade 8.0 (e.g. GeomFill_Gordon for loft guides); "
+                                       "skipped on the 7.9 build")
 
 
 # Tests measured over ~1.5 s (pytest --durations, OCP 8.0, 2026-11-12). Kept as one list so the
@@ -282,6 +284,8 @@ SLOW_TESTS = {
     "test_golden_features.py::test_save_load_roundtrip[hole_tapped_modelled_m5]",
     "test_golden_features.py::test_save_load_roundtrip[thread_internal_left_hand_clearance]",
     "test_golden_features.py::test_save_load_roundtrip[thread_external_length]",
+    "test_loft_guides.py::test_holes_are_lofted_unguided",
+    "test_loft_guides.py::test_guides_through_profile_corners_and_circle_profiles",
 }
 
 
@@ -289,6 +293,8 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if item.nodeid.split("tests/", 1)[-1] in SLOW_TESTS:
             item.add_marker(pytest.mark.slow)
+        if OCCT_MAJOR < 8 and item.get_closest_marker("needs_occt8"):
+            item.add_marker(pytest.mark.skip(reason=f"needs OpenCascade 8.0; this build is cadquery-ocp {OCP_VERSION}"))
 
 
 def pytest_sessionfinish(session, exitstatus):

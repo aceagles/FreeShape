@@ -3181,7 +3181,14 @@ def run_loft(state, f):
         else:
             profs.append(resolve(state, item["ref"], "face")[1])
     start, end = _loft_end(state, p.get("start")), _loft_end(state, p.get("end"))
-    if start is None and end is None:            # no new option: the legacy route, exactly as before I7.2
+    guides = [g for g in (p.get("guides") or []) if g]
+    if guides:                                   # the network route (I7.3), OpenCascade 8.0 only
+        if start is not None or end is not None:
+            raise K.KernelError("Guides and end conditions cannot be combined yet")
+        if p.get("ruled"):
+            raise K.KernelError("Guides need a smooth loft — untick Straight sides (ruled)")
+        body, hist = K.loft_network(profs, _loft_guides(state, guides), with_history=True)
+    elif start is None and end is None:          # no new option: the legacy route, exactly as before I7.2
         body, hist = K.loft(profs, p.get("ruled", False), with_history=True)
     else:
         if p.get("ruled"):
@@ -3204,6 +3211,18 @@ def _loft_end(state, c):
             raise K.KernelError(f"Unknown variable #{bad[0]}" if bad else f"Can't read '{mag}'")
         mag = val
     return {"cond": c["cond"], "mag": float(mag)}
+
+
+def _loft_guides(state, guides):
+    """A loft's `guides` param (one list of path refs per guide, as a sweep's `path`) as one wire each."""
+    out = []
+    for n, refs in enumerate(guides, 1):
+        try:
+            out.append(_path_wire(state, refs))
+        except K.KernelError as exc:
+            msg = f"Missing loft guide {n}" if str(exc) == "Missing sweep path" else f"Guide {n}: {exc}"
+            raise K.KernelError(msg) from None
+    return out
 
 
 def _loft_names(state, p):

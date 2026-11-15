@@ -46,7 +46,7 @@ from conftest import (EXAMPLES_DIR, FRONT, TOP, add, rect_lines, region_refs, sk
                       v4_studio_json)
 from freeshape import features as F  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
-from freeshape.document import Document, PartStudioDoc  # noqa: E402
+from freeshape.document import PartStudioDoc  # noqa: E402
 from freeshape.engine.encode import Encoder  # noqa: E402
 from freeshape.ui.viewport import Pick  # noqa: E402
 from test_rib import bracket, line, rib_sketch  # noqa: E402
@@ -181,7 +181,7 @@ def run():
 def body(app, w):
 
     # ---- the Document: a block with a through hole, a small box, a pin (cylinder), three circle sketches, an arc
-    doc = Document()
+    doc = PartStudioDoc()
     sb = sketch_feature(doc, lambda s: rect_lines(s, 0, 0, 60, 40), TOP)
     add(doc, "extrude", regions=region_refs(doc, sb), depth=10, op="new")
     hole = sketch_feature(doc, lambda s: s.add_point_entity(s.add_point(45, 10)), TOP)
@@ -387,7 +387,7 @@ def body(app, w):
     path4 = os.path.join(TMP, "v4.fshape")
     with open(path4, "w") as fh:
         json.dump(v4, fh)
-    d4 = Document.load(path4)
+    d4 = PartStudioDoc.load(path4)
     T.check(not d4.errors, d4.errors)
     saved = json.loads(d4.to_json())
     T.check(saved["version"] == 5, f"the version 4 file saved as version {saved['version']}")

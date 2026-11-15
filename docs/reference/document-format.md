@@ -92,7 +92,7 @@ Types whose `params` name something outside the feature:
 
 | Type | `params` key | Type | Meaning |
 | --- | --- | --- | --- |
-| `sketch` | `sketch` | object | `{points, entities, constraints}` of the sketch. Ids such as `p4` and `l7` live here. A line, circle or arc made by using a part edge may carry `src`, a reference to that edge; the sketch projects the edge again on each rebuild. Without `src` it is a fixed copy. |
+| `sketch` | `sketch` | object | `{points, entities, constraints}` of the sketch. Ids such as `p4` and `l7` live here. A line, circle or arc made by using a part edge may carry `src`, a reference to that edge; the sketch projects the edge again on each rebuild. Without `src` it is a fixed copy. A dimension constraint may carry `pos`, where its label was placed in sketch coordinates, and `pos_anchor`, where the geometry it measures was at that moment; the label is drawn at `pos` moved by however far that geometry has gone since. Without `pos_anchor` the label is at `pos`. |
 | `import` | `blob` | string | Blob key of the imported STEP file. Since version 3. |
 | `import` | `data` | string | Before version 3: base64 of the imported STEP file, inline. Since version 3 written only as an empty string, by an import that holds no file yet. |
 | `import` | `filename` | string | Name of the imported file. |

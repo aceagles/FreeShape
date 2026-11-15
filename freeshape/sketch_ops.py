@@ -82,7 +82,7 @@ def fillet_corner(sk: Sketch, pid: str, r: float) -> str:
     sk.add_constraint("normal_at", aid, l1, t1)
     sk.add_constraint("normal_at", aid, l2, t2)
     rc = sk.add_constraint("radius", aid, value=r)
-    rc["pos"] = (M + (M - C) / np.linalg.norm(M - C) * max(r, 1.0) * 1.2).tolist()
+    sk.place_dim(rc, M + (M - C) / np.linalg.norm(M - C) * max(r, 1.0) * 1.2)
     sk.solve()
     return aid
 
@@ -307,7 +307,7 @@ def slot(sk: Sketch, a, b, width: float, construction=False, a_pid=None, b_pid=N
         sk.add_constraint("tangent", arc, bot)
     sk.add_constraint("equal", end_a, end_b)
     rc = sk.add_constraint("radius", end_b, value=w)
-    rc["pos"] = (b + d * w * 1.6 + n * w * 0.6).tolist()
+    sk.place_dim(rc, b + d * w * 1.6 + n * w * 0.6)
     sk.solve()
     return [top, bot, end_a, end_b, centre]
 

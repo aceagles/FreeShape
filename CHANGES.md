@@ -73,6 +73,16 @@ for cutting), version history, Python plugins, and new navigation. It was built 
 - **Out of date**: a change to the model greys the rows and the footer says "Out of date. Check again." The panel
   stays open while you turn the view; closing it removes the ghosts and restores transparency.
 
+### Thicken, Enclose and Fill: surfaces to solids
+- **Thicken** turns a surface part or a face into a solid, 2 mm or any thickness on one side, both sides or about the
+  middle. A surface makes a new part and is used up unless you tick *Keep tools*; a solid's face adds to the solid.
+  A thickness larger than the surface's tightest curve allows fails with a message saying so.
+- **Enclose** makes a solid from surface parts, faces and planes that surround a volume. The surfaces may overhang
+  each other. Five faces of a cube fail with "The selection does not close a volume".
+- **Fill** makes a surface across a closed ring of edges, for example the open top of a box. Tick *Tangency* on a
+  model edge to aim the fill along the face beside it. With *Add*, the fill is sewn to the surface parts in scope
+  and the part becomes a solid when they enclose a volume.
+
 ### Context identity and display
 - **Bodies keep their identity**: a Context made by *Edit in context* names each neighbour by its Assembly
   instance, not by its place in the list. A neighbour you hid, coloured or ended an extrude on stays that

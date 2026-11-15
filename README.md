@@ -264,6 +264,8 @@ Things selected before opening a feature are pre-filled. Extrude and Plane show 
   can be set to *Tangency*, which aims the fill along the face beside it (a target, not a guarantee); guide points
   pull it through them. *Add* sews it to the surface parts in scope and makes a solid if they enclose a volume.
   Search for it as *patch*, *cap hole* or *fill surface*.
+- **Surfaces to solids** — Thicken, Enclose and Fill take a surface model to a solid; `scripts/smoke/sy3_solidify.py` runs the whole
+  route in the real window (a fender surface thickened, six squares enclosed to a cube, a box's open top filled).
 - **Mirror**, **Linear pattern**, **Circular pattern** — of parts.
 - **Boolean** — union, subtract, intersect parts.
 - **Import STEP / BREP** and **Export STEP / STL / BREP** (whole studio, or selected parts from the Parts list).

@@ -2749,6 +2749,23 @@ def _offset_one_side(plane, wire, chain, uv, closed, right, dist):
     return _as_wire(ws[0]), _maker_history(mk, [wire])
 
 
+def _open_wire_ends(wire):
+    """The two end vertices of an open wire: the vertices only one of its edges has."""
+    seen = []                                   # [vertex, number of edges that have it]
+    for e in edges(wire):
+        for v in _sub_shapes(e, TopAbs_VERTEX):
+            for item in seen:
+                if item[0].IsSame(v):
+                    item[1] += 1
+                    break
+            else:
+                seen.append([v, 1])
+    ends = [v for v, n in seen if n == 1]
+    if len(ends) != 2:
+        raise KernelError(THIN_TOO_THICK)
+    return ends[0], ends[1]
+
+
 def thin_profile(plane, wire, t1, t2):
     """A thin face in `plane` from `wire`, a closed or open chain of sketch curves: (face, offset history, cap
     edges). The face is the strip between the wire offset by `t1` and by `t2` on its other side, with sharp
@@ -2798,13 +2815,13 @@ def thin_profile(plane, wire, t1, t2):
     else:
         ends = []
         for w in (made[True], made[False]):
-            ch = _travel_chain(w)
-            a, b = ch[0][1][0], ch[-1][1][-1]
-            if np.linalg.norm(a - pts[0]) + np.linalg.norm(b - pts[-1]) > np.linalg.norm(b - pts[0]) + np.linalg.norm(a - pts[-1]):
+            a, b = _open_wire_ends(w)           # the wire's own vertices, so the caps join it exactly
+            if np.linalg.norm(_vertex_xyz(a) - pts[0]) + np.linalg.norm(_vertex_xyz(b) - pts[-1]) \
+                    > np.linalg.norm(_vertex_xyz(b) - pts[0]) + np.linalg.norm(_vertex_xyz(a) - pts[-1]):
                 a, b = b, a
             ends.append((a, b))
-        caps = [BRepBuilderAPI_MakeEdge(_pnt(ends[0][0]), _pnt(ends[1][0])).Edge(),
-                BRepBuilderAPI_MakeEdge(_pnt(ends[0][1]), _pnt(ends[1][1])).Edge()]
+        caps = [BRepBuilderAPI_MakeEdge(_as_vertex(ends[0][0]), _as_vertex(ends[1][0])).Edge(),
+                BRepBuilderAPI_MakeEdge(_as_vertex(ends[0][1]), _as_vertex(ends[1][1])).Edge()]
         loop = make_wire(edges(made[True]) + caps + edges(made[False]))
         face = BRepBuilderAPI_MakeFace(pln, facing(loop, True), True).Face()
     if not is_valid(face) or mass_props(face)["area"] < 1e-9:

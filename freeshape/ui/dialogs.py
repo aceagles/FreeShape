@@ -24,8 +24,8 @@ from .viewport import Pick
 
 OP_LABELS = [("new", "New"), ("add", "Add"), ("remove", "Remove"), ("intersect", "Intersect")]
 SURFACE_OP_LABELS = OP_LABELS[:2]        # Remove and Intersect are not available for surfaces
-CREATE_LABELS = [("solid", "Solid"), ("surface", "Surface")]      # a sweep's Thin joins with card I2.9
-THIN_CREATE_LABELS = CREATE_LABELS + [("thin", "Thin")]            # Extrude and Revolve
+CREATE_LABELS = [("solid", "Solid"), ("surface", "Surface")]
+THIN_CREATE_LABELS = CREATE_LABELS + [("thin", "Thin")]            # Extrude, Revolve and Sweep
 
 
 def _thin_fields(what):
@@ -965,11 +965,12 @@ SCHEMAS = {
     "sweep": [
         {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
         {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
-        {"t": "ops", "key": "creation", "options": CREATE_LABELS, "default": "solid"},
+        {"t": "ops", "key": "creation", "options": THIN_CREATE_LABELS, "default": "solid"},
         _sel("profiles", "Faces and sketch regions to sweep", {"region", "face"},
              visible=lambda p: p.get("creation") != "surface"),
         _sel("curves", "Sketch curves to sweep (open or closed)", {"path"},
-             visible=lambda p: p.get("creation") == "surface"),
+             visible=lambda p: p.get("creation") in ("surface", "thin")),
+        *_thin_fields("sweep"),
         _sel("path", "Sweep path (sketch curves or edges)", {"path"}),
         _scope(),
     ],
@@ -2776,7 +2777,7 @@ class FeatureDialog(_ResizableFrame):
         if key == "creation" and self.ftype in ("extrude", "revolve", "sweep") and value == "surface" \
                 and p.get("op", "add") not in ("new", "add"):
             p["op"] = "add"                    # Remove and Intersect are not available for surfaces
-        if key == "creation" and self.ftype in ("extrude", "revolve") and value == "thin":
+        if key == "creation" and self.ftype in ("extrude", "revolve", "sweep") and value == "thin":
             for k, v in (("thickness1", 1.0), ("thickness2", 0.0)):       # not in default_params (goldens go through it)
                 if k not in p:
                     p[k] = v

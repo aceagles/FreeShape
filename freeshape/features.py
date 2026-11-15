@@ -2353,14 +2353,11 @@ def _sweep_up_to(state, p, face, kind, how):
 
 
 def _surface_creation(p, what, ends_msg):
-    """True for a surface feature (`creation` "surface"); False for a solid or thin one (a thin sweep raises, not
-    built yet), and raises for the
+    """True for a surface feature (`creation` "surface"); False for a solid or thin one, and raises for the
     options a surface does not take: Remove and Intersect, and the ends `ends_msg` names."""
     creation = p.get("creation", "solid")
     if creation == "thin":
-        if what == "sweep":                       # card I2.9
-            raise K.KernelError(f"A thin {what} is not available yet")
-        return False                              # a thin extrude or revolve is the solid path on a thin face
+        return False                              # a thin extrude, revolve or sweep is the solid path on a thin face
     if creation != "surface":
         return False
     if p.get("op", "add") in ("remove", "intersect"):
@@ -3347,19 +3344,82 @@ def _curve_names(fid, profs, labels):
         return None
 
 
+THIN_SWEEP_BEND = "The wall is thicker than the path's tightest bend allows"
+
+
+def _check_thin_sweep_bends(profs, path_wire):
+    """Raise THIN_SWEEP_BEND when a thin profile reaches as far from the path as a bend of the path is tight.
+
+    A profile point swept round a bend turns about the bend's axis at the radius (bend radius - its distance
+    from the axis towards the centre); once that distance reaches the bend radius the wall folds into itself.
+    Each bend is sampled along the path (a line has none) for its radius and axis; the reach is
+    the largest distance, in the bend's plane, from a profile sample to the path point nearest the profile.
+    Conservative: a point on the outside of the bend counts as well, since the profile's side of the path is
+    not tracked round the path."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomLProp import GeomLProp_CLProps
+    from OCP.gp import gp_Dir
+    bends = []                                   # (radius, unit axis of the bend)
+    for e in K.edges(path_wire):
+        try:
+            a, b = BRep_Tool.Range_s(e)
+            crv = BRep_Tool.Curve_s(e, a, b)
+        except Exception:
+            continue
+        if crv is None:
+            continue
+        props = GeomLProp_CLProps(crv, 2, 1e-9)
+        for k in range(33):
+            props.SetParameter(a + (b - a) * k / 32)
+            try:
+                if not props.IsTangentDefined() or props.Curvature() < 1e-9:
+                    continue
+                t, n = gp_Dir(), gp_Dir()
+                props.Tangent(t)
+                props.Normal(n)
+                axis = np.cross([t.X(), t.Y(), t.Z()], [n.X(), n.Y(), n.Z()])
+                bends.append((1.0 / props.Curvature(), axis / np.linalg.norm(axis)))
+            except Exception:
+                continue
+    if not bends:
+        return
+    for face in profs:
+        try:
+            q0 = BRepExtrema_DistShapeShape(face, path_wire).PointOnShape2(1)
+            origin = np.array([q0.X(), q0.Y(), q0.Z()])
+        except Exception:                       # no single nearest point: the face meets the path
+            origin = K.discretize_edge(K.edges(path_wire)[0], 0.05)[0]
+        pts = np.vstack([K.discretize_edge(edge, 0.05) for edge in K.edges(face)]) - origin
+        for r, axis in bends:
+            reach = float(np.linalg.norm(pts - np.outer(pts @ axis, axis), axis=1).max())
+            if reach >= r * (1 - 1e-9):
+                raise K.KernelError(THIN_SWEEP_BEND)
+
+
 def run_sweep(state, f):
     p = f["params"]
     surface = _surface_creation(p, "sweep", None)
     curve_labels = []
-    profs = _profiles(state, p, f["id"], curve_labels)
+    thin = p.get("creation") == "thin"
+    thin_hist, thin_seeds = None, []
+    if thin:
+        profs, thin_hist, thin_seeds = _thin_profiles(state, p, f["id"])
+        if not profs:
+            raise K.KernelError("Select sketch curves or regions to sweep")
+    else:
+        profs = _profiles(state, p, f["id"], curve_labels)
     if surface and not profs:
         raise K.KernelError("Select sketch curves to sweep")
     if not p.get("path"):
         raise K.KernelError("Select the path to sweep along")
-    body, hist = K.sweep(profs, _path_wire(state, p["path"]), with_history=True)
+    path_wire = _path_wire(state, p["path"])
+    if thin:
+        _check_thin_sweep_bends(profs, path_wire)
+    body, hist = K.sweep(profs, path_wire, with_history=True)
     seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
-    named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []),
-                         body, hist, "sweep")
+    named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []) + thin_seeds,
+                         body, K._chain(thin_hist, hist) if thin else hist, "sweep")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 

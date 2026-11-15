@@ -368,13 +368,6 @@ def test_an_extrude_with_no_creation_key_is_unchanged():
     assert K.volume(p.shape) == pytest.approx(2000) and len(K.faces(p.shape)) == 6 and p.name == "Part 1"
 
 
-def test_a_thin_sweep_is_still_not_available():
-    doc = PartStudioDoc()
-    sid = sketch_feature(doc, l_shape, TOP)
-    f, err = try_add(doc, "sweep", creation="thin", curves=curves(doc, sid), path=curves(doc, sid))
-    assert err == "A thin sweep is not available yet"
-
-
 def test_thin_profile_returns_the_face_the_history_and_the_cap_edges():
     from freeshape.kernel import std_plane
     pl = std_plane("Top")
@@ -448,14 +441,6 @@ def test_the_dialog_offers_thin_with_onshapes_field_names(make_win, ftype):
     assert "Thickness 1" in shown and "Thickness 2" not in shown and "Flip wall" not in shown
     _segment_buttons(dlg, "creation")["Solid"].click()
     assert "Thickness 1" not in _visible_labels(dlg)
-
-
-def test_a_sweep_dialog_still_offers_solid_and_surface_only(make_win):
-    doc = PartStudioDoc()
-    sketch_feature(doc, l_shape, TOP)
-    w = make_win(doc)
-    w.start_feature("sweep")
-    assert list(_segment_buttons(w.dialog, "creation")) == ["Solid", "Surface"]
 
 
 def test_the_dialog_commits_a_thin_extrude(make_win):

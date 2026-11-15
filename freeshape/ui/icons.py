@@ -291,6 +291,17 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(ORANGE, 1.6))
         p.setBrush(Qt.NoBrush)
         p.drawRect(QRectF(5, 24, 22, 4))
+    elif name == "boundary_surface":
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(QColor("#eef3fa"))
+        p.drawPolygon(QPolygonF([QPointF(4, 22), QPointF(10, 8), QPointF(28, 10), QPointF(26, 25)]))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(_pen(ORANGE, 1.8))
+        p.drawLine(QPointF(4, 22), QPointF(26, 25))
+        p.drawLine(QPointF(10, 8), QPointF(28, 10))
+        p.setPen(_pen(INK, 1.6))
+        p.drawLine(QPointF(4, 22), QPointF(10, 8))
+        p.drawLine(QPointF(26, 25), QPointF(28, 10))
     elif name == "draft":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(FACE)

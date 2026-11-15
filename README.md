@@ -246,6 +246,10 @@ Things selected before opening a feature are pre-filled. Extrude and Plane show 
   left out of STL, 3MF and OBJ export, of Assembly inserts and of interference checks (STEP and BREP keep them).
 - **Rib** — a web or gusset from open sketch curves (lines and arcs) grown to meet a part, parallel to the sketch plane; set the thickness and direction.
 - **Loft** — blend between two or more profiles on different planes; tick *Straight sides* for a ruled loft.
+- **Boundary surface** — a surface through curves in a U direction and, optionally, curves in a V direction (search
+  for *gordon*, *network surface* or *curve network*). Pick the curves of each direction in order; with U curves
+  only it also works on OpenCascade 7.9, V curves need 8.0. It is a surface Loft saved with a marker, so its face
+  names match the same Loft's. It does not match tangent to neighbouring faces (use *Fill* for that).
 - **Draft** — tilt faces by an angle from a neutral plane, for moulded or 3D-printed parts.
 - **Split** — cut parts in two with a plane or flat face; keep both sides or one. **Split with a surface**: pick a
   surface part and it cuts as drawn, so it must pass completely through the part (otherwise Split says so); tick

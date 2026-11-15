@@ -715,6 +715,11 @@ _LOFT_GUIDES_WHY = ("Guides, end conditions, a closed loft and a point profile c
 _LOFT_SURFACE_WHY = "A surface loft takes no end conditions: choose Solid to set them"
 
 
+_BOUNDARY_TIP = ("A surface through curves in a U direction and, optionally, a V direction. It does not match "
+                 "tangent or curvature to neighbouring faces (use Fill for a patch with tangency), and has no "
+                 "magnitude, isocurve display or trimming. V curves need OpenCascade 8.0.")
+
+
 def _loft_surface(p):
     """True when a loft is made as a surface (Create = Surface, I7.8)."""
     return p.get("creation") == "surface"
@@ -748,6 +753,8 @@ def _loft_fold(p, strip=False):
     kept only when ticked, and a closed loft or a point profile (which grey the conditions and guides
     out) leaves none of them."""
     plain = _loft_plain(p)
+    if p.get("front") and any(p.get("guides") or []):
+        p["ruled"] = False               # a Boundary surface with V curves is smooth (the row is greyed out)
     if not p.get("closed"):
         p.pop("closed", None)
     if not _loft_surface(p):
@@ -1092,6 +1099,19 @@ SCHEMAS = {
                 "clear those first"},
         _sel_list("guides", "Guides — one pick is one guide (sketch curves or an edge)", {"path"},
                   visible=lambda p: not p.get("ruled") and bool(p.get("guides_on"))),
+        _scope(),
+    ],
+    # I7.9: a surface loft opened through its front door (params["front"] == "boundary_surface"): the loft's
+    # `curves` are the U direction, its `guides` the V direction. Same runner, same saved keys.
+    "boundary_surface": [
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS},
+        _sel_list("curves", "U direction profiles — pick sketch curves or edges in order",
+                  {"path"}, tip=_BOUNDARY_TIP),
+        _sel_list("guides", "V direction profiles (optional; two or more, each touching every U curve)",
+                  {"path"}, tip=_BOUNDARY_TIP),
+        {**_check("ruled", "Straight sides (ruled)"),
+         "enabled": lambda p: not any(p.get("guides") or []),
+         "why": "Straight sides apply to U curves only: remove the V curves first"},
         _scope(),
     ],
     "draft": [
@@ -1574,7 +1594,9 @@ class FeatureDialog(_ResizableFrame):
             pass
         if self.ftype == "loft":
             _loft_unfold(self.feature["params"])
-        self.schema = SCHEMAS.get(self.ftype, [])
+            if F.front_kind(self.feature):
+                self.feature["params"]["guides_on"] = True       # the V list is always there: _loft_fold keeps it
+        self.schema = SCHEMAS.get(F.front_kind(self.feature) or self.ftype, [])
         if self.ftype.startswith("plugin:"):
             from .. import plugins
             self.schema = plugins.dialog_schema(self.ftype)
@@ -1617,7 +1639,7 @@ class FeatureDialog(_ResizableFrame):
         lay.setSpacing(6)
         head = QHBoxLayout()
         ic = QLabel()
-        ic.setPixmap(icon(self.ftype).pixmap(20, 20))
+        ic.setPixmap(icon(F.door_kind(self.feature)).pixmap(20, 20))
         head.addWidget(ic)
         self.title = QLineEdit(self.feature["name"])
         self.title.setStyleSheet("QLineEdit { border: none; font-weight: 700; background: transparent; }"

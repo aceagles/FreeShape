@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import kernel as K
+from .. import features as F
 from .icons import icon
 from . import theme, pyfeature_ui
 
@@ -287,7 +288,7 @@ class FeatureList(_EyeMixin, QListWidget):
             prev_folder = fo
             if not (name_hit or folder_hit):
                 continue
-            it = QListWidgetItem(icon(f["type"]), f["name"])
+            it = QListWidgetItem(icon(F.door_kind(f)), f["name"])
             it.setData(ROLE_KIND, "feature")
             it.setData(ROLE_ID, f["id"])
             it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)

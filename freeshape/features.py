@@ -12,6 +12,7 @@ import base64
 import json
 import math
 import os
+import re
 import tempfile
 import types
 from dataclasses import dataclass, field
@@ -43,6 +44,40 @@ PART_PALETTE = (
 def palette_color(n):
     """Colour for the n-th part (1-based) created in a replay."""
     return PART_PALETTE[(n - 1) % len(PART_PALETTE)]
+
+# Front doors (I7.9): a named way in to a feature type, stored as the type plus a `front` marker in its params.
+# A Boundary surface is a surface loft; `run_loft` ignores the marker. This is the one place that reads it:
+# a label, icon, dialog or error that depends on the door asks `front_kind`.
+FRONT_DOORS = {"boundary_surface": ("loft", "Boundary surface")}
+
+
+def front_kind(feature):
+    """The front door a feature was made through ("boundary_surface"), or None for a plain feature."""
+    kind = (feature.get("params") or {}).get("front") if isinstance(feature, dict) else None
+    return kind if kind in FRONT_DOORS and FRONT_DOORS[kind][0] == feature.get("type") else None
+
+
+def door_kind(feature):
+    """What to show for a feature: its front door when it has one, else its type. Picks labels, icons, schemas."""
+    return front_kind(feature) or feature["type"]
+
+
+def boundary_wording(msg):
+    """A surface loft's error in the Boundary surface's words (U curves are the loft's curves, V curves its guides)."""
+    for old, new in (("Add a second guide: a surface loft with guides needs at least two",
+                      "Add a second V curve: a Boundary surface with V curves needs at least two"),
+                     ("Loft guides need OpenCascade 8.0 or newer",
+                      "Boundary surface with V curves needs OpenCascade 8.0 or newer"),
+                     ("Select at least two profiles, in order", "Select at least two U curves, in order"),
+                     ("Select sketch curves to loft", "Select the U curves"),
+                     ("Guides need a smooth loft — untick Straight sides (ruled)",
+                      "V curves need a smooth surface — untick Straight sides (ruled)"),
+                     ("A closed surface loft and guides cannot be combined yet",
+                      "A Boundary surface cannot have V curves and be closed")):
+        msg = msg.replace(old, new)
+    msg = re.sub(r"\b[Gg]uide (\d+)", r"V curve \1", msg)
+    return re.sub(r"\b[Pp]rofile (\d+)", r"U curve \1", msg)
+
 
 FEATURE_LABELS = {
     "sketch": "Sketch", "extrude": "Extrude", "revolve": "Revolve", "fillet": "Fillet",
@@ -3623,6 +3658,16 @@ def run_rib(state, f):
 
 
 def run_loft(state, f):
+    """A loft; a Boundary surface (I7.9) is the same loft with the `front` marker, only its errors are reworded."""
+    if front_kind(f) is None:
+        return _run_loft(state, f)
+    try:
+        return _run_loft(state, f)
+    except K.KernelError as e:
+        raise K.KernelError(boundary_wording(str(e))) from e
+
+
+def _run_loft(state, f):
     p = f["params"]
     if _surface_creation(p, "loft", None):       # I7.8: a surface loft takes sketch curves and part edges
         return _run_loft_surface(state, f)

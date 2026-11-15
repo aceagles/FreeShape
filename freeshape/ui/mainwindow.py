@@ -591,6 +591,9 @@ class MainWindow(QMainWindow):
             C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"),
               "blend transition end condition loft tangent normal to profile guide curves guided loft "
               "boundary surface ruled surface surface loft"),
+            C("boundary_surface", "Boundary surface", "A surface through curves in a U direction and, optionally, "
+              "a V direction. V curves need OpenCascade 8.0.", lambda: F_("boundary_surface"),
+              "boundary surface gordon network surface uv surface curve network surface"),
             C("fillet", "Fillet", "Round off edges or faces with a radius.", lambda: F_("fillet"),
               "round blend corner variable fillet variable radius"),
             C("variable_fillet", "Variable fillet", "Round off edges with a radius that changes from vertex to vertex.",
@@ -895,6 +898,7 @@ class MainWindow(QMainWindow):
         for name, tip in (("extrude", "Extrude (Shift+E)"), ("revolve", "Revolve (Shift+W)"),
                           ("sweep", "Sweep — a profile along a path"),
                           ("rib", "Rib — a web or gusset from sketch curves"), ("loft", "Loft — blend between profiles"),
+                          ("boundary_surface", "Boundary surface — a surface through U and V curves"),
                           ("fillet", "Fillet (Shift+F)"), ("chamfer", "Chamfer"), ("draft", "Draft — angle side faces"),
                           ("shell", "Shell"), ("hole", "Hole — custom or ISO clearance / tapped"),
                           ("thread", "Thread — real ISO threads on holes and shafts"),
@@ -1356,9 +1360,12 @@ class MainWindow(QMainWindow):
     def start_feature(self, ftype, edit_fid=None, preselect=None):
         if self.is_asm or self.is_dwg:
             return
+        door = ftype if ftype in F.FRONT_DOORS else None        # a front door (I7.9): its type plus a marker
+        if door:
+            ftype = F.FRONT_DOORS[door][0]
         if self.mode != "idle":
-            if self.mode == "dialog" and self.dialog and self.dialog.is_new and self.dialog.ftype != ftype \
-                    and edit_fid is None:
+            if self.mode == "dialog" and self.dialog and self.dialog.is_new \
+                    and F.door_kind(self.dialog.feature) != (door or ftype) and edit_fid is None:
                 self.cancel_dialog()
             else:
                 return
@@ -1369,6 +1376,11 @@ class MainWindow(QMainWindow):
             pre = []
         else:
             feat = self.doc.make_feature(ftype)
+            if door:
+                feat["params"].update(creation="surface", front=door)
+                taken = {g["name"] for g in self.doc.features}
+                n = next(i for i in range(1, len(taken) + 2) if f"{F.FRONT_DOORS[door][1]} {i}" not in taken)
+                feat["name"] = f"{F.FRONT_DOORS[door][1]} {n}"
             index = self.doc.insert_index()
             is_new = True
             pre = list(preselect) if preselect else list(self.viewport.selection)
@@ -4992,6 +5004,7 @@ class MainWindow(QMainWindow):
             "Shift+T: transparent · Shift+X: section view<br><br>"
             "<b>Features</b><br>Alt+C or Ctrl+Space: search tools · "
             "Shift+S: sketch · Shift+E: extrude · Shift+W: revolve · Shift+F: fillet<br>"
+            "Boundary surface (a surface through U and V curves): search for it, or use its toolbar button<br>"
             "Ctrl+Z / Ctrl+Y: undo / redo · Enter: accept dialog · Esc: cancel<br><br>"
             "<b>Sketch</b><br>L line · G rectangle · R centre rectangle · C circle · A arc · P point · D dimension · Q construction<br>"
             "I coincident · H horizontal · V vertical · E equal · T tangent · U use edges · Del delete · Esc stop tool<br><br>"

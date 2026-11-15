@@ -2288,11 +2288,34 @@ def _sweep_up_to(state, p, face, kind, how):
     return K.keep_piece_from(long_body, tool, seed, hist)
 
 
+def _surface_creation(p, what, ends_msg):
+    """True for a surface feature (`creation` "surface"); raises for a thin one (not built yet), and for the
+    options a surface does not take: Remove and Intersect, and the ends `ends_msg` names."""
+    creation = p.get("creation", "solid")
+    if creation == "thin":
+        raise K.KernelError(f"A thin {what} is not available yet")
+    if creation != "surface":
+        return False
+    if p.get("op", "add") in ("remove", "intersect"):
+        raise K.KernelError("Remove and Intersect are not available for surfaces")
+    if ends_msg and (p.get("end") in UP_TO or p.get("end") == "to_face"):
+        raise K.KernelError(ends_msg)
+    return True
+
+
 def run_revolve(state, f):
     p = f["params"]
-    profs = _profiles(state, p, f["id"])
+    surface = _surface_creation(p, "revolve", "A surface revolve needs a Full, One direction or Symmetric end")
+    curve_labels = []
+    profs = _profiles(state, p, f["id"], curve_labels)
+    if surface and not profs:
+        raise K.KernelError("Select sketch curves to revolve")
     a, d = resolve_axis(state, p.get("axis", {}))
-    for prof in profs:
+    for r in (p.get("curves", []) if surface else []):          # a model edge has no sketch plane to check
+        sr = state.sketches.get(r.get("sketch"))
+        if sr is not None and abs(float(np.asarray(sr.plane.normal, float) @ d)) > 1 - 1e-9:
+            raise K.KernelError("The axis must not be perpendicular to the sketch plane")
+    for prof in ([] if surface else profs):
         pl = K.planar_face_plane(prof)
         if pl is not None and abs(float(pl.normal @ d)) > 1 - 1e-9:
             raise K.KernelError("The axis must not be perpendicular to the sketch plane")
@@ -2305,7 +2328,9 @@ def run_revolve(state, f):
         apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
         return
     body, hist = K.revolve(profs, a, d, angle, symmetric=(end == "symmetric"), with_history=True)
-    named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "revolve")
+    seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
+    named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []),
+                         body, hist, "revolve")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 
@@ -3065,11 +3090,17 @@ def _curve_names(fid, profs, labels):
 
 def run_sweep(state, f):
     p = f["params"]
-    profs = _profiles(state, p, f["id"])
+    surface = _surface_creation(p, "sweep", None)
+    curve_labels = []
+    profs = _profiles(state, p, f["id"], curve_labels)
+    if surface and not profs:
+        raise K.KernelError("Select sketch curves to sweep")
     if not p.get("path"):
         raise K.KernelError("Select the path to sweep along")
     body, hist = K.sweep(profs, _path_wire(state, p["path"]), with_history=True)
-    named = name_feature(state, f["id"], _profile_names(state, p), body, hist, "sweep")
+    seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
+    named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []),
+                         body, hist, "sweep")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 

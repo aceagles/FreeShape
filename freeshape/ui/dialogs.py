@@ -784,8 +784,12 @@ SCHEMAS = {
         _scope(),
     ],
     "revolve": [
-        _ops(),
-        _sel("profiles", "Faces and sketch regions to revolve", {"region", "face"}),
+        {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
+        {"t": "ops", "key": "creation", "options": CREATE_LABELS, "default": "solid"},
+        _sel("profiles", "Faces and sketch regions to revolve", {"region", "face"},
+             visible=lambda p: p.get("creation") != "surface"),
+        _sel("curves", "Sketch curves to revolve", {"path"}, visible=lambda p: p.get("creation") == "surface"),
         _sel("axis_sel", "Revolve axis (axis, sketch line or edge)", {"axis"}, multi=False),
         _choice("axis_std", "…or world axis", [("", "—"), ("X", "X axis"), ("Y", "Y axis"), ("Z", "Z axis")]),
         _choice("end", "Revolve type", [("full", "Full"), ("one", "One direction"), ("symmetric", "Symmetric")]
@@ -901,8 +905,13 @@ SCHEMAS = {
         _check("keep_tools", "Keep tools", visible=lambda p: p.get("op") != "union"),
     ],
     "sweep": [
-        _ops(),
-        _sel("profiles", "Faces and sketch regions to sweep", {"region", "face"}),
+        {"t": "ops", "key": "op", "options": OP_LABELS, "visible": lambda p: p.get("creation") != "surface"},
+        {"t": "ops", "key": "op", "options": SURFACE_OP_LABELS, "visible": lambda p: p.get("creation") == "surface"},
+        {"t": "ops", "key": "creation", "options": CREATE_LABELS, "default": "solid"},
+        _sel("profiles", "Faces and sketch regions to sweep", {"region", "face"},
+             visible=lambda p: p.get("creation") != "surface"),
+        _sel("curves", "Sketch curves to sweep (open or closed)", {"path"},
+             visible=lambda p: p.get("creation") == "surface"),
         _sel("path", "Sweep path (sketch curves or edges)", {"path"}),
         _scope(),
     ],
@@ -1051,7 +1060,7 @@ def params_to_fields(ftype, p):
         f["upto_part"] = [("part", u["id"])] if u.get("kind") == "part" else []
     if ftype in ("extrude", "revolve", "sweep"):
         f["profiles"] = [("region", r) for r in p.get("regions", [])] + [("face", r) for r in p.get("faces", [])]
-    if ftype == "extrude":
+    if ftype in ("extrude", "revolve", "sweep"):
         f["curves"] = [("path", r) for r in p.get("curves", [])]
     if ftype in SCOPE_FEATURES:
         f["scope"] = [("part", i) for i in p.get("scope", [])]
@@ -1145,12 +1154,12 @@ def fields_to_params(ftype, fields, p):
     if ftype in ("extrude", "revolve", "sweep"):
         p["regions"] = [r for k, r in fields.get("profiles", []) if k == "region"]
         p["faces"] = [r for k, r in fields.get("profiles", []) if k == "face"]
-    if ftype == "extrude":
+    if ftype in ("extrude", "revolve", "sweep"):
         curves = [r for k, r in fields.get("curves", [])]
         if curves:
             p["curves"] = curves
         else:
-            p.pop("curves", None)            # a solid extrude saves no curves key
+            p.pop("curves", None)            # a solid feature saves no curves key
     if ftype == "sweep":
         p["path"] = [r for k, r in fields.get("path", [])]
     if ftype == "rib":
@@ -2663,7 +2672,7 @@ class FeatureDialog(_ResizableFrame):
             fk = {"up_to_face": "upto_face", "up_to_vertex": "upto_vertex", "up_to_part": "upto_part"}.get(value)
             if fk in self.fields:
                 QTimer.singleShot(0, lambda fk=fk: self.activate(self.fields[fk]))
-        if key == "creation" and self.ftype == "extrude" and value == "surface" \
+        if key == "creation" and self.ftype in ("extrude", "revolve", "sweep") and value == "surface" \
                 and p.get("op", "add") not in ("new", "add"):
             p["op"] = "add"                    # Remove and Intersect are not available for surfaces
         if key == "draft" and value and self.ftype == "extrude" and not p.get("draft_angle"):

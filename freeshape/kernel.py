@@ -1048,8 +1048,13 @@ def extrude(profile_faces, direction: np.ndarray, depth: float, symmetric=False,
 
 
 def revolve(profile_faces, axis_p, axis_d, angle_deg: float, symmetric=False, with_history=False):
+    """Revolve profile faces into a solid, or profile wires (open or closed) into a surface body: a revolved
+    wire is a shell with one face per edge. Faces and wires are not mixed."""
     if not profile_faces:
         raise KernelError("Select sketch regions to revolve")
+    surface = any(f.ShapeType() == TopAbs_WIRE for f in profile_faces)
+    if surface and not all(f.ShapeType() == TopAbs_WIRE for f in profile_faces):
+        raise KernelError("Revolve takes faces or curves, not both")
     ax = gp_Ax1(_pnt(axis_p), _dir(axis_d))
     sweeps = []
     ang = math.radians(angle_deg)
@@ -1065,7 +1070,7 @@ def revolve(profile_faces, axis_p, axis_d, angle_deg: float, symmetric=False, wi
         if not mk.IsDone():
             raise KernelError("Revolve failed (does the profile cross the axis?)")
         sweeps.append((mk, start, f, place))
-    return _swept(sweeps, with_history)
+    return _swept(sweeps, with_history, surface)
 
 
 def _placed(shape, t: gp_Trsf):
@@ -2363,8 +2368,9 @@ def _pipe_shell(path_wire, wire):
     return _pipe_maker(path_wire, wire).Shape()
 
 
-def _pipe_maker(path_wire, wire):
-    """The finished pipe-shell maker for `wire` swept along `path_wire`, already made into a solid."""
+def _pipe_maker(path_wire, wire, solid=True):
+    """The finished pipe-shell maker for `wire` swept along `path_wire`, made into a solid unless `solid` is
+    false (a surface sweep keeps the open shell)."""
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
     from OCP.BRepBuilderAPI import BRepBuilderAPI_RightCorner
     mk = BRepOffsetAPI_MakePipeShell(path_wire)
@@ -2374,7 +2380,8 @@ def _pipe_maker(path_wire, wire):
     mk.Build()
     if not mk.IsDone():
         raise KernelError("Sweep failed — the path may be too tight for the profile")
-    mk.MakeSolid()
+    if solid:
+        mk.MakeSolid()
     return mk
 
 
@@ -2406,6 +2413,11 @@ def sweep(profile_faces, path_wire, with_history=False):
     from OCP.TopAbs import TopAbs_WIRE
     if not profile_faces:
         raise KernelError("Select a profile to sweep")
+    surface = any(f.ShapeType() == TopAbs_WIRE for f in profile_faces)
+    if surface and not all(f.ShapeType() == TopAbs_WIRE for f in profile_faces):
+        raise KernelError("Sweep takes faces or curves, not both")
+    if surface:
+        return _sweep_surface(profile_faces, path_wire, with_history)
     out, steps = [], []
     for f in profile_faces:
         outer = BRepTools.OuterWire_s(f)
@@ -2439,6 +2451,25 @@ def sweep(profile_faces, path_wire, with_history=False):
     if volume(res) < 0:
         res = res.Reversed()
     return (res, _chain(_chain(*steps), fused)) if with_history else res
+
+
+def _sweep_surface(profile_wires, path_wire, with_history):
+    """Each profile wire (open or closed) swept along `path_wire` into a shell of its own, with a face per
+    profile edge and path segment. The shells are returned as they are (one shell, or a compound of them):
+    no hole tunnels, no solid check, no volume reversal, and no sewing, so each keeps its history."""
+    shells, steps = [], []
+    for w in profile_wires:
+        try:
+            mk = _pipe_maker(path_wire, w, solid=False)
+        except KernelError:
+            raise
+        except Exception as exc:
+            raise KernelError("Sweep failed — the path may be too tight for the profile") from exc
+        shells.append(mk.Shape())
+        if with_history:
+            steps.append(_pipe_history(mk, None, w))
+    shape = shells[0] if len(shells) == 1 else compound(shells)
+    return (shape, _chain(*steps)) if with_history else shape
 
 
 def _wire_centre(w) -> np.ndarray:

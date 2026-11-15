@@ -703,6 +703,7 @@ SCOPE_OPS = ("add", "remove", "intersect")
 SCOPE_FEATURES = ("extrude", "revolve", "sweep", "loft")
 
 
+SWEEP_CONTROLS = [("", "None"), ("keep", "Keep profile orientation"), ("lock", "Lock profile direction")]
 LOFT_CONDITIONS = [("", "None"), ("normal", "Normal to profile"), ("tangent", "Tangent to profile")]
 LOFT_END_CHOICES = LOFT_CONDITIONS + [("match_tangent", "Match tangent")]     # I7.5: with Adjacent faces
 
@@ -1032,6 +1033,9 @@ SCHEMAS = {
              visible=lambda p: p.get("creation") in ("surface", "thin")),
         *_thin_fields("sweep"),
         _sel("path", "Sweep path (sketch curves or edges)", {"path"}),
+        _choice("control", "Profile control", SWEEP_CONTROLS),
+        _sel("lock_dir", "Direction (axis, edge or sketch line)", {"axis"}, multi=False,
+             visible=lambda p: p.get("control") == "lock"),
         _scope(),
     ],
     "rib": [
@@ -1205,6 +1209,8 @@ def params_to_fields(ftype, p):
         f["faces"] = [("face", r) for r in p.get("faces", [])]
     if ftype == "sweep":
         f["path"] = [("path", r) for r in p.get("path", [])]
+        d = p.get("lock_dir") or {}
+        f["lock_dir"] = [("axis", d)] if d and d.get("kind") != "std" else []
     if ftype == "rib":
         f["path"] = [("path", r) for r in p.get("path", [])]
         f["parts"] = [("part", i) for i in p.get("parts", [])]
@@ -1308,6 +1314,13 @@ def fields_to_params(ftype, fields, p):
             p.pop("curves", None)            # a solid feature saves no curves key
     if ftype == "sweep":
         p["path"] = [r for k, r in fields.get("path", [])]
+        lock = [r for k, r in fields.get("lock_dir", [])]
+        if p.get("control") == "lock" and lock:
+            p["lock_dir"] = lock[0]
+        else:
+            p.pop("lock_dir", None)
+        if not p.get("control"):
+            p.pop("control", None)           # None saves no key
     if ftype == "rib":
         p["path"] = [r for k, r in fields.get("path", [])]
         p["parts"] = [r for k, r in fields.get("parts", [])]
@@ -2921,6 +2934,8 @@ class FeatureDialog(_ResizableFrame):
                 if k in self.widgets:
                     self.widgets[k].setText(_show(p[k]))
             QTimer.singleShot(0, lambda: self.activate(self.fields["curves"]))      # a thin wall is drawn as curves
+        if key == "control" and self.ftype == "sweep" and value == "lock" and "lock_dir" in self.fields:
+            QTimer.singleShot(0, lambda: self.activate(self.fields["lock_dir"]))      # the direction is picked next
         if key == "draft" and value and self.ftype == "extrude" and not p.get("draft_angle"):
             p["draft_angle"] = 5.0           # not in default_params (goldens are built through it), so seed it here
             if "draft_angle" in self.widgets:

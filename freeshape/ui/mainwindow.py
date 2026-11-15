@@ -585,7 +585,7 @@ class MainWindow(QMainWindow):
               "symmetric or through all.", lambda: F_("extrude"), "boss cut pad pocket draft taper surface extrude thin extrude wall"),
             C("revolve", "Revolve", "Spin a sketch region around an axis to make round parts.",
               lambda: F_("revolve"), "lathe turn surface revolve thin revolve wall"),
-            C("sweep", "Sweep", "Move a profile along a path to make a pipe or rail.", lambda: F_("sweep"), "pipe path surface sweep thin sweep"),
+            C("sweep", "Sweep", "Move a profile along a path to make a pipe or rail.", lambda: F_("sweep"), "pipe path surface sweep thin sweep profile orientation"),
             C("rib", "Rib", "Add a rib, web or gusset to a part from open sketch curves, grown until it meets the "
               "part.", lambda: F_("rib"), "gusset web stiffener support"),
             C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"),

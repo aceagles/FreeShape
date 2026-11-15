@@ -2849,13 +2849,48 @@ def _pipe_shell(path_wire, wire):
     return _pipe_maker(path_wire, wire).Shape()
 
 
-def _pipe_maker(path_wire, wire, solid=True):
+SWEEP_NO_DIRECTION = "Pick a direction for Lock profile direction"
+SWEEP_KEEP_NEEDS_PLANE = "Keep profile orientation needs a flat profile"
+
+
+def _profile_normal(wire):
+    """(a point on, the unit normal of) the plane a profile wire lies in; None when it is not flat."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_FindPlane
+    fp = BRepBuilderAPI_FindPlane(wire)
+    if not fp.Found():
+        return None
+    pln = fp.Plane()
+    return _wire_centre(wire), _np(pln.Axis().Direction())
+
+
+def _set_pipe_mode(mk, wire, control):
+    """The pipe maker's orientation mode. No control: corrected Frenet, the profile follows the path. `keep`:
+    a fixed trihedron from the profile's plane, so every section stays parallel to the profile. `("lock", d)`:
+    a constant binormal along `d`."""
+    kind = control[0] if control else None
+    if kind is None:
+        mk.SetMode(False)                   # corrected Frenet: keeps the profile upright along the path
+    elif kind == "keep":
+        got = _profile_normal(wire)
+        if got is None:
+            raise KernelError(SWEEP_KEEP_NEEDS_PLANE)
+        mk.SetMode(gp_Ax2(_pnt(got[0]), _dir(got[1])))
+    elif kind == "lock":
+        if control[1] is None or np.linalg.norm(np.asarray(control[1], float)) < 1e-9:
+            raise KernelError(SWEEP_NO_DIRECTION)
+        d = np.asarray(control[1], float)
+        mk.SetMode(_dir(d / np.linalg.norm(d)))
+    else:
+        raise KernelError("Unknown profile control")
+
+
+def _pipe_maker(path_wire, wire, solid=True, control=None):
     """The finished pipe-shell maker for `wire` swept along `path_wire`, made into a solid unless `solid` is
-    false (a surface sweep keeps the open shell)."""
+    false (a surface sweep keeps the open shell). `control` is None, ("keep",) or ("lock", direction)."""
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
     from OCP.BRepBuilderAPI import BRepBuilderAPI_RightCorner
     mk = BRepOffsetAPI_MakePipeShell(path_wire)
-    mk.SetMode(False)                       # corrected Frenet: keeps the profile upright along the path
+    _set_pipe_mode(mk, wire, control)
     mk.SetTransitionMode(BRepBuilderAPI_RightCorner)   # clean mitred joins at sharp corners
     mk.Add(wire, False, False)
     mk.Build()
@@ -2889,7 +2924,7 @@ def _pipe_history(mk, face, wire):
     return hist
 
 
-def sweep(profile_faces, path_wire, with_history=False):
+def sweep(profile_faces, path_wire, with_history=False, control=None):
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_WIRE
     if not profile_faces:
@@ -2898,19 +2933,19 @@ def sweep(profile_faces, path_wire, with_history=False):
     if surface and not all(f.ShapeType() == TopAbs_WIRE for f in profile_faces):
         raise KernelError("Sweep takes faces or curves, not both")
     if surface:
-        return _sweep_surface(profile_faces, path_wire, with_history)
+        return _sweep_surface(profile_faces, path_wire, with_history, control)
     out, steps = [], []
     for f in profile_faces:
         outer = BRepTools.OuterWire_s(f)
         try:
-            mk = _pipe_maker(path_wire, outer)
+            mk = _pipe_maker(path_wire, outer, control=control)
             body = mk.Shape()
             hist = _pipe_history(mk, f, outer) if with_history else None
             exp = TopExp_Explorer(f, TopAbs_WIRE)
             while exp.More():                 # holes in the profile become tunnels
                 w = TopoDS.Wire(exp.Current()) if hasattr(TopoDS, "Wire") else exp.Current()
                 if not w.IsSame(outer):
-                    tmk = _pipe_maker(path_wire, w)
+                    tmk = _pipe_maker(path_wire, w, control=control)
                     if with_history:
                         body, cut_hist = cut(body, tmk.Shape(), with_history=True)
                         hist = _chain(hist, _pipe_history(tmk, None, w), cut_hist)
@@ -2934,14 +2969,14 @@ def sweep(profile_faces, path_wire, with_history=False):
     return (res, _chain(_chain(*steps), fused)) if with_history else res
 
 
-def _sweep_surface(profile_wires, path_wire, with_history):
+def _sweep_surface(profile_wires, path_wire, with_history, control=None):
     """Each profile wire (open or closed) swept along `path_wire` into a shell of its own, with a face per
     profile edge and path segment. The shells are returned as they are (one shell, or a compound of them):
     no hole tunnels, no solid check, no volume reversal, and no sewing, so each keeps its history."""
     shells, steps = [], []
     for w in profile_wires:
         try:
-            mk = _pipe_maker(path_wire, w, solid=False)
+            mk = _pipe_maker(path_wire, w, solid=False, control=control)
         except KernelError:
             raise
         except Exception as exc:

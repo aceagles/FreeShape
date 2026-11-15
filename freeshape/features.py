@@ -3397,6 +3397,21 @@ def _check_thin_sweep_bends(profs, path_wire):
                 raise K.KernelError(THIN_SWEEP_BEND)
 
 
+def _sweep_control(state, p):
+    """The sweep's profile control for the kernel: None (absent or empty: the profile follows the path),
+    ("keep",) or ("lock", unit direction of `lock_dir`)."""
+    c = p.get("control") or ""
+    if c == "":
+        return None
+    if c == "keep":
+        return ("keep",)
+    if c == "lock":
+        if not p.get("lock_dir"):
+            raise K.KernelError(K.SWEEP_NO_DIRECTION)
+        return ("lock", resolve_axis(state, p["lock_dir"])[1])
+    raise K.KernelError("Unknown profile control")
+
+
 def run_sweep(state, f):
     p = f["params"]
     surface = _surface_creation(p, "sweep", None)
@@ -3416,7 +3431,7 @@ def run_sweep(state, f):
     path_wire = _path_wire(state, p["path"])
     if thin:
         _check_thin_sweep_bends(profs, path_wire)
-    body, hist = K.sweep(profs, path_wire, with_history=True)
+    body, hist = K.sweep(profs, path_wire, with_history=True, control=_sweep_control(state, p))
     seeded = _curve_names(f["id"], profs, curve_labels) if surface else None
     named = name_feature(state, f["id"], _profile_names(state, p) + ([seeded] if seeded else []) + thin_seeds,
                          body, K._chain(thin_hist, hist) if thin else hist, "sweep")

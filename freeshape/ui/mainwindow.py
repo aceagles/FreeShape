@@ -36,6 +36,7 @@ from .viewport import Viewport, Pick
 from .panels import LeftPanel, STD_PLANES, DocTabBar, DependenciesPanel
 from .dialogs import FeatureDialog, SketchDialog, pick_to_item
 from .section import SectionPanel
+from .context_bar import ContextBar
 from .sketcher import Sketcher, CONSTRAINT_TOOLS
 from .numparse import fmt
 from .assembly_ui import AssemblyController
@@ -257,6 +258,7 @@ class MainWindow(QMainWindow):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
         self.viewport = Viewport()
+        self.context_bar = ContextBar(self)       # shown over the 3D view of a Part Studio with a Context
         self.view_stack = QStackedWidget()       # the 3D view, or the drawing sheet
         self.view_stack.addWidget(self.viewport)
         self.view_stack.addWidget(self.dwg.canvas)
@@ -340,6 +342,7 @@ class MainWindow(QMainWindow):
         lp.features.planeClicked.connect(self._tree_plane_clicked)
         lp.features.featureHovered.connect(self._feature_hovered)
         lp.features.itemSelectionChanged.connect(self._update_feature_hl)
+        lp.features.itemSelectionChanged.connect(self._refresh_context_bar)
         self._hl_hover = None
         self._hl_cache = {}
         lp.filter.textChanged.connect(lambda t: (lp.features.set_filter(t), self._populate_lists()))
@@ -703,6 +706,9 @@ class MainWindow(QMainWindow):
         for i, name in enumerate(("Front", "Back", "Left", "Right", "Top", "Bottom"), 1):
             cmds.append(C("iso", f"{name} view", f"Look at the model from the {name.lower()} (Shift+{i}).",
                           lambda n=name: self.viewport.set_standard_view(n), "", "View"))
+        if self.context_bar.context_fid() is not None:
+            cmds.append(C("assembly", "Go to assembly", "Switch to the Assembly this Part Studio's Context was "
+                          "captured from.", self.context_bar.go_to_assembly, "context tab", "View"))
         from . import pyfeature_ui, plugin_ui
         return cmds + pyfeature_ui.palette_commands(self) + plugin_ui.palette_commands(self, C)
 
@@ -1173,6 +1179,7 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(i)
 
     def _on_doc_changed(self):
+        self._refresh_context_bar()
         self.dependencies.populate(self._dependency_view())
         if self.var_tabs.is_variables(self.doc):
             self.var_tabs.on_changed(self.doc)
@@ -1895,6 +1902,7 @@ class MainWindow(QMainWindow):
     def set_select_through_context(self, on, save=True):
         """The pick rule of I6.4: a Context body never takes a click from, nor hides, geometry of the edited studio."""
         self.viewport.select_through = bool(on)
+        self._refresh_context_bar()
         self.act_select_through.blockSignals(True)
         self.act_select_through.setChecked(bool(on))
         self.act_select_through.blockSignals(False)
@@ -1909,6 +1917,7 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             a = 0.3
         self.viewport.context_alpha = a
+        self._refresh_context_bar()
         self.viewport.update()
         if save:
             self.settings.setValue("view/context_alpha", a)
@@ -3551,6 +3560,11 @@ class MainWindow(QMainWindow):
         except K.KernelError:
             return None
 
+    def _refresh_context_bar(self):
+        bar = getattr(self, "context_bar", None)
+        if bar is not None and getattr(self, "left", None) is not None:
+            bar.refresh()
+
     def update_context(self, fid=None):
         """Recapture a Context feature of the current studio from its Assembly (one undoable edit). Acts on `fid`,
         else the selected Context row, else the studio's only Context feature."""
@@ -4359,6 +4373,7 @@ class MainWindow(QMainWindow):
             if self.doc.kind != "drawing":
                 self._views[id(self.doc)] = self.viewport.cam.state()
         self.doc = doc
+        self._refresh_context_bar()
         self.viewport.transparent_ids = set(self._transparent.get(doc, ())) | set(self.tool_transparent)
         self.viewport.clear_selection()
         self.measure.hide()
@@ -4983,6 +4998,8 @@ class MainWindow(QMainWindow):
         super().resizeEvent(e)
         if self.section_panel is not None:
             self.section_panel.place()
+        if not self.context_bar.isHidden():
+            self.context_bar.place()
         if self.measure.isVisible():
             self._selection_changed()
 

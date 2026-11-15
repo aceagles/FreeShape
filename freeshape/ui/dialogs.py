@@ -477,6 +477,66 @@ class SelectionField(QFrame):
         self.changed.emit()
 
 
+class GuideListField(SelectionField):
+    """A selection list where one pick is one entry, shown as a numbered row with move-up, move-down and remove
+    buttons. A loft's guides use it (`guides`: one inner list of references per entry); the Boundary surface's U
+    and V lists can reuse it. `items` holds (kind, ref) as for any field; an entry that stands for several
+    references (a saved guide of more than one path piece) is ("group", [refs]) and is kept as it is."""
+
+    def __init__(self, key, label, want, multi=True, parent=None, number=False):
+        super().__init__(key, label, want, True, parent, False)
+        self.list.itemDoubleClicked.disconnect()
+        self.list.setToolTip("Each pick is one entry. Use the arrows to reorder and \u2715 to remove.")
+
+    def move(self, row, delta):
+        """Move an entry up (delta -1) or down (+1); False when it is already at that end."""
+        new = row + delta
+        if not (0 <= row < len(self.items) and 0 <= new < len(self.items)):
+            return False
+        self.items[row], self.items[new] = self.items[new], self.items[row]
+        self.changed.emit()
+        return True
+
+    def _row_label(self, doc, item, i):
+        kind, ref = item
+        what = f"{len(ref)} pieces" if kind == "group" else item_label(doc, item)
+        return f"{i + 1}. {what}"
+
+    def refresh(self, doc, missing=()):
+        self.list.clear()
+        if not self.items:
+            it = QListWidgetItem("Click to select" if self.property("active") == "true" else "—")
+            it.setForeground(QColor("#8a94a3"))
+            self.list.addItem(it)
+        for i, item in enumerate(self.items):
+            it = QListWidgetItem("")
+            self.list.addItem(it)
+            w = _RowWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(2, 0, 2, 0)
+            lab = QLabel(self._row_label(doc, item, i))
+            if i in missing:
+                lab.setStyleSheet("color:#d93025;")
+            h.addWidget(lab, 1)
+            for text, tip, fn, on in (("\u25b2", "Move up", lambda i=i: self.move(i, -1), i > 0),
+                                      ("\u25bc", "Move down", lambda i=i: self.move(i, 1), i < len(self.items) - 1),
+                                      ("\u2715", "Remove", lambda i=i: self._remove_row(i), True)):
+                b = QToolButton()
+                b.setText(text)
+                b.setToolTip(tip)
+                b.setEnabled(on)
+                b.clicked.connect(lambda _=False, fn=fn: fn())
+                h.addWidget(b)
+            it.setSizeHint(QSize(0, 28))
+            self.list.setItemWidget(it, w)
+        self._base_h = min(6, max(1, len(self.items))) * 28 + 4
+        self.list.setFixedHeight(self._base_h + self.extra)
+
+    def _remove_row(self, row):
+        self.remove_at(row)
+        self.changed.emit()
+
+
 def fillet_vertex_ends(state, edge_refs):
     """Positions of the vertices a variable fillet of these edges can set a radius at: the ends of the edges and of
     the edges tangent to them that the fillet pulls into the contour. [] when the edges do not resolve."""
@@ -577,11 +637,19 @@ def _sel(key, label, want, multi=True, visible=None, number=False, tip=None):
             "number": number, "tip": tip}
 
 
+def _sel_list(key, label, want, visible=None, tip=None):
+    """A list field where one pick is one entry (GuideListField)."""
+    return {**_sel(key, label, want, True, visible, False, tip), "list": True}
+
+
 SCOPE_OPS = ("add", "remove", "intersect")
 SCOPE_FEATURES = ("extrude", "revolve", "sweep", "loft")
 
 
 LOFT_CONDITIONS = [("", "None"), ("normal", "Normal to profile"), ("tangent", "Tangent to profile")]
+
+
+_LOFT_GUIDES_WHY = "Guides and end conditions cannot be combined yet: untick Guides and continuity first"
 
 
 def _loft_unfold(p):
@@ -590,11 +658,18 @@ def _loft_unfold(p):
         c = p.get(end) if isinstance(p.get(end), dict) else {}
         p[f"{end}_cond"] = c.get("cond") or ""
         p[f"{end}_mag"] = c.get("mag", 1.0)
+    p["guides_on"] = any(g for g in p.get("guides") or [])
 
 
 def _loft_fold(p, strip=False):
     """The flat dialog fields back into `start` and `end`. No condition (or a ruled loft, which hides
-    them) leaves no key, so an old loft keeps the legacy route; strip=True drops the flat fields."""
+    them) leaves no key, so an old loft keeps the legacy route; strip=True drops the flat fields.
+    `guides` goes the same way: no tick, a ruled loft or no entries leaves no key."""
+    if "guides_on" in p:
+        if p.get("ruled") or not p["guides_on"] or not any(p.get("guides") or []):
+            p.pop("guides", None)
+        if strip:
+            p.pop("guides_on", None)
     for end in ("start", "end"):
         if f"{end}_cond" not in p:
             continue
@@ -835,12 +910,19 @@ SCHEMAS = {
         _ops(),
         _sel("profiles", "Profiles — pick them in order", {"region", "face"}),
         _check("ruled", "Straight sides (ruled)"),
-        _choice("start_cond", "Start profile condition", LOFT_CONDITIONS, visible=lambda p: not p.get("ruled")),
+        {**_choice("start_cond", "Start profile condition", LOFT_CONDITIONS, visible=lambda p: not p.get("ruled")),
+         "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
         _num("start_mag", "Magnitude", unit="", signed=True,
              visible=lambda p: not p.get("ruled") and bool(p.get("start_cond"))),
-        _choice("end_cond", "End profile condition", LOFT_CONDITIONS, visible=lambda p: not p.get("ruled")),
+        {**_choice("end_cond", "End profile condition", LOFT_CONDITIONS, visible=lambda p: not p.get("ruled")),
+         "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
         _num("end_mag", "Magnitude", unit="", signed=True,
              visible=lambda p: not p.get("ruled") and bool(p.get("end_cond"))),
+        {**_check("guides_on", "Guides and continuity", visible=lambda p: not p.get("ruled")),
+         "enabled": lambda p: not (p.get("start_cond") or p.get("end_cond")),
+         "why": "Guides and end conditions cannot be combined yet: clear the start and end profile conditions first"},
+        _sel_list("guides", "Guides — one pick is one guide (sketch curves or an edge)", {"path"},
+                  visible=lambda p: not p.get("ruled") and bool(p.get("guides_on"))),
         _scope(),
     ],
     "draft": [
@@ -978,6 +1060,7 @@ def params_to_fields(ftype, p):
         f["parts"] = [("part", i) for i in p.get("parts", [])]
     if ftype == "loft":
         f["profiles"] = [(it["kind"], it["ref"]) for it in p.get("profiles", [])]
+        f["guides"] = [("path", g[0]) if len(g) == 1 else ("group", list(g)) for g in p.get("guides") or [] if g]
     if ftype == "draft":
         f["faces"] = [("face", r) for r in p.get("faces", [])]
         f["neutral_sel"] = [("plane", p["neutral"])] if p.get("neutral") else []
@@ -1061,6 +1144,7 @@ def fields_to_params(ftype, fields, p):
         p["parts"] = [r for k, r in fields.get("parts", [])]
     if ftype == "loft":
         p["profiles"] = [{"kind": k, "ref": r} for k, r in fields.get("profiles", [])]
+        p["guides"] = [list(r) if k == "group" else [r] for k, r in fields.get("guides", [])]
         _loft_fold(p)
     if ftype == "draft":
         p["faces"] = [r for k, r in fields.get("faces", [])]
@@ -1379,7 +1463,8 @@ class FeatureDialog(_ResizableFrame):
             self._info_rows.append((spec, lab))
             return lab
         if t == "sel":
-            f = SelectionField(spec["key"], spec["label"], spec["want"], spec["multi"], number=spec.get("number", False))
+            f = (GuideListField if spec.get("list") else SelectionField)(
+                spec["key"], spec["label"], spec["want"], spec["multi"], number=spec.get("number", False))
             f.activated.connect(self.activate)
             f.changed.connect(self._fields_changed)
             if spec.get("tip"):
@@ -2211,6 +2296,10 @@ class FeatureDialog(_ResizableFrame):
         for spec, w in self.rows:
             vis = spec.get("visible")
             w.setVisible(True if vis is None else bool(vis(p)))
+            if spec.get("enabled"):             # greyed with the reason when another setting rules it out
+                ok = bool(spec["enabled"](p))
+                w.setEnabled(ok)
+                w.setToolTip("" if ok else spec["why"])
         # clicks go to the active field, so it must be one the user can see: a row that has just been
         # hidden (Merge scope when the operation becomes New) hands over to the first visible empty field
         af = self.active_field
@@ -2568,6 +2657,8 @@ class FeatureDialog(_ResizableFrame):
                 self.fields[fk].items = []
         fields = self._field_values()
         fields_to_params(self.ftype, fields, p)
+        if key == "guides_on" and value and "guides" in self.fields:
+            QTimer.singleShot(0, lambda: self.activate(self.fields["guides"]))
         if key == "fillet_type" and value == "variable" and "vertices" in self.fields:
             QTimer.singleShot(0, lambda: self.activate(self.fields["vertices"]))
         self._sync_visibility()

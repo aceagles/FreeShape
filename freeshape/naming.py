@@ -62,6 +62,7 @@ OP_FOR = {
     "derived": OP_DERIVED,
     "draft": "DFT",
     "enclose": "ENC",
+    "fill": "FIL",
     "fillet": "FLT",
     "flat_pattern": "UNF",
     "import": "IMP",

@@ -56,7 +56,7 @@ FEATURE_LABELS = {
     "sweep": "Sweep", "rib": "Rib", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "sm_hem": "Hem", "sm_jog": "Jog", "sm_tab": "Tab",
     "sm_convert": "Convert to sheet metal", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
-    "thicken": "Thicken", "enclose": "Enclose",
+    "thicken": "Thicken", "enclose": "Enclose", "fill": "Fill",
     "delete_part": "Delete part",
 }
 
@@ -2678,6 +2678,96 @@ def run_enclose(state, f):
             state.sheet.pop(pid, None)
 
 
+def _fill_support(state, ref_faces, pid, edge):
+    """The face a Tangency fill edge leaves tangent to: the first of the picked `faces` that holds the edge, else
+    the picked one, else (no pick) the largest face of the edge's own part that holds it. None for a sketch curve."""
+    picked = [resolve(state, r, "face")[1] for r in ref_faces or []]
+    if picked:
+        for face in picked:
+            if any(edge.IsSame(e) for e in K.edges(face)):
+                return face
+        return picked[0]
+    if pid is None:
+        return None
+    around = [K._as_face(x) for x in K.edge_faces(state.parts[pid].shape, edge)]
+    return max(around, key=lambda x: K.face_info(x)["area"]) if around else None
+
+
+def run_fill(state, f):
+    """Fill: a face across a closed boundary. `edges` is a list of `{ref, continuity: position | tangency, faces}`
+    (`ref` a model edge or a sketch curve; a sketch curve has no support face and counts as Position), `guides` are
+    vertex references the face passes through. New makes a surface part. Add sews the face to the surface parts in
+    scope it connects to, at 1e-4 (the plate's edge is near the input edge, not on it); when they close a volume the
+    result is a solid part."""
+    p = f["params"]
+    fid = f["id"]
+    edges, supports, seen = [], [], set()
+    for item in p.get("edges") or []:
+        ref = item.get("ref") or {}
+        cont = item.get("continuity") or "position"
+        if cont not in ("position", "tangency"):
+            raise K.KernelError(f"Unknown continuity '{cont}'")
+        if ref.get("kind") == "edge":
+            pid, e = resolve(state, ref["edge"], "edge")
+            pairs = [(pid, e)]
+            key = ("edge", json.dumps(ref["edge"], sort_keys=True, default=str))
+        else:
+            key, es = _ref_edges(state, ref)
+            pairs = [(None, e) for _, e in es]
+        if key is None:
+            raise K.KernelError("Fill edges are model edges or sketch curves")
+        if key in seen:
+            continue
+        seen.add(key)
+        for pid, e in pairs:
+            edges.append(e)
+            supports.append(_fill_support(state, item.get("faces"), pid, e) if cont == "tangency" else None)
+    if not edges:
+        raise K.KernelError("Select the edges of the boundary")
+    points = [resolve_point(state, g) for g in p.get("guides") or []]
+    face, hist = K.fill(edges, supports, points, with_history=True)
+    named = _tool_names(state, fid, face, "fill")
+    op = p.get("op") or "new"
+    if op not in ("new", "add"):
+        raise K.KernelError("Fill makes a new surface or adds to the surfaces in scope")
+    if op == "new":
+        apply_body(state, face, "new", fid, p.get("scope"), named)
+        return
+    scope = p.get("scope")
+    pool = [q for i, q in state.parts.items() if (not scope or i in scope) and not q.reference
+            and K.is_surface(q.shape)]
+    group, grew = [], True
+    while grew:                   # the surface parts the face reaches, one shared edge after another
+        grew = False
+        for q in list(pool):
+            if len(K.as_surface([x.shape for x in group] + [face, q.shape], 1e-4)) < len(
+                    K.as_surface([x.shape for x in group] + [face], 1e-4)) + 1:
+                group.append(q)
+                pool.remove(q)
+                grew = True
+    shapes = [q.shape for q in group] + [face]
+    closed = K.sew_closed(shapes, 1e-4)
+    if closed:                    # the surfaces and the face surround a volume: a solid part, as Onshape does
+        for q in group:
+            state.parts.pop(q.id, None)
+            state.names.pop(q.id, None)
+            state.sheet.pop(q.id, None)
+        for s in closed:
+            state.set_named(state.new_part(s, fid).id, _tool_names(state, fid, s, "fill"))
+        return
+    merged = K.as_surface(shapes, 1e-4)
+    if not group:
+        apply_body(state, face, "new", fid, scope, named)
+        return
+    keep = group[0]
+    for q in group[1:]:
+        state.parts.pop(q.id, None)
+        state.names.pop(q.id, None)
+    shape = merged[0] if len(merged) == 1 else K.compound(merged)
+    state.parts[keep.id] = Part(keep.id, keep.name, shape, keep.color)
+    state.set_named(keep.id, None)
+
+
 def run_delete_part(state, f):
     ids = _selected_parts(state, f["params"])
     for i in ids:
@@ -3858,7 +3948,7 @@ RUNNERS = {
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "sm_hem": run_sm_hem, "sm_jog": run_sm_jog, "sm_tab": run_sm_tab, "sm_convert": run_sm_convert,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
-    "thicken": run_thicken, "enclose": run_enclose,
+    "thicken": run_thicken, "enclose": run_enclose, "fill": run_fill,
     "delete_part": run_delete_part,
 }
 
@@ -3884,6 +3974,7 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "thicken": {"faces": [], "parts": [], "thickness1": 2.0, "thickness2": 0.0, "mid_plane": False,
                     "flip": False, "keep_tools": False, "op": "new", "scope": []},
         "enclose": {"entities": [], "keep_tools": False, "op": "new", "scope": []},
+        "fill": {"edges": [], "guides": [], "op": "new", "scope": []},
         "delete_part": {"parts": []},
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
         "axis": {"type": "auto", "refs": [], "click": None, "flip": False, "connector_axis": "z"},

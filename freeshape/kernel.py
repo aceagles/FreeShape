@@ -2066,6 +2066,125 @@ def enclose(shapes, with_history=False):
     return (out, hist) if with_history else out
 
 
+FILL_GAP = "The boundary has a gap"
+FILL_FAILED = "Could not fill this boundary smoothly - try Position on some edges"
+FILL_TOL = 1e-3          # how far the fill's boundary may sit from an input edge
+# BRepFill_Filling(Degree, NbPtsOnCur, NbIter, Anisotropie, Tol2d, Tol3d, TolAng, TolCurv, MaxDeg, MaxSegments)
+FILL_SETTINGS = (3, 15, 2, False, 1e-5, 1e-4, 1e-2, 1e-1, 8, 9)      # the OCC defaults
+
+
+def _boundary_gap(edge_list):
+    """The position of a gap in a set of edges that should close into one loop, or None when every end meets
+    another end (within the tolerance `make_wire` uses)."""
+    ends = []
+    for e in edge_list:
+        p = discretize_edge(e)
+        ends += [p[0].astype(float), p[-1].astype(float)]
+    scale = max([float(np.linalg.norm(a - b)) for a in ends for b in ends] + [1.0])
+    tol = max(1e-4, 1e-6 * scale) * 100
+    loose = [a for i, a in enumerate(ends)
+             if not any(j != i and np.linalg.norm(a - b) < tol for j, b in enumerate(ends))]
+    if not loose:
+        return None
+    return loose[0] if len(loose) == 1 else (loose[0] + loose[1]) / 2
+
+
+def fill(edges, supports=None, points=(), with_history=False):
+    """A face across a closed boundary. `edges` are the boundary edges in any order; `supports` has one
+    entry per edge, the face the fill should leave the edge tangent to, or None for Position; `points` are
+    guide points the face must pass through. Returns the face, or (face, history) (the face is new, so
+    the history is empty).
+
+    A planar boundary with every edge Position and no guide gets an exact plane (BRepBuilderAPI_MakeFace).
+    Otherwise BRepFill_Filling builds a plate through the edges (spike I2.1: filling=g1). A Tangency edge asks
+    BRepFill_Filling for G1 to its support; the filler treats that as a target, not a guarantee (the spike
+    measured 0.08 to 0.5 rad), so the angle actually reached is `fill_tangent_error`."""
+    from OCP.BRepFill import BRepFill_Filling
+    from OCP.GeomAbs import GeomAbs_C0, GeomAbs_G1
+    edges = list(edges)
+    if not edges:
+        raise KernelError("Select the edges of the boundary")
+    supports = list(supports) if supports is not None else [None] * len(edges)
+    if len(supports) != len(edges):
+        raise KernelError("Each fill edge needs a continuity")
+    gap = _boundary_gap(edges)
+    if gap is not None:
+        raise KernelError(f"{FILL_GAP} near ({gap[0]:.3f}, {gap[1]:.3f}, {gap[2]:.3f})")
+    try:
+        wire = make_wire(edges)
+    except KernelError as exc:
+        raise KernelError(f"The boundary is not one closed loop ({exc})") from exc
+    if not BRep_Tool.IsClosed_s(wire):
+        raise KernelError(FILL_GAP)
+    pts = [np.asarray(p, float) for p in points]
+    if all(s is None for s in supports) and not pts:
+        mk = BRepBuilderAPI_MakeFace(wire, True)           # only a plane: fails for a bent boundary
+        if mk.IsDone():
+            face = _as_face(mk.Face())
+            if is_valid(face):
+                return (face, BRepTools_History()) if with_history else face
+    mids = [discretize_edge(e)[len(discretize_edge(e)) // 2] for e in edges]
+    ordered = []                  # (edge in wire order, its support)
+    for w in _wire_edges(wire):
+        pm = discretize_edge(w)
+        pm = pm[len(pm) // 2]
+        i = min(range(len(edges)), key=lambda k: float(np.linalg.norm(mids[k] - pm)))
+        ordered.append((w, supports[i]))
+    try:
+        mk = BRepFill_Filling(*FILL_SETTINGS)
+        for w, sup in ordered:
+            if sup is None:
+                mk.Add(w, GeomAbs_C0, True)
+            else:
+                mk.Add(w, sup, GeomAbs_G1, True)
+        for p in pts:
+            mk.Add(_pnt(p))
+        mk.Build()
+        done = mk.IsDone()
+        face = _as_face(mk.Face()) if done else None
+    except Exception:
+        done, face = False, None
+    if not done or face is None or not is_valid(face) or fill_deviation(edges, face) > FILL_TOL:
+        raise KernelError(FILL_FAILED)
+    return (face, BRepTools_History()) if with_history else face
+
+
+def fill_deviation(edges, face):
+    """The largest distance from the input `edges` to the boundary of `face` (sampled along each edge)."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepTools import BRepTools
+    outer = BRepTools.OuterWire_s(face)
+    worst = 0.0
+    for e in edges:
+        pts = discretize_edge(e)
+        for p in pts[np.linspace(0, len(pts) - 1, min(len(pts), 12)).astype(int)]:
+            d = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(_pnt(p)).Vertex(), outer)
+            d.Perform()
+            worst = max(worst, d.Value())
+    return worst
+
+
+def fill_tangent_error(face, edges, support, samples=5):
+    """The angle (rad) between the normal of `face` and of `support` at `samples` points along `edges`
+    (normals compared as lines, so a reversed face counts as the same)."""
+    from OCP.BRepGProp import BRepGProp_Face
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+
+    def normal(f, p):
+        pr = GeomAPI_ProjectPointOnSurf(_pnt(p), BRep_Tool.Surface_s(f))
+        u, v = pr.LowerDistanceParameters()
+        pt, n = gp_Pnt(), gp_Vec()
+        BRepGProp_Face(f).Normal(u, v, pt, n)
+        n = _np(n)
+        return n / max(float(np.linalg.norm(n)), 1e-12)
+    pts = np.vstack([discretize_edge(e) for e in edges])
+    worst = 0.0
+    for p in pts[np.linspace(0, len(pts) - 1, samples).astype(int)]:
+        worst = max(worst, math.acos(min(1.0, abs(float(normal(face, p) @ normal(support, p))))))
+    return worst
+
+
 # --------------------------------------------------------------------------- tessellation
 
 @dataclass

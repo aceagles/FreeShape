@@ -1,0 +1,5 @@
+document.json -merge
+*.fshape -merge
+*.fasm -merge
+*.fdwg -merge
+*.fvars -merge

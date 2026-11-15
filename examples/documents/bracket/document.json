@@ -1,0 +1,14 @@
+{
+ "format": "freeshape-document",
+ "version": 1,
+ "id": "9a229e1c8c824d7ab88c748f5119775e",
+ "name": "Bracket",
+ "tabs": [
+  {
+   "id": "T1",
+   "kind": "studio",
+   "file": "bracket.fshape",
+   "name": "bracket"
+  }
+ ]
+}

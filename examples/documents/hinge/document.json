@@ -1,0 +1,20 @@
+{
+ "format": "freeshape-document",
+ "version": 1,
+ "id": "721de1cc6a47466b8584b1a25fbf8cf2",
+ "name": "Hinge",
+ "tabs": [
+  {
+   "id": "T1",
+   "kind": "studio",
+   "file": "hinge_parts.fshape",
+   "name": "hinge_parts"
+  },
+  {
+   "id": "T2",
+   "kind": "assembly",
+   "file": "hinge.fasm",
+   "name": "hinge"
+  }
+ ]
+}

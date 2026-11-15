@@ -1,0 +1,402 @@
+{
+ "format": "freeshape-assembly",
+ "version": 9,
+ "name": "hinge",
+ "uid": "dfcda3d081ed483b992c9e3ab30dbf01",
+ "instances": [
+  {
+   "id": "I1",
+   "name": "Base plate <1>",
+   "source": {
+    "kind": "studio",
+    "part": "F2/1",
+    "studio_name": "hinge_parts",
+    "tab": "T1"
+   },
+   "T": [
+    [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     1.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "fixed": true,
+   "hidden": false,
+   "part_name": "Base plate",
+   "_brep_blob": "5f891de5b389330539d9fd9e003e1fb425713cd39160213c3aa3ec85cbdfd99c",
+   "material": null
+  },
+  {
+   "id": "I2",
+   "name": "Arm <1>",
+   "source": {
+    "kind": "studio",
+    "part": "F4/1",
+    "studio_name": "hinge_parts",
+    "tab": "T1"
+   },
+   "T": [
+    [
+     1.0,
+     0.0,
+     0.0,
+     9.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0,
+     -46.0
+    ],
+    [
+     0.0,
+     0.0,
+     1.0,
+     10.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "fixed": false,
+   "hidden": false,
+   "part_name": "Arm",
+   "_brep_blob": "ff91f0295707707cc0fce33d932cb3077091bfd979bafe3c55f4a347e1f9ed32",
+   "material": null
+  },
+  {
+   "id": "I3",
+   "name": "Pin <1>",
+   "source": {
+    "kind": "studio",
+    "part": "F6/1",
+    "studio_name": "hinge_parts",
+    "tab": "T1"
+   },
+   "T": [
+    [
+     1.0,
+     0.0,
+     0.0,
+     -65.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     1.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "fixed": false,
+   "hidden": false,
+   "part_name": "Pin",
+   "_brep_blob": "b35f602f7fc07ed8e41e5d6c327ac24e4f42e2405bb3b3bddee03d90b9835fef",
+   "material": null
+  }
+ ],
+ "mates": [
+  {
+   "id": "M4",
+   "type": "fastened",
+   "name": "Fastened 1",
+   "a": {
+    "inst": "I1",
+    "kind": "edge",
+    "index": 13,
+    "click": null,
+    "ref": {
+     "kind": "edge",
+     "len": 25.132741228718345,
+     "c": [
+      15.000000000000018,
+      20.0,
+      0.0
+     ],
+     "type": 1,
+     "r": 4.0,
+     "center": [
+      15.0,
+      20.0,
+      0.0
+     ],
+     "axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "bb": [
+      [
+       -1e-07,
+       -1e-07,
+       -1e-07
+      ],
+      [
+       60.0000001,
+       40.0000001,
+       10.0000001
+      ]
+     ]
+    },
+    "frame": {
+     "o": [
+      15.0,
+      20.0,
+      0.0
+     ],
+     "z": [
+      -0.0,
+      -0.0,
+      -1.0
+     ],
+     "x": [
+      1.0,
+      0.0,
+      0.0
+     ],
+     "what": "circular edge"
+    },
+    "x_ref": [
+     1.0,
+     0.0
+    ]
+   },
+   "b": {
+    "inst": "I3",
+    "kind": "edge",
+    "index": 1,
+    "click": null,
+    "ref": {
+     "kind": "edge",
+     "len": 24.504422698000383,
+     "c": [
+      80.00000000000001,
+      20.000000000000004,
+      0.0
+     ],
+     "type": 1,
+     "r": 3.9,
+     "center": [
+      80.0,
+      20.0,
+      0.0
+     ],
+     "axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "bb": [
+      [
+       76.0999999,
+       16.0999999,
+       -1e-07
+      ],
+      [
+       83.9000001,
+       23.9000001,
+       30.0000001
+      ]
+     ]
+    },
+    "frame": {
+     "o": [
+      80.0,
+      20.0,
+      0.0
+     ],
+     "z": [
+      -0.0,
+      -0.0,
+      -1.0
+     ],
+     "x": [
+      1.0,
+      0.0,
+      0.0
+     ],
+     "what": "circular edge"
+    },
+    "x_ref": [
+     1.0,
+     0.0
+    ]
+   },
+   "flip": true,
+   "offset": 0.0,
+   "angle": 0.0,
+   "suppressed": false,
+   "values": {}
+  },
+  {
+   "id": "M5",
+   "type": "revolute",
+   "name": "Revolute 1",
+   "a": {
+    "inst": "I1",
+    "kind": "edge",
+    "index": 14,
+    "click": null,
+    "ref": {
+     "kind": "edge",
+     "len": 25.132741228718345,
+     "c": [
+      15.000000000000018,
+      20.0,
+      10.0
+     ],
+     "type": 1,
+     "r": 4.0,
+     "center": [
+      15.0,
+      20.0,
+      10.0
+     ],
+     "axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "bb": [
+      [
+       -1e-07,
+       -1e-07,
+       -1e-07
+      ],
+      [
+       60.0000001,
+       40.0000001,
+       10.0000001
+      ]
+     ]
+    },
+    "frame": {
+     "o": [
+      15.0,
+      20.0,
+      10.0
+     ],
+     "z": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "x": [
+      1.0,
+      0.0,
+      0.0
+     ],
+     "what": "circular edge"
+    },
+    "x_ref": [
+     1.0,
+     0.0
+    ]
+   },
+   "b": {
+    "inst": "I2",
+    "kind": "edge",
+    "index": 13,
+    "click": null,
+    "ref": {
+     "kind": "edge",
+     "len": 25.132741228718345,
+     "c": [
+      6.000000000000018,
+      66.0,
+      0.0
+     ],
+     "type": 1,
+     "r": 4.0,
+     "center": [
+      6.0,
+      66.0,
+      0.0
+     ],
+     "axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "bb": [
+      [
+       -1e-07,
+       59.9999999,
+       -1e-07
+      ],
+      [
+       50.0000001,
+       72.0000001,
+       6.0000001
+      ]
+     ]
+    },
+    "frame": {
+     "o": [
+      6.0,
+      66.0,
+      0.0
+     ],
+     "z": [
+      -0.0,
+      -0.0,
+      -1.0
+     ],
+     "x": [
+      1.0,
+      0.0,
+      0.0
+     ],
+     "what": "circular edge"
+    },
+    "x_ref": [
+     1.0,
+     0.0
+    ]
+   },
+   "flip": false,
+   "offset": 0.0,
+   "angle": 0.0,
+   "suppressed": false,
+   "values": {
+    "rz": 0.0
+   }
+  }
+ ],
+ "groups": [],
+ "relations": [],
+ "_tab_id": "T2"
+}

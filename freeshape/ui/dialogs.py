@@ -165,7 +165,12 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
     # "axis_feature" and "connector"; revolve and the patterns do not)
     if k == "sketch_line" and "sketch_line" in want:
         fid, eid = pick.key
-        return ("sketch_line", {"kind": "sketch_line", "sketch": fid, "line": eid})
+        ref = {"kind": "sketch_line", "sketch": fid, "line": eid}
+        if "axis_connector" in want:        # the Plane tool: plane_role needs the entity type, it has no model state
+            for sfid, sr, _ in vp.sketches:
+                if sfid == fid:
+                    ref["etype"] = sr.sketch.entities.get(eid, {}).get("type", "line")
+        return ("sketch_line", ref)
     if k == "sketch_point" and "sketch_point" in want:
         return _sketch_point_item(vp, pick)
     if k == "axis" and ("axis_feature" in want or "axis" in want):
@@ -224,7 +229,7 @@ def item_label(doc, item):
         return "Sketch curves" if ref["kind"] == "sketch_chain" else "Edge"
     if kind == "sketch_line":            # the Axis tool's refs
         f = doc.feature(ref.get("sketch"))
-        return f"{f['name'] if f else 'Sketch'} line"
+        return f"{f['name'] if f else 'Sketch'} {ref.get('etype', 'line')}"
     if kind == "connector":
         f = doc.feature(ref.get("fid"))
         return f["name"] if f else "Mate connector"
@@ -644,7 +649,8 @@ SCHEMAS = {
     ],
     "plane": [
         _choice("type", "Plane type", F.PLANE_TYPES),
-        _sel("refs_sel", "Planes, faces, edges, axes and vertices", {"plane", "face", "edge", "vertex", "axis_feature", "axis_connector"}),
+        _sel("refs_sel", "Planes, faces, edges, axes, sketch curves and points",
+             {"plane", "face", "edge", "vertex", "sketch_line", "sketch_point", "axis_feature", "axis_connector"}),
         {"t": "info", "key": "_info", "text": lambda p: _plane_info(p)},
         _num("offset", "Offset distance", visible=lambda p: F.plane_type(p) == "offset"),
         _num("angle", "Angle", unit="deg", visible=lambda p: F.plane_type(p) == "line_angle"),

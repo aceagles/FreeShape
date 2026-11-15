@@ -494,7 +494,7 @@ def resolve_point(state: ModelState, ref, fid=None) -> np.ndarray:
 PLANE_TYPES = [
     ("auto", "Automatic"), ("offset", "Offset"), ("plane_point", "Plane + point"), ("line_angle", "Line + angle"),
     ("point_normal", "Point + edge normal"), ("three_point", "Three points"), ("mid_plane", "Mid plane"),
-    ("curve_point", "Curve + point"), ("tangent", "Tangent"),
+    ("curve_point", "Curve point"), ("tangent", "Tangent"),
 ]
 PLANE_TYPE_NAMES = dict(PLANE_TYPES)
 
@@ -510,10 +510,12 @@ def plane_items(p):
 
 
 def plane_role(kind, ref):
-    if kind == "vertex":
+    if kind in ("vertex", "sketch"):    # a sketch point is a point
         return "point"
     if kind == "plane":
         return "plane"
+    if kind == "sketch_line":       # a sketch line is straight; an arc, circle, spline or ellipse is a curve
+        return "line" if ref.get("etype", "line") == "line" else "curve"
     if kind == "axis":              # an axis feature stands where a straight edge does
         return "line"
     if kind == "face":
@@ -574,6 +576,24 @@ def _frame(origin, normal, xhint=None):
     raise K.KernelError("Can't orient that plane")
 
 
+def _sketch_entity_edge(state, ref):
+    """The OCC edge of the one sketch entity a `sketch_line` reference names (not its chain). A construction
+    entity counts: the user picked it. A deleted sketch or entity is an error (ADR 0011), never a near match."""
+    import copy
+    res = state.sketches.get(ref["sketch"])
+    eid = ref["line"]
+    if res is None:
+        raise K.KernelError(f"Sketch {ref['sketch']} is gone: the plane has no curve to stand on")
+    if eid not in res.sketch.entities:
+        raise K.KernelError(f"Sketch entity {eid} is gone: the plane has no curve to stand on")
+    one = copy.copy(res.sketch)
+    one.entities = {eid: {**res.sketch.entities[eid], "construction": False}}
+    edges = K.make_sketch_edges(res.plane, one.curves())
+    if len(edges) != 1:
+        raise K.KernelError(f"Sketch entity {eid} has no usable curve")
+    return edges[0]
+
+
 def build_plane(state, p):
     """The datum plane a plane feature describes."""
     items = plane_items(p)
@@ -587,6 +607,12 @@ def build_plane(state, p):
 
     def face_plane(k, ref):
         return resolve_plane(state, ref if k == "plane" else {"kind": "face", "face": ref})
+
+    def point_of(k, ref):               # the world point of a vertex or a sketch point
+        return resolve_point(state, ref) if k == "vertex" else _axis_point(state, k, ref)
+
+    def edge_of(k, ref):                # the OCC edge of an edge or of the single picked sketch entity
+        return resolve(state, ref, "edge")[1] if k == "edge" else _sketch_entity_edge(state, ref)
 
     def one(role, what, n=1):
         got = by[role] if isinstance(role, str) else [x for r in role for x in by[r]]
@@ -602,21 +628,21 @@ def build_plane(state, p):
         return base.offset(float(p.get("offset", 10)) * (-1 if flip else 1))
     if typ == "plane_point":
         base = face_plane(*one("plane", "a plane or planar face")[0])
-        pt = resolve_point(state, one("point", "a vertex for the plane to pass through")[0][1])
+        pt = point_of(*one("point", "a vertex for the plane to pass through")[0])
         return done(K.Plane(pt, base.xdir, base.normal))
     if typ in ("point_normal", "curve_point"):
         ek, eref = one(("line", "curve"), "an edge")[0]
-        pt = resolve_point(state, one("point", "a vertex")[0][1])
+        pt = point_of(*one("point", "a vertex")[0])
         if ek == "axis":                                       # perpendicular to the axis, through the point
             return done(_frame(pt, resolve_axis(state, eref)[1]))
-        _, e = resolve(state, eref, "edge")
-        if typ == "point_normal" and eref.get("type") == int(K.GeomAbs_Line):
+        e = edge_of(ek, eref)
+        if typ == "point_normal" and plane_role(ek, eref) == "line":
             n = np.array(K.edge_info(e)["d"], float)          # perpendicular to a straight edge, through the point
             return done(_frame(pt, n))
         on, n = K.edge_closest(e, pt)                          # perpendicular to the curve where the point lies on it
         return done(_frame(on, n))
     if typ == "three_point":
-        pts = [resolve_point(state, r) for _, r in one("point", "three vertices", 3)]
+        pts = [point_of(k, r) for k, r in one("point", "three vertices", 3)]
         n = np.cross(pts[1] - pts[0], pts[2] - pts[0])
         if np.linalg.norm(n) < 1e-9 * max(1.0, float(np.linalg.norm(pts[1] - pts[0]))):
             raise K.KernelError("The three points are in a straight line")

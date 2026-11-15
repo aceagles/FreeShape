@@ -158,9 +158,9 @@ def measure_pairs(asm):
 # ---------------------------------------------------------------------------------------------- bolted bracket
 def load_bracket(folder):
     import make_bolted_bracket as EX
-    from freeshape.document import Document
+    from freeshape.document import PartStudioDoc
     EX.main(folder)
-    studio = Document.load(os.path.join(folder, "bolted_bracket_parts.fshape"))
+    studio = PartStudioDoc.load(os.path.join(folder, "bolted_bracket_parts.fshape"))
     return A.AssemblyDoc.load(os.path.join(folder, "bolted_bracket.fasm"),
                               resolver=lambda src: studio.state.parts[src["part"]])
 

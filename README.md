@@ -250,6 +250,13 @@ Things selected before opening a feature are pre-filled. Extrude and Plane show 
   for *gordon*, *network surface* or *curve network*). Pick the curves of each direction in order; with U curves
   only it also works on OpenCascade 7.9, V curves need 8.0. It is a surface Loft saved with a marker, so its face
   names match the same Loft's. It does not match tangent to neighbouring faces (use *Fill* for that).
+- **Loft end conditions, guides and sweep control** — a Loft's start and end can be *Normal to profile*, *Tangent
+  to profile* or *Match tangent* (continuing the faces beside the profile), each with a signed magnitude. Tick
+  *Guides and continuity* to pick guide curves; **guides need OpenCascade 8.0 or newer** and cannot be combined with
+  end conditions. *Closed* lofts back to the first profile, a point can end a loft, and *Create = Surface* lofts
+  curves into a surface body. A Sweep's *Profile control* is None, *Keep profile orientation* (the end stays parallel
+  to the start) or *Lock profile direction* along a picked direction. Not included: *Match curvature*, and tangent
+  match on a Boundary surface. `scripts/smoke/sy7_loft.py` runs the whole route in the real window.
 - **Draft** — tilt faces by an angle from a neutral plane, for moulded or 3D-printed parts.
 - **Split** — cut parts in two with a plane or flat face; keep both sides or one. **Split with a surface**: pick a
   surface part and it cuts as drawn, so it must pass completely through the part (otherwise Split says so); tick

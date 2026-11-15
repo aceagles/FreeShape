@@ -83,6 +83,29 @@ for cutting), version history, Python plugins, and new navigation. It was built 
   model edge to aim the fill along the face beside it. With *Add*, the fill is sewn to the surface parts in scope
   and the part becomes a solid when they enclose a volume.
 
+### Loft conditions, guides, Loft as a surface, Boundary surface and sweep control
+- **End conditions on Loft**: *Start profile condition* and *End profile condition* offer None, *Normal to profile*,
+  *Tangent to profile* and *Match tangent*, each with a signed *Magnitude*. Normal to profile leaves each profile
+  square (the two offset 20 mm squares leave within 0.1 degree, against 26.6 degrees for the plain loft). Match
+  tangent continues the faces beside the profile; leave *Adjacent faces* empty to use the faces that share the
+  profile's outer edges (a loft from a cone frustum's top face stays within 0.5 degree of the cone wall, against
+  32.5 degrees with no condition). The dialog preview follows the condition.
+- **Guides**: tick *Guides and continuity* and pick guide curves. Two bowed guides turn two squares into one solid
+  that passes through both guides. **Guides need OpenCascade 8.0 or newer**; on 7.9 the loft fails with "Loft guides
+  need OpenCascade 8.0 or newer". A loft takes guides or end conditions, not both.
+- **Closed loft and point profiles**: tick *Closed* with three or more profiles to loft back to the first (four
+  circles on a ring make a solid with no end caps). A vertex or sketch point can be the first or last profile.
+- **Create: Surface on Loft**: the curves, open or closed, loft into a surface body with no caps.
+- **Boundary surface**: a new command, a surface through U curves and, on OpenCascade 8.0, V curves. From U curves
+  alone it equals the surface Loft of the same curves; the feature list calls it "Boundary surface 1". Search for it
+  as *gordon*, *network surface* or *curve network*.
+- **Sweep Profile control**: None, *Keep profile orientation* (every section stays parallel to the profile, so a
+  quarter-turn path ends parallel to its start) and *Lock profile direction* with a direction to pick (the profile
+  stays in a plane that holds that direction; on a path that pitches and turns, a default sweep's long edge leans
+  up to 17 degrees off square to z where a locked one stays square).
+- **Not included**: *Match curvature*, guides combined with end conditions, and tangent match to neighbouring
+  faces on a Boundary surface (use *Fill*). `scripts/smoke/sy7_loft.py` runs all of the above in the real window.
+
 ### Context identity and display
 - **Bodies keep their identity**: a Context made by *Edit in context* names each neighbour by its Assembly
   instance, not by its place in the list. A neighbour you hid, coloured or ended an extrude on stays that

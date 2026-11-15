@@ -259,3 +259,22 @@ def test_main_window_inserts_a_library_part_into_the_assembly(lib, tmp_path, mon
         assert len(w.doc.parts) == before + 1
     finally:
         ui_helpers.close_window(w)
+
+
+def test_an_assembly_offers_the_component_library_from_insert_and_search_tools(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+    w = ui_helpers.plate_assembly_window(tmp_path)
+    try:
+        opened = []
+        monkeypatch.setattr(w, "open_step_library", lambda: opened.append(1))
+        assert w.is_asm
+        w.asm.toggle_insert()
+        btn = w.asm.insert_panel.findChild(QPushButton, "insert_component_library")
+        assert btn is not None and btn.isEnabled()
+        btn.click()
+        assert opened == [1]
+        (cmd,) = [c for c in w._palette_commands() if c.name == "Component library"]
+        cmd.action()
+        assert opened == [1, 1]
+    finally:
+        ui_helpers.close_window(w)

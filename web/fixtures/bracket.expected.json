@@ -1,0 +1,40 @@
+{
+ "axes": 0,
+ "connectors": 0,
+ "edges": 42,
+ "faces": 16,
+ "kind": "studio",
+ "names": [
+  {
+   "engine_index": 1,
+   "index": 0,
+   "kind": "face",
+   "name": "l10;SKT;:HF1:4,E;:M;:L(l11;SKT;:HF1:4,E;:M;:HF1:3,E|l12;SKT;:HF1:4,E;:M;:HF1:3,E|l7;SKT;:HF1:4,E;:M;:HF1:3,E|l8;SKT;:HF1:4,E;:M;:HF1:3,E);:HF1:76,F;:M;XTR;:HF2:7,F;:M;FLT;:HF3:7,F;:M;CHF;:HF8:7,F",
+   "part": 0,
+   "part_id": "F2/1"
+  },
+  {
+   "engine_index": 1,
+   "index": 0,
+   "kind": "edge",
+   "name": "l11;SKT;:HF1:4,E;:M;:HF1:3,E;:M;XTR;:HF2:7,E;FLT;:HF3:4,E;:M;CHF;:HF8:7,E",
+   "part": 0,
+   "part_id": "F2/1"
+  },
+  {
+   "engine_index": 1,
+   "index": 0,
+   "kind": "vertex",
+   "name": "l10;SKT;:HF1:4,E;:M;:L(l11;SKT;:HF1:4,E;:M;:HF1:3,E|l12;SKT;:HF1:4,E;:M;:HF1:3,E|l7;SKT;:HF1:4,E;:M;:HF1:3,E|l8;SKT;:HF1:4,E;:M;:HF1:3,E);:HF1:76,F;:M;XTR;:HF2:7,F;:M;FLT;:HF3:7,F;:M;CHF;:HF8:7,F;:U;CHF;:U;CHF;:HF8:7,V",
+   "part": 0,
+   "part_id": "F2/1"
+  }
+ ],
+ "parts": 1,
+ "planes": 0,
+ "revision": 0,
+ "sketches": 3,
+ "tab": "T1",
+ "triangles": 868,
+ "vertices": 28
+}

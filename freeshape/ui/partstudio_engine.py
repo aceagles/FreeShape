@@ -587,11 +587,14 @@ def plan_rows(have, want):
 
 
 def geometry_hash(shape):
-    """A hash of what a shape looks like -- solid count, volume, bounding box, to 1e-4 -- for shapes that are
-    built again on each side (a Drawing's model is a compound made where it is drawn), so that their BREP text
-    cannot be compared."""
+    """A hash of what a shape looks like -- solid count, volume, bounding box, to 1e-4, and for each surface
+    body its face count and area -- for shapes that are built again on each side (a Drawing's model is a
+    compound made where it is drawn), so that their BREP text cannot be compared."""
     lo, hi = K.bbox(shape)
     key = [len(K.solids(shape)), round(float(K.volume(shape)), 4)] + [round(float(x), 4) for x in (*lo, *hi)]
+    loose = [b for b in K.bodies(shape) if K.is_surface(b)]
+    if loose:       # no volume to tell them apart; a solid-only shape keeps its old key
+        key += [len(K.faces(b)) for b in loose] + [round(float(K.mass_props(b)["area"]), 4) for b in loose]
     return hashlib.sha256(repr(key).encode()).hexdigest()
 
 

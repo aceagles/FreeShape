@@ -2532,22 +2532,25 @@ def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=Fa
 
 def section_cut(shape, p0, n):
     """The model with everything in front of the cutting plane removed (the side `n` points to), for a section
-    view. Each solid is cut on its own, so a multi-part model stays separate parts."""
+    view. Each body is cut on its own, so a multi-part model stays separate parts; a surface body keeps the
+    pieces whose centroid is on the kept side."""
     p0, n = np.asarray(p0, float), _unit_np(n)
     lo, hi = bbox(shape)
     size = float(np.linalg.norm(hi - lo)) * 2 + 10
     pl = Plane(p0, _any_perp(n), n)
     tool = BRepBuilderAPI_MakeFace(gp_Pln(pl.gp_ax3()), -size, size, -size, size).Face()
     keep = []
-    for sol in solids(shape) or [shape]:
+    for sol in bodies(shape) or [shape]:
         sp = BRepAlgoAPI_Splitter()
         sp.SetArguments(_list([sol]))
         sp.SetTools(_list([tool]))
         sp.SetFuzzyValue(1e-7)
         sp.Build()
-        pieces = solids(sp.Shape()) if sp.IsDone() else [sol]
+        pieces = []
+        for b in (bodies(sp.Shape()) if sp.IsDone() else [sol]):
+            pieces += _cut_apart(b, [tool]) if is_surface(b) else [b]
         for q in pieces:
-            c = interior_point_solid(q)
+            c = mass_props(q)["centroid"] if is_surface(q) else interior_point_solid(q)
             if float((c - p0) @ n) < 0:
                 keep.append(q)
     return compound(keep)
@@ -2753,7 +2756,9 @@ def side_of(point, tool) -> float:
 def piece_side(piece, tool) -> float:
     """Which side of a cutting surface a piece cut off by it lies on (+ = the side the surface's normal points
     to). A piece the surface cut has a face lying on it, facing away from the piece: that settles it exactly.
-    Otherwise a point inside the piece is tested."""
+    Otherwise a point inside the piece is tested; for a shell piece (a surface body) that is its area centroid."""
+    if is_surface(piece):
+        return side_of(mass_props(piece)["centroid"], tool)
     lo, hi = bbox(piece)
     tol = float(np.linalg.norm(hi - lo)) * 1e-6 + 1e-7
     for f in faces(piece):
@@ -2770,8 +2775,51 @@ def piece_side(piece, tool) -> float:
     return side_of(interior_point_solid(piece), tool)
 
 
+def _cut_apart(body, tools):
+    """The pieces of a surface body that a split has left in one shell: faces stay together across an edge
+    unless that edge lies on one of the cutting surfaces `tools`. A body no edge of which lies on a tool is
+    returned as it is."""
+    fs = faces(body)
+    if len(fs) < 2:
+        return [body]
+    tol = float(np.linalg.norm(bbox(body)[1] - bbox(body)[0])) * 1e-6 + 1e-7
+    parent = list(range(len(fs)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for e in edges(body):
+        pair = edge_faces(body, e)
+        if len(pair) != 2 or any(_dist(e, t) <= tol for t in tools):
+            continue
+        a, b = (next(i for i, f in enumerate(fs) if f.IsSame(x)) for x in pair)
+        parent[find(a)] = find(b)
+    groups = {}
+    for i, f in enumerate(fs):
+        groups.setdefault(find(i), []).append(f)
+    if len(groups) == 1:
+        return [body]
+    out = []
+    for g in groups.values():
+        b, sh = BRep_Builder(), TopoDS_Shell()
+        b.MakeShell(sh)
+        for f in g:
+            b.Add(sh, f)
+        out.append(sh)
+    return out
+
+
+def _dist(a, b) -> float:
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    d = BRepExtrema_DistShapeShape(a, b)
+    return float(d.Value()) if d.IsDone() else float("inf")
+
+
 def split_with(shape, tools, with_history=False):
-    """The solids a shape is cut into by any number of cutting surfaces (faces or shells).
+    """The bodies a shape is cut into by any number of cutting surfaces (faces or shells): solids, and the
+    shells a surface body is cut into.
     with_history=True returns (pieces, history): the splitter's history over the shape and the tools, in that
     order, which is what naming needs (as split_by_plane gives for one plane)."""
     tools = list(tools)
@@ -2782,7 +2830,9 @@ def split_with(shape, tools, with_history=False):
     sp.Build()
     if not sp.IsDone():
         raise KernelError("Split failed")
-    pieces = solids(sp.Shape())
+    pieces = []
+    for b in bodies(sp.Shape()):
+        pieces += _cut_apart(b, tools) if is_surface(b) else [b]
     return (pieces, _maker_history(sp, [shape] + tools)) if with_history else pieces
 
 

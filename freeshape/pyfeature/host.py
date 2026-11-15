@@ -185,19 +185,19 @@ def _load_names(data, named_shape):
 
 
 def _load_part(store, rec, expected_id, blobs):
-    """(solid, NamedShape) of one stored part; adds the bytes it read to `blobs`."""
+    """(body, NamedShape) of one stored part; adds the bytes it read to `blobs`."""
     if not isinstance(rec, dict) or rec.get("id") != expected_id:
         raise ValueError("stored part id is not the feature's next part id")
     brep = store.get(rec.get("brep"), max_bytes=MAX_BLOB_BYTES)
     names = store.get(rec.get("names"), max_bytes=MAX_BLOB_BYTES)
     shape = B.shape_from_brep(brep)        # only bytes `get` has hash-checked reach a parser
-    solids = K.solids(shape)
-    if len(solids) != 1:
-        raise ValueError("stored part is not one solid")
-    named = N.NamedShape(solids[0], {})
+    bodies = K.bodies(shape)            # one solid, or one surface body (I2.3)
+    if len(bodies) != 1:
+        raise ValueError("stored part is not one body")
+    named = N.NamedShape(bodies[0], {})
     _load_names(names, named)
     blobs[rec["brep"]], blobs[rec["names"]] = brep, names
-    return solids[0], named
+    return bodies[0], named
 
 
 def restore(state, f, entry, store):
@@ -218,7 +218,7 @@ def restore(state, f, entry, store):
     except Exception as e:     # BlobError, a malformed entry, or a parser failure: all mean damaged
         raise K.KernelError(damaged_message(f)) from e
     for (solid, named), rec in zip(loaded, parts):
-        part = state.new_part(solid, fid)
+        part = state.new_part(solid, fid, surface=K.is_surface(solid))
         if part.id != rec["id"]:          # cannot happen: ids were checked against the same counter
             raise K.KernelError(damaged_message(f))
         state.set_named(part.id, named)

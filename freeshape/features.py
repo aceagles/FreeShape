@@ -1380,10 +1380,10 @@ def saved_copy_key(f):
 def saved_copy_record(state, fid, key):
     """(entry, blobs) of the parts feature `fid` made in `state`, for a document's `python_builds`: per part its
     BREP and name map as blobs (pyfeature.host.build_record) plus its name and colour; `key` is saved_copy_key.
-    None when a part is not one solid (restoring takes one solid per part) or the feature made no part."""
+    None when a part is not one body, solid or surface (restoring takes one solid per part) or the feature made no part."""
     from .pyfeature import host
     entry, blobs = host.build_record(state, fid, {})
-    if not entry["parts"] or any(len(K.solids(state.parts[r["id"]].shape)) != 1 for r in entry["parts"]):
+    if not entry["parts"] or any(len(K.bodies(state.parts[r["id"]].shape)) != 1 for r in entry["parts"]):
         return None
     del entry["plugin"]
     entry["key"] = key
@@ -2521,8 +2521,8 @@ def _repeat_features(state, f, copies, op):
         part = state.parts.get(pid)
         if part is None:                      # the feature made a part that has since gone: new parts
             for s_, _ in adds.get(pid, []):
-                for sol in K.solids(s_):
-                    state.new_part(sol, f["id"])
+                for sol in K.bodies(s_):
+                    state.new_part(sol, f["id"], surface=K.is_surface(sol))
             continue
         # through the named boolean helpers, so the part keeps its element names (as apply_body does)
         shape, named = part.shape, state.named(pid)

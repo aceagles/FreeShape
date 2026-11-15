@@ -33,7 +33,7 @@ or `... FAILED: <why>`; every step runs even after an earlier one failed, and th
      "not compared".
   9. Add the bundled examples through the Plugins window, build the spur gear plugin feature in a new Part Studio
      tab: the engine worker has one part, no error, the in-process volume, and a stored copy as blobs.
- 10. Save the Document, close it, open it again: every tab file's version is Part Studio 4, Assembly 9, Drawing 3;
+ 10. Save the Document, close it, open it again: every tab file's version is Part Studio 5, Assembly 9, Drawing 3;
      tab ids, kinds, feature, instance, mate, relation, pattern, explode and view counts and part volumes are
      unchanged; no tab error, no Document warning, no feature recovered by shape, no lost dimension.
 
@@ -836,7 +836,7 @@ def run(tmp, wins, failed):
     def _():
         import json
         from freeshape import migrations as MIG
-        want_ver = {"studio": 4, "assembly": 9, "drawing": 3}
+        want_ver = {"studio": 5, "assembly": 9, "drawing": 3}
         check({k: MIG.latest_version(k if k != "studio" else "document") for k in want_ver} == want_ver,
               "the migrations module reports other latest versions than the card's formats")
 

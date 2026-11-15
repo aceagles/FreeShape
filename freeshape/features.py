@@ -3459,13 +3459,18 @@ def run_rib(state, f):
 
 def run_loft(state, f):
     p = f["params"]
-    profs = []
+    profs, owners = [], []
     for item in p.get("profiles", []):
         if item["kind"] == "region":
-            profs += resolve_regions(state, [item["ref"]], f["id"])
+            got = resolve_regions(state, [item["ref"]], f["id"])
+            profs += got
+            owners += [None] * len(got)
         else:
-            profs.append(resolve(state, item["ref"], "face")[1])
-    start, end = _loft_end(state, p.get("start")), _loft_end(state, p.get("end"))
+            pid, face = resolve(state, item["ref"], "face")
+            profs.append(face)
+            owners.append(pid)
+    start = _loft_end(state, p.get("start"), profs[0] if profs else None, owners[0] if owners else None)
+    end = _loft_end(state, p.get("end"), profs[-1] if profs else None, owners[-1] if owners else None)
     guides = [g for g in (p.get("guides") or []) if g]
     if guides:                                   # the network route (I7.3), OpenCascade 8.0 only
         if start is not None or end is not None:
@@ -3483,11 +3488,31 @@ def run_loft(state, f):
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 
-def _loft_end(state, c):
+def _loft_end(state, c, profile=None, owner=None):
     """A loft's `start` or `end` param as `K.loft_skin` takes it: None when there is no condition (a
-    missing key, {} and {"cond": ""} alike), else {"cond", "mag"} with the magnitude evaluated."""
+    missing key, {} and {"cond": ""} alike), else {"cond", "mag"} with the magnitude evaluated.
+    Match tangent adds "faces": its `faces` references resolved, or, with none picked and a `profile`
+    face picked from part `owner`, the faces of that part that share the profile's outer edges."""
     if not isinstance(c, dict) or not c.get("cond"):
         return None
+    out = {"cond": c["cond"], "mag": _loft_mag(state, c)}
+    if c["cond"] == "match_tangent":
+        faces = [resolve(state, r, "face")[1] for r in c.get("faces") or []]
+        out["faces"] = faces or _loft_adjacent(state, profile, owner)
+    return out
+
+
+def _loft_adjacent(state, profile, owner):
+    """The faces of part `owner` that share an edge of `profile`'s outer wire (Match tangent's default)."""
+    from OCP.BRepTools import BRepTools
+    if profile is None or owner not in state.parts:
+        return []
+    rim = K.edges(BRepTools.OuterWire_s(profile))
+    return [f for f in K.faces(state.parts[owner].shape)
+            if not f.IsSame(profile) and any(e.IsSame(r) for e in K.edges(f) for r in rim)]
+
+
+def _loft_mag(state, c):
     mag = c.get("mag", 1.0)
     if isinstance(mag, str):
         val = parse_number(mag, variables=state.vars)
@@ -3495,7 +3520,7 @@ def _loft_end(state, c):
             bad = [n for n in var_names(mag) if n not in state.vars]
             raise K.KernelError(f"Unknown variable #{bad[0]}" if bad else f"Can't read '{mag}'")
         mag = val
-    return {"cond": c["cond"], "mag": float(mag)}
+    return float(mag)
 
 
 def _loft_guides(state, guides):

@@ -2914,7 +2914,11 @@ def loft(profile_faces, ruled=False, with_history=False):
 # Hermite skinning is exact on both builds; ghost sections through ThruSections reached only 0.23
 # degree, so only the hermite route is built.
 LOFT_SKIN = "hermite"
-LOFT_CONDS = ("normal", "tangent")      # Normal to profile, Tangent to profile
+LOFT_CONDS = ("normal", "tangent", "match_tangent")      # Normal to profile, Tangent to profile, Match tangent
+LOFT_MATCH_ANGLE = 0.5      # degrees: the most a Match tangent loft's normal may differ from its adjacent face's
+LOFT_MATCH_TOL = 1e-4       # mm: how close an adjacent face must lie to a profile curve to touch it
+LOFT_MATCH_ROUNDS = 6       # knot refinements along the profile before Match tangent gives up
+LOFT_MATCH_ERR = "Could not match the adjacent faces smoothly"
 
 
 def _skin_arrays():
@@ -3077,12 +3081,159 @@ def _outward(cols, normal):
     return out
 
 
+# Match tangent (I7.5): the end derivative of each column follows d(u), the direction that continues
+# the adjacent face across the profile curve (in the face's tangent plane, square to the curve).
+
+def _point_face_distance(p, face):
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    return BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(_pnt(p)).Vertex(), face).Value()
+
+
+def _face_normal_at(face, p):
+    """The unit normal of the face's surface at the point nearest p (as the surface has it, unflipped)."""
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.GeomLProp import GeomLProp_SLProps
+    surf = BRep_Tool.Surface_s(face)
+    u, v = GeomAPI_ProjectPointOnSurf(_pnt(p), surf).LowerDistanceParameters()
+    props = GeomLProp_SLProps(surf, u, v, 1, 1e-9)
+    if not props.IsNormalDefined():
+        raise KernelError(LOFT_MATCH_ERR)
+    return _np(props.Normal())
+
+
+def _match_setup(curves, faces, into):
+    """Which adjacent face each curve of an end section continues: per curve (face, sign) or None when
+    no face touches it, `sign` turning n x t away from the face. A face that touches no curve is refused."""
+    used, out = set(), []
+    for c in curves:
+        bs = _bspline_make(c)
+        pts = [_np(bs.Value(float(t))) for t in np.linspace(0.0, 1.0, 5)]
+        hit = next((i for i, f in enumerate(faces)
+                    if all(_point_face_distance(p, f) < LOFT_MATCH_TOL for p in pts)), None)
+        if hit is None:
+            out.append(None)
+            continue
+        used.add(hit)
+        pt, v = gp_Pnt(), gp_Vec()
+        bs.D1(0.5, pt, v)
+        p, t = _np(pt), _np(v)
+        d = np.cross(_face_normal_at(faces[hit], p), t)
+        d /= np.linalg.norm(d)
+        eps = max(1e-3 * np.linalg.norm(t), 1e-3)
+        ahead, behind = _point_face_distance(p + eps * d, faces[hit]), _point_face_distance(p - eps * d, faces[hit])
+        if abs(ahead - behind) > 0.1 * eps:          # the face lies behind the step that leaves it
+            sign = 1.0 if ahead > behind else -1.0
+        else:
+            sign = 1.0 if float(np.dot(d, into)) >= 0 else -1.0
+        out.append((faces[hit], sign))
+    if len(used) < len(faces):
+        raise KernelError("Pick faces that touch the profile")
+    return out
+
+
+def _match_dir(bs, entry, into, u):
+    """(d, n) at parameter u of curve `bs`: the unit continuing direction and the plane it must stay in
+    (the face's tangent plane; with no face, Normal to profile: d = into)."""
+    pt, v = gp_Pnt(), gp_Vec()
+    bs.D1(float(u), pt, v)
+    t = _np(v)
+    if entry is None:
+        n = np.cross(t, into)
+        return into, n / np.linalg.norm(n)
+    face, sign = entry
+    n = _face_normal_at(face, _np(pt))
+    d = sign * np.cross(n, t)
+    return d / np.linalg.norm(d), n
+
+
+def _match_samples(c, per_span):
+    kn = list(c["knots"])
+    return np.unique(np.concatenate([np.linspace(a, b, per_span + 1) for a, b in zip(kn, kn[1:])]))
+
+
+def _match_field(curves, entries, into):
+    """Per curve: the derivative poles (n, 3) whose B-spline field follows d(u), fitted by least squares
+    with the corner poles fixed, and the largest angle in degrees between the loft's normal and the face's."""
+    bss = [_bspline_make(c) for c in curves]
+    corners = []                                   # corners[k]: where curve k - 1 ends and curve k starts
+    for k in range(len(curves)):
+        da, na = _match_dir(bss[k - 1], entries[k - 1], into, 1.0)
+        db, nb = _match_dir(bss[k], entries[k], into, 0.0)
+        w, s = np.cross(na, nb), da + db
+        if np.linalg.norm(w) > 1e-6 and abs(float(np.dot(w, s))) > 1e-9:
+            w = w / np.linalg.norm(w) * np.sign(float(np.dot(w, s)))      # in both tangent planes
+        else:
+            w = s / np.linalg.norm(s) if np.linalg.norm(s) > 1e-9 else db
+        corners.append(w)
+    fields, worst = [], []
+    for k, (c, bs, entry) in enumerate(zip(curves, bss, entries)):
+        flat = np.repeat(c["knots"], c["mults"])
+        deg, n = c["deg"], len(c["poles"])
+        D = np.zeros((n, 3))
+        D[0], D[-1] = corners[k], corners[(k + 1) % len(curves)]
+        if n > 2:
+            us = _match_samples(c, 3 * (deg + 1))
+            B = np.array([_bspline_basis(flat, deg, float(u))[0] for u in us])
+            target = np.array([_match_dir(bs, entry, into, u)[0] for u in us])
+            rhs = target - np.outer(B[:, 0], D[0]) - np.outer(B[:, -1], D[-1])
+            D[1:-1] = np.linalg.lstsq(B[:, 1:-1], rhs, rcond=None)[0]
+        ang = 0.0
+        for u in _match_samples(c, 4 * (deg + 1) + 1):
+            pt, v = gp_Pnt(), gp_Vec()
+            bs.D1(float(u), pt, v)
+            nl = np.cross(_np(v), _bspline_basis(flat, deg, float(u))[0] @ D)
+            nf = _match_dir(bs, entry, into, u)[1]
+            ln = np.linalg.norm(nl)
+            cos = abs(float(np.dot(nl, nf))) / ln if ln > 1e-12 else 0.0
+            ang = max(ang, math.degrees(math.acos(min(1.0, cos))))
+        fields.append(D)
+        worst.append(ang)
+    return fields, worst
+
+
+def _refine_column(col):
+    """A knot mid-way in every span of one edge column, in every section's curve (exact)."""
+    mids = [(a + b) / 2 for a, b in zip(col[0]["knots"], col[0]["knots"][1:])]
+    for i, c in enumerate(col):
+        b = _bspline_make(c)
+        for u in mids:
+            b.InsertKnot(float(u), 1, 1e-10, False)
+        col[i] = _bspline_data(b)
+
+
+def _match_ends(cols, conds):
+    """The unit derivative poles per column at each Match tangent end (None at any other end), refining
+    the knots of a column along the profile until its angle is under LOFT_MATCH_ANGLE. Mutates `cols`."""
+    nsec, ncol = len(cols[0]), len(cols)
+    ends = [(e, i, c) for e, (i, c) in enumerate(((0, conds[0]), (nsec - 1, conds[1])))
+            if c is not None and c["cond"] == "match_tangent"]
+    if not ends:
+        return [None, None]
+    entries = {e: _match_setup([col[i] for col in cols], c["faces"], c["into"]) for e, i, c in ends}
+    for rnd in range(LOFT_MATCH_ROUNDS + 1):
+        out, bad = [None, None], set()
+        for e, i, c in ends:
+            out[e], worst = _match_field([col[i] for col in cols], entries[e], c["into"])
+            bad |= {k for k, w in enumerate(worst) if w > LOFT_MATCH_ANGLE}
+        if not bad:
+            return out
+        if rnd == LOFT_MATCH_ROUNDS:
+            raise KernelError(LOFT_MATCH_ERR)
+        for k in bad:
+            _refine_column(cols[k])
+        for i in range(nsec):                     # neighbouring columns still share their corner pole
+            for k in range(ncol):
+                cols[k][i]["poles"][-1] = cols[(k + 1) % ncol][i]["poles"][0]
+
+
 def _skin_solid(wires, conds, with_history, cap_faces=None):
     """A loft through `wires` by Hermite skinning, as a solid, with the history of every input edge
     (and, given `cap_faces`, of the first and last profile faces).
 
     `conds` is (start, end); each is None or {"cond", "mag", "n", "into"}: `n` the unit normal of the
-    end profile's plane and `into` the unit normal pointing from that profile into the loft."""
+    end profile's plane and `into` the unit normal pointing from that profile into the loft; Match
+    tangent adds "faces", the adjacent faces."""
     from OCP.BRepFill import BRepFill_CompatibleWires
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
     from OCP.Geom import Geom_BSplineSurface
@@ -3107,8 +3258,9 @@ def _skin_solid(wires, conds, with_history, cap_faces=None):
     for i in range(len(secs)):                     # neighbouring columns share their corner pole exactly
         for k in range(ncol):
             cols[k][i]["poles"][-1] = cols[(k + 1) % ncol][i]["poles"][0]
+    match = _match_ends(cols, conds)               # Match tangent may refine the columns' knots first
     nsec = len(secs)
-    grid = [np.vstack([cols[k][i]["poles"] for k in range(ncol)]) for i in range(nsec)]
+    grid =[np.vstack([cols[k][i]["poles"] for k in range(ncol)]) for i in range(nsec)]
     gaps = [float(np.mean(np.linalg.norm(grid[i] - grid[i - 1], axis=1))) for i in range(1, nsec)]
     if min(gaps) < 1e-9:
         raise KernelError("Loft failed — two profiles are in the same place")
@@ -3129,6 +3281,8 @@ def _skin_solid(wires, conds, with_history, cap_faces=None):
         """The derivative along the loft at every pole of section i, per column."""
         if c is None:
             return [np.zeros((len(cols[k][i]["poles"]), 3)) for k in range(ncol)]
+        if c["cond"] == "match_tangent":
+            return [sign * c["mag"] * d for d in match[0 if i == 0 else 1]]
         if c["cond"] == "normal":
             return [np.tile(sign * c["mag"] * c["into"], (len(cols[k][i]["poles"]), 1)) for k in range(ncol)]
         out = _outward([cols[k][i] for k in range(ncol)], c["n"])
@@ -3217,19 +3371,27 @@ def _skin_end(face, other, cond):
     n = _np(ad.Plane().Axis().Direction())
     d = np.asarray(face_info(other)["c"], float) - np.asarray(face_info(face)["c"], float)
     into = n if float(np.dot(d, n)) >= 0 else -n
-    return {"cond": cond["cond"], "mag": mag, "n": n, "into": into}
+    out = {"cond": cond["cond"], "mag": mag, "n": n, "into": into}
+    if cond["cond"] == "match_tangent":
+        out["faces"] = list(cond.get("faces") or [])
+        if not out["faces"]:
+            raise KernelError("Match tangent needs the adjacent faces — pick the faces that touch the profile")
+    return out
 
 
 def loft_skin(profile_faces, start=None, end=None, with_history=False):
     """A loft whose ends leave the first profile and meet the last as `start` and `end` say: each is
-    None or {"cond": "normal" | "tangent", "mag": <signed magnitude, default 1>}.
+    None or {"cond": "normal" | "tangent" | "match_tangent", "mag": <signed magnitude, default 1>}, and
+    Match tangent also has "faces": the adjacent faces (TopoDS faces) the loft continues smoothly.
 
     Built by the route spike I7.1 chose (LOFT_SKIN, Hermite skinning): the wires are made compatible,
     each edge column becomes one B-spline face through every section with the end derivatives set
-    (Normal to profile m*L*n, Tangent to profile m*L*t with t the outward in-plane normal), the two
-    profile faces close it as caps, and the faces are sewn into a solid. One side face per edge of the
-    first profile, with the same history as `loft`, so the faces get the same names on either route.
-    Holes are matched as `loft` matches them and lofted with the outer loop's conditions."""
+    (Normal to profile m*L*n, Tangent to profile m*L*t with t the outward in-plane normal, Match tangent
+    m*L*d with d continuing the adjacent face across the profile curve), the two profile faces close it
+    as caps, and the faces are sewn into a solid. One side face per edge of the first profile, with the
+    same history as `loft`, so the faces get the same names on either route. Holes are matched as `loft`
+    matches them and lofted with the outer loop's conditions, except that a Match tangent end leaves
+    them with no condition there (with no condition at either end they are lofted as `loft` does)."""
     from OCP.BRepTools import BRepTools
     if len(profile_faces) < 2:
         raise KernelError("Select at least two profiles, in order")
@@ -3239,8 +3401,16 @@ def loft_skin(profile_faces, start=None, end=None, with_history=False):
         raise KernelError("loft_skin needs an end condition; use loft")
     outers = [BRepTools.OuterWire_s(f) for f in profile_faces]
     body, hist = _skin_solid(outers, conds, with_history, profile_faces)
+    hole_conds = tuple(None if c is not None and c["cond"] == "match_tangent" else c for c in conds)
     for wires in _loft_hole_sets(profile_faces):
-        core, core_hist = _skin_solid(wires, conds, with_history)
+        if hole_conds == (None, None):
+            tool = _thru_sections(wires, False)
+            core = tool.Shape()
+            if volume(core) < 0:
+                core = core.Reversed()
+            core_hist = _thru_sections_history(tool, wires) if with_history else None
+        else:
+            core, core_hist = _skin_solid(wires, hole_conds, with_history)
         if with_history:
             body, cut_hist = cut(body, core, with_history=True)
             hist = _chain(hist, core_hist, cut_hist)

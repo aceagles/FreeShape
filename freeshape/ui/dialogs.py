@@ -667,17 +667,20 @@ SCOPE_FEATURES = ("extrude", "revolve", "sweep", "loft")
 
 
 LOFT_CONDITIONS = [("", "None"), ("normal", "Normal to profile"), ("tangent", "Tangent to profile")]
+LOFT_END_CHOICES = LOFT_CONDITIONS + [("match_tangent", "Match tangent")]     # I7.5: with Adjacent faces
 
 
 _LOFT_GUIDES_WHY = "Guides and end conditions cannot be combined yet: untick Guides and continuity first"
 
 
 def _loft_unfold(p):
-    """The dialog edits a loft's `start` and `end` ({cond, mag}) as flat fields start_cond, start_mag, ..."""
+    """The dialog edits a loft's `start` and `end` ({cond, mag, faces}) as flat fields start_cond, start_mag,
+    start_faces, ..."""
     for end in ("start", "end"):
         c = p.get(end) if isinstance(p.get(end), dict) else {}
         p[f"{end}_cond"] = c.get("cond") or ""
         p[f"{end}_mag"] = c.get("mag", 1.0)
+        p[f"{end}_faces"] = list(c.get("faces") or [])
     p["guides_on"] = any(g for g in p.get("guides") or [])
 
 
@@ -696,11 +699,14 @@ def _loft_fold(p, strip=False):
         cond = "" if p.get("ruled") else p.get(f"{end}_cond") or ""
         if cond:
             p[end] = {"cond": cond, "mag": p.get(f"{end}_mag", 1.0)}
+            if cond == "match_tangent" and p.get(f"{end}_faces"):     # none picked: no key, the default faces
+                p[end]["faces"] = list(p[f"{end}_faces"])
         else:
             p.pop(end, None)
         if strip:
             p.pop(f"{end}_cond", None)
             p.pop(f"{end}_mag", None)
+            p.pop(f"{end}_faces", None)
 
 
 def thicken_op_for(state, p):
@@ -977,14 +983,20 @@ SCHEMAS = {
         _ops(),
         _sel("profiles", "Profiles — pick them in order", {"region", "face"}),
         _check("ruled", "Straight sides (ruled)"),
-        {**_choice("start_cond", "Start profile condition", LOFT_CONDITIONS, visible=lambda p: not p.get("ruled")),
+        {**_choice("start_cond", "Start profile condition", LOFT_END_CHOICES, visible=lambda p: not p.get("ruled")),
          "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
         _num("start_mag", "Magnitude", unit="", signed=True,
              visible=lambda p: not p.get("ruled") and bool(p.get("start_cond"))),
-        {**_choice("end_cond", "End profile condition", LOFT_CONDITIONS, visible=lambda p: not p.get("ruled")),
+        {**_sel("start_faces", "Adjacent faces", {"face"},
+                visible=lambda p: not p.get("ruled") and p.get("start_cond") == "match_tangent"),
+         "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
+        {**_choice("end_cond", "End profile condition", LOFT_END_CHOICES, visible=lambda p: not p.get("ruled")),
          "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
         _num("end_mag", "Magnitude", unit="", signed=True,
              visible=lambda p: not p.get("ruled") and bool(p.get("end_cond"))),
+        {**_sel("end_faces", "Adjacent faces", {"face"},
+                visible=lambda p: not p.get("ruled") and p.get("end_cond") == "match_tangent"),
+         "enabled": lambda p: not p.get("guides_on"), "why": _LOFT_GUIDES_WHY},
         {**_check("guides_on", "Guides and continuity", visible=lambda p: not p.get("ruled")),
          "enabled": lambda p: not (p.get("start_cond") or p.get("end_cond")),
          "why": "Guides and end conditions cannot be combined yet: clear the start and end profile conditions first"},
@@ -1131,6 +1143,9 @@ def params_to_fields(ftype, p):
     if ftype == "loft":
         f["profiles"] = [(it["kind"], it["ref"]) for it in p.get("profiles", [])]
         f["guides"] = [("path", g[0]) if len(g) == 1 else ("group", list(g)) for g in p.get("guides") or [] if g]
+        for end in ("start", "end"):
+            refs = p[f"{end}_faces"] if f"{end}_faces" in p else (p.get(end) or {}).get("faces")
+            f[f"{end}_faces"] = [("face", r) for r in refs or []]
     if ftype == "draft":
         f["faces"] = [("face", r) for r in p.get("faces", [])]
         f["neutral_sel"] = [("plane", p["neutral"])] if p.get("neutral") else []
@@ -1227,6 +1242,8 @@ def fields_to_params(ftype, fields, p):
     if ftype == "loft":
         p["profiles"] = [{"kind": k, "ref": r} for k, r in fields.get("profiles", [])]
         p["guides"] = [list(r) if k == "group" else [r] for k, r in fields.get("guides", [])]
+        for end in ("start", "end"):
+            p[f"{end}_faces"] = [r for k, r in fields.get(f"{end}_faces", []) if k == "face"]
         _loft_fold(p)
     if ftype == "draft":
         p["faces"] = [r for k, r in fields.get("faces", [])]

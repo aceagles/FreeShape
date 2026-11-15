@@ -223,8 +223,12 @@ feature list, so you can define them part-way through and use them in later feat
 Things selected before opening a feature are pre-filled. Extrude and Plane show a **blue arrow you can drag** to set the depth/offset (drag back past the start to flip direction; hold Shift for finer, unsnapped values).
 
 - **Extrude** — New / Add / Remove / Intersect; Blind, Symmetric, Through all; second direction. Cuts
-  automatically go into the material.
-- **Revolve** — around a sketch line, a part edge, or the X/Y/Z axis; full, one direction or symmetric.
+  automatically go into the material. *Create* chooses **Solid** (closed regions, the default), **Surface** (open
+  or closed sketch curves become a surface body, no solid; Remove, Intersect and the up-to ends are refused) or
+  **Thin** (a wall of the given thickness grown from the curves into a solid; *Mid plane*, *Thickness 1 and 2*,
+  *Flip wall*; thickness 1 is on the right of the curve's direction, outside a closed curve).
+- **Revolve** — around a sketch line, a part edge, or the X/Y/Z axis; full, one direction or symmetric. *Create*
+  offers Solid, Surface and Thin, as Extrude does.
 - **Fillet / Chamfer** — pick edges, or a face to do all its edges.
 - **Shell** — pick faces to remove, inward or outward.
 - **Hole** — at the points and circle centres of a sketch (click the sketch, or pick it in the dialog);
@@ -236,11 +240,17 @@ Things selected before opening a feature are pre-filled. Extrude and Plane show 
   and a *print clearance* for 3D-printed threads (0.1–0.2 mm usually works). Tapped holes can also be modelled
   straight from the Hole feature (*Model the thread*). Real threads take a few seconds to build, so plain tapped
   holes (sized for the tap drill) stay the default — like Onshape.
-- **Sweep** — a profile along a path (connected sketch curves or part edges), e.g. pipes and handles.
+- **Sweep** — a profile along a path (connected sketch curves or part edges), e.g. pipes and handles. *Create*
+  offers Solid, Surface and Thin; a thin sweep that is thicker than the path's tightest bend allows says so.
+  Surface bodies are listed in the Parts list under **Surfaces**, have an area and no volume or mass, and are
+  left out of STL, 3MF and OBJ export, of Assembly inserts and of interference checks (STEP and BREP keep them).
 - **Rib** — a web or gusset from open sketch curves (lines and arcs) grown to meet a part, parallel to the sketch plane; set the thickness and direction.
 - **Loft** — blend between two or more profiles on different planes; tick *Straight sides* for a ruled loft.
 - **Draft** — tilt faces by an angle from a neutral plane, for moulded or 3D-printed parts.
-- **Split** — cut parts in two with a plane or flat face; keep both sides or one.
+- **Split** — cut parts in two with a plane or flat face; keep both sides or one. **Split with a surface**: pick a
+  surface part and it cuts as drawn, so it must pass completely through the part (otherwise Split says so); tick
+  *Keep tools* to keep the surface, or pick one of its faces to use the extended face (or *Trim to face
+  boundaries* to use it as it is).
 - **Move** — move and/or rotate parts (or imports), optionally keeping the original as a copy.
 - **Plane** — offset, plane + point, line + angle, point + edge normal, three points, mid plane, curve + point or
   tangent; *Automatic* picks the type from your selection.

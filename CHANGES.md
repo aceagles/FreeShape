@@ -25,6 +25,23 @@ for cutting), version history, Python plugins, and new navigation. It was built 
 - **File version 5**: files now save as version 5, one step up from version 4. Nothing in them changes; older files
   open as before and build to the same parts. FreeShape 1.x and earlier 2.0 previews refuse a version 5 file.
 
+### Surface bodies and thin features
+- **Create: Solid, Surface or Thin** on Extrude, Revolve and Sweep. Solid is the default and saves nothing new.
+  Surface turns sketch curves (open or closed) into a surface body with no solid; Remove, Intersect and the up-to
+  ends are refused with a message. Thin grows a wall from the curves into one solid, with *Mid plane*,
+  *Thickness 1 and 2* and *Flip wall* (thickness 1 is on the right of the curve's direction, outside a closed
+  curve); an open arc with Mid plane works, and a thin sweep thicker than the path's tightest bend says so. The
+  open chain of a fender extrudes and sweeps thin into one solid.
+- **Surface bodies**: a surface part is named Surface 1, Surface 2 and so on, and the Parts list shows them under
+  a Surfaces (n) header after Parts (n). It has an area and no volume or mass, patterns and mirrors like a
+  solid (a mirrored surface that touches the mirror plane sews into one part), and saves and reopens unchanged.
+  It is left out of STL, 3MF and OBJ export (a studio of only surfaces says "Nothing to export"), of Assembly
+  inserts and of interference checks; STEP and BREP keep it.
+- **Split with a surface**: pick a surface part as the Split tool and it cuts as drawn. A surface that stops short
+  is refused ("The surface must pass completely through the part"); pick one of its faces to use the extended face.
+  *Keep tools* keeps the surface; *Trim to face boundaries* uses a face as it is. Search for it as "split with
+  surface".
+
 ### Insert DXF or SVG into a sketch
 - **Insert DXF or SVG**: in a sketch, the command (also found by searching "insert dxf", "import svg" or "logo")
   picks a `.dxf` or `.svg` file and puts its curves into the sketch as one undo step. They arrive selected.

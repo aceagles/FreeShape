@@ -118,6 +118,28 @@ def block_doc(w=40.0, d=20.0, h=10.0, x0=0.0, y0=0.0, plane=None):
     return doc
 
 
+def v4_studio_json():
+    """A Part Studio that holds a block with a fillet, as file version 4 writes it: the version 5 step
+    (`_onshape_parity_2`) is taken out of the document chain while it is built and saved, so `to_json` stamps 4.
+    Returns the saved file as a dict. The chain is put back before the function returns."""
+    from freeshape import migrations as Mig
+    chain = Mig._CHAINS["document"]
+    at = next(i for i, s in enumerate(chain) if s.__name__ == "_onshape_parity_2")
+    step = chain.pop(at)
+    try:
+        doc = block_doc()
+        pid = next(iter(doc.state.parts))
+        part = doc.state.parts[pid]
+        vertical = [e for e in K.edges(part.shape) if line_along((0, 0, 1))(K.edge_info(e))]
+        edges = [F.make_ref(pid, vertical[0], "edge", part.shape, doc.state.named(pid))]
+        add(doc, "fillet", edges=edges, radius=1)
+        data = json.loads(doc.to_json())
+    finally:
+        chain.insert(at, step)
+    assert data["version"] == 4, data["version"]
+    return data
+
+
 def only_part(doc_or_state):
     st = doc_or_state.state if isinstance(doc_or_state, Document) else doc_or_state
     assert len(st.parts) == 1, list(st.parts)

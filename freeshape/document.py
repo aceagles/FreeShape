@@ -105,6 +105,18 @@ def _adopt_upstream_2_0(data):
 M.register("document", _adopt_upstream_2_0)
 
 
+def _onshape_parity_2(data):
+    """FILE_VERSION 4 -> 5 (the Onshape parity 2 run). A pass-through step: nothing in a version 4 file changes.
+    The step takes one version for every key this plan saves, so a build before the plan refuses a file that
+    holds one, rather than reading the key without error and building wrong. Version 5 may hold this plan's
+    keys for: loft end conditions and guides, variable fillet radii, an extrude draft, and Context bodies under
+    new ids. The format reference lists each key and the card that adds it."""
+    return data
+
+
+M.register("document", _onshape_parity_2)
+
+
 CONTEXT_CURRENT, CONTEXT_OUT_OF_DATE, CONTEXT_ASSEMBLY_MISSING = "current", "out of date", "assembly missing"
 
 

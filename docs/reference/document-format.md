@@ -49,12 +49,12 @@ On save, `FolderDocument.save` adds `_tab_id` to each Tab file. It repeats the m
 
 ## Part Studio file
 
-Written by `Document.to_json` (`freeshape/document.py`). Format tag `freeshape`. Current version: 4. Extension `.fshape`.
+Written by `Document.to_json` (`freeshape/document.py`). Format tag `freeshape`. Current version: 5. Extension `.fshape`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `format` | string | Always `freeshape`. |
-| `version` | integer | File version. Current is 4. |
+| `version` | integer | File version. Current is 5. |
 | `name` | string | Display name. |
 | `uid` | string | Id of the studio, used by loose-file Links. |
 | `features` | list | The feature list, in order. See Feature. |
@@ -412,13 +412,14 @@ Written by `VariableStudioDoc.to_json` (`freeshape/variable_studio.py`). Format 
 
 ### Chain document
 
-Part Studio. Registered in `freeshape/document.py`. Latest version 4. 3 steps.
+Part Studio. Registered in `freeshape/document.py`. Latest version 5. 4 steps.
 
 | Step | Function | Change |
 | --- | --- | --- |
 | 1 to 2 | `_migrate_part_ids` | Part ids change from `<fid>:<counter>` to `<fid>/<n>`. The step replays the features, rewrites the ids that `params`, `overrides` and `hidden` name, and records `part_aliases`. |
 | 2 to 3 | `_move_import_data_to_blobs` | An `import` feature's base64 `params.data` becomes `params.blob`, the key of the decoded bytes. The bytes are held in memory by the loaded studio and written to the blobs by its next save. |
 | 3 to 4 | `_adopt_upstream_2_0` | The upstream 2.0 merge. A file may now hold `folders`, `configs`, `plugin_copies` and upstream's feature types, which an earlier build would drop or fail on. One conversion: an extrude saved with end `upto` takes upstream's shape, an `up_to_*` end with its target in `up_to`. |
+| 4 to 5 | `_onshape_parity_2` | The Onshape parity 2 run. A pass-through: no key changes. Version 5 holds this plan's new keys (loft end conditions and guides, variable fillet radii, an extrude draft, Context bodies under new ids), so a build before the plan refuses the file. Each key's own row says the card that adds it. |
 
 ### Chain assembly
 

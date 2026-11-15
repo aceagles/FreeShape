@@ -1,8 +1,12 @@
-import { Scene, WebGLRenderer } from 'three'
+import { Mesh, Ray, Scene, Vector3, WebGLRenderer } from 'three'
+import type { MeshBVH } from 'three-mesh-bvh'
+import { PointerModule } from '../input/pointer'
+import type { NavHost } from '../input/pointer'
 import type { StudioOutputs } from '../wire'
 import { viewportBackground } from './colors'
 import { ViewCamera } from './camera'
-import type { CameraState } from './camera'
+import type { CameraState, StandardView } from './camera'
+import { STANDARD_VIEWS } from './camera'
 import { buildScene } from './scene'
 import type { BuiltScene, SceneStats } from './scene'
 
@@ -27,7 +31,7 @@ const EMPTY: SceneStats = { parts: 0, context: 0, faces: 0, edges: 0, triangles:
  * Owns the canvas, the renderer, the camera and the current scene of one viewport. Plain three.js: React only
  * mounts it (see Viewport.tsx). The camera is fitted to the first model it gets; later outputs keep the view.
  */
-export class ViewportController {
+export class ViewportController implements NavHost {
   readonly view = new ViewCamera()
   private renderer: WebGLRenderer
   private readonly scene = new Scene()
@@ -37,11 +41,13 @@ export class ViewportController {
   private pending = 0
   private fitted = false
   private disposed = false
+  readonly pointer: PointerModule
 
   /** Throws when the browser cannot create a WebGL context. */
   constructor(readonly canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' })
     this.renderer.setClearColor(viewportBackground(), 1)
+    this.pointer = new PointerModule(canvas, this)
     this.report()
   }
 
@@ -76,6 +82,47 @@ export class ViewportController {
     this.requestRender()
   }
 
+  /** Look along a standard view and fit the model. */
+  setStandardView(name: StandardView): void {
+    this.view.setBack(STANDARD_VIEWS[name])
+    this.fit()
+  }
+
+  /** Look straight at the nearest face direction, or at the given outward normal, and fit the model. */
+  normalTo(normal?: readonly [number, number, number]): void {
+    this.view.normalTo(normal)
+    this.fit()
+  }
+
+  modelCentre(): Vector3 {
+    const b = this.built?.bounds
+    return b ? new Vector3((b.lo[0] + b.hi[0]) / 2, (b.lo[1] + b.hi[1]) / 2, (b.lo[2] + b.hi[2]) / 2) : new Vector3()
+  }
+
+  /** The model point under a view position (CSS pixels from the top left): the nearest hit of a ray along the view. */
+  pickPoint(x: number, y: number): Vector3 | null {
+    if (!this.built) return null
+    const { back } = this.view.axes()
+    const ray = new Ray(this.view.unproject(x, y).addScaledVector(back, this.view.depthRadius * 8), back.clone().negate())
+    let best: Vector3 | null = null
+    let bestDistance = Infinity
+    this.built.root.updateMatrixWorld(true)
+    this.built.root.traverse((o) => {
+      const bvh = o.userData['bvh'] as MeshBVH | undefined
+      if (!(o instanceof Mesh) || !bvh) return
+      const local = ray.clone().applyMatrix4(o.matrixWorld.clone().invert())
+      const hit = bvh.raycastFirst(local, 2)
+      if (!hit) return
+      const world = hit.point.clone().applyMatrix4(o.matrixWorld)
+      const d = world.distanceTo(ray.origin)
+      if (d < bestDistance) {
+        bestDistance = d
+        best = world
+      }
+    })
+    return best
+  }
+
   requestRender(): void {
     if (this.pending || this.disposed) return
     this.pending = requestAnimationFrame(() => {
@@ -104,6 +151,7 @@ export class ViewportController {
 
   dispose(): void {
     this.disposed = true
+    this.pointer.dispose()
     if (this.pending) cancelAnimationFrame(this.pending)
     if (this.built) {
       this.scene.remove(this.built.root)

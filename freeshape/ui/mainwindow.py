@@ -944,7 +944,7 @@ class MainWindow(QMainWindow):
         self._tb(h, "fix", "Fix / unfix the selected parts", self._asm_toggle_fix)
         self.btn_group = self._tb(h, "group", "Group the selected parts so they move as one body", self._asm_group)
         h.addWidget(_sep())
-        self.btn_interf = self._tb(h, "interference", "Interference check — show where parts overlap",
+        self.btn_interf = self._tb(h, "interference", "Interference detection — show where parts overlap",
                                    lambda: a.toggle_interference(), checkable=True)
         self._tb(h, "linear_pattern", "Linear pattern of the selected parts", lambda: a.pattern_dialog("linear"))
         self._tb(h, "circular_pattern", "Circular pattern of the selected parts", lambda: a.pattern_dialog("circular"))

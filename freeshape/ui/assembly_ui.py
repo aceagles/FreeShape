@@ -2047,6 +2047,7 @@ class AssemblyController:
         self.panel = AssemblyPanel()
         self.insert_panel = None
         self.explode_panel = None
+        self.interf_panel = None     # the Interference detection panel while open
         self.mate_dialog = None
         self.relation_dialog = None
         self.move_dialog = None
@@ -3188,8 +3189,8 @@ class AssemblyController:
             C("hide", "Isolate", "Hide every part but the selected ones (Shift+I).", self.isolate_selected,
               "only visibility"),
             C("hide", "Show all", "Show every hidden part (Shift+Y).", self.show_all, "unhide visibility"),
-            C("interference", "Interference", "Show where parts overlap.", w.btn_interf.click,
-              "clash collision overlap check"),
+            C("interference", "Interference detection", "Show where parts overlap.", w.btn_interf.click,
+              "interference clash collision overlap check"),
             C("bom", "Bill of materials", "List the parts with quantities and mass.", self.show_bom,
               "bom parts list table"),
             C("bom", "Mass properties", "Mass by material, total mass and centre of mass of the whole assembly.",
@@ -3305,50 +3306,31 @@ class AssemblyController:
 
     # ------------------------------------------------------------------ analysis
     def toggle_interference(self, on=None):
+        """Open or close the Interference detection panel (the toolbar button and the palette command)."""
         btn = self.w.btn_interf
         if on is None:
             on = btn.isChecked()
         if not on:
-            self._drop_interf()
-            self.vp.update()
+            self.close_interference()
+            return
+        if self.interf_panel is not None:
+            return
+        if self.w.mode != "idle":
             btn.setChecked(False)
             return
-        from PySide6.QtWidgets import QProgressDialog, QApplication
-        prog = QProgressDialog("Checking for interference…", None, 0, 0, self.w)
-        prog.setWindowModality(Qt.WindowModal)
-        prog.setMinimumDuration(400)
-
-        def step(n, total):
-            prog.setMaximum(max(total, 1))
-            prog.setValue(n)
-            QApplication.processEvents()
-        try:
-            res = self.doc.interferences(step)
-        finally:
-            prog.close()
-        doc = self.doc
-        if not res:
-            self._drop_interf()
-            btn.setChecked(False)
-            self.vp.update()
-            QMessageBox.information(self.w, "Interference", "No interference — no parts overlap.")
-            return
-        ghosts = []
-        lines = []
-        for a, b, v, ov in res:
-            try:
-                ghosts.append((K.tessellate(ov), (0.92, 0.15, 0.12, 0.55)))
-            except Exception:
-                pass
-            lines.append(f"• {doc.instance(a)['name']}  ×  {doc.instance(b)['name']}:  {fmt(v, 2)} mm³")
-        self._interf = ghosts
+        from .interference_ui import AssemblyHost, InterferencePanel
+        self.interf_panel = InterferencePanel(AssemblyHost(self))
+        self.interf_panel.closed.connect(self.close_interference)
         btn.setChecked(True)
-        self.vp.ghosts = ghosts
-        self.vp.update()
-        self.w.status.showMessage(f"{len(res)} interference(s) found — shown in red. Click the button again "
-                                  "to clear.", 8000)
-        QMessageBox.information(self.w, "Interference", f"{len(res)} pair(s) of parts overlap "
-                                "(shown in red):\n\n" + "\n".join(lines[:30]))
+
+    def close_interference(self):
+        p, self.interf_panel = self.interf_panel, None
+        if p is not None:
+            p.shutdown()
+            p.hide()
+            p.deleteLater()
+        if hasattr(self.w, "btn_interf"):
+            self.w.btn_interf.setChecked(False)
 
     def show_bom(self):
         if not self.doc.instances:
@@ -3386,6 +3368,7 @@ class AssemblyController:
         if self.animate_dialog is not None:
             self.animate_dialog.reject()
         self.close_insert()
+        self.close_interference()
         self._drag = None
         self.vp.triads = []
         self._drop_interf()

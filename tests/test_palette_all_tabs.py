@@ -73,11 +73,17 @@ def test_assembly_lists_its_commands_and_no_feature(w):
     assembly(w)
     got = names(w)
     for n in ("Insert", "Revolute", "Pin slot", "Parallel", "Linear relation", "Group", "Animate", "Fix", "Suppress",
-              "Unsuppress", "Hide", "Isolate", "Show all", "Interference", "Bill of materials", "Mass properties",
+              "Unsuppress", "Hide", "Isolate", "Show all", "Interference detection", "Bill of materials", "Mass properties",
               "Section view", "Front view", "Isometric view", "Export"):
         assert n in got, n
     assert not FEATURES & set(got)
     assert [c.name for c in search_commands(w._palette_commands(), "joint")][:1] == ["Fastened"]
+
+
+def test_assembly_interference_command_is_found_by_its_names(w):
+    assembly(w)
+    for word in ("Interference", "clash", "collision", "overlap"):
+        assert [c.name for c in search_commands(w._palette_commands(), word)][:1] == ["Interference detection"], word
 
 
 def test_assembly_revolute_starts_the_mate_tool_in_that_type(w):

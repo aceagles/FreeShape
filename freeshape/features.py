@@ -2178,9 +2178,34 @@ def run_fillet(state, f):
     groups = _group_by_part(state, p.get("edges", []), "edge")
     if not groups:
         raise K.KernelError("Select edges to fillet")
+    variable = p.get("fillet_type") == "variable"
+    if p.get("fillet_type") not in (None, "constant", "variable"):
+        raise K.KernelError(f"Unknown fillet type '{p.get('fillet_type')}'")
+    vradii = []
+    if variable:                    # [(position, radius)]: a radius may be an expression, like chamfer's distance2
+        for i, item in enumerate(p.get("vertex_radii") or []):
+            r = item.get("radius")
+            if isinstance(r, str):
+                val = parse_number(r, variables=state.vars)
+                if val is None:
+                    bad = [n for n in var_names(r) if n not in state.vars]
+                    raise K.KernelError(f"Unknown variable #{bad[0]}" if bad else f"Can't read '{r}'")
+                r = val
+            try:
+                pos = resolve_point(state, item["vertex"])
+            except K.KernelError as exc:
+                c = item["vertex"].get("c")
+                where = f" at ({c[0]:.3f}, {c[1]:.3f}, {c[2]:.3f})" if c else ""
+                err = K.KernelError(f"Fillet vertex {i + 1}{where}: {exc}")
+                err.element_name = getattr(exc, "element_name", None)
+                raise err from exc
+            vradii.append((pos, float(r)))
     for pid, es in groups.items():
         part = state.parts[pid]
-        res, hist = K.fillet(part.shape, es, float(p.get("radius", 1)), with_history=True)
+        if variable:
+            res, hist = K.fillet_variable(part.shape, es, float(p.get("radius", 1)), vradii, with_history=True)
+        else:
+            res, hist = K.fillet(part.shape, es, float(p.get("radius", 1)), with_history=True)
         named = name_feature(state, f["id"], [pid], res, hist, "fillet")
         state.parts[pid] = Part(pid, part.name, res, part.color)
         state.set_named(pid, named)

@@ -1395,6 +1395,101 @@ def fillet(shape, edge_list, radius: float, with_history=False):
     return out
 
 
+def _contour_vertices(mk, ic):
+    """The distinct vertices of the edges of contour `ic` of a MakeFillet, in contour order."""
+    out = []
+    for j in range(1, mk.NbEdges(ic) + 1):
+        ex = TopExp_Explorer(mk.Edge(ic, j), TopAbs_VERTEX)
+        while ex.More():
+            v = _as_vertex(ex.Current())
+            if not any(v.IsSame(o) for o in out):
+                out.append(v)
+            ex.Next()
+    return out
+
+
+def _vertex_xyz(v):
+    return _np(BRep_Tool.Pnt_s(_as_vertex(v)))
+
+
+def _variable_build(shape, edge_list, default_radius, vertex_radii, scale):
+    """One variable-radius build with every radius times `scale`. Returns (maker, result or None, used)
+    where `used` flags the vertex_radii entries that sit on an end of a contour edge. The route is the
+    one scripts/spikes/op2_fillet.result.txt names: Add(E) per edge, then SetRadius(r, contour, vertex) once
+    per vertex of each contour (ResetContour is not needed). Radii are keyed by vertex, so edge direction
+    does not matter and the vertices of unselected edges a contour pulls in take the default radius."""
+    mk = BRepFilletAPI_MakeFillet(shape)
+    used = [False] * len(vertex_radii)
+    try:
+        for e in edge_list:
+            mk.Add(e)
+        for ic in range(1, mk.NbContours() + 1):
+            for v in _contour_vertices(mk, ic):
+                r = float(default_radius)
+                p = _vertex_xyz(v)
+                for i, (q, rq) in enumerate(vertex_radii):
+                    if float(np.linalg.norm(p - np.asarray(q, float))) < 1e-6:
+                        r, used[i] = float(rq), True
+                mk.SetRadius(r * scale, ic, v)
+        mk.Build()
+    except Exception:
+        return mk, None, used
+    if not mk.IsDone():
+        return mk, None, used
+    out = mk.Shape()
+    return mk, (out if _blend_ok(shape, out) else None), used
+
+
+def _faulty_corner(mk):
+    """A phrase naming the vertex a failed fillet maker blames, or ''."""
+    try:
+        if mk.NbFaultyVertices() > 0:
+            x, y, z = _vertex_xyz(mk.FaultyVertex(1))
+            return f" (it failed at the vertex ({x:.3f}, {y:.3f}, {z:.3f}))"
+    except Exception:
+        pass
+    return ""
+
+
+def fillet_variable(shape, edge_list, default_radius: float, vertex_radii, with_history=False):
+    """A fillet whose radius changes along the edges. `vertex_radii` is a list of (vertex, radius): the
+    vertex is a vertex shape or an xyz position, and the radius applies at that vertex. Every other
+    vertex of a contour (which can include edges that were not selected: tangent edges join in) takes
+    `default_radius`. OpenCascade eases the radius between vertices; there is no linear option.
+    with_history=True returns (shape, history of the maker whose result is used)."""
+    if not edge_list:
+        raise KernelError("Select edges to fillet")
+    if default_radius <= 0:
+        raise KernelError("Radius must be positive")
+    radii = []
+    for v, r in vertex_radii:
+        if r <= 0:
+            raise KernelError("Vertex radii must be positive")
+        radii.append((v if isinstance(v, (tuple, list, np.ndarray)) else _vertex_xyz(v), float(r)))
+    mk, out, used = _variable_build(shape, edge_list, default_radius, radii, 1.0)
+    if out is None:
+        corner = _faulty_corner(mk)
+        lo, hi = 0.0, 1.0
+        if len(edge_list) <= 24:
+            for _ in range(9):
+                mid = (lo + hi) / 2
+                if _variable_build(shape, edge_list, default_radius, radii, mid)[1] is not None:
+                    lo = mid
+                else:
+                    hi = mid
+        pct = math.floor(lo * 100)
+        hint = f" — the largest that works here is about {pct} percent of these radii" if pct >= 1 else ""
+        raise KernelError("Fillet radius too large for these edges (the rounds would overlap or not fit)"
+                          + corner + hint)
+    for (q, _), ok in zip(radii, used):
+        if not ok:
+            import logging
+            logging.getLogger(__name__).warning(
+                "fillet: the vertex at (%.3f, %.3f, %.3f) is not an end of any filleted edge; its radius is ignored",
+                *[float(x) for x in q])
+    return (out, _maker_history(mk, [shape])) if with_history else out
+
+
 def chamfer(shape, edge_list, dist: float, with_history=False, kind="equal", second=None, faces=None):
     """with_history=True returns (shape, history of the maker whose result is used).
     kind "two": `second` is the other distance; "angle": `second` is the angle in degrees. Both measure

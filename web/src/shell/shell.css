@@ -1,0 +1,330 @@
+/* The app shell, built to web/design/layout.html. Sizes, colours and radii come from src/theme/tokens.ts through the
+   custom properties tokenVars() sets on .shell. */
+.shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--c-white);
+  color: var(--c-ink);
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: 1.3;
+}
+.shell button {
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.shell button:disabled {
+  cursor: default;
+}
+
+/* Top bar */
+.top-bar {
+  flex: none;
+  height: var(--top-bar);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: 0 var(--sp-8);
+  background: var(--c-white);
+  border-bottom: 1px solid var(--c-line);
+}
+.top-bar-name {
+  flex: none;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0 var(--sp-8) 0 var(--sp-8);
+  font-weight: 600;
+  font-size: var(--fs-title);
+}
+.top-bar-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.top-bar-gap {
+  flex: 1;
+}
+.tab-button {
+  flex: none;
+  height: var(--touch);
+  padding: 0 var(--sp-14);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-inkSoft);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tab-button[aria-current='page'] {
+  border-color: var(--c-accentLine);
+  background: var(--c-accentSoft);
+  color: var(--c-accentDark);
+  font-weight: 600;
+}
+.icon-button {
+  width: var(--touch);
+  height: var(--touch);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-inkSoft);
+  cursor: pointer;
+}
+.icon-button:disabled {
+  opacity: 0.35;
+}
+.icon-button:not(:disabled):active {
+  background: var(--c-accentPinned);
+}
+.link-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  height: var(--touch);
+  padding: 0 var(--sp-8);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-inkSoft);
+  font-size: var(--fs-tab);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.link-status[aria-expanded='true'] {
+  background: var(--c-accentSoft);
+}
+.link-dot {
+  width: var(--status-dot);
+  height: var(--status-dot);
+  border-radius: 50%;
+  background: var(--c-ok);
+}
+.link-status[data-status='reconnecting'] .link-dot {
+  background: var(--c-selection);
+}
+.link-status[data-status='lost'] .link-dot {
+  background: var(--c-danger);
+}
+.link-status[data-status='lost'] {
+  color: var(--c-danger);
+}
+
+/* Tool strip */
+.tool-strip {
+  position: relative;
+  z-index: 5;
+  flex: none;
+  height: var(--tool-strip);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-8);
+  background: var(--c-surface);
+  border-top: 1px solid var(--c-line);
+  border-bottom: 1px solid var(--c-line);
+  /* The top bar's border and this border are one line. */
+  margin-top: -1px;
+}
+.strip-button {
+  position: relative;
+  flex: none;
+  width: var(--tool-w);
+  height: var(--tool-h);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-inkSoft);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  cursor: pointer;
+}
+.strip-button:disabled {
+  opacity: 0.35;
+}
+.strip-button[data-active] {
+  border-color: var(--c-accentLine);
+  background: var(--c-accentSoft);
+  color: var(--c-accentDark);
+}
+.strip-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Top right, clear of the label line beneath the icon: a label as wide as "Constrain" cannot reach it. */
+.strip-mark {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  pointer-events: none;
+}
+.strip-button[data-gap] {
+  margin-left: var(--sp-10);
+}
+
+/* Feature panel column, dialog area, viewport */
+.shell-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.left-column {
+  position: relative;
+  flex: none;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--c-line);
+  background: var(--c-white);
+}
+.panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.panel-header {
+  flex: none;
+  height: var(--panel-header);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-4) 0 var(--sp-14);
+  border-bottom: 1px solid var(--c-lineSoft);
+}
+.panel-title {
+  flex: 1;
+  font-weight: 600;
+}
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+.panel-row {
+  height: var(--feature-row);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-10);
+  padding: 0 var(--sp-14);
+}
+.panel-row[aria-current='true'] {
+  background: var(--c-accentSoft);
+  font-weight: 600;
+}
+.panel-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-top: var(--sp-2);
+}
+.dialog-area {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  background: var(--c-white);
+}
+.dialog-header {
+  flex: none;
+  height: var(--dialog-header);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-6) 0 var(--sp-14);
+  background: var(--c-accentSoft);
+  border-bottom: 1px solid var(--c-accentLine);
+}
+.dialog-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: var(--fs-title);
+}
+.dialog-close {
+  border: 1px solid var(--c-line);
+  background: var(--c-white);
+  color: var(--c-ink);
+}
+.dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-12);
+}
+.shell-viewport {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--c-viewport);
+}
+/* Where the selection chip (S4) goes: top left, inset 12 px. Empty until then. */
+.chip-slot {
+  position: absolute;
+  top: var(--inset);
+  left: var(--inset);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  pointer-events: none;
+}
+.chip-slot > * {
+  pointer-events: auto;
+}
+
+/* The debug panel, opened from the connection state in the top bar. */
+.debug-popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(var(--top-bar) + var(--sp-4));
+  right: var(--sp-8);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  background: var(--c-white);
+  box-shadow: 0 8px 24px var(--c-shadow);
+  padding: var(--sp-12) var(--sp-14);
+}
+.debug-version {
+  margin: var(--sp-8) 0 0;
+  font-size: var(--fs-small);
+  color: var(--c-muted);
+}

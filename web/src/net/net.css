@@ -1,40 +1,39 @@
+/* The connection debug panel (opened from the top bar's connection state, see src/shell). */
 .net-panel {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
   display: grid;
   gap: 8px;
-  padding: 12px 16px;
-  border: 1px solid #3a3e45;
-  border-radius: 8px;
-  background: #23262b;
-  font-size: 15px;
   min-width: 260px;
+  font-size: 14px;
+  color: #1f2328;
 }
 .net-panel p {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
+  font-weight: 600;
 }
 .net-up::before,
 .net-down::before {
   content: '';
   display: inline-block;
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   margin-right: 8px;
   border-radius: 50%;
 }
 .net-up::before {
-  background: #4cc38a;
+  background: #2e9e44;
 }
 .net-down::before {
-  background: #e5a24a;
+  background: #ffc740;
 }
 .net-rtt {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 2px 16px;
   margin: 0;
+}
+.net-rtt dt {
+  color: #5c6570;
 }
 .net-rtt dd {
   margin: 0;
@@ -43,15 +42,17 @@
 }
 .net-panel button {
   min-height: 44px;
-  border: 1px solid #4a4f58;
-  border-radius: 6px;
-  background: #2d3138;
-  color: inherit;
+  border: 1px solid #d5d9de;
+  border-radius: 8px;
+  background: #f5f6f8;
+  color: #1f2328;
   font: inherit;
+  font-weight: 500;
+  cursor: pointer;
 }
 .net-copied {
   min-height: 1em;
-  color: #9aa1ab;
+  color: #5c6570;
   font-size: 13px;
 }
 .net-copied:empty {

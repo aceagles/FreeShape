@@ -14,12 +14,13 @@ export async function fetchStudio(tab: string, signal?: AbortSignal): Promise<St
 }
 
 /**
- * The viewport for the first Part Studio tab of the document: loads its outputs, and loads them again whenever the
- * tab's revision rises. Tab selection comes with the app shell; until then the first Part Studio is shown.
+ * The viewport for one tab of the document: loads its outputs, and loads them again whenever the tab's revision
+ * rises. `tab` is the app shell's current tab; without it the first Part Studio is shown. A tab that is not a Part
+ * Studio (an Assembly) leaves the last view in place until the Assembly view exists.
  */
-export function StudioViewport({ store }: { store: ConnectionStore }) {
+export function StudioViewport({ store, tab: chosen }: { store: ConnectionStore; tab?: string | null }) {
   const { tabs } = useConnection(store)
-  const tab = tabs.find((t) => t.kind === 'studio')?.id ?? null
+  const tab = chosen === undefined ? (tabs.find((t) => t.kind === 'studio')?.id ?? null) : chosen
   const [outputs, setOutputs] = useState<StudioOutputs | null>(null)
   const load = useCallback(
     (id: string) => {

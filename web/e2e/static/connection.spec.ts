@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-// The page with the live connection state and the debug panel, against a scripted socket (no freeshape serve).
+// The shell with the live connection state and the debug panel, against a scripted socket (no freeshape serve).
 test('the connection panel shows the state and round trips, and a dropped socket reconnects', async ({ page }) => {
   const sockets: string[] = []
   await page.route('**/health', (route) => route.fulfill({ json: { ok: true, version: '1.2.3' } }))
@@ -14,9 +14,14 @@ test('the connection panel shows the state and round trips, and a dropped socket
     if (sockets.length === 1) setTimeout(() => ws.close(), 1500)
   })
   await page.goto('/')
+  // The debug panel opens from the connection state in the top bar.
+  await expect(page.getByTestId('link-status')).toHaveText('Connected')
+  await page.getByTestId('link-status').click()
+  await expect(page.getByTestId('version')).toHaveText('Server version 1.2.3')
   await expect(page.getByTestId('connection')).toHaveText('Connected to Bracket')
   await expect(page.getByTestId('rtt-median')).toHaveText(/ms$/)
   await page.screenshot({ path: test.info().outputPath('connection-1024x768.png') })
+  await expect(page.getByTestId('link-status')).toHaveText('Reconnecting')
   await expect(page.getByTestId('connection')).toContainText('Not connected')
   await expect(page.getByTestId('connection')).toHaveText('Connected to Bracket', { timeout: 10_000 })
   expect(sockets.length).toBeGreaterThanOrEqual(2)

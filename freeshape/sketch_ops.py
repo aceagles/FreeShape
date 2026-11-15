@@ -202,34 +202,12 @@ def _offset_dimension(sk: Sketch, pairs, dist: float, first=None):
     return c
 
 
-def offset(sk: Sketch, eid: str, dist: float):
-    """Offset the chain containing `eid`. Positive distance = outward for closed chains. The copy is held by one
-    `offset` dimension of |dist|, so it follows its source and the gap can be edited."""
-    if abs(dist) < TOL:
-        raise ValueError("Offset distance can't be zero")
-    e0 = sk.entities.get(eid)
-    if e0 is None or e0["type"] in ("point", "spline", "ellipse", "text"):
-        raise ValueError("Offset works on lines, arcs and circles")
-    cons = e0.get("construction", False)
-    if e0["type"] == "circle":
-        r = e0["r"] + dist
-        if r <= TOL:
-            raise ValueError("Offset is larger than the circle")
-        new = sk.add_circle(e0["c"], r, cons)
-        _offset_dimension(sk, [(new, eid)], dist)
-        sk.solve()
-        return [new]
-    chain, closed = _chain(sk, eid)
-    # orientation: positive offset = outward on a closed chain
-    s = dist
-    if closed:
-        pts = []
-        for k, fwd in chain:
-            pl = sk.polyline(k, 32)
-            pts.extend(pl if fwd else pl[::-1])
-        pts = np.array(pts)
-        area = 0.5 * np.sum(pts[:, 0] * np.roll(pts[:, 1], -1) - np.roll(pts[:, 0], -1) * pts[:, 1])
-        s = -dist if area > 0 else dist          # CCW: outward is to the right
+_OFFSET_TOO_LARGE = "Offset is too large for this shape"
+
+
+def _offset_side(sk: Sketch, chain, closed: bool, s: float):
+    """Where the copy of `chain` lands when each segment moves `s` to its left (pure: nothing is added to the
+    sketch). Returns (items, joints). Raises ValueError when an arc radius is not positive or a line would reverse."""
     items = []
     for k, fwd in chain:
         e = sk.entities[k]
@@ -243,7 +221,7 @@ def offset(sk: Sketch, eid: str, dist: float):
             r = sk.radius(k)
             r2 = r - s if fwd else r + s
             if r2 <= TOL:
-                raise ValueError("Offset is larger than an arc's radius")
+                raise ValueError(_OFFSET_TOO_LARGE)
             S, E = (sk.P(e["p1"]), sk.P(e["p2"])) if fwd else (sk.P(e["p2"]), sk.P(e["p1"]))
             items.append({"eid": k, "fwd": fwd, "type": "arc", "C": e["c"],
                           "S": C + (S - C) / np.linalg.norm(S - C) * r2,
@@ -264,6 +242,21 @@ def offset(sk: Sketch, eid: str, dist: float):
         joints.append(min(cand, key=lambda p: np.linalg.norm(p - guess)) if cand else guess)
     if not closed:
         joints.append(items[-1]["E"])
+    for i, it in enumerate(items):
+        if it["type"] == "line":
+            a = joints[i]
+            b = joints[(i + 1) % len(joints)] if closed else joints[i + 1]
+            e = sk.entities[it["eid"]]
+            src = sk.P(e["p2"]) - sk.P(e["p1"])
+            if not it["fwd"]:
+                src = -src
+            if (b - a) @ src <= TOL * max(np.linalg.norm(src), 1.0):      # reversed or collapsed to a point
+                raise ValueError(_OFFSET_TOO_LARGE)
+    return items, joints
+
+
+def _offset_build(sk: Sketch, items, joints, closed: bool, cons: bool):
+    """Add one side's points and entities to the sketch. Returns (new ids, point ids)."""
     pids = [sk.add_point(*p) for p in joints]
     new = []
     for i, it in enumerate(items):
@@ -275,7 +268,69 @@ def offset(sk: Sketch, eid: str, dist: float):
             new.append(lid)
         else:
             new.append(sk.add_arc(it["C"], a, b, cons) if it["fwd"] else sk.add_arc(it["C"], b, a, cons))
-    _offset_dimension(sk, [(k, it["eid"]) for k, it in zip(new, items)], dist, first=eid)
+    return new, pids
+
+
+def offset(sk: Sketch, eid: str, dist: float, both: bool = False, caps=None):
+    """Offset the chain containing `eid`. Positive distance = outward for closed chains. The copy is held by one
+    `offset` dimension of |dist|, so it follows its source and the gap can be edited.
+
+    both=True also offsets to the other side, with the same dimension driving both. caps="round" on an open chain
+    then closes the two copies with a half-disc round each end (arcs centred on the source end points, tangent
+    to the copies) and makes the source chain construction, so the result is one region. A closed chain or a
+    circle gives two loops and no caps. Raises ValueError when the offset is too large for the shape."""
+    if abs(dist) < TOL:
+        raise ValueError("Offset distance can't be zero")
+    if caps not in (None, "none", "round"):
+        raise ValueError("Caps must be 'none' or 'round'")
+    e0 = sk.entities.get(eid)
+    if e0 is None or e0["type"] in ("point", "spline", "ellipse", "text"):
+        raise ValueError("Offset works on lines, arcs and circles")
+    cons = e0.get("construction", False)
+    if e0["type"] == "circle":
+        radii = [e0["r"] + dist] + ([e0["r"] - dist] if both else [])
+        if min(radii) <= TOL:
+            raise ValueError(_OFFSET_TOO_LARGE)
+        new = [sk.add_circle(e0["c"], r, cons) for r in radii]
+        _offset_dimension(sk, [(n, eid) for n in new], dist)
+        sk.solve()
+        return new
+    chain, closed = _chain(sk, eid)
+    # orientation: positive offset = outward on a closed chain
+    s = dist
+    if closed:
+        pts = []
+        for k, fwd in chain:
+            pl = sk.polyline(k, 32)
+            pts.extend(pl if fwd else pl[::-1])
+        pts = np.array(pts)
+        area = 0.5 * np.sum(pts[:, 0] * np.roll(pts[:, 1], -1) - np.roll(pts[:, 0], -1) * pts[:, 1])
+        s = -dist if area > 0 else dist          # CCW: outward is to the right
+    sides = [_offset_side(sk, chain, closed, s)]
+    if both:
+        sides.append(_offset_side(sk, chain, closed, -s))      # validated before anything is added
+    new, pairs, ends = [], [], []
+    for items, joints in sides:
+        ids, pids = _offset_build(sk, items, joints, closed, cons)
+        new += ids
+        pairs += [(k, it["eid"]) for k, it in zip(ids, items)]
+        ends.append((ids, pids))
+    if both and caps == "round" and not closed:
+        (ids_p, pids_p), (ids_m, pids_m) = ends
+        first, last = chain[0], chain[-1]
+        e_first, e_last = sk.entities[first[0]], sk.entities[last[0]]
+        c_start = e_first["p1"] if first[1] else e_first["p2"]
+        c_end = e_last["p2"] if last[1] else e_last["p1"]
+        # CCW arcs, as slot() draws them: the end cap runs minus -> plus round the front, the start cap plus -> minus
+        cap_end = sk.add_arc(c_end, pids_m[-1], pids_p[-1], cons)
+        cap_start = sk.add_arc(c_start, pids_p[0], pids_m[0], cons)
+        for cap, a, b in ((cap_start, ids_p[0], ids_m[0]), (cap_end, ids_p[-1], ids_m[-1])):
+            sk.add_constraint("tangent", cap, a)
+            sk.add_constraint("tangent", cap, b)
+        for k, _fwd in chain:
+            sk.entities[k]["construction"] = True
+        new += [cap_start, cap_end]
+    _offset_dimension(sk, pairs, dist, first=eid)
     sk.solve()
     return new
 

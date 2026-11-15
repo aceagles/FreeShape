@@ -9,7 +9,11 @@ The server binds 127.0.0.1 and nothing else; there is no option for another addr
 (ADR 0010). `--host` exists only to refuse: `127.0.0.1` and `localhost` are accepted (both bind 127.0.0.1).
 
 Routes (an exact table; no part of a request is ever joined to a file path):
-    GET  /                      the viewer page (freeshape/static/viewer.html, package data; 404 if not installed)
+    GET  /                      the built Browser client (freeshape/static/app/index.html), or, when it is not built,
+                                a plain page naming `npm --prefix web run build`
+    GET  /viewer                the old viewer page (freeshape/static/viewer.html, package data; 404 if not installed)
+    GET  <file of the client>   a file of the built client, looked up in a table of the files found under
+                                freeshape/static/app/ (see `_client_files`); a path not in the table is 404
     GET  /health                {"ok", "version", "qt_imported", "qt_modules"}
     GET  /tabs                  {"document": {"id", "name"}, "tabs": [session.tabs() entries]}
     GET  /tabs/<id>/outputs     the tab's outputs in the engine wire format (application/octet-stream)
@@ -33,6 +37,7 @@ import socket
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 BIND_HOST = "127.0.0.1"
 MAX_BODY = 1024 * 1024
@@ -42,10 +47,23 @@ BODY_DEADLINE = 30.0            # seconds for the whole body of one request
 DEFAULT_PORT = 8765
 READY_PREFIX = "FREESHAPE_SERVE_READY"
 _TAB_PATH = re.compile(r"^/tabs/([A-Za-z0-9_-]{1,64})/(outputs|mesh\.json|edit)$")
-_FIXED = {"/": ("GET",), "/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
+_FIXED = {"/viewer": ("GET",), "/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
 _EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST"}
 _VIEWER_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
                "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+_CLIENT_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
+               "img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; base-uri 'none'; "
+               "form-action 'none'; frame-ancestors 'none'")
+_CLIENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+                 ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+                 ".json": "application/json; charset=utf-8", ".map": "application/json; charset=utf-8",
+                 ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".webp": "image/webp",
+                 ".woff2": "font/woff2", ".woff": "font/woff", ".wasm": "application/wasm",
+                 ".txt": "text/plain; charset=utf-8"}
+_CLIENT_DIR = Path(__file__).resolve().parent / "static" / "app"     # `npm --prefix web run build` writes here
+_CLIENT_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_NOT_BUILT = (b"The FreeShape client is not built.\n\nBuild it with:\n\n    npm --prefix web run build\n\n"
+              b"then reload this page. The old viewer is at /viewer.\n")
 _REMOTE_MESSAGE = ("remote access needs authentication that does not exist yet; "
                    "serve binds 127.0.0.1 only (use a port forward or the tunnel)")
 
@@ -57,6 +75,37 @@ def _viewer_page():
         return resources.files("freeshape").joinpath("static/viewer.html").read_bytes()
     except (OSError, ModuleNotFoundError, FileNotFoundError):
         return None
+
+
+def _client_files():
+    """{URL path: (file, content type)} for the built client: every regular file under freeshape/static/app/, found
+    by listing the folder, never by joining a request value to a path. A request is answered only when its raw
+    path is a key of this table. File and folder names must be plain (letters, digits, `_`, `.`, `-`, no leading
+    dot); symbolic links are skipped. Empty when the client is not built (no index.html)."""
+    root = _CLIENT_DIR
+    table = {}
+
+    def walk(folder, prefix):
+        try:
+            entries = sorted(folder.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            name = entry.name
+            if entry.is_symlink() or name.startswith(".") or not _CLIENT_NAME.match(name):
+                continue
+            if entry.is_dir():
+                walk(entry, prefix + name + "/")
+            elif entry.is_file():
+                ctype = _CLIENT_TYPES.get(entry.suffix.lower())
+                if ctype is not None:
+                    table[prefix + name] = (entry, ctype)
+
+    walk(root, "/")
+    if "/index.html" not in table:
+        return {}
+    table["/"] = table.pop("/index.html")
+    return table
 
 
 def _qt_modules():
@@ -275,6 +324,9 @@ class _Server:
         tab = None
         if path in _FIXED:
             route, want = path, _FIXED[path][0]
+        elif path == "/" or (_TAB_PATH.match(path) is None and path in (files := _client_files())):
+            route, want = "client", "GET"                          # the table decides; see `_client_files`
+            tab = _client_files().get(path)                        # (file, content type); None: client not built
         else:
             m = _TAB_PATH.match(path)
             if m is None or m.group(1) not in self.tab_ids:
@@ -327,7 +379,12 @@ class _Server:
 
     async def _route(self, route, tab, body):
         session = self.session
-        if route == "/":
+        if route == "client":
+            if tab is None:                                      # `tab` carries (file, content type) for this route
+                return self._send(200, _NOT_BUILT, "text/plain; charset=utf-8")
+            data = await asyncio.get_running_loop().run_in_executor(None, tab[0].read_bytes)
+            return self._send(200, data, tab[1], [("Content-Security-Policy", _CLIENT_CSP)])
+        if route == "/viewer":
             page = _viewer_page()
             if page is None:
                 return self._send(404, b"The viewer page is not installed; see /tabs and /tabs/<id>/mesh.json.\n",

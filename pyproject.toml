@@ -19,5 +19,5 @@ freeshape = "freeshape.__main__:main"
 include = ["freeshape*"]
 
 [tool.setuptools.package-data]
-freeshape = ["assets/*", "static/*.html", "addons/**/*.csv", "addons/**/plugin.json", "addons/**/NOTICE.md", "addons/*/*.svg",
+freeshape = ["assets/*", "static/*.html", "static/app/**/*", "addons/**/*.csv", "addons/**/plugin.json", "addons/**/NOTICE.md", "addons/*/*.svg",
              "plugin_examples/*.py"]

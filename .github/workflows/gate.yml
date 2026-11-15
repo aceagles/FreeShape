@@ -8,6 +8,7 @@
 #   check    build, lint and e2e, one runner each, running the harness.jsonc command unchanged.
 #   test     the pytest suite split into SHARDS shards per OCP venv, one runner each. A shard collects
 #            the whole suite and runs every SHARDS-th test id (round robin), exactly as fs-gate does.
+#   web      the Browser client in web/: npm ci, check, build, e2e:static (WebKit), on Node 22 on the runner.
 #   gate     green only if every job above is green. Wait on this one.
 #
 # Containers run with no network, as a non-root user, with .git mounted read-only, as in fs-gate.
@@ -229,9 +230,35 @@ jobs:
             -v "$PWD:$PWD" -v "$PWD/.git:$PWD/.git:ro" -w "$PWD" \
             --entrypoint sh "$IMAGE" -c "$SCRIPT"
 
+  web:
+    # The Browser client (web/). Runs on the runner with Node, not in the harness container (no network there).
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npx playwright install --with-deps webkit
+      - run: npm run e2e:static
+        env:
+          CI: "true"
+
   gate:
     if: always()
-    needs: [prepare, check, test]
+    needs: [prepare, check, test, web]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -240,7 +267,8 @@ jobs:
           PREPARE: ${{ needs.prepare.result }}
           CHECK: ${{ needs.check.result }}
           TEST: ${{ needs.test.result }}
+          WEB: ${{ needs.web.result }}
           SHA: ${{ needs.prepare.outputs.sha }}
         run: |
-          echo "commit $SHA: prepare=$PREPARE check=$CHECK test=$TEST"
-          [ "$PREPARE" = success ] && [ "$CHECK" = success ] && [ "$TEST" = success ]
+          echo "commit $SHA: prepare=$PREPARE check=$CHECK test=$TEST web=$WEB"
+          [ "$PREPARE" = success ] && [ "$CHECK" = success ] && [ "$TEST" = success ] && [ "$WEB" = success ]

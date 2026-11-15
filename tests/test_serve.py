@@ -187,8 +187,8 @@ def test_outputs_come_back_in_the_wire_format(served):
     assert out.tab == served.ids["asm"] and len(out.instances) == 2
 
 
-def test_root_is_the_viewer_page(served):
-    status, h, body = served.request("GET", "/")
+def test_viewer_route_is_the_viewer_page(served):
+    status, h, body = served.request("GET", "/viewer")
     assert status == 200 and h["Content-Type"].startswith("text/html") and b"<title>FreeShape viewer</title>" in body
 
 

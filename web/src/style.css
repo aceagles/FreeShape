@@ -1,0 +1,32 @@
+:root {
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: #1b1d21;
+  color: #e6e8eb;
+}
+.placeholder {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.placeholder h1 {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 600;
+}
+.placeholder p {
+  margin: 0;
+  font-size: 18px;
+  color: #9aa1ab;
+}

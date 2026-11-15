@@ -40,6 +40,7 @@ MARK = {"overlap": "●", "contained": "⊂", "thread": "≈", "failed": "⚠"}
 KIND_WORD = {"overlap": "Overlap", "contained": "B inside A", "thread": "Thread fit (expected)",
              "failed": "Could not check"}
 ROLE_CLASH = Qt.UserRole + 1
+AMBER = (0.95, 0.60, 0.10)                  # an expected thread overlap, when drawn
 GREY = QBrush(QColor("#9aa0a6"))
 MIN_BOX = 1.0                               # mm; the zoom never frames less than this
 
@@ -63,6 +64,7 @@ def surviving_pairs(bodies, skip):
 class AssemblyHost(QObject):
     """What the panel needs from an Assembly tab."""
     changed = Signal()
+    has_standard = True                       # the panel shows "Include standard content" for this host
 
     def __init__(self, ctl):
         super().__init__()
@@ -113,10 +115,20 @@ class _Item(QTreeWidgetItem):
     """A result row that sorts by volume, not by its text."""
 
     def __lt__(self, other):
+        if isinstance(other, _Group):
+            return self.treeWidget().header().sortIndicatorOrder() == Qt.AscendingOrder
         col = self.treeWidget().sortColumn() if self.treeWidget() else 0
         if col == 2:
             return self.clash.volume < other.clash.volume
         return self.text(col).lower() < other.text(col).lower()
+
+
+class _Group(QTreeWidgetItem):
+    """The collapsed "Expected (threads)" group: it always sorts below the counted rows."""
+
+    def __lt__(self, other):
+        tw = self.treeWidget()
+        return bool(tw) and tw.header().sortIndicatorOrder() == Qt.DescendingOrder
 
 
 class InterferencePanel(QFrame):
@@ -141,6 +153,8 @@ class InterferencePanel(QFrame):
         self._result = None               # the last ClashList shown
         self._scope = None                # None = every visible part, else a set of ids
         self._cache = {}
+        self._left = 0                    # standard parts the last check left out
+        self._group = None                # the Expected (threads) group item, or None
         self._ignored = set()             # frozenset pairs ignored this session
         self._ghost_meshes = {}           # id(clash) -> Mesh
         self._given = None                # the list this panel put in vp.ghosts
@@ -208,6 +222,13 @@ class InterferencePanel(QFrame):
         self.tree.viewport().installEventFilter(self)
         lay.addWidget(self.tree)
 
+        self.include_std = QCheckBox("Include standard content")
+        self.include_std.setChecked(True)
+        self.include_std.setToolTip("Check Standard parts too. A screw fastened into its hole is listed as an expected "
+                                    "thread overlap, not counted. Off: no pair with a Standard part is checked.")
+        self.include_std.toggled.connect(lambda _on: self.check())
+        self.include_std.setVisible(bool(getattr(host, "has_standard", False)))
+        lay.addWidget(self.include_std)
         self.iso = QCheckBox("Isolate the two parts")
         self.iso.setToolTip("Show only the parts of the current row (view only: nothing is hidden in the Assembly)")
         self.iso.toggled.connect(lambda _on: self._apply_view())
@@ -262,16 +283,21 @@ class InterferencePanel(QFrame):
             self.status.setText("Close the exploded view first: the check uses the real positions.")
             return
         bodies = self.host.bodies(self._scope)
-        n = surviving_pairs(bodies, self._skip_pairs())
+        n = surviving_pairs(bodies, self._rules()[0])
         if n <= OPEN_RUNS_AT_MOST:
             self.check()
         else:
             self.status.setText(f"{n:,} pairs to check: press Check to start.")
 
-    def _skip_pairs(self):
-        """Today's kernel rule: a Standard part fastened to another instance is left out (I5.5 adds the checkbox)."""
-        skip, expected, _left = self.host.pair_rules(True)
-        return frozenset(skip) | frozenset(expected)
+    def _rules(self):
+        """(skip_pairs, expected_pairs, standard parts left out) for the checkbox as it stands now."""
+        if not getattr(self.host, "has_standard", False):
+            return frozenset(), frozenset(), 0
+        return self.host.pair_rules(self.include_std.isChecked())
+
+    def set_include_standard(self, on):
+        """Tick or untick "Include standard content"; a change re-runs the check."""
+        self.include_std.setChecked(bool(on))
 
     def _check_or_cancel(self):
         if self._running:
@@ -296,7 +322,8 @@ class InterferencePanel(QFrame):
         if self.executor is None:
             self.executor = ThreadPoolExecutor(1, thread_name_prefix="interference")
         ev = self._cancel
-        self._future = launch_check(self.executor, bodies, self._skip_pairs(), frozenset(),
+        skip, expected, self._left = self._rules()
+        self._future = launch_check(self.executor, bodies, skip, expected,
                                     self._set_progress, ev.is_set, self._cache)
         self._run_of_future = self._run
         self.status.setText("Checking…")
@@ -365,6 +392,7 @@ class InterferencePanel(QFrame):
         self._set_current(None)
         self.tree.setSortingEnabled(False)
         self.tree.clear()
+        self._group = None
         for c in res:
             if frozenset((c.a, c.b)) in self._ignored:
                 continue
@@ -374,11 +402,23 @@ class InterferencePanel(QFrame):
             it.setData(0, ROLE_CLASH, c.kind)
             it.setTextAlignment(2, Qt.AlignRight | Qt.AlignVCenter)
             it.setToolTip(0, KIND_WORD[c.kind] + (f": {c.note}" if c.note else ""))
-            self.tree.addTopLevelItem(it)
+            if c.kind == "thread":
+                if self._group is None:
+                    self._group = _Group(["Expected (threads)"])
+                    self._group.setFirstColumnSpanned(True)
+                    self.tree.addTopLevelItem(self._group)
+                self._group.addChild(it)
+            else:
+                self.tree.addTopLevelItem(it)
         self.tree.setSortingEnabled(True)
         self.tree.sortItems(2, Qt.DescendingOrder)
-        for r in range(self.tree.topLevelItemCount()):
-            self._grey(self.tree.topLevelItem(r), self._stale)
+        if self._group is not None:
+            self._group.setText(0, f"Expected (threads) ({self._group.childCount()})")
+            self._group.setToolTip(0, "A screw is modelled at its major diameter and a tapped hole at the tap drill, "
+                                      "so they overlap by design. Not counted.")
+            self._group.setExpanded(False)
+        for it in self._items():
+            self._grey(it, self._stale)
         self.detail.setText("")
         self._footer()
         self._give(self._all_ghosts(None))
@@ -388,28 +428,44 @@ class InterferencePanel(QFrame):
         if res is None:
             return
         shown = [c for c in res if frozenset((c.a, c.b)) not in self._ignored]
-        n_ok = sum(1 for c in shown if c.kind != "failed")
-        n_fail = len(shown) - n_ok
+        n_thread = sum(1 for c in shown if c.kind == "thread")
+        n_ok = sum(1 for c in shown if c.kind not in ("failed", "thread"))
+        n_fail = len(shown) - n_ok - n_thread
         parts = []
         if res.incomplete:
             parts.append(f"Incomplete: stopped after {res.pairs_checked:,} of {res.pairs_total:,} pairs.")
         if n_ok:
             parts.append(f"{n_ok} interference{'s' if n_ok != 1 else ''}.")
         elif not n_fail and not res.incomplete:
-            parts.append("No interference: no parts overlap.")
+            parts.append("No interference." if n_thread else "No interference: no parts overlap.")
+        if n_thread:
+            parts.append(f"{n_thread} expected thread overlap{'s' if n_thread != 1 else ''} not counted.")
         if n_fail:
             parts.append(f"{n_fail} pair{'s' if n_fail != 1 else ''} could not be checked.")
+        if self._left:
+            parts.append(f"{self._left} standard part{'s' if self._left != 1 else ''} not checked.")
         if self._ignored:
             parts.append(f"{len(self._ignored)} ignored this session.")
         if self._stale:
             parts.append("Out of date. Check again.")
         self.status.setText(" ".join(parts))
 
+    def _items(self):
+        """Every result row item: the counted rows top to bottom, then those in the Expected (threads) group."""
+        out = []
+        for r in range(self.tree.topLevelItemCount()):
+            it = self.tree.topLevelItem(r)
+            if isinstance(it, _Group):
+                out.extend(it.child(k) for k in range(it.childCount()))
+            else:
+                out.append(it)
+        return sorted(out, key=lambda i: i.clash.kind == "thread")
+
     def rows(self):
         """The rows as shown, top to bottom: dicts with a, b, a_name, b_name, volume, kind, note, lo, hi."""
         out = []
-        for r in range(self.tree.topLevelItemCount()):
-            c = self.tree.topLevelItem(r).clash
+        for it in self._items():
+            c = it.clash
             out.append({"a": c.a, "b": c.b, "a_name": self.host.name(c.a), "b_name": self.host.name(c.b),
                         "volume": c.volume, "kind": c.kind, "note": c.note, "lo": c.lo, "hi": c.hi})
         return out
@@ -427,8 +483,8 @@ class InterferencePanel(QFrame):
         if self._closed or self._stale:
             return
         self._stale = True
-        for r in range(self.tree.topLevelItemCount()):
-            self._grey(self.tree.topLevelItem(r), True)
+        for it in self._items():
+            self._grey(it, True)
         if self._result is not None:
             self._footer()
         elif not self._running:
@@ -457,7 +513,7 @@ class InterferencePanel(QFrame):
             m = self._mesh(c)
             if m is not None:
                 alpha = ALL if current is None else (STRONG if c is current else FAINT)
-                out.append((m, (*RED, alpha)))
+                out.append((m, (*(AMBER if c.kind == "thread" else RED), alpha)))
         return out
 
     def _give(self, ghosts):
@@ -515,9 +571,12 @@ class InterferencePanel(QFrame):
 
     def activate(self, row):
         """Make row `row` (0-based, as rows() lists it) the current one, as a click does."""
-        it = self.tree.topLevelItem(row)
-        if it is None:
+        items = self._items()
+        if not 0 <= row < len(items):
             return
+        it = items[row]
+        if it.parent() is not None:
+            it.parent().setExpanded(True)
         self.tree.blockSignals(True)
         self.tree.setCurrentItem(it)
         self.tree.blockSignals(False)
@@ -584,7 +643,16 @@ class InterferencePanel(QFrame):
             self._set_current(None)
             self._set_hl(None)
             self._apply_view()
-        self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
+        par = item.parent()
+        if par is not None:
+            par.removeChild(item)
+            if par.childCount() == 0:
+                self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(par))
+                self._group = None
+            else:
+                par.setText(0, f"Expected (threads) ({par.childCount()})")
+        else:
+            self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
         self._give(self._all_ghosts(self._current.clash if self._current is not None else None))
         self._footer()
 

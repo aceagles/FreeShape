@@ -64,7 +64,7 @@ def snapshot(doc):
 
 def _build_blobs(doc):
     """{key: bytes} of the BREP and name-map blobs that the Document's stored builds name (a Python feature's or
-    a Derived feature's `parts`, a plugin feature's `breps`); one it cannot read is left out (its feature is then
+    a Derived feature's `parts`, a plugin feature's `breps`) and its Context features' captures; one it cannot read is left out (its feature is then
     red in the worker, as it would be here)."""
     out = {}
     for entry in doc.python_builds.values():
@@ -77,6 +77,8 @@ def _build_blobs(doc):
                     out[key] = doc._blob_get(key)
                 except (blobstore.BlobError, ValueError, TypeError):
                     pass
+    for key, data in doc._context_blobs().items():      # the captures of its Context features: the worker has no other way to read them
+        out.setdefault(key, data)
     return out
 
 
@@ -252,6 +254,7 @@ class _Result:
     def __init__(self, snap, out, parts):
         self.snap, self.errors, self.variables, self.revision = snap, dict(out.errors), dict(out.variables), out.revision
         self.parts = parts           # [(PartOut, shape, K.Mesh)]
+        self.context = []            # the same for the Context bodies (reference parts, shown but never the studio's)
         self.connectors = list(getattr(out, "connectors", []))     # [MateConnectorOut]
         self.planes = dict(getattr(out, "planes", None) or {})     # plane feature id -> Plane.to_dict()
         self.axes = dict(getattr(out, "axes", None) or {})         # axis feature id -> {"o", "d", "span"}
@@ -395,16 +398,18 @@ class StudioEngine(QObject):
 
     def _decode(self, rec, snap, out):
         """The parts of a StudioOutputs as shapes and meshes (a part that did not change is not decoded again)."""
-        parts, cache = [], {}
-        for p in out.parts:
-            hit = rec.cache.get(p.hash)
-            if hit is None:
-                shape = K.shape_from_brep(p.brep)
-                hit = (shape, kernel_mesh(p.mesh, len(K.faces(shape))) if p.mesh is not None else None)
-            cache[p.hash] = hit
-            parts.append((p, hit[0], hit[1]))
+        parts, ctx, cache = [], [], {}
+        for into, outs in ((parts, out.parts), (ctx, getattr(out, "context", None) or ())):
+            for p in outs:
+                hit = rec.cache.get(p.hash) or cache.get(p.hash)
+                if hit is None:
+                    shape = K.shape_from_brep(p.brep)
+                    hit = (shape, kernel_mesh(p.mesh, len(K.faces(shape))) if p.mesh is not None else None)
+                cache[p.hash] = hit
+                into.append((p, hit[0], hit[1]))
         rec.cache = cache
         res = _Result(snap, out, parts)
+        res.context = ctx
         res.copies = self._plugin_copies(rec, snap)
         if res.copies and res.copies[0]:    # the worker holds the copies it made: the window's taking them is no change
             rec.have = dict(rec.have, python_builds=dict(rec.have.get("python_builds") or {}, **res.copies[0]))
@@ -479,13 +484,15 @@ class StudioEngine(QObject):
     def _apply(self, rec, res):
         doc = rec.doc
         st = F.ModelState()
-        for p, shape, mesh in res.parts:
+        shown = [(p, shape, mesh, False) for p, shape, mesh in res.parts]
+        shown += [(p, shape, mesh, True) for p, shape, mesh in res.context]     # Context bodies: reference parts
+        for p, shape, mesh, ref in shown:
             fc = {i - 1: tuple(c) for i, c in p.face_colors.items()} if p.face_colors else None
-            st.parts[p.id] = F.Part(p.id, p.name, shape, tuple(p.color), fc)
+            st.parts[p.id] = F.Part(p.id, p.name, shape, tuple(p.color), fc, ref)
             names = {(_LETTER[k], i): n for k, d in p.names.items() for i, n in d.items()}
             if names:
                 st.set_named(p.id, N.NamedShape(shape, names))
-        st.engine_names = {p.id: p.names for p, *_ in res.parts}      # the engine's name maps, for picking
+        st.engine_names = {p.id: p.names for p, *_ in shown}      # the engine's name maps, for picking
         st.connectors = {c.id: dict({"name": c.name, "part": c.part or None, "frame": c.frame},
                                     **({"sketch": c.sketch} if getattr(c, "sketch", "") else {}))
                          for c in res.connectors}
@@ -520,7 +527,7 @@ class StudioEngine(QObject):
         doc._apply_overrides(st)
         rec.shown = {p.id: p.hash for p, *_ in res.parts}
         rec.meshes = {}
-        for p, shape, mesh in res.parts:
+        for p, shape, mesh, _ref in shown:
             if mesh is not None:
                 self.window.viewport.seed_mesh(shape, mesh)
                 rec.meshes[p.id] = mesh_hash(mesh)

@@ -212,6 +212,8 @@ class TabOutputs:
 @dataclass
 class StudioOutputs(TabOutputs):
     parts: list = field(default_factory=list)          # [PartOut], in the studio's part order
+    context: list = field(default_factory=list)        # [PartOut] of the Context bodies (reference parts), for the
+    #                                                    window only; never in `parts`, so no consumer takes them as the studio's
     sketches: list = field(default_factory=list)       # [SketchOut]
     connectors: list = field(default_factory=list)     # [MateConnectorOut], in feature order
     variables: dict = field(default_factory=dict)      # name -> number

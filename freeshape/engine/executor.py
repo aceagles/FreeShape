@@ -358,7 +358,9 @@ class StudioTab(_Tab):
             if getattr(p, "named", None) is None:
                 p.named = st.named(p.id)
         parts = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
-                 if not p.reference]     # I5.3: a Context body never leaves the studio
+                 if not p.reference]     # I5.3: a Context body never leaves the studio ...
+        context = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
+                   if p.reference]       # ... except to its own window, in `context`, so it can show and mark them
         sketches = []
         for fid, res in st.sketches.items():
             f = doc.feature(fid)
@@ -367,7 +369,7 @@ class StudioTab(_Tab):
         planes = {str(fid): plain(pl.to_dict()) for fid, pl in st.planes.items()}
         axes = {str(fid): plain(dict(ax)) for fid, ax in getattr(st, "axes", {}).items()}
         return StudioOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
-                             errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts,
+                             errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts, context=context,
                              sketches=sketches, connectors=connectors, variables=plain(dict(st.vars)),
                              planes=planes, axes=axes, error_refs=plain(dict(getattr(doc, "error_refs", {}))))
 

@@ -1,6 +1,8 @@
 """Left-hand panels: the feature list (with rollback bar) and the parts list."""
 from __future__ import annotations
 
+import weakref
+
 from PySide6.QtCore import Qt, Signal, QSize, QRect, QPointF
 from PySide6.QtGui import QColor, QIcon, QPixmap, QPainter, QFont, QBrush, QPainterPath, QPen
 from PySide6.QtWidgets import (
@@ -240,8 +242,60 @@ class FeatureList(_EyeMixin, QListWidget):
         self.context_status = None       # callable(fid) -> status text of a Context feature (the main window sets it)
         self._folder_of = {}
         self._eye_setup()
+        # scroll position: kept across a refill, remembered per document across tab switches; a new document
+        # opens scrolled to the bottom, where the newest features and the rollback bar are
+        self._shown_doc = None           # weakref to the document the rows show
+        self._shown_count = 0            # how many features it had then
+        self._scroll_of = weakref.WeakKeyDictionary()   # document -> (scroll value, was at the bottom)
+
+    def _at_bottom(self):
+        sb = self.verticalScrollBar()
+        return sb.value() >= sb.maximum()
+
+    def _remember_scroll(self):
+        doc = self._shown_doc() if self._shown_doc is not None else None
+        if doc is not None:
+            try:
+                self._scroll_of[doc] = (self.verticalScrollBar().value(), self._at_bottom())
+            except TypeError:            # a document that cannot be weakly referenced: nothing to remember
+                pass
+        return doc
+
+    def _restore_scroll(self, doc, prev_doc):
+        """After a refill: stay where the user was; jump to the end when a feature was added or this document
+        has not been shown before; on a switch back to a document, go back to where it was left."""
+        self.doItemsLayout()                         # the scroll range of the new rows, before setting a value
+        sb = self.verticalScrollBar()
+        n = len(doc.features)
+        try:
+            saved = self._scroll_of.get(doc)
+        except TypeError:
+            saved = None
+        added = doc is prev_doc and n > self._shown_count
+        if saved is None or added:
+            rb = next((self.item(i) for i in range(self.count()) if self.item(i).data(ROLE_KIND) == "rollback"), None)
+            if rb is not None and self.row(rb) < self.count() - 1:
+                self.scrollToItem(rb)                # rolled back: keep the bar (and the new feature above it) in view
+            else:
+                self.scrollToBottom()
+        elif saved[1]:
+            self.scrollToBottom()
+        else:
+            sb.setValue(min(saved[0], sb.maximum()))
+        try:
+            self._shown_doc = weakref.ref(doc)
+        except TypeError:
+            self._shown_doc = None
+        self._shown_count = n
+
+    def resizeEvent(self, e):
+        at_bottom = self._at_bottom()
+        super().resizeEvent(e)
+        if at_bottom:                                # the panel grew or shrank: the end stays in view
+            self.scrollToBottom()
 
     def populate(self, doc, editing_id=None, marks=None):
+        prev_doc = self._remember_scroll()
         self.blockSignals(True)
         self.clear()
         self._folder_of = {f["id"]: f.get("folder") for f in doc.features}
@@ -335,6 +389,7 @@ class FeatureList(_EyeMixin, QListWidget):
         if active >= len(doc.features):
             self._add_rollback()
         self.blockSignals(False)
+        self._restore_scroll(doc, prev_doc)
 
     def _add_folder(self, doc, fo, info, members, force_open):
         open_ = bool(info.get("open", True)) or force_open
@@ -590,6 +645,44 @@ class PartsList(_EyeMixin, QListWidget):
         return [it.data(ROLE_ID) for it in self.selectedItems()]
 
 
+def _chevron_icon(open_, size=16):
+    """The section header's arrow, drawn like a folder row's: down when open, right when closed."""
+    ic = QIcon()
+    for scale in (1, 2):
+        pm = QPixmap(size * scale, size * scale)
+        pm.fill(Qt.transparent)
+        pm.setDevicePixelRatio(scale)
+        p = QPainter(pm)
+        paint_chevron(p, QRect(0, 0, size, size), open_)
+        p.end()
+        ic.addPixmap(pm)
+    return ic
+
+
+class SectionHeader(QToolButton):
+    """A left-panel section title that opens and closes its section on a click. `text()` stays the plain
+    title; the arrow is the icon. `toggled(open)` fires on a change."""
+
+    def __init__(self, title, open_=True):
+        super().__init__()
+        self.setObjectName("sectionHeader")
+        self.setText(title)
+        self.setCheckable(True)
+        self.setAutoRaise(True)
+        self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.setCursor(Qt.PointingHandCursor)
+        self.toggled.connect(self._arrow)
+        self.setChecked(open_)
+        self._arrow(open_)
+
+    def _arrow(self, open_):
+        self.setIcon(_chevron_icon(open_))
+        self.setToolTip(f"Hide {self.text().split(' (')[0]}" if open_ else f"Show {self.text().split(' (')[0]}")
+
+    def is_open(self):
+        return self.isChecked()
+
+
 class LeftPanel(QWidget):
     def __init__(self):
         super().__init__()
@@ -619,11 +712,11 @@ class LeftPanel(QWidget):
         sep.setFixedHeight(1)
         sep.setStyleSheet("background:#d5d9de;")
         lay.addWidget(sep)
-        self.parts_header = QLabel("Parts")
-        self.parts_header.setObjectName("sectionHeader")
-        lay.addWidget(self.parts_header)
+        self.parts_header = SectionHeader("Parts")          # click to hide the parts and give the features the room
+        lay.addWidget(self.parts_header, 0, Qt.AlignLeft)
         self.parts = PartsList()
         lay.addWidget(self.parts, 2)
+        self.parts_header.toggled.connect(self.parts.setVisible)
         self.setMinimumWidth(220)
 
 
@@ -701,18 +794,31 @@ class DependenciesPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        self.header = QLabel("Dependencies")
-        self.header.setObjectName("sectionHeader")
-        lay.addWidget(self.header)
+        # starts closed: it is seldom needed, and open it takes about half the column from the feature list
+        self.header = SectionHeader("Dependencies", open_=False)
+        lay.addWidget(self.header, 0, Qt.AlignLeft)
+        self.body = QWidget()
+        bl = QVBoxLayout(self.body)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(0)
         self.uses_list = QListWidget()
         self.used_by_list = QListWidget()
         for title, lst in (("Uses", self.uses_list), ("Used by", self.used_by_list)):
             lab = QLabel(title)
             lab.setObjectName("sectionHeader")
-            lay.addWidget(lab)
+            bl.addWidget(lab)
             lst.setMaximumHeight(110)
             lst.itemClicked.connect(self._clicked)
-            lay.addWidget(lst)
+            bl.addWidget(lst)
+        lay.addWidget(self.body)
+        self.body.setVisible(False)
+        self.header.toggled.connect(self.body.setVisible)
+
+    def set_open(self, open_):
+        self.header.setChecked(bool(open_))
+
+    def is_open(self):
+        return self.header.is_open()
 
     def populate(self, view):
         """`view` is links.dependency_view's {uses, used_by}, or None (no tab of a Document)."""
@@ -731,6 +837,8 @@ class DependenciesPanel(QWidget):
                 elif e["state"] in DEP_ATTENTION_STATES:
                     it.setForeground(QColor("#b06000"))
                 lst.addItem(it)
+        n = len(view["uses"]) + len(view["used_by"])
+        self.header.setText(f"Dependencies ({n})" if n else "Dependencies")    # a count, so a closed section still says
 
     def entries(self):
         """The rows as text: (uses, used_by)."""

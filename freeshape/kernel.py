@@ -1333,8 +1333,10 @@ def edge_faces(shape, edge):
     return out
 
 
-def _try_blend(make, shape, edge_list, size, with_history=False, two=None):
+def _try_blend(make, shape, edge_list, size, with_history=False, two=None, why=None):
     """The blended shape, or None. with_history=True returns (shape, history of this maker) or None.
+    `why`, a dict, is filled on a failure: "cause" is "exception" (Build raised; "exc" holds it), "not_done"
+    (IsDone() false) or "rejected" (_blend_ok refused the result), and "maker" is the maker, for _diagnose_blend.
     `two` is (kind, second, faces) for a chamfer with two distances ("two": second is the other
     distance) or a distance and an angle ("angle": second is the angle in radians); faces[i] is the
     face of edge_list[i] on which `size` is measured."""
@@ -1346,14 +1348,23 @@ def _try_blend(make, shape, edge_list, size, with_history=False, two=None):
             mk.Add(float(size), float(two[1]), e, _as_face(two[2][i]))
         else:
             mk.AddDA(float(size), float(two[1]), e, _as_face(two[2][i]))
+    if why is not None:
+        why.clear()
+        why["maker"] = mk
     try:
         mk.Build()
-    except Exception:
+    except Exception as exc:
+        if why is not None:
+            why.update(cause="exception", exc=exc)
         return None
     if not mk.IsDone():
+        if why is not None:
+            why["cause"] = "not_done"
         return None
     out = mk.Shape()
     if not _blend_ok(shape, out):
+        if why is not None:
+            why["cause"] = "rejected"
         return None
     return (out, _maker_history(mk, [shape])) if with_history else out
 
@@ -1387,12 +1398,182 @@ def fillet(shape, edge_list, radius: float, with_history=False):
         raise KernelError("Select edges to fillet")
     if radius <= 0:
         raise KernelError("Radius must be positive")
-    out = _try_blend(BRepFilletAPI_MakeFillet, shape, edge_list, radius, with_history)
+    why = {}
+    out = _try_blend(BRepFilletAPI_MakeFillet, shape, edge_list, radius, with_history, why=why)
     if out is None:
         best = _largest_blend(BRepFilletAPI_MakeFillet, shape, edge_list, radius)
         hint = f" — the largest that works here is about {_nice_down(best):g} mm" if best else ""
-        raise KernelError(f"Fillet radius too large for these edges (the rounds would overlap or not fit){hint}")
+        raise _fillet_failure(shape, edge_list, why, best is not None, hint)
     return out
+
+
+def fillet_prechecks(shape, edge_list):
+    """Checks before the kernel runs. Returns (edges to fillet, [warning text]); raises KernelError (with
+    `failed_edges`) when nothing is left to fillet. An edge with fewer than two distinct faces (a seam, where a
+    surface closes on itself, or an open edge) and an edge that is already smooth (continuity above C0) are
+    dropped with a warning when other edges remain: OpenCascade ignores a seam among other edges today, and a face
+    pick selects its seam too. A corner where four or more edges meet is only a warning here; the build decides
+    (and says so if it fails). A check never rejects a selection that builds today."""
+    from OCP.GeomAbs import GeomAbs_C0
+    one_face, smooth = [], []
+    for e in edge_list:
+        fs = edge_faces(shape, e)
+        if len(fs) < 2:
+            one_face.append(e)
+            continue
+        try:
+            if BRep_Tool.Continuity_s(e, _as_face(fs[0]), _as_face(fs[1])) != GeomAbs_C0:
+                smooth.append(e)
+        except Exception:
+            pass
+    keep = [e for e in edge_list if not any(e.IsSame(o) for o in one_face + smooth)]
+    warnings = []
+    for e in one_face:
+        warnings.append(f"{_edge_text(e)} is a seam or an open edge with only one face; it was left out")
+    for e in smooth:
+        warnings.append(f"{_edge_text(e)} is already smooth (it joins its faces tangentially); it was left out")
+    if not keep:
+        if one_face:
+            others = []
+            for e in one_face:
+                for f in edge_faces(shape, e):
+                    for o in edges(f):
+                        if len(edge_faces(shape, o)) >= 2 and not any(o.IsSame(x) for x in others):
+                            others.append(o)
+            msg = (f"{_edge_text(one_face[0])} is a seam or an open edge: it has only one face, so there is no "
+                   f"corner to round")
+            if others:
+                msg += ". The edges next to it that can be rounded are " + "; ".join(_edge_text(o) for o in others[:4])
+        else:
+            msg = f"{_edge_text(smooth[0])} is already smooth: there is no sharp edge to round"
+        err = KernelError(msg)
+        err.failed_edges, err.failed_vertices = list(one_face + smooth), []
+        raise err
+    try:
+        for corner in _crowded_corners(shape, keep):
+            warnings.append(_corner_text(corner))
+    except Exception:
+        pass
+    return keep, warnings
+
+
+def _edge_text(e):
+    """'the edge from (x, y, z) to (x, y, z)', or 'the curved edge near (x, y, z)' for one that is not a line."""
+    try:
+        info = edge_info(e)
+        if info["type"] == int(GeomAbs_Line):
+            a, b = _vertex_xyz(TopExp.FirstVertex_s(e)), _vertex_xyz(TopExp.LastVertex_s(e))
+            return "the edge from ({:.3f}, {:.3f}, {:.3f}) to ({:.3f}, {:.3f}, {:.3f})".format(*a, *b)
+        return "the curved edge near ({:.3f}, {:.3f}, {:.3f})".format(*info["c"])
+    except Exception:
+        return "an edge"
+
+
+# what OpenCascade's per-contour status means for a person (ChFiDS_ErrorStatus)
+def _status_text(status):
+    from OCP.ChFiDS import ChFiDS_StartsolFailure, ChFiDS_TwistedSurface, ChFiDS_WalkingFailure
+    if status == ChFiDS_StartsolFailure:
+        return "the radius does not fit at the start of this edge"
+    if status == ChFiDS_TwistedSurface:
+        return "the round would fold over itself here - the radius is larger than the curve of the neighbouring face"
+    if status == ChFiDS_WalkingFailure:
+        return "the round could not be followed along this edge"
+    return "OpenCascade could not build the round along this edge"
+
+
+def _diagnose_blend(mk):
+    """What a failed MakeFillet says about where and why: {"reasons": [text], "edges": [edge shapes],
+    "vertices": [xyz], "has_result": bool or None}. Reads only the inspection methods the I8.1 spike found callable
+    on both OCP builds. Runs after a failure only, and never raises: whatever cannot be read is left out."""
+    out = {"reasons": [], "edges": [], "vertices": [], "has_result": None}
+    try:
+        out["has_result"] = bool(mk.HasResult())
+    except Exception:
+        pass
+    try:
+        nc = mk.NbContours()
+        for i in range(1, mk.NbFaultyContours() + 1):
+            ic = mk.FaultyContour(i)
+            if not 1 <= ic <= nc:                  # OpenCascade would dereference a missing spine
+                continue
+            es = [mk.Edge(ic, j) for j in range(1, mk.NbEdges(ic) + 1)]
+            out["edges"] += es
+            where = " and ".join(_edge_text(e) for e in es[:3]) + (" ..." if len(es) > 3 else "")
+            out["reasons"].append(f"{where}: {_status_text(mk.StripeStatus(ic))}")
+    except Exception:
+        pass
+    try:
+        for i in range(1, mk.NbFaultyVertices() + 1):
+            xyz = tuple(float(x) for x in _vertex_xyz(mk.FaultyVertex(i)))
+            out["vertices"].append(xyz)
+            out["reasons"].append("the rounds could not be joined at this corner ({:.3f}, {:.3f}, {:.3f})".format(*xyz))
+    except Exception:
+        pass
+    return out
+
+
+def _crowded_corners(shape, edge_list):
+    """[(xyz, edges at it, selected edges at it)] for every vertex where four or more edges meet and a selected
+    edge ends or branches (not exactly two selected edges passing through). OpenCascade does not handle a round
+    contour that ends at such a corner (the header of BRepFilletAPI_MakeFillet.Build)."""
+    m = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_VERTEX, TopAbs_EDGE, m)
+    out, seen = [], []
+    for e in edge_list:
+        for v in (TopExp.FirstVertex_s(e), TopExp.LastVertex_s(e)):
+            if v.IsNull() or any(v.IsSame(o) for o in seen) or not m.Contains(v):
+                continue
+            seen.append(v)
+            at = []
+            for x in m.FindFromKey(v):
+                if not any(x.IsSame(o) for o in at) and not BRep_Tool.Degenerated_s(_as_edge(x)):
+                    at.append(x)
+            sel = [x for x in at if any(x.IsSame(o) for o in edge_list)]
+            if len(at) >= 4 and sel and len(sel) != 2:
+                out.append((tuple(float(c) for c in _vertex_xyz(v)), [_as_edge(x) for x in at], [_as_edge(x) for x in sel]))
+    return out
+
+
+def _corner_text(corner):
+    xyz, at, sel = corner
+    return ("{} edges meet at the vertex ({:.3f}, {:.3f}, {:.3f}); OpenCascade cannot end a round where four or "
+            "more edges meet".format(len(at), *xyz))
+
+
+def _fillet_failure(shape, edge_list, why, smaller_works, hint):
+    """The KernelError for a failed fillet. "Radius too large" is said only when `smaller_works` (the search found
+    a size that builds, `hint` says which); otherwise the reasons the maker gave are. The error carries the failing
+    edges (`failed_edges`, shapes of the shape that was filleted) and vertices (`failed_vertices`, xyz)."""
+    diag = {"reasons": [], "edges": [], "vertices": []}
+    try:
+        diag = _diagnose_blend(why["maker"]) if why.get("maker") is not None else diag
+    except Exception:
+        pass
+    reasons, fe, fv = list(diag["reasons"]), list(diag["edges"]), list(diag["vertices"])
+    try:
+        for corner in _crowded_corners(shape, edge_list):
+            reasons.append(_corner_text(corner))
+            fv.append(corner[0])
+            fe += [e for e in corner[2] if not any(e.IsSame(o) for o in fe)]
+    except Exception:
+        pass
+    if smaller_works:
+        msg = "Fillet radius too large for these edges (the rounds would overlap or not fit)" + hint
+    else:
+        msg = "Fillet failed on these edges, and no smaller radius works either"
+        if not reasons:
+            cause = why.get("cause")
+            if cause == "exception":
+                reasons.append(f"OpenCascade reported: {why.get('exc')}")
+            elif cause == "rejected":
+                reasons.append("the rounds overlap or fold over each other, so the result is not a valid solid")
+            else:
+                reasons.append("OpenCascade could not build the rounds")
+    if reasons:
+        msg += (". Where: " if smaller_works else ". ") + "; ".join(reasons)
+    err = KernelError(msg)
+    err.failed_edges, err.failed_vertices = fe, fv
+    return err
 
 
 def _contour_vertices(mk, ic):
@@ -1468,7 +1649,6 @@ def fillet_variable(shape, edge_list, default_radius: float, vertex_radii, with_
         radii.append((v if isinstance(v, (tuple, list, np.ndarray)) else _vertex_xyz(v), float(r)))
     mk, out, used = _variable_build(shape, edge_list, default_radius, radii, 1.0)
     if out is None:
-        corner = _faulty_corner(mk)
         lo, hi = 0.0, 1.0
         if len(edge_list) <= 24:
             for _ in range(9):
@@ -1479,8 +1659,8 @@ def fillet_variable(shape, edge_list, default_radius: float, vertex_radii, with_
                     hi = mid
         pct = math.floor(lo * 100)
         hint = f" — the largest that works here is about {pct} percent of these radii" if pct >= 1 else ""
-        raise KernelError("Fillet radius too large for these edges (the rounds would overlap or not fit)"
-                          + corner + hint)
+        why = {"maker": mk, "cause": "not_done" if not mk.IsDone() else "rejected"}
+        raise _fillet_failure(shape, edge_list, why, pct >= 1, hint)
     for (q, _), ok in zip(radii, used):
         if not ok:
             import logging

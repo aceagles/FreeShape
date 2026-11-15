@@ -220,6 +220,7 @@ class StudioOutputs(TabOutputs):
     # that rebuilt these itself from the finished parts would lose any whose face a later feature changed.
     planes: dict = field(default_factory=dict)
     axes: dict = field(default_factory=dict)
+    error_refs: dict = field(default_factory=dict)     # failed feature id -> [reference dicts] to where it failed
 
 
 @dataclass

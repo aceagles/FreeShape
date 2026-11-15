@@ -174,6 +174,17 @@ def config_row(configs, name=None):
     return next((r for r in rows if r["name"] == name), None)
 
 
+class ErrorText(str):
+    """A feature's error message that also carries `refs`: references to the edges and vertices where it failed
+    (a fillet's), for the window to highlight. Behaves as the plain string; refs do not cross the engine's wire."""
+    refs = None
+
+    def __new__(cls, text, refs=None):
+        self = super().__new__(cls, text)
+        self.refs = refs
+        return self
+
+
 class PartStudioDoc:
     kind = "studio"
 
@@ -207,6 +218,7 @@ class PartStudioDoc:
         self._redo: list[str] = []
         self._cache: dict[str, ModelState] = {}
         self.errors: dict[str, str] = {}
+        self.error_refs: dict = {}                # feature id -> refs to where it failed (a fillet's), for the window
         self.state = ModelState()
         self._counter = 0
         self.listeners = []
@@ -624,6 +636,7 @@ class PartStudioDoc:
     def compute(self, features, upto=None, errors=None, config=None):
         """Replay features (with caching). Returns the resulting ModelState."""
         state = ModelState()
+        self._error_refs = {}
         from . import plugins as _P      # upstream's plugin features ("plugin:<id>"); loads no Qt
         _P.CURRENT_DOC[0] = self.uid
         h = hashlib.sha1()
@@ -682,7 +695,7 @@ class PartStudioDoc:
                                 state.parts[pid] = Part(part.id, part.name, part.shape, part.color,
                                                         carry_face_colors(old, part.shape))
                     except K.KernelError as e:
-                        err = str(e)
+                        err = ErrorText(str(e), getattr(e, "refs", None))
                         if err == REFERENCE_ONLY:
                             state = prior.copy()      # nothing the feature did to a Context body stays
                     except Exception as e:  # never let one feature kill the model
@@ -693,7 +706,9 @@ class PartStudioDoc:
                         state.history[f["id"]] = (prior, state)
             new_cache[key] = (state, err)
             if errors is not None and err:
-                errors[f["id"]] = err
+                errors[f["id"]] = str(err)
+                if getattr(err, "refs", None):
+                    self._error_refs[f["id"]] = err.refs
         self._cache.update(new_cache)
         if len(self._cache) > 400:
             self._cache = new_cache
@@ -856,6 +871,7 @@ class PartStudioDoc:
         errors = {}
         self.state = self.compute(self.features, self.active_count(), errors).copy()
         self.errors = errors
+        self.error_refs = self._error_refs
         self._apply_overrides(self.state)
         self.notify()
 

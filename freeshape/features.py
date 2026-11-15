@@ -2173,6 +2173,19 @@ def _group_by_part(state, refs, kind):
     return groups
 
 
+def _attach_failure_refs(err, state, pid, part):
+    """Put the failing edges and vertices of a fillet error on it as references (`err.refs`), for the window
+    to highlight. A diagnostics problem here must not hide the real error."""
+    try:
+        named = state.named(pid)
+        refs = [make_ref(pid, e, "edge", part.shape, named) for e in getattr(err, "failed_edges", None) or []]
+        refs += [make_vertex_ref(pid, v, part.shape, named) for v in getattr(err, "failed_vertices", None) or []]
+        if refs:
+            err.refs = refs
+    except Exception:
+        pass
+
+
 def run_fillet(state, f):
     p = f["params"]
     groups = _group_by_part(state, p.get("edges", []), "edge")
@@ -2202,10 +2215,18 @@ def run_fillet(state, f):
             vradii.append((pos, float(r)))
     for pid, es in groups.items():
         part = state.parts[pid]
-        if variable:
-            res, hist = K.fillet_variable(part.shape, es, float(p.get("radius", 1)), vradii, with_history=True)
-        else:
-            res, hist = K.fillet(part.shape, es, float(p.get("radius", 1)), with_history=True)
+        try:
+            es, warns = K.fillet_prechecks(part.shape, es)      # a seam or smooth edge is left out, with a warning
+            for w in warns:
+                import logging
+                logging.getLogger(__name__).warning("fillet %s: %s", f["id"], w)
+            if variable:
+                res, hist = K.fillet_variable(part.shape, es, float(p.get("radius", 1)), vradii, with_history=True)
+            else:
+                res, hist = K.fillet(part.shape, es, float(p.get("radius", 1)), with_history=True)
+        except K.KernelError as err:
+            _attach_failure_refs(err, state, pid, part)
+            raise
         named = name_feature(state, f["id"], [pid], res, hist, "fillet")
         state.parts[pid] = Part(pid, part.name, res, part.color)
         state.set_named(pid, named)

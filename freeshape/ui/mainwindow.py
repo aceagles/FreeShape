@@ -3262,9 +3262,34 @@ class MainWindow(QMainWindow):
             shp = vp.part_shapes.get(pid)
             if shp is not None:
                 edges[pid] = K.face_edge_indices(shp, fis)
-        vp.feature_hl = {"faces": faces, "edges": edges, "polys": polys} if (faces or polys) else None
+        for pid, eis in self._error_hl_edges().items():       # where a failed fillet failed (edges only)
+            edges.setdefault(pid, set()).update(eis)
+        vp.feature_hl = {"faces": faces, "edges": edges, "polys": polys} if (faces or polys or edges) else None
         vp.triads = self._connector_triads(getattr(self.doc, "state", None))
         vp.update()
+
+    def error_hl_refs(self):
+        """The references (edges and vertices) where the features now in error failed, e.g. a fillet's failing
+        contour: [] when no feature has failed there. Cleared when the feature is fixed, because the list is read
+        from the Document's current errors."""
+        doc = getattr(self, "doc", None)
+        if doc is None or self.is_asm or self.is_dwg:
+            return []
+        refs = getattr(doc, "error_refs", None) or {}
+        return [r for fid in getattr(doc, "errors", {}) for r in refs.get(fid, ())]
+
+    def _error_hl_edges(self):
+        """{part id: {edge index}} in the viewport's shapes for the edge references of `error_hl_refs`."""
+        out = {}
+        for r in self.error_hl_refs():
+            if r.get("kind") != "edge" or r.get("part") not in self.viewport.part_shapes:
+                continue
+            for i, e in enumerate(K.edges(self.viewport.part_shapes[r["part"]])):
+                info = K.edge_info(e)
+                if info["type"] == r["type"] and np.linalg.norm(np.asarray(info["c"]) - np.asarray(r["c"])) < 1e-6 \
+                        and abs(info["len"] - r["len"]) < 1e-6:
+                    out.setdefault(r["part"], set()).add(i)
+        return out
 
     def _feature_geometry(self, fid):
         """(faces by part in the model shown now, world polylines) for one feature — cached per model state."""

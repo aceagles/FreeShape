@@ -369,7 +369,7 @@ class StudioTab(_Tab):
         return StudioOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
                              errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts,
                              sketches=sketches, connectors=connectors, variables=plain(dict(st.vars)),
-                             planes=planes, axes=axes)
+                             planes=planes, axes=axes, error_refs=plain(dict(getattr(doc, "error_refs", {}))))
 
 
 class VariablesTab(_Tab):

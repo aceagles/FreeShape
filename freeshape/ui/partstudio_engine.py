@@ -255,6 +255,7 @@ class _Result:
         self.connectors = list(getattr(out, "connectors", []))     # [MateConnectorOut]
         self.planes = dict(getattr(out, "planes", None) or {})     # plane feature id -> Plane.to_dict()
         self.axes = dict(getattr(out, "axes", None) or {})         # axis feature id -> {"o", "d", "span"}
+        self.error_refs = dict(getattr(out, "error_refs", None) or {})   # failed feature id -> refs to where
         self.rebuilt = []            # tab ids the engine rebuilt because this tab's output changed (Link graph)
         self.extra = []              # [(rec, _Result)] for the Part Studios among them
         self.copies = None           # saved copies of plugin features from the worker (StudioEngine._plugin_copies)
@@ -513,6 +514,7 @@ class StudioEngine(QObject):
                     pass
         doc.state = st
         doc.errors = dict(res.errors)
+        doc.error_refs = dict(getattr(res, "error_refs", None) or {})
         if res.copies:
             doc.take_plugin_copies(*res.copies)
         doc._apply_overrides(st)

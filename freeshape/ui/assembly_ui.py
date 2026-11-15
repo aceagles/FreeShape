@@ -2088,7 +2088,10 @@ class AssemblyController:
         parts = []
         sketches = []
         exploding = self.explode_panel is not None
+        only = getattr(self.w, "view_only_ids", None)
         for inst in doc.visible_instances():
+            if only is not None and inst["id"] not in only:
+                continue
             if doc.is_sketch_instance(inst["id"]):
                 # edges and points only, no faces: drawn by the viewport's sketch path, not as a part
                 T = np.array(inst["T"], float)
@@ -2101,7 +2104,6 @@ class AssemblyController:
             fc = p.face_colors if not inst.get("color") else None
             parts.append((inst["id"], K.located(p.shape, T), doc.instance_color(inst), fc, T, p.shape))
         self.vp.set_scene(parts, [], sketches)
-        self.vp.ghosts = self._interf or []
         self.update_triads()
 
     def _sketch_instance_result(self, iid, T):
@@ -2187,11 +2189,16 @@ class AssemblyController:
         self.vp.pick_points = points
         self.vp.update()
 
+    def _drop_interf(self):
+        """Forget the interference ghosts and take them off the viewport, unless another tool has put its own there."""
+        if self.vp.ghosts is self._interf:
+            self.vp.ghosts = []
+        self._interf = None
+
     def on_changed(self):
         if self._interf is not None:
             # parts may have moved: the old overlap display would be wrong
-            self._interf = None
-            self.vp.ghosts = []
+            self._drop_interf()
             if hasattr(self.w, "btn_interf"):
                 self.w.btn_interf.setChecked(False)
         editing = self.mate_dialog.mate["id"] if self.mate_dialog is not None and not self.mate_dialog.is_new \
@@ -3300,8 +3307,7 @@ class AssemblyController:
         if on is None:
             on = btn.isChecked()
         if not on:
-            self._interf = None
-            self.vp.ghosts = []
+            self._drop_interf()
             self.vp.update()
             btn.setChecked(False)
             return
@@ -3320,9 +3326,8 @@ class AssemblyController:
             prog.close()
         doc = self.doc
         if not res:
-            self._interf = None
+            self._drop_interf()
             btn.setChecked(False)
-            self.vp.ghosts = []
             self.vp.update()
             QMessageBox.information(self.w, "Interference", "No interference — no parts overlap.")
             return
@@ -3381,7 +3386,6 @@ class AssemblyController:
         self.close_insert()
         self._drag = None
         self.vp.triads = []
-        self.vp.ghosts = []
-        self._interf = None
+        self._drop_interf()
         if hasattr(self.w, "btn_interf"):
             self.w.btn_interf.setChecked(False)

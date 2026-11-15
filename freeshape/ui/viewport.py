@@ -519,6 +519,15 @@ class Viewport(QOpenGLWidget):
             self.cam.target, self.cam.scale = target, scale
             self.update()
 
+    def fit_bounds(self, lo, hi, animate=True):
+        """Frame the box lo..hi, keeping the view direction."""
+        target, scale = self.cam.fit_target(lo, hi)
+        if animate:
+            self.animate_to((target, self.cam.R.copy(), scale))
+        else:
+            self.cam.target, self.cam.scale = target, scale
+            self.update()
+
     # ================================================================== GL
     def initializeGL(self):
         GL.glClearColor(1, 1, 1, 1)

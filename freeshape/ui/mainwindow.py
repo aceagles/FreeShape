@@ -165,6 +165,8 @@ class MainWindow(QMainWindow):
         self.show_axes = True                               # construction axes (Shift+P)
         self.show_connectors = True                         # a Part Studio's mate connectors (K, Shift+P)
         self._transparent = weakref.WeakKeyDictionary()     # document -> ids of the parts made transparent (Shift+T)
+        self.tool_transparent = set()   # ids a tool made transparent: session state, never saved, merged into the above
+        self.view_only_ids = None       # a set: show only these part / instance ids; None shows all. View only, no undo
         self._passing_key = False
         self._shown = None                                  # what _show_state last drew in a Part Studio
         from PySide6.QtCore import QSettings
@@ -1264,14 +1266,15 @@ class MainWindow(QMainWindow):
     def _show_state(self, state, active_sketch=None, also_show=()):
         if self.is_dwg:
             return
-        self.viewport.transparent_ids = set(self._transparent.get(self.doc, ()))
+        self.viewport.transparent_ids = set(self._transparent.get(self.doc, ())) | set(self.tool_transparent)
         if self.is_asm:
             self.asm.show_scene()
             return
         self._shown = (self.doc, state, active_sketch, also_show)
         parts = [(p.id, self._flat_or_folded(state, p), p.color,
                   None if self._flat_on(state, p) else p.face_colors, None, None, p.reference)
-                 for p in state.parts.values() if p.id not in self.doc.hidden_parts]
+                 for p in state.parts.values() if p.id not in self.doc.hidden_parts
+                 and (self.view_only_ids is None or p.id in self.view_only_ids)]
         sketches = []
         for fid, sr in state.sketches.items():
             if fid in self.doc.hidden_features and fid != active_sketch and fid not in also_show:
@@ -3693,7 +3696,7 @@ class MainWindow(QMainWindow):
             cur.update(parts)
             msg = f"{self._count(len(parts))} transparent: Shift+T with nothing selected or under the mouse " \
                   "makes every part solid again"
-        self.viewport.set_transparent(cur)
+        self.viewport.set_transparent(cur | self.tool_transparent)
         return msg
 
     # ---- in a Part Studio
@@ -4147,7 +4150,7 @@ class MainWindow(QMainWindow):
             if self.doc.kind != "drawing":
                 self._views[id(self.doc)] = self.viewport.cam.state()
         self.doc = doc
-        self.viewport.transparent_ids = set(self._transparent.get(doc, ()))
+        self.viewport.transparent_ids = set(self._transparent.get(doc, ())) | set(self.tool_transparent)
         self.viewport.clear_selection()
         self.measure.hide()
         if self.var_tabs.is_variables(doc):

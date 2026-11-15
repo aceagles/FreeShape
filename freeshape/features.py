@@ -3180,9 +3180,30 @@ def run_loft(state, f):
             profs += resolve_regions(state, [item["ref"]], f["id"])
         else:
             profs.append(resolve(state, item["ref"], "face")[1])
-    body, hist = K.loft(profs, p.get("ruled", False), with_history=True)
+    start, end = _loft_end(state, p.get("start")), _loft_end(state, p.get("end"))
+    if start is None and end is None:            # no new option: the legacy route, exactly as before I7.2
+        body, hist = K.loft(profs, p.get("ruled", False), with_history=True)
+    else:
+        if p.get("ruled"):
+            raise K.KernelError("End conditions need a smooth loft — untick Straight sides (ruled)")
+        body, hist = K.loft_skin(profs, start, end, with_history=True)
     named = name_feature(state, f["id"], _loft_names(state, p), body, hist, "loft")
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
+
+
+def _loft_end(state, c):
+    """A loft's `start` or `end` param as `K.loft_skin` takes it: None when there is no condition (a
+    missing key, {} and {"cond": ""} alike), else {"cond", "mag"} with the magnitude evaluated."""
+    if not isinstance(c, dict) or not c.get("cond"):
+        return None
+    mag = c.get("mag", 1.0)
+    if isinstance(mag, str):
+        val = parse_number(mag, variables=state.vars)
+        if val is None:
+            bad = [n for n in var_names(mag) if n not in state.vars]
+            raise K.KernelError(f"Unknown variable #{bad[0]}" if bad else f"Can't read '{mag}'")
+        mag = val
+    return {"cond": c["cond"], "mag": float(mag)}
 
 
 def _loft_names(state, p):

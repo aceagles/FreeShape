@@ -581,6 +581,33 @@ SCOPE_OPS = ("add", "remove", "intersect")
 SCOPE_FEATURES = ("extrude", "revolve", "sweep", "loft")
 
 
+LOFT_CONDITIONS = [("", "None"), ("normal", "Normal to profile"), ("tangent", "Tangent to profile")]
+
+
+def _loft_unfold(p):
+    """The dialog edits a loft's `start` and `end` ({cond, mag}) as flat fields start_cond, start_mag, ..."""
+    for end in ("start", "end"):
+        c = p.get(end) if isinstance(p.get(end), dict) else {}
+        p[f"{end}_cond"] = c.get("cond") or ""
+        p[f"{end}_mag"] = c.get("mag", 1.0)
+
+
+def _loft_fold(p, strip=False):
+    """The flat dialog fields back into `start` and `end`. No condition (or a ruled loft, which hides
+    them) leaves no key, so an old loft keeps the legacy route; strip=True drops the flat fields."""
+    for end in ("start", "end"):
+        if f"{end}_cond" not in p:
+            continue
+        cond = "" if p.get("ruled") else p.get(f"{end}_cond") or ""
+        if cond:
+            p[end] = {"cond": cond, "mag": p.get(f"{end}_mag", 1.0)}
+        else:
+            p.pop(end, None)
+        if strip:
+            p.pop(f"{end}_cond", None)
+            p.pop(f"{end}_mag", None)
+
+
 def _scope():
     return _sel("scope", "Merge scope (empty = every part it touches)", {"part"},
                 visible=lambda p: p.get("op", "add") in SCOPE_OPS)
@@ -808,6 +835,12 @@ SCHEMAS = {
         _ops(),
         _sel("profiles", "Profiles — pick them in order", {"region", "face"}),
         _check("ruled", "Straight sides (ruled)"),
+        _choice("start_cond", "Start profile condition", LOFT_CONDITIONS, visible=lambda p: not p.get("ruled")),
+        _num("start_mag", "Magnitude", unit="", signed=True,
+             visible=lambda p: not p.get("ruled") and bool(p.get("start_cond"))),
+        _choice("end_cond", "End profile condition", LOFT_CONDITIONS, visible=lambda p: not p.get("ruled")),
+        _num("end_mag", "Magnitude", unit="", signed=True,
+             visible=lambda p: not p.get("ruled") and bool(p.get("end_cond"))),
         _scope(),
     ],
     "draft": [
@@ -1028,6 +1061,7 @@ def fields_to_params(ftype, fields, p):
         p["parts"] = [r for k, r in fields.get("parts", [])]
     if ftype == "loft":
         p["profiles"] = [{"kind": k, "ref": r} for k, r in fields.get("profiles", [])]
+        _loft_fold(p)
     if ftype == "draft":
         p["faces"] = [r for k, r in fields.get("faces", [])]
         sel = fields.get("neutral_sel", [])
@@ -1230,6 +1264,8 @@ class FeatureDialog(_ResizableFrame):
                 self.feature["params"].setdefault(k_, v_)
         except Exception:
             pass
+        if self.ftype == "loft":
+            _loft_unfold(self.feature["params"])
         self.schema = SCHEMAS.get(self.ftype, [])
         if self.ftype.startswith("plugin:"):
             from .. import plugins
@@ -2734,6 +2770,8 @@ class FeatureDialog(_ResizableFrame):
             self.err.show()
             return
         self.feature["name"] = self.title.text().strip() or self.feature["name"]
+        if self.ftype == "loft":
+            _loft_fold(self.feature["params"], strip=True)
         if self.ftype == "hole":
             import re as _re
             try:

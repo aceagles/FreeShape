@@ -2509,6 +2509,349 @@ def loft(profile_faces, ruled=False, with_history=False):
     return (body, hist) if with_history else body
 
 
+# Loft end conditions (I7.2). The route was chosen by spike I7.1 (scripts/spikes/op2_loft.result.txt):
+#   OCP 7.9: DECISION loft skin=hermite skin_angle_deg=0.0000 gordon79=absent gordon80=absent one_guide=absent corner_guide=absent rational=absent
+#   OCP 8.0: DECISION loft skin=hermite skin_angle_deg=0.0000 gordon79=absent gordon80=ok one_guide=isocurve corner_guide=ok rational=direct
+# Hermite skinning is exact on both builds; ghost sections through ThruSections reached only 0.23
+# degree, so only the hermite route is built.
+LOFT_SKIN = "hermite"
+LOFT_CONDS = ("normal", "tangent")      # Normal to profile, Tangent to profile
+
+
+def _skin_arrays():
+    """The OCCT collection classes the skinning route needs; their Python names differ per build."""
+    try:
+        from OCP.TColgp import TColgp_Array1OfPnt as P1, TColgp_Array2OfPnt as P2
+        from OCP.TColStd import TColStd_Array1OfReal as R1, TColStd_Array1OfInteger as I1
+        from OCP.TopTools import TopTools_SequenceOfShape as Seq
+    except ImportError:  # OCP 8.0
+        from OCP.OCP.collections import (Array1_gp_Pnt as P1, Array2_gp_Pnt as P2, Array1_double as R1,
+                                         Array1_int as I1, Sequence_TopoDS_Shape as Seq)
+    return P1, P2, R1, I1, Seq
+
+
+def _bspline_basis(knots, p, t, ders=0):
+    """Values (row 0) and derivatives (rows 1..ders) at t of every degree-p B-spline basis function on
+    `knots` (the full, multiplicity-expanded knot vector)."""
+    k = np.asarray(knots, float)
+    m = len(k) - 1
+    lvl = [np.zeros(m)]
+    span = max(j for j in range(m) if k[j] < k[j + 1]) if t >= k[-1] else \
+        next(j for j in range(m) if k[j] <= t < k[j + 1])
+    lvl[0][span] = 1.0
+    for d in range(1, p + 1):
+        prev, cur = lvl[-1], np.zeros(m - d)
+        for i in range(m - d):
+            a, b = k[i + d] - k[i], k[i + d + 1] - k[i + 1]
+            cur[i] = ((t - k[i]) / a * prev[i] if a > 0 else 0.0) + ((k[i + d + 1] - t) / b * prev[i + 1] if b > 0 else 0.0)
+        lvl.append(cur)
+
+    def lift(d, lower):            # d/dt of the degree-d functions, from (derivatives of) degree d-1 ones
+        out = np.zeros(len(lower) - 1)
+        for i in range(len(out)):
+            a, b = k[i + d] - k[i], k[i + d + 1] - k[i + 1]
+            out[i] = d * ((lower[i] / a if a > 0 else 0.0) - (lower[i + 1] / b if b > 0 else 0.0))
+        return out
+    rows = [lvl[p]]
+    if ders >= 1:
+        rows.append(lift(p, lvl[p - 1]))
+    if ders >= 2:
+        rows.append(lift(p, lift(p - 1, lvl[p - 2])) if p >= 2 else np.zeros(len(lvl[p])))
+    return rows
+
+
+class _Section:
+    """One compatible profile wire as B-spline curves, one per edge, in wire order, each over [0, 1]."""
+
+    def __init__(self, wire):
+        from OCP.BRepTools import BRepTools_WireExplorer
+        self.wire = wire
+        self.edges, self.curves = [], []
+        ex = BRepTools_WireExplorer(wire)
+        while ex.More():
+            e = ex.Current()
+            self.edges.append(e)
+            self.curves.append(self._curve(e))
+            ex.Next()
+
+    @staticmethod
+    def _curve(edge):
+        from OCP.Geom import Geom_TrimmedCurve
+        from OCP.GeomConvert import GeomConvert, GeomConvert_ApproxCurve
+        from OCP.GeomAbs import GeomAbs_C2
+        ad = BRepAdaptor_Curve(edge)
+        r = BRep_Tool.Curve_s(edge, 0.0, 1.0)
+        c = r[0] if isinstance(r, tuple) else r
+        bs = GeomConvert.CurveToBSplineCurve_s(Geom_TrimmedCurve(c, ad.FirstParameter(), ad.LastParameter()))
+        if bs.IsPeriodic():
+            bs.SetNotPeriodic()
+        if edge.Orientation() == TopAbs_REVERSED:
+            bs.Reverse()
+        if bs.IsRational():         # arcs, circles, conics: non-rational within 1e-6 (the card's tolerance)
+            ap = GeomConvert_ApproxCurve(bs, 1e-6, GeomAbs_C2, 200, 8)
+            if not ap.HasResult():
+                raise KernelError("Loft failed — a profile curve could not be prepared for the end condition")
+            bs = ap.Curve()
+        return _bspline_data(bs)
+
+
+def _bspline_data(bs):
+    """(poles (n, 3), distinct knots normalised to [0, 1], multiplicities, degree) of a Geom_BSplineCurve."""
+    kn = np.array([bs.Knot(i) for i in range(1, bs.NbKnots() + 1)])
+    kn = (kn - kn[0]) / (kn[-1] - kn[0])
+    return {"poles": np.array([_np(bs.Pole(i)) for i in range(1, bs.NbPoles() + 1)]),
+            "knots": kn, "mults": [bs.Multiplicity(i) for i in range(1, bs.NbKnots() + 1)],
+            "deg": bs.Degree()}
+
+
+def _bspline_make(d):
+    from OCP.Geom import Geom_BSplineCurve
+    P1, _P2, R1, I1, _Seq = _skin_arrays()
+    poles, kn, mu = P1(1, len(d["poles"])), R1(1, len(d["knots"])), I1(1, len(d["knots"]))
+    for i, p in enumerate(d["poles"]):
+        poles.SetValue(i + 1, _pnt(p))
+    for i, (k, m) in enumerate(zip(d["knots"], d["mults"])):
+        kn.SetValue(i + 1, float(k))
+        mu.SetValue(i + 1, int(m))
+    return Geom_BSplineCurve(poles, kn, mu, int(d["deg"]))
+
+
+def _same_knots(curves):
+    """The curves of one edge column brought to one degree and one knot vector (exact: degree raising
+    and knot insertion do not move the curve)."""
+    deg = max(c["deg"] for c in curves)
+    bss = [_bspline_make(c) for c in curves]
+    for b in bss:
+        if b.Degree() < deg:
+            b.IncreaseDegree(deg)
+    want = {}
+    for b in bss:
+        for i in range(1, b.NbKnots() + 1):
+            u = round(b.Knot(i), 12)
+            want[u] = max(want.get(u, 0), b.Multiplicity(i))
+    for b in bss:
+        for u, m in sorted(want.items()):
+            if 0.0 < u < 1.0:
+                b.InsertKnot(u, m, 1e-10, False)
+    out = [_bspline_data(b) for b in bss]
+    n = len(out[0]["poles"])
+    if any(len(o["poles"]) != n or len(o["knots"]) != len(out[0]["knots"]) for o in out):
+        raise KernelError("Loft failed — the profiles could not be matched edge for edge")
+    return out
+
+
+def _wire_turn(points, normal):
+    """+1 when the closed polygon `points` runs anticlockwise about `normal`, else -1."""
+    a = sum(np.cross(points[i], points[(i + 1) % len(points)]) for i in range(len(points)))
+    return 1.0 if float(np.dot(a, normal)) >= 0 else -1.0
+
+
+def _outward(cols, normal):
+    """Per column, per pole: the unit outward in-plane normal of the profile curve at that pole's
+    Greville abscissa. A pole on a corner gets the mitre of its two edges' normals, the same in both
+    columns, so neighbouring side faces still share their edge."""
+    samples = [p for c in cols for p in c["poles"]]
+    turn = _wire_turn(samples, normal)
+    out, ends = [], []
+    for c in cols:
+        bs = _bspline_make(c)
+        flat = np.repeat(c["knots"], c["mults"])
+        deg = c["deg"]
+        dirs = []
+        for j in range(len(c["poles"])):
+            g = float(np.mean(flat[j + 1:j + deg + 1]))
+            pt, v = gp_Pnt(), gp_Vec()
+            bs.D1(g, pt, v)
+            t = _np(v)
+            t = t - np.dot(t, normal) * normal
+            nrm = np.cross(t, normal) * turn
+            ln = np.linalg.norm(nrm)
+            dirs.append(nrm / ln if ln > 1e-12 else np.zeros(3))
+        out.append(dirs)
+        ends.append((dirs[0], dirs[-1]))
+    for k in range(len(cols)):
+        a, b = ends[k - 1][1], ends[k][0]          # last pole of the previous column meets this first pole
+        s = 1.0 + float(np.dot(a, b))
+        mitre = (a + b) / s if s > 1e-6 else b
+        out[k - 1][-1] = mitre
+        out[k][0] = mitre
+    return out
+
+
+def _skin_solid(wires, conds, with_history, cap_faces=None):
+    """A loft through `wires` by Hermite skinning, as a solid, with the history of every input edge
+    (and, given `cap_faces`, of the first and last profile faces).
+
+    `conds` is (start, end); each is None or {"cond", "mag", "n", "into"}: `n` the unit normal of the
+    end profile's plane and `into` the unit normal pointing from that profile into the loft."""
+    from OCP.BRepFill import BRepFill_CompatibleWires
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
+    from OCP.Geom import Geom_BSplineSurface
+    from OCP.TopAbs import TopAbs_SHELL
+    _P1, P2, R1, I1, Seq = _skin_arrays()
+    seq = Seq()
+    for w in wires:
+        seq.Append(w)
+    cw = BRepFill_CompatibleWires(seq)
+    try:
+        cw.Perform()
+    except Exception as exc:
+        raise KernelError("Loft failed — try profiles with similar shapes") from exc
+    if not cw.IsDone():
+        raise KernelError("Loft failed — try profiles with similar shapes")
+    res = cw.Shape()
+    secs = [_Section(_as_wire(res.Value(i))) for i in range(1, res.Length() + 1)]
+    ncol = len(secs[0].curves)
+    if any(len(s.curves) != ncol for s in secs):
+        raise KernelError("Loft failed — try profiles with similar shapes")
+    cols = [_same_knots([s.curves[k] for s in secs]) for k in range(ncol)]   # cols[k][i]: column k, section i
+    for i in range(len(secs)):                     # neighbouring columns share their corner pole exactly
+        for k in range(ncol):
+            cols[k][i]["poles"][-1] = cols[(k + 1) % ncol][i]["poles"][0]
+    nsec = len(secs)
+    grid = [np.vstack([cols[k][i]["poles"] for k in range(ncol)]) for i in range(nsec)]
+    gaps = [float(np.mean(np.linalg.norm(grid[i] - grid[i - 1], axis=1))) for i in range(1, nsec)]
+    if min(gaps) < 1e-9:
+        raise KernelError("Loft failed — two profiles are in the same place")
+    v = np.concatenate([[0.0], np.cumsum(gaps)])   # a loft parameter per section: mean pole distance
+
+    # Each column of poles is a cubic through the sections. Its parameter runs in mm, so an end
+    # derivative of m * n per mm is the card's m * L * n per unit of the end span (L = that span).
+    vflat = np.concatenate([[v[0]] * 4, v[1:-1], [v[-1]] * 4])
+    nv = nsec + 2
+    A = np.zeros((nv, nv))
+    for i in range(nsec):
+        A[i] = _bspline_basis(vflat, 3, v[i])[0]
+    for row, (t, c) in zip((nsec, nsec + 1), ((v[0], conds[0]), (v[-1], conds[1]))):
+        A[row] = _bspline_basis(vflat, 3, t, 2)[1 if c else 2]     # no condition: zero second derivative
+    lu = np.linalg.inv(A)
+
+    def end_ders(i, c, sign):
+        """The derivative along the loft at every pole of section i, per column."""
+        if c is None:
+            return [np.zeros((len(cols[k][i]["poles"]), 3)) for k in range(ncol)]
+        if c["cond"] == "normal":
+            return [np.tile(sign * c["mag"] * c["into"], (len(cols[k][i]["poles"]), 1)) for k in range(ncol)]
+        out = _outward([cols[k][i] for k in range(ncol)], c["n"])
+        return [sign * c["mag"] * np.array(d) for d in out]
+    # A derivative leaves the start profile into the loft and arrives at the end profile out of it.
+    d0, d1 = end_ders(0, conds[0], 1.0), end_ders(nsec - 1, conds[1], -1.0)
+
+    vk, vm = R1(1, nsec), I1(1, nsec)
+    for i, t in enumerate(v):
+        vk.SetValue(i + 1, float(t))
+        vm.SetValue(i + 1, 4 if i in (0, nsec - 1) else 1)
+    sew = BRepBuilderAPI_Sewing(1e-6)
+    side = []
+    for k in range(ncol):
+        c0 = cols[k][0]
+        nu = len(c0["poles"])
+        poles = P2(1, nu, 1, nv)
+        for j in range(nu):
+            rhs = np.vstack([cols[k][i]["poles"][j] for i in range(nsec)] + [d0[k][j], d1[k][j]])
+            ctrl = lu @ rhs
+            for q in range(nv):
+                poles.SetValue(j + 1, q + 1, _pnt(ctrl[q]))
+        uk, um = R1(1, len(c0["knots"])), I1(1, len(c0["knots"]))
+        for i, (kv, mv) in enumerate(zip(c0["knots"], c0["mults"])):
+            uk.SetValue(i + 1, float(kv))
+            um.SetValue(i + 1, int(mv))
+        surf = Geom_BSplineSurface(poles, uk, vk, um, vm, int(c0["deg"]), 3)
+        f = BRepBuilderAPI_MakeFace(surf, 0.0, 1.0, float(v[0]), float(v[-1]), 1e-7).Face()
+        side.append(f)
+        sew.Add(f)
+    caps = []
+    for i in (0, nsec - 1):
+        mw = BRepBuilderAPI_MakeWire()
+        for k in range(ncol):
+            mw.Add(BRepBuilderAPI_MakeEdge(_bspline_make(cols[k][i])).Edge())
+        mf = BRepBuilderAPI_MakeFace(mw.Wire(), True) if mw.IsDone() else None
+        if mf is None or not mf.IsDone():
+            raise KernelError("End conditions need flat end profiles")
+        caps.append(mf.Face())
+        sew.Add(caps[-1])
+    sew.Perform()
+    ex = TopExp_Explorer(sew.SewedShape(), TopAbs_SHELL)
+    if not ex.More():
+        raise KernelError("Loft failed — the end condition made a surface that does not close")
+    body = BRepBuilderAPI_MakeSolid(_as_shell(ex.Current())).Solid()
+    ex.Next()
+    if ex.More() or not is_valid(body):
+        raise KernelError("Loft failed — the end condition made a surface that does not close")
+    if volume(body) < 0:
+        body.Reverse()
+    if not with_history:
+        return body, None
+    hist = BRepTools_History()
+    side = [sew.Modified(f) for f in side]
+    # Each edge of the first profile generated the side faces of its span. Only the first: that is
+    # all ThruSections' GeneratedFace answers for in `loft`, and a second source would change the names.
+    for w, sec in ((wires[0], secs[0]),):
+        for e in _sub_shapes(w, TopAbs_EDGE):
+            try:
+                gens = list(cw.GeneratedShapes(e))
+            except Exception:
+                gens = []
+            for g in gens or [e]:
+                for k, ce in enumerate(sec.edges):
+                    if ce.IsSame(g):
+                        hist.AddGenerated(e, side[k])
+    if cap_faces:
+        for f, cap in ((cap_faces[0], caps[0]), (cap_faces[-1], caps[1])):
+            hist.AddGenerated(f, sew.Modified(cap))
+    return body, hist
+
+
+def _skin_end(face, other, cond):
+    """An end condition made ready for `_skin_solid`: the profile's plane normal and the normal that
+    points from it towards its neighbouring profile."""
+    if cond is None:
+        return None
+    if cond.get("cond") not in LOFT_CONDS:
+        raise KernelError(f"Unknown loft end condition '{cond.get('cond')}'")
+    mag = float(cond.get("mag", 1.0))
+    if abs(mag) < 1e-9:
+        raise KernelError("A loft end condition needs a magnitude other than zero")
+    ad = BRepAdaptor_Surface(face)
+    if ad.GetType() != GeomAbs_Plane:
+        raise KernelError("End conditions need flat end profiles")
+    n = _np(ad.Plane().Axis().Direction())
+    d = np.asarray(face_info(other)["c"], float) - np.asarray(face_info(face)["c"], float)
+    into = n if float(np.dot(d, n)) >= 0 else -n
+    return {"cond": cond["cond"], "mag": mag, "n": n, "into": into}
+
+
+def loft_skin(profile_faces, start=None, end=None, with_history=False):
+    """A loft whose ends leave the first profile and meet the last as `start` and `end` say: each is
+    None or {"cond": "normal" | "tangent", "mag": <signed magnitude, default 1>}.
+
+    Built by the route spike I7.1 chose (LOFT_SKIN, Hermite skinning): the wires are made compatible,
+    each edge column becomes one B-spline face through every section with the end derivatives set
+    (Normal to profile m*L*n, Tangent to profile m*L*t with t the outward in-plane normal), the two
+    profile faces close it as caps, and the faces are sewn into a solid. One side face per edge of the
+    first profile, with the same history as `loft`, so the faces get the same names on either route.
+    Holes are matched as `loft` matches them and lofted with the outer loop's conditions."""
+    from OCP.BRepTools import BRepTools
+    if len(profile_faces) < 2:
+        raise KernelError("Select at least two profiles, in order")
+    conds = (_skin_end(profile_faces[0], profile_faces[1], start),
+             _skin_end(profile_faces[-1], profile_faces[-2], end))
+    if conds[0] is None and conds[1] is None:
+        raise KernelError("loft_skin needs an end condition; use loft")
+    outers = [BRepTools.OuterWire_s(f) for f in profile_faces]
+    body, hist = _skin_solid(outers, conds, with_history, profile_faces)
+    for wires in _loft_hole_sets(profile_faces):
+        core, core_hist = _skin_solid(wires, conds, with_history)
+        if with_history:
+            body, cut_hist = cut(body, core, with_history=True)
+            hist = _chain(hist, core_hist, cut_hist)
+        else:
+            body = cut(body, core)
+        if len(solids(body)) != 1 or not is_valid(body):
+            raise KernelError("Loft failed — a hole runs out through the side of the loft")
+    return (body, hist) if with_history else body
+
+
 def draft(shape, face_list, pull_dir, angle_deg, neutral: Plane, with_history=False):
     from OCP.BRepOffsetAPI import BRepOffsetAPI_DraftAngle
     if not face_list:

@@ -588,7 +588,8 @@ class MainWindow(QMainWindow):
             C("sweep", "Sweep", "Move a profile along a path to make a pipe or rail.", lambda: F_("sweep"), "pipe path"),
             C("rib", "Rib", "Add a rib, web or gusset to a part from open sketch curves, grown until it meets the "
               "part.", lambda: F_("rib"), "gusset web stiffener support"),
-            C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"), "blend transition"),
+            C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"),
+              "blend transition end condition loft tangent normal to profile"),
             C("fillet", "Fillet", "Round off edges or faces with a radius.", lambda: F_("fillet"),
               "round blend corner variable fillet variable radius"),
             C("variable_fillet", "Variable fillet", "Round off edges with a radius that changes from vertex to vertex.",

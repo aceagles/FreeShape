@@ -41,6 +41,10 @@ What this fork adds:
 - **Insert DXF or SVG into a sketch** — bring a `.dxf` or `.svg` file's curves into a sketch as one undo step,
   at the size and units the file states, with Scale, Fit width and layer choices. Text, images, hatches and DWG
   files are skipped (save a DWG as DXF); curves arrive unconstrained.
+- **Interference detection** — in a Part Studio and an Assembly, a panel lists the parts that overlap with the
+  overlap volume and size; click a row to select the pair and frame the overlap. Assemblies have an *Include
+  standard content* tick, and screws fastened into their holes sit in an *Expected (threads)* group that is not
+  counted. The check runs in a helper process.
 - **Component library** — browse a folder of STEP files with previews and insert from it.
 - **Headless and browser** — `python -m freeshape serve <Document>` serves a Document over HTTP on your own
   machine, with a view-only browser viewer.
@@ -296,6 +300,10 @@ tab puts parts together and lets them move the way the real thing would — like
 - **Instances** — right-click for rename, fix / unfix, hide, isolate, colour, **Move / rotate** by exact amounts,
   duplicate, open its Part Studio, mass properties and the degrees of freedom it has left.
 - **Interference check** — shows in red where parts overlap, with the overlap volume.
+- **Interference detection** — the toolbar button opens a panel listing each pair of overlapping parts, with the
+  volume and size. Click a row to select the pair, frame the overlap and ghost it. *Include standard content*
+  (ticked by default) brings Standard parts in; thread fits between a fastened screw and its hole go in the
+  *Expected (threads)* group and are not counted. A change to the model greys the list until you check again.
 - **Bill of materials** — each different part with its quantity, volume and mass; copy it or save it as CSV.
 - **Export** — STEP keeps the assembly structure, part names and colours; STL is one mesh; BREP is the exact
   OpenCascade geometry (no names or colours).

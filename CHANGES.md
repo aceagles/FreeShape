@@ -39,6 +39,23 @@ for cutting), version history, Python plugins, and new navigation. It was built 
 - **Skipped**: text, images, hatches and DWG files. Skipped items are counted in the status line. For DWG, save
   as DXF first.
 
+### Interference detection
+- **Interference detection panel**: in a Part Studio and in an Assembly, the toolbar button (or the command, also
+  found by searching "clash", "collision" or "overlap") lists every pair of parts that share volume, largest first,
+  with the overlap volume and size. Click a row to select the pair, frame the overlap and ghost it; the Document is
+  not changed and not marked dirty. Isolate shows only the pair.
+- **Part Studio**: hidden parts and Context parts are left out and counted in the footer ("2 parts not checked:
+  hidden or reference."). With fewer than two parts the panel says "Interference needs two or more parts."
+- **Include standard content**: in an Assembly, ticked by default. Unticking it leaves Standard parts out and the
+  footer counts them ("1 standard part not checked.").
+- **Expected (threads)**: a screw fastened into its tapped hole overlaps the plate by design. These pairs sit in a
+  collapsed "Expected (threads) (n)" group and are not counted. A screw run into a third part is counted.
+- **Check in a helper process**: the check runs in a separate process, so the window stays responsive and Cancel
+  returns at once. If the helper cannot start, the check runs in the app instead. A pair that cannot be checked is a
+  "could not check" row, and the footer counts it.
+- **Out of date**: a change to the model greys the rows and the footer says "Out of date. Check again." The panel
+  stays open while you turn the view; closing it removes the ghosts and restores transparency.
+
 ### Axis at the centre of a flat face
 - **Axis tool**: picking a flat face on its own now gives an axis through the **centre of the face**, square to it
   and pointing out of the part: the same place a mate connector on that face sits. The end face of a shaft or a

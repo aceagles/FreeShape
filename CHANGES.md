@@ -77,6 +77,23 @@ for cutting), version history, Python plugins, and new navigation. It was built 
 - **Transparency**: the slider sets how see-through Context bodies are, 0 to 100, and is remembered. Moving it
   redraws without rebuilding the model.
 
+### Variable-radius fillet and clearer fillet errors
+- **Variable radius**: in the Fillet dialog, set *Type* to *Variable radius* (or run the *Variable fillet*
+  command), pick the edges, then pick end vertices in the *Vertices* list and type a radius for each. A radius can
+  be a number or an expression. The radius eases smoothly from one vertex to the next; a vertex you leave out takes
+  the dialog's radius. On a 40 mm block edge, 2 mm at one end and 6 mm at the other measures 2 mm and 6 mm there,
+  and swapping the two mirrors it. Constant fillets save and build exactly as before.
+- **Failures say where and why**: a fillet that is too large says "the largest that works here is about N mm"
+  (for a variable fillet, "about N percent of these radii") and, after "Where:", names the edge or corner and the
+  reason OpenCascade gave. When no smaller radius works either, the message gives the reasons and suggests no
+  radius. The failing edges are highlighted in the view until the fillet is fixed. A corner is named in the
+  message but not drawn.
+- **Not included**: full round, conic and curvature-continuous sections, and face blend. The radius always eases
+  smoothly; there is no linear option.
+- **No retry ladder and no crash guard**: we tried a corpus of 40 fillets on swept and lofted bodies against every
+  alternative way of building a round. None rescued a failing fillet and none crashed, so fillets still run in the
+  app's own process and a failed one just reports its error (ADR 0012).
+
 ### Axis at the centre of a flat face
 - **Axis tool**: picking a flat face on its own now gives an axis through the **centre of the face**, square to it
   and pointing out of the part: the same place a mate connector on that face sits. The end face of a shaft or a

@@ -52,6 +52,11 @@ What this fork adds:
   hiding one instance are separate choices. A Context body keeps its identity when an earlier instance is deleted
   and the Context is updated; a Context saved by an earlier version opens as it was and converts at its first
   Update context.
+- **Variable-radius fillet and clearer fillet errors** — in the Fillet dialog, set Type to Variable radius and give
+  each end vertex its own radius (a number or an expression); the radius eases smoothly between them. A fillet that
+  fails names the edge or corner and the reason, says how large a radius would work, and highlights the failing
+  edges. Not included: full round, conic and curvature sections, and face blend. No retry ladder or crash guard
+  was built: a corpus of 40 fillets found nothing for them to rescue (ADR 0012).
 - **Component library** — browse a folder of STEP files with previews and insert from it.
 - **Headless and browser** — `python -m freeshape serve <Document>` serves a Document over HTTP on your own
   machine, with a view-only browser viewer.

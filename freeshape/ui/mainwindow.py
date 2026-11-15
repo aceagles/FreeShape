@@ -581,6 +581,8 @@ class MainWindow(QMainWindow):
             C("revolve", "Revolve", "Spin a sketch region around an axis to make round parts.",
               lambda: F_("revolve"), "lathe turn"),
             C("sweep", "Sweep", "Move a profile along a path to make a pipe or rail.", lambda: F_("sweep"), "pipe path"),
+            C("rib", "Rib", "Add a rib, web or gusset to a part from open sketch curves, grown until it meets the "
+              "part.", lambda: F_("rib"), "gusset web stiffener support"),
             C("loft", "Loft", "Blend smoothly between two or more profiles.", lambda: F_("loft"), "blend transition"),
             C("fillet", "Fillet", "Round off edges or faces with a radius.", lambda: F_("fillet"), "round blend corner"),
             C("chamfer", "Chamfer", "Create beveled edges or faces with a distance.", lambda: F_("chamfer"),
@@ -862,7 +864,8 @@ class MainWindow(QMainWindow):
         self._tb(h, "sketch", "Sketch (Shift+S)", lambda: self.start_sketch())
         h.addWidget(_sep())
         for name, tip in (("extrude", "Extrude (Shift+E)"), ("revolve", "Revolve (Shift+W)"),
-                          ("sweep", "Sweep — a profile along a path"), ("loft", "Loft — blend between profiles"),
+                          ("sweep", "Sweep — a profile along a path"),
+                          ("rib", "Rib — a web or gusset from sketch curves"), ("loft", "Loft — blend between profiles"),
                           ("fillet", "Fillet (Shift+F)"), ("chamfer", "Chamfer"), ("draft", "Draft — angle side faces"),
                           ("shell", "Shell"), ("hole", "Hole — custom or ISO clearance / tapped"),
                           ("thread", "Thread — real ISO threads on holes and shafts"),

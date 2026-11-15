@@ -217,6 +217,7 @@ Things selected before opening a feature are pre-filled. Extrude and Plane show 
   straight from the Hole feature (*Model the thread*). Real threads take a few seconds to build, so plain tapped
   holes (sized for the tap drill) stay the default — like Onshape.
 - **Sweep** — a profile along a path (connected sketch curves or part edges), e.g. pipes and handles.
+- **Rib** — a web or gusset from open sketch curves (lines and arcs) grown to meet a part, parallel to the sketch plane; set the thickness and direction.
 - **Loft** — blend between two or more profiles on different planes; tick *Straight sides* for a ruled loft.
 - **Draft** — tilt faces by an angle from a neutral plane, for moulded or 3D-printed parts.
 - **Split** — cut parts in two with a plane or flat face; keep both sides or one.

@@ -258,6 +258,13 @@ def draw(name: str, p: QPainter):
         p.setPen(_pen(INK, 1.4))
         p.setBrush(QColor("#eef3fa"))
         p.drawEllipse(QPointF(6, 27), 4, 2.2)
+    elif name == "rib":
+        _box(p, 4, 14, 24, 14, 6)
+        p.setPen(_pen(INK, 1.3))
+        p.setBrush(FACE)
+        p.drawPolygon(QPolygonF([QPointF(11, 17), QPointF(15, 17), QPointF(15, 5), QPointF(11, 5)]))
+        p.setPen(_pen(ORANGE, 1.6))
+        p.drawLine(QPointF(25, 20), QPointF(13, 7))
     elif name == "loft":
         p.setPen(_pen(INK, 1.3))
         p.setBrush(FACE)

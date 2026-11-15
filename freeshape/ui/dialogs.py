@@ -701,6 +701,12 @@ SCHEMAS = {
         _sel("path", "Sweep path (sketch curves or edges)", {"path"}),
         _scope(),
     ],
+    "rib": [
+        _sel("path", "Sketch curves for the rib (an open chain of lines and arcs)", {"path"}),
+        _sel("parts", "Part for the rib", {"part"}, multi=False),
+        _num("thickness", "Thickness", minimum=1e-6),
+        _check("flip", "Opposite direction"),
+    ],
     "loft": [
         _ops(),
         _sel("profiles", "Profiles — pick them in order", {"region", "face"}),
@@ -837,6 +843,9 @@ def params_to_fields(ftype, p):
         f["faces"] = [("face", r) for r in p.get("faces", [])]
     if ftype == "sweep":
         f["path"] = [("path", r) for r in p.get("path", [])]
+    if ftype == "rib":
+        f["path"] = [("path", r) for r in p.get("path", [])]
+        f["parts"] = [("part", i) for i in p.get("parts", [])]
     if ftype == "loft":
         f["profiles"] = [(it["kind"], it["ref"]) for it in p.get("profiles", [])]
     if ftype == "draft":
@@ -913,6 +922,9 @@ def fields_to_params(ftype, fields, p):
         p["faces"] = [r for k, r in fields.get("profiles", []) if k == "face"]
     if ftype == "sweep":
         p["path"] = [r for k, r in fields.get("path", [])]
+    if ftype == "rib":
+        p["path"] = [r for k, r in fields.get("path", [])]
+        p["parts"] = [r for k, r in fields.get("parts", [])]
     if ftype == "loft":
         p["profiles"] = [{"kind": k, "ref": r} for k, r in fields.get("profiles", [])]
     if ftype == "draft":
@@ -1131,6 +1143,8 @@ class FeatureDialog(_ResizableFrame):
                 self.fields[k].items = list(items)
         if is_new and preselection:
             self._apply_preselection(preselection)
+        if self.ftype == "rib" and is_new:
+            self._default_rib_part()
         if self.ftype == "mate_connector":       # hover a face or edge: the same snap points the Assembly offers
             main.viewport.snap_provider = self.snap_candidates
         self._sync_visibility()              # also picks the field that takes the first click
@@ -2322,9 +2336,37 @@ class FeatureDialog(_ResizableFrame):
                     self._stamp_connector(item, pk, None, None)
         self.main.viewport.clear_selection()
 
+    def _default_rib_part(self):
+        """The Rib's part field is filled when one part is the obvious choice: the only part in the studio, or
+        the only part the sketch plane of the picked curves cuts. A part the user picked is never replaced."""
+        fld = self.fields.get("parts")
+        if fld is None or fld.items:
+            return
+        parts = self.base_state.parts
+        pid = next(iter(parts)) if len(parts) == 1 else None
+        if pid is None and self.fields["path"].items:
+            sr = self.base_state.sketches.get(self.fields["path"].items[0][1].get("sketch"))
+            if sr is not None:
+                n = np.asarray(sr.plane.normal, float)
+                o = np.asarray(sr.plane.origin, float)
+                cut = []
+                for i, part in parts.items():
+                    lo, hi = K.bbox(part.shape)
+                    c, h = (lo + hi) / 2, (hi - lo) / 2
+                    if abs(float(n @ (c - o))) <= float(np.abs(n) @ h) + 1e-9:
+                        cut.append(i)
+                pid = cut[0] if len(cut) == 1 else None
+        if pid is not None:
+            fld.items = [("part", pid)]
+            self.feature["params"]["parts"] = [pid]
+
     def _fields_changed(self):
         fields = {k: f.items for k, f in self.fields.items()}
         fields_to_params(self.ftype, fields, self.feature["params"])
+        if self.ftype == "rib" and not self.fields["parts"].items:
+            self._default_rib_part()
+            fields["parts"] = self.fields["parts"].items
+            fields_to_params(self.ftype, fields, self.feature["params"])
         self._sync_visibility()
         self.schedule_preview()
 

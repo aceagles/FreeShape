@@ -450,12 +450,14 @@ class SelectionField(QFrame):
             it = QListWidgetItem("" if self.number else item_label(doc, item))
             if i in missing:
                 it.setForeground(QColor("#d93025"))
-                it.setToolTip("Reference could not be found — double-click to remove")
+                it.setToolTip("Reference could not be found — click \u2715 to remove")
             else:
-                it.setToolTip("Double-click to remove")
+                it.setToolTip("Click \u2715 (or double-click) to remove")
             self.list.addItem(it)
             if self.number:
                 self._number_row(it, i, item_label(doc, item))
+            else:
+                self._remove_button_row(it, i)
         n = max(1, len(self.items))
         self._base_h = min(6, n) * (28 if self.number else 20) + 4
         self.list.setFixedHeight(self._base_h + self.extra)
@@ -472,9 +474,35 @@ class SelectionField(QFrame):
                       "Empty means the default radius. The radius changes smoothly between vertices.")
         ed.textEdited.connect(lambda t, i=i, ed=ed: self._number_edited(i, ed, t))
         h.addWidget(ed)
+        h.addWidget(self._remove_button(i))
         w.entered.connect(lambda i=i: self.hovered.emit(i))
         it.setSizeHint(QSize(0, 28))
         self.list.setItemWidget(it, w)
+
+    def _remove_button(self, i):
+        """The \u2715 at the end of row i: removes that pick alone (the header's \u2715 clears them all)."""
+        b = QToolButton()
+        b.setObjectName("rowRemove")
+        b.setText("\u2715")
+        b.setToolTip("Remove")
+        b.setAutoRaise(True)
+        b.setFixedSize(18, 18)
+        b.clicked.connect(lambda _=False, i=i: self._remove_row(i))
+        return b
+
+    def _remove_button_row(self, it, i):
+        """A plain row keeps its text on the item; the widget over it only holds the remove button, on the right."""
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 2, 0)
+        h.addStretch(1)
+        h.addWidget(self._remove_button(i))
+        self.list.setItemWidget(it, w)
+
+    def _remove_row(self, row):
+        if 0 <= row < len(self.items):
+            self.remove_at(row)
+            self.changed.emit()
 
     def _number_edited(self, i, ed, txt):
         txt = txt.strip()
@@ -588,10 +616,6 @@ class GuideListField(SelectionField):
             self.list.setItemWidget(it, w)
         self._base_h = min(6, max(1, len(self.items))) * 28 + 4
         self.list.setFixedHeight(self._base_h + self.extra)
-
-    def _remove_row(self, row):
-        self.remove_at(row)
-        self.changed.emit()
 
 
 def fillet_vertex_ends(state, edge_refs):
@@ -2613,12 +2637,14 @@ class FeatureDialog(_ResizableFrame):
             if spec["t"] == "ops":            # the buttons show the params (Surface limits the operation to New / Add)
                 for (val, _), b in zip(spec["options"], w.findChildren(QToolButton)):
                     b.setChecked(p.get(spec["key"], spec.get("default")) == val)
-        # clicks go to the active field, so it must be one the user can see: a row that has just been
-        # hidden (Merge scope when the operation becomes New) hands over to the first visible empty field
+        # clicks go to the active field, so it must be one the user can see: on open, or when a row has just
+        # been hidden (Merge scope when the operation becomes New), the first visible field that can still take
+        # a click gets it. A list that takes several picks keeps it even when it already holds some (a
+        # preselected region leaves the regions field active, as in Onshape); a filled single pick hands on.
         af = self.active_field
         if af is None or not af.isVisibleTo(self):
             shown = [f for f in self.fields.values() if f.isVisibleTo(self)]
-            nxt = next((f for f in shown if not f.items), None) or (shown[0] if shown else None)
+            nxt = next((f for f in shown if f.multi or not f.items), None) or (shown[0] if shown else None)
             if nxt is not None:
                 self.activate(nxt)
         for f in self.fields.values():

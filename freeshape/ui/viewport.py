@@ -1688,7 +1688,10 @@ class Viewport(QOpenGLWidget):
                     tt, _ = _ray_tris(o, d, m.verts, m.tris)
                     if tt < best[0]:
                         best = (tt, Pick("region", (fid, ri)))
-            if best[1] is not None and self.cam.view_z_of_t(best[0]) >= face_z - tol_z * 4:
+            # a dialog field that takes regions (Extrude's profiles) sees through bodies to them, as in Onshape:
+            # a region inside or behind a part still wins over the face in front of it
+            through_to_regions = self.select_filter is not None and "region" in self.select_filter
+            if best[1] is not None and (through_to_regions or self.cam.view_z_of_t(best[0]) >= face_z - tol_z * 4):
                 return best[1]
 
         # planes win when they're in front of, or level with, the nearest face

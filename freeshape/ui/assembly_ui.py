@@ -3291,7 +3291,7 @@ class AssemblyController:
                      and f["params"].get("assembly") == asm.uid and f["params"].get("instance") == iid), None)
         try:
             if have is not None:
-                folder.update_context(tab.id, have["id"])
+                self.w.rename_session_parts(studio, folder.update_context(tab.id, have["id"]))
             else:
                 feat = studio.make_feature("context")
                 # ids "instance": bodies are <fid>/<instance id>, so they keep their identity across Update context

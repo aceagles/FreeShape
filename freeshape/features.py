@@ -1660,6 +1660,58 @@ def run_context(state, f):
         state.set_named(pid, N.name_context(shape, named.names, fid, label))
 
 
+# Param keys that name parts of this Part Studio by id (I6.2): a string under one of these keys is a part id, and so
+# is each string in a list under one (a dict in such a list, a Split tool say, is walked like any other). A
+# {"kind": "part", "id": ...} dict (an extrude's up_to) names one by "id". Every other string is left alone.
+PART_ID_KEYS = ("part", "owner", "parts", "scope", "tools", "targets")
+# Feature types whose params name no part of this studio: a Derived and a Variable Studio reference name ids of
+# their source studio, a Context names an Assembly instance.
+NO_PART_REFS = ("derived", "variable_studio_ref", "context")
+
+
+def renamed_part_id(pid, ids):
+    """`pid` under the map `ids` (old part id -> new one): a mapped id, or a piece `<old>.<i>[.<j>...]` a cut
+    severed from one as `<new>.<i>...`. Any other value is returned unchanged."""
+    if not isinstance(pid, str):
+        return pid
+    if pid in ids:
+        return ids[pid]
+    root, dot, tail = pid.partition(".")
+    if dot and root in ids and all(t.isdigit() for t in tail.split(".")):
+        return ids[root] + dot + tail
+    return pid
+
+
+def rename_part_refs(feature, ids):
+    """A copy of `feature` whose params name each part of the map `ids` by its new id: every part id under a
+    PART_ID_KEYS key, at any depth (a face or edge reference's "part", a sketch entity's Use source, a Boolean's
+    tools and targets, a pattern's parts, a Split's tools, a mate connector's ref and owner, an extrude's scope and
+    up-to part). The one walker Update context uses to convert a Context's positional body ids. `feature` is not
+    changed; a feature of a NO_PART_REFS type comes back as it is."""
+    def one(v):
+        return renamed_part_id(v, ids) if isinstance(v, str) else walk(v)
+
+    def walk(x):
+        if isinstance(x, list):
+            return [walk(v) for v in x]
+        if not isinstance(x, dict):
+            return x
+        out = {}
+        for k, v in x.items():
+            if k in PART_ID_KEYS:
+                out[k] = [one(i) for i in v] if isinstance(v, list) else one(v)
+            elif k == "id" and x.get("kind") == "part":
+                out[k] = renamed_part_id(v, ids)
+            else:
+                out[k] = walk(v)
+        return out
+
+    f = dict(feature)
+    if f.get("type") not in NO_PART_REFS and isinstance(f.get("params"), dict):
+        f["params"] = walk(f["params"])
+    return f
+
+
 def project_edge(plane, edge):
     """What a part edge looks like on a sketch plane, in sketch coordinates:
 

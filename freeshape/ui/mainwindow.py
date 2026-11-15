@@ -3579,10 +3579,23 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Select a Context feature to update", 5000)
             return
         try:
-            self.folder.update_context(tab.id, fid)
+            self.rename_session_parts(self.doc, self.folder.update_context(tab.id, fid))
         except K.KernelError as e:
             self.status.showMessage(str(e), 6000)
         self._populate_lists()              # the row's status text
+
+    def rename_session_parts(self, doc, ids):
+        """Rename, by the map `ids` (old part id -> new), the parts of `doc` made transparent this session (Shift+T):
+        Update context converting an old Context's body ids (I6.2) keeps them see-through under their new ids."""
+        from ..features import renamed_part_id
+        cur = self._transparent.get(doc)
+        if not ids or not cur:
+            return
+        new = {renamed_part_id(pid, ids) for pid in cur}
+        cur.clear()
+        cur.update(new)
+        if doc is self.doc:
+            self.viewport.set_transparent(cur | self.tool_transparent)
 
     def _add_origin_connector_action(self, m):
         a = m.addAction("Mate connector at origin", self.mate_connector_at_origin)

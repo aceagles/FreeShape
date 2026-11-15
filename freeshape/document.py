@@ -147,9 +147,36 @@ def context_status(doc, fid, asm):
     return CONTEXT_CURRENT
 
 
+CONTEXT_UNREADABLE = ("This Context's stored capture can't be read, so its bodies can't be re-identified. "
+                      "Delete the Context and use Edit in context again.")
+
+
+def _positional_context_ids(doc, f):
+    """{"<fid>/<k>": "<fid>/<instance id>"} for a Context made before I6.1 (no "ids" param): k is the neighbour's
+    position in the capture as stored in this file, which is how run_context numbered it. Raises KernelError
+    CONTEXT_UNREADABLE when that listing can't be read, or holds instance ids run_context would refuse."""
+    fid, key = f["id"], (f.get("params") or {}).get("capture")
+    try:
+        if not key:
+            raise ValueError("no capture")
+        iids = [n["id"] for n in context_listing(doc._blob_get, key)["neighbours"]]
+    except (blobstore.BlobError, ValueError, TypeError) as e:
+        raise K.KernelError(CONTEXT_UNREADABLE) from e
+    if len(set(iids)) != len(iids) or not all(i and all(c.isalnum() or c == "_" for c in i) for i in iids):
+        raise K.KernelError(CONTEXT_UNREADABLE)
+    return {f"{fid}/{k}": f"{fid}/{iid}" for k, iid in enumerate(iids, 1)}
+
+
 def update_context(doc, fid, asm):
     """Recapture the "context" feature `fid` from the Assembly `asm`: new blobs, a new capture key, one undoable
-    param edit that rebuilds the studio. Raises KernelError when the Assembly or the instance is missing."""
+    param edit that rebuilds the studio. Raises KernelError when the Assembly or the instance is missing.
+
+    A Context made before I6.1 (no "ids" param) is converted in the same undoable edit (I6.2): its bodies
+    `<fid>/<k>` become `<fid>/<instance id>` by the capture stored in this file, every reference to one in this
+    studio is renamed (feature params through features.rename_part_refs, part overrides, hidden parts) and the
+    Context gets ids "instance". When that capture can't be read the update is refused with CONTEXT_UNREADABLE
+    and nothing changes. Returns the map of renamed ids ({} when nothing was converted), so the window can rename
+    its session state too."""
     from .assembly import capture_context
     f = doc.feature(fid)
     if f is None or f.get("type") != "context":
@@ -157,10 +184,21 @@ def update_context(doc, fid, asm):
     p = f.get("params") or {}
     if asm is None or asm.instance(p.get("instance")) is None:
         raise K.KernelError("Can't update the Context: its Assembly or instance is missing")
+    ids = _positional_context_ids(doc, f) if "ids" not in p else {}
     key = doc.store_context(capture_context(asm, p["instance"]))
     new = copy.deepcopy(f)
     new["params"]["capture"] = key
-    doc.replace_feature(new)
+    if not ids:
+        doc.replace_feature(new)
+        return {}
+    from .features import rename_part_refs, renamed_part_id
+    new["params"]["ids"] = "instance"
+    doc.checkpoint()
+    doc.features = [new if g["id"] == fid else rename_part_refs(g, ids) for g in doc.features]
+    doc.part_overrides = {renamed_part_id(k, ids): v for k, v in doc.part_overrides.items()}
+    doc.hidden_parts = {renamed_part_id(k, ids) for k in doc.hidden_parts}
+    doc.rebuild()
+    return ids
 
 
 def config_row(configs, name=None):

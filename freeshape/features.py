@@ -56,7 +56,7 @@ FEATURE_LABELS = {
     "sweep": "Sweep", "rib": "Rib", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "sm_hem": "Hem", "sm_jog": "Jog", "sm_tab": "Tab",
     "sm_convert": "Convert to sheet metal", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
-    "thicken": "Thicken",
+    "thicken": "Thicken", "enclose": "Enclose",
     "delete_part": "Delete part",
 }
 
@@ -2556,6 +2556,55 @@ def run_thicken(state, f):
             state.sheet.pop(pid, None)
 
 
+def run_enclose(state, f):
+    """Enclose: a solid for every volume the entities surround. Entities are `{kind: part | face | plane, ref}`:
+    a part (a surface part, or a solid acting as a wall), a face, or a plane (cut to the size of the other
+    entities). The surface parts used are deleted unless keep_tools; a solid part is never deleted."""
+    p = f["params"]
+    fid = f["id"]
+    shapes, pids, used, planes = [], [], [], []
+    for e in p.get("entities", []):
+        kind, ref = e.get("kind"), e.get("ref")
+        if kind == "part":
+            part = state.parts.get(ref)
+            if part is None:
+                raise K.KernelError("Missing part reference")
+            shapes.append(part.shape)
+            pids.append(ref)
+            if K.is_surface(part.shape) and ref not in used:
+                used.append(ref)
+        elif kind == "face":
+            pid, face = resolve(state, ref, "face")
+            shapes.append(face)
+            if pid not in pids:
+                pids.append(pid)
+            if K.is_surface(state.parts[pid].shape) and pid not in used:
+                used.append(pid)
+        elif kind == "plane":
+            planes.append(resolve_plane(state, ref))
+        else:
+            raise K.KernelError("Enclose entities are parts, faces or planes")
+    if not shapes:
+        raise K.KernelError("Select the surfaces that surround a volume")
+    if planes:                    # a plane is cut to the size of the other entities, with room to overhang
+        lo, hi = np.full(3, 1e18), np.full(3, -1e18)
+        for s in shapes:
+            a, b = K.bbox(s)
+            lo, hi = np.minimum(lo, a), np.maximum(hi, b)
+        around, size = (lo + hi) / 2, max(float(np.linalg.norm(hi - lo)), 1.0)
+        shapes = shapes + [K.plane_face(pl, around, size) for pl in planes]
+    op = p.get("op") or "new"
+    solids, hist = K.enclose(shapes, with_history=True)
+    for solid in solids:
+        named = name_feature(state, fid, pids, solid, hist, "enclose")
+        apply_body(state, solid, op, fid, p.get("scope"), named)
+    if not p.get("keep_tools"):
+        for pid in used:          # as run_delete_part does, once per part
+            state.parts.pop(pid, None)
+            state.names.pop(pid, None)
+            state.sheet.pop(pid, None)
+
+
 def run_delete_part(state, f):
     ids = _selected_parts(state, f["params"])
     for i in ids:
@@ -3711,7 +3760,7 @@ RUNNERS = {
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "sm_hem": run_sm_hem, "sm_jog": run_sm_jog, "sm_tab": run_sm_tab, "sm_convert": run_sm_convert,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
-    "thicken": run_thicken,
+    "thicken": run_thicken, "enclose": run_enclose,
     "delete_part": run_delete_part,
 }
 
@@ -3736,6 +3785,7 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "offset_surface": {"faces": [], "distance": 2.0, "flip": False},
         "thicken": {"faces": [], "parts": [], "thickness1": 2.0, "thickness2": 0.0, "mid_plane": False,
                     "flip": False, "keep_tools": False, "op": "new", "scope": []},
+        "enclose": {"entities": [], "keep_tools": False, "op": "new", "scope": []},
         "delete_part": {"parts": []},
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
         "axis": {"type": "auto", "refs": [], "click": None, "flip": False, "connector_axis": "z"},

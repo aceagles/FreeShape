@@ -1986,6 +1986,86 @@ def thicken(shape_or_faces, t1, t2=0.0, with_history=False):
     return (out, hist) if with_history else out
 
 
+ENCLOSE_FAILED = "The selection does not close a volume"
+
+
+def sew_closed(shapes, tol=1e-6):
+    """Sew faces and shells at `tol` and return a solid for every shell that came out closed (a list, empty
+    when none closes). Closure is checked before BRepLib.OrientClosedSolid, which turns an open shell into
+    an invalid solid without complaint; a solid that comes out inside out is reversed."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid
+    from OCP.BRepLib import BRepLib
+    from OCP.TopAbs import TopAbs_SHELL
+    sew = BRepBuilderAPI_Sewing(float(tol))
+    for s in shapes:
+        sew.Add(s)
+    sew.Perform()
+    out = []
+    ex = TopExp_Explorer(sew.SewedShape(), TopAbs_SHELL)
+    while ex.More():
+        shell = _as_shell(ex.Current())
+        ex.Next()
+        if not BRep_Tool.IsClosed_s(shell):
+            continue
+        mk = BRepBuilderAPI_MakeSolid()
+        mk.Add(shell)
+        if not mk.IsDone():
+            continue
+        sol = _as_solid(mk.Shape())
+        BRepLib.OrientClosedSolid_s(sol)
+        if volume(sol) < 0:
+            sol = _as_solid(sol.Reversed())
+        if is_valid(sol) and volume(sol) > 1e-9:
+            out.append(sol)
+    return out
+
+
+def enclose(shapes, with_history=False):
+    """The solids that surfaces surround: a list of solids (one per closed volume), or (solids, history over
+    the input faces). `shapes` are faces, shells and solids (a solid acts as a wall through its shells). They
+    may overhang each other or cross: BOPAlgo_MakerVolume intersects them and keeps the closed cells (spike
+    I2.1: makervolume, with the builder's History())."""
+    from OCP.BOPAlgo import BOPAlgo_MakerVolume
+    from OCP.TopAbs import TopAbs_SHELL
+    args = []
+    for s in shapes:
+        if solids(s):
+            ex = TopExp_Explorer(s, TopAbs_SHELL)
+            while ex.More():
+                args.append(ex.Current())
+                ex.Next()
+        elif faces(s):
+            args.append(s)
+    if not args:
+        raise KernelError(ENCLOSE_FAILED)
+    try:
+        mv = BOPAlgo_MakerVolume()
+        for a in args:
+            mv.AddArgument(a)
+        mv.SetRunParallel(False)
+        mv.SetIntersect(True)
+        mv.SetFuzzyValue(1e-6)
+        mv.SetAvoidInternalShapes(True)
+        mv.Perform()
+        bad = mv.HasErrors()
+        res = None if bad else mv.Shape()
+    except Exception:
+        bad, res = True, None
+    if bad or res is None or res.IsNull() or not solids(res):
+        raise KernelError(ENCLOSE_FAILED)
+    res, h_clean = clean(res, with_history=True)       # the intersection leaves coplanar faces split
+    hist = _chain(_maker_history(mv, args), h_clean)
+    out = []
+    for s in solids(res):
+        if volume(s) < 0:
+            s = _as_solid(s.Reversed())
+        if is_valid(s) and volume(s) > 1e-9:
+            out.append(s)
+    if not out:
+        raise KernelError(ENCLOSE_FAILED)
+    return (out, hist) if with_history else out
+
+
 # --------------------------------------------------------------------------- tessellation
 
 @dataclass

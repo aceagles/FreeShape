@@ -61,6 +61,7 @@ OP_FOR = {
     "delete_face": OP_MAKER,
     "derived": OP_DERIVED,
     "draft": "DFT",
+    "enclose": "ENC",
     "fillet": "FLT",
     "flat_pattern": "UNF",
     "import": "IMP",

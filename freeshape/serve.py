@@ -119,12 +119,43 @@ def mesh_document(out):
             "errors": {str(k): str(v) for k, v in (out.errors or {}).items()}, "meshes": meshes}
 
 
+_ORIGIN_RE = re.compile(r"https://((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?::([0-9]{1,5}))?")
+
+
+def parse_allow_origin(value):
+    """`(origin, hosts)` for one `--allow-origin` value: an exact `https://host[:port]` origin, no wildcard, userinfo,
+    path, query or IP literal. `hosts` are the Host header values it admits (the port is optional). Raises ValueError."""
+    m = _ORIGIN_RE.fullmatch(value.lower()) if isinstance(value, str) and value.isascii() else None
+    if m is None:
+        raise ValueError("must be an exact https://host[:port] origin, with no wildcard and no path")
+    name, port = m.group(1), m.group(2)
+    if port is not None and not 0 < int(port) <= 65535:
+        raise ValueError("the port must be 1..65535")
+    port = "443" if port is None else str(int(port))
+    origins = {f"https://{name}"} if port == "443" else {f"https://{name}:{port}"}
+    hosts = {name, f"{name}:{port}"} if port == "443" else {name, f"{name}:{port}"}
+    if port == "443":
+        origins.add(f"https://{name}:443")
+    return origins, hosts
+
+
+def check_host_origin(host, origin, hosts, origins):
+    """None when the request may go on, else `(status, message)`: 421 for a Host that is not in `hosts`, 403 for an
+    Origin (when one is sent) that is not in `origins`. Only the Host and Origin headers decide, never X-Forwarded-*.
+    The HTTP handler and the WebSocket upgrade both call this."""
+    if host is None or host.lower() not in hosts:
+        return 421, "unexpected Host header"                     # DNS rebinding: a name that is not ours
+    if origin is not None and origin not in origins:
+        return 403, "cross-origin requests are refused"
+    return None
+
+
 class _Server:
     """The aiohttp server: bound to 127.0.0.1 when made, running once `serve_forever` is called (it blocks, on its
     own event loop, until `shutdown`). `lock` serialises every session call; those calls run on `pool`, never on
     the event loop."""
 
-    def __init__(self, session, port=0):
+    def __init__(self, session, port=0, allow_origins=()):
         from .session import SessionError
         self.session = session
         self.session_error = SessionError
@@ -144,6 +175,10 @@ class _Server:
         self.port = sock.getsockname()[1]
         self.hosts = {f"{BIND_HOST}:{self.port}", f"localhost:{self.port}"}
         self.origins = {f"http://{h}" for h in self.hosts}
+        for value in allow_origins:                              # public origins named with --allow-origin
+            o, h = parse_allow_origin(value)
+            self.origins |= o
+            self.hosts |= h
         self._loop = None
         self._stop = None
         self._stop_asked = False
@@ -230,11 +265,9 @@ class _Server:
 
     async def _respond(self, request):
         method = request.method
-        if request.headers.get("Host") not in self.hosts:
-            return self._fail(421, "unexpected Host header")      # DNS rebinding: a name that is not ours
-        origin = request.headers.get("Origin")
-        if origin is not None and origin not in self.origins:
-            return self._fail(403, "cross-origin requests are refused")
+        refused = check_host_origin(request.headers.get("Host"), request.headers.get("Origin"), self.hosts, self.origins)
+        if refused is not None:
+            return self._fail(*refused)
         if method not in ("GET", "POST"):                         # PUT, DELETE, HEAD, OPTIONS, ... are refused
             return self._fail(405, "method not allowed", [("Allow", "GET, POST")])
         # the route comes from the raw request target, never from a decoded or normalised path
@@ -325,10 +358,10 @@ class _Server:
         return self._fail(404, "not found")
 
 
-def make_server(session, port=0):
+def make_server(session, port=0, allow_origins=()):
     """A server on 127.0.0.1:`port` over `session` (bound, not yet serving). Callers run `serve_forever` (it
     blocks) and, at the end, `shutdown`, `server_close` and close the session; `close_all` does the last three."""
-    return _Server(session, port)
+    return _Server(session, port, allow_origins)
 
 
 def close_all(server, session, wait=10.0):
@@ -349,7 +382,15 @@ def main(argv=None):
     ap.add_argument("document", help="the Document folder")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT, help="port to listen on (0 picks a free one)")
     ap.add_argument("--host", default=BIND_HOST, help="only 127.0.0.1 or localhost; anything else is refused")
+    ap.add_argument("--allow-origin", action="append", default=[], metavar="ORIGIN",
+                    help="also accept this public https://host[:port] origin (repeatable; none by default)")
     args = ap.parse_args(argv)
+    for value in args.allow_origin:
+        try:
+            parse_allow_origin(value)
+        except ValueError as e:
+            print(f"freeshape serve: refusing --allow-origin {_clean(value, 80)!r}: {e}.", file=sys.stderr)
+            return 2
     if args.host not in ("127.0.0.1", "localhost"):
         print(f"freeshape serve: refusing --host {_clean(args.host, 80)!r}: {_REMOTE_MESSAGE}.", file=sys.stderr)
         return 2
@@ -367,7 +408,7 @@ def main(argv=None):
         print(f"freeshape serve: cannot open the Document: {e}", file=sys.stderr)
         return 1
     try:
-        server = make_server(session, args.port)
+        server = make_server(session, args.port, args.allow_origin)
     except OSError as e:
         session.close()
         print(f"freeshape serve: cannot listen on {BIND_HOST}:{args.port}: {e}", file=sys.stderr)

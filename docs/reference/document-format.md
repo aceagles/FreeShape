@@ -86,7 +86,7 @@ Each entry of `features` is an object.
 
 #### Feature types
 
-Built-in types: `sketch`, `extrude`, `revolve`, `fillet`, `chamfer`, `shell`, `plane`, `axis`, `mirror`, `linear_pattern`, `circular_pattern`, `boolean`, `import`, `hole`, `variable`, `sweep`, `loft`, `draft`, `split`, `move`, `thread`, `sm_base`, `sm_flange`, `sm_hem`, `sm_jog`, `sm_tab`, `sm_convert`, `delete_face`, `move_face`, `offset_surface`, `delete_part`, `variable_studio_ref`, `derived`, `mate_connector`, `context`. A Python feature has a type owned by a Plugin (`py:<plugin>/<name>`). A feature added by an upstream-style plugin file has type `plugin:<id>`.
+Built-in types: `sketch`, `extrude`, `revolve`, `fillet`, `chamfer`, `shell`, `plane`, `axis`, `mirror`, `linear_pattern`, `circular_pattern`, `boolean`, `import`, `hole`, `variable`, `sweep`, `rib`, `loft`, `draft`, `split`, `move`, `thread`, `sm_base`, `sm_flange`, `sm_hem`, `sm_jog`, `sm_tab`, `sm_convert`, `delete_face`, `move_face`, `offset_surface`, `delete_part`, `variable_studio_ref`, `derived`, `mate_connector`, `context`. A Python feature has a type owned by a Plugin (`py:<plugin>/<name>`). A feature added by an upstream-style plugin file has type `plugin:<id>`.
 
 Types whose `params` name something outside the feature:
 
@@ -109,6 +109,7 @@ Types whose `params` name something outside the feature:
 | `context` | `instance` | string | The instance id the capture was taken for. |
 | `context` | `capture` | string | Blob key of the capture listing. See Where binary data lives. |
 | `delete_part` | `parts` | list of string | Parts removed from the result. |
+| `rib` | `path`, `parts`, `thickness`, `mode`, `flip`, `extend`, `merge` | mixed | A rib parallel to the sketch plane. `path` is a list of `{kind: sketch_chain, sketch, entity}` references, as Sweep takes; each chain is an open run of lines and arcs and makes one rib. `parts` holds the one part the rib grows from. `thickness` is in mm, centred on the sketch plane. `mode` is `parallel`, the only value built. `flip` reverses the side of the chain the rib grows towards; by default it is the side of the part. `extend` (default true) lengthens the chain at both ends along its tangents so it meets the part. `merge` (default true) fuses the rib into the part; false makes it a new part. |
 | `extrude`, `revolve` | `end`, `up_to`, `offset` | mixed | Since version 4 an up-to end is `end` `up_to_face`, `up_to_vertex`, `up_to_part` or `up_to_next`, with its target in `up_to` (`{kind: face, plane or vertex, ref}` or `{kind: part, id}`) and an optional `offset` in mm. Before version 4 this fork wrote `end` `upto` with a reference in `upto`; the 3 to 4 step converts it. `end` `to_face` with its target in `to` is unchanged. |
 | `split` | `tools` | list | Since version 4: `{kind: plane, face or path, ref, both, flip}` per cutting tool. A file with the older `plane` and `keep` keys still reads. |
 | `mirror`, `linear_pattern`, `circular_pattern` | `type`, `features` | mixed | `type` `features` repeats the listed feature ids instead of whole parts. |

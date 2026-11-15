@@ -52,7 +52,7 @@ FEATURE_LABELS = {
     "derived": "Derived",
     "mate_connector": "Mate connector",
     "context": "Context",
-    "sweep": "Sweep", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
+    "sweep": "Sweep", "rib": "Rib", "loft": "Loft", "draft": "Draft", "split": "Split", "move": "Move", "thread": "Thread",
     "sm_base": "Sheet metal", "sm_flange": "Flange", "sm_hem": "Hem", "sm_jog": "Jog", "sm_tab": "Tab",
     "sm_convert": "Convert to sheet metal", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
     "delete_part": "Delete part",
@@ -2718,6 +2718,190 @@ def run_sweep(state, f):
     apply_body(state, body, p.get("op", "add"), f["id"], p.get("scope"), named)
 
 
+# --------------------------------------------------------------------------- rib
+
+RIB_OUTSIDE = "The rib must be entirely within the bounds of the part"
+
+
+def _rib_chain(state, ref, extend, size):
+    """One `sketch_chain` reference as the curves of a rib's centre line: (plane, [(id, curve)] in order,
+    the chain's middle point and chord in sketch coordinates, the two ends of the lengthened chain).
+
+    Only an open chain of lines and arcs. With `extend` the chain is lengthened at both ends by `size`
+    along its tangents: an end line grows in place, an end arc gets a tangent line `<arc id>x0` / `x1`."""
+    from . import sketch_ops
+    sr = state.sketches.get(ref.get("sketch"))
+    if sr is None or ref.get("entity") not in sr.sketch.entities:
+        raise K.KernelError("Missing rib profile")
+    sk = sr.sketch
+    kinds_ok = ("line", "arc")
+    if sk.entities[ref["entity"]]["type"] not in kinds_ok:
+        raise K.KernelError("A rib profile is a chain of lines and arcs")
+    chain, closed = sketch_ops._chain(sk, ref["entity"])
+    if closed:
+        raise K.KernelError("A rib profile must be an open chain")
+    curves = {c["id"]: c for c in sk.curves()}
+    rows = []                           # [id, curve, start, end, tangent at start, tangent at end], in travel order
+    for eid, fwd in chain:
+        e = sk.entities[eid]
+        if e["type"] not in kinds_ok:
+            raise K.KernelError("A rib profile is a chain of lines and arcs")
+        a, b = np.array(sk.P(e["p1"]), float), np.array(sk.P(e["p2"]), float)
+        curve = dict(curves[eid])
+        if e["type"] == "line":
+            ta = tb = (b - a) / np.linalg.norm(b - a)
+        else:                           # an arc runs anticlockwise from p1 to p2
+            c = np.array(sk.P(e["c"]), float)
+            ra, rb = a - c, b - c
+            ta = np.array([-ra[1], ra[0]]) / np.linalg.norm(ra)
+            tb = np.array([-rb[1], rb[0]]) / np.linalg.norm(rb)
+        if not fwd:
+            a, b, ta, tb = b, a, -tb, -ta
+        if e["type"] == "line":
+            curve["p1"], curve["p2"] = a.tolist(), b.tolist()
+        rows.append([eid, curve, a, b, ta, tb])
+    mid_row = rows[len(rows) // 2]
+    mid = np.array(mid_row[1]["pm"], float) if mid_row[1]["type"] == "arc" else (mid_row[2] + mid_row[3]) / 2
+    chord = rows[-1][3] - rows[0][2]
+    start, end = rows[0][2], rows[-1][3]
+    out = [(r[0], r[1]) for r in rows]
+    if extend:
+        far0, far1 = start - rows[0][4] * size, end + rows[-1][5] * size
+        for k, (row, pt, far) in enumerate(((rows[0], start, far0), (rows[-1], end, far1))):
+            if row[1]["type"] == "line":
+                row[1]["p1" if k == 0 else "p2"] = far.tolist()
+            else:
+                tail = {"type": "line", "id": f"{row[0]}x{k}",
+                        "p1": (far if k == 0 else pt).tolist(), "p2": (pt if k == 0 else far).tolist()}
+                out.insert(0, (tail["id"], tail)) if k == 0 else out.append((tail["id"], tail))
+        start, end = far0, far1
+    return sr.plane, out, mid, chord, (start, end)
+
+
+def _rib_direction(part_shape, plane, mid, chord, size, flip):
+    """The way a rib's sheet is swept, in world space: in the sketch plane, perpendicular to the chord, towards
+    the part (the side whose ray from the chain's middle meets the part first); `flip` reverses it."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    if np.linalg.norm(chord) < 1e-9:
+        raise K.KernelError("The rib profile has no length")
+    perp = np.array([-chord[1], chord[0]]) / np.linalg.norm(chord)
+
+    def first_hit(d):
+        def hit(t):
+            seg = K.make_sketch_edges(plane, [{"type": "line", "p1": mid.tolist(), "p2": (mid + d * t).tolist()}])[0]
+            ext = BRepExtrema_DistShapeShape(part_shape, seg)
+            return ext.IsDone() and ext.Value() <= 1e-6
+        if not hit(size):
+            return None
+        lo, hi = 0.0, size
+        for _ in range(40):
+            m = (lo + hi) / 2
+            lo, hi = (lo, m) if hit(m) else (m, hi)
+        return hi
+    reached = [(t, d) for t, d in ((first_hit(d), d) for d in (perp, -perp)) if t is not None]
+    d = min(reached, key=lambda x: x[0])[1] if reached else perp
+    d3 = plane.xdir * d[0] + plane.ydir * d[1]
+    return -d3 if flip else d3
+
+
+def _shape_distance(a, b):
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    ext = BRepExtrema_DistShapeShape(a, b)
+    return ext.Value() if ext.IsDone() else 1e18
+
+
+def _rib_sheet(plane, curves, d3, size, fid, outer_ends):
+    """The sheet of a rib: every curve swept `size` along `d3`. Returns (faces, their NamedShape, the edges
+    that bound the sheet away from the sketch curves: the far edges and, with `outer_ends` (the world points
+    where a lengthened chain stops), the sheet's ends there).
+
+    The names are keyed on the sketch entity id (docs/reference/element-naming.md, "Rib"): `<id>` the sheet
+    face, `<id>t` its edge on the curve, `<id>b` the far edge, `<id>s0` and `<id>s1` the side edges at the
+    curve's first and last vertex, `<id>v0`, `<id>v1` and `<id>w0`, `<id>w1` the vertices."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.TopAbs import TopAbs_VERTEX
+    faces, made = [], []
+    for eid, curve in curves:
+        pairs = K.make_sketch_edges(plane, [curve], with_ids=True)
+        if not pairs:
+            raise K.KernelError("The rib profile has a zero-length piece")
+        mk = BRepPrimAPI_MakePrism(pairs[0][1], K._vec(d3 * size))
+        mk.Build()
+        if not mk.IsDone():
+            raise K.KernelError("Rib failed")
+        faces.append(mk.Shape())
+        made.append((eid, mk))
+    comp = K.compound(faces)
+    el = N._Elements(comp)
+    labels, outer = {}, []
+
+    def label(sub, text):
+        key = el.key(sub)
+        if key is not None:
+            labels[key] = text
+
+    for (eid, mk), face in zip(made, faces):
+        base, far = mk.FirstShape(), mk.LastShape()
+        label(face, eid)
+        label(base, f"{eid}t")
+        label(far, f"{eid}b")
+        outer.append(far)
+        for k, v in enumerate(K._sub_shapes(base, TopAbs_VERTEX)[:2]):
+            label(v, f"{eid}v{k}")
+            side = list(mk.Generated(v))
+            if not side:
+                continue
+            label(side[0], f"{eid}s{k}")
+            for w in K._sub_shapes(side[0], TopAbs_VERTEX):
+                if not w.IsSame(v):
+                    label(w, f"{eid}w{k}")
+            vp = np.array(K.vertex_points(v)[0], float)
+            if any(np.linalg.norm(vp - q) < 1e-6 for q in outer_ends):
+                outer.append(side[0])
+    return faces, N.seed(comp, fid, N.OP_SKETCH, labels), outer
+
+
+def run_rib(state, f):
+    """Rib, parallel to the sketch plane (docs/reference/element-naming.md, "Rib").
+
+    Each chain's centre line is swept towards the part into a planar sheet, the sheet is thickened about the
+    sketch plane into a slab, the slab is cut by the part, and the piece next to the chain is fused in."""
+    p = f["params"]
+    fid = f["id"]
+    if p.get("mode", "parallel") != "parallel":
+        raise K.KernelError("Only a rib parallel to the sketch plane is available")
+    if not p.get("path"):
+        raise K.KernelError("Select the sketch curves for the rib")
+    pid = next((i for i in p.get("parts", []) if i in state.parts), None)
+    if pid is None:
+        raise K.KernelError("Select the part for the rib")
+    t = float(p.get("thickness", 2.0))
+    if t <= 1e-9:
+        raise K.KernelError("Rib thickness must be positive")
+    extend = bool(p.get("extend", True))
+    for ref in p["path"]:
+        part = state.parts[pid]
+        size = _model_size(state) * 2 + 10
+        plane, curves, mid, chord, ends2d = _rib_chain(state, ref, extend, size)
+        d3 = _rib_direction(part.shape, plane, mid, chord, size, p.get("flip", False))
+        stops = [plane.to_world(*q) for q in ends2d] if extend else []
+        sheets, sheet_named, outer = _rib_sheet(plane, curves, d3, size, fid, stops)
+        slab, hist = K.extrude(sheets, np.asarray(plane.normal, float), t, symmetric=True, with_history=True)
+        if len(K.solids(slab)) != 1:
+            raise K.KernelError("Rib failed")
+        seed = plane.to_world(*mid) + d3 * max(size * 1e-5, 1e-4)
+        try:
+            piece, hist2, caps = K.keep_piece_from(slab, part.shape, seed, hist)
+        except K.KernelError:
+            raise K.KernelError(RIB_OUTSIDE) from None
+        if _shape_distance(piece, K.compound(outer)) <= 1e-6:
+            raise K.KernelError(RIB_OUTSIDE)
+        roles = [(c, min(sheets, key=lambda s: _shape_distance(c, s)), "end") for c in caps]
+        roles = [r for r in roles if sheet_named.name_of(r[1]) is not None]
+        named = name_feature(state, fid, [sheet_named], piece, hist2, "extrude", roles=roles)
+        apply_body(state, piece, "add" if p.get("merge", True) else "new", fid, [pid], named)
+
+
 def run_loft(state, f):
     p = f["params"]
     profs = []
@@ -3019,7 +3203,7 @@ RUNNERS = {
     "derived": run_derived,
     "mate_connector": run_mate_connector,
     "context": run_context,
-    "sweep": run_sweep, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
+    "sweep": run_sweep, "rib": run_rib, "loft": run_loft, "draft": run_draft, "split": run_split, "move": run_move,
     "thread": run_thread, "sm_base": run_sm_base, "sm_flange": run_sm_flange,
     "sm_hem": run_sm_hem, "sm_jog": run_sm_jog, "sm_tab": run_sm_tab, "sm_convert": run_sm_convert,
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
@@ -3069,6 +3253,8 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
                  "depth": 10.0, "end": "through", "style": "simple", "tip": True,
                  "counterbore_dia": 9.0, "counterbore_depth": 3.0, "countersink_dia": 10.0},
         "sweep": {"regions": [], "faces": [], "path": [], "op": op},
+        "rib": {"path": [], "parts": [], "thickness": 2.0, "mode": "parallel", "flip": False,
+                "extend": True, "merge": True},
         "loft": {"profiles": [], "ruled": False, "op": op},
         "draft": {"faces": [], "neutral": {"kind": "std", "name": "Top"}, "angle": 3.0, "flip": False},
         "split": {"parts": [], "tools": []},

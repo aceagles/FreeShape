@@ -248,6 +248,8 @@ Things selected before opening a feature are pre-filled. Extrude and Plane show 
   (heal, cap or leave open), push or pull flat faces, or make a surface a set distance from faces.
 - **Thicken** — turn surfaces or faces into a solid, on one or both sides or about the middle; tick *Keep tools* to
   keep the surfaces. A solid's face adds to it, a surface makes a new part.
+- **Enclose** — make a solid from surface parts, faces and planes that surround a volume (they may overlap); tick
+  *Keep tools* to keep the surfaces. Search for it as *stitch*, *sew* or *knit*.
 - **Mirror**, **Linear pattern**, **Circular pattern** — of parts.
 - **Boolean** — union, subtract, intersect parts.
 - **Import STEP / BREP** and **Export STEP / STL / BREP** (whole studio, or selected parts from the Parts list).

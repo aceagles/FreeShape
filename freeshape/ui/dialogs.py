@@ -873,6 +873,12 @@ SCHEMAS = {
          if p.get("mid_plane") else ""},
         _scope(),
     ],
+    "enclose": [
+        _ops(),
+        _sel("entities", "Surface parts, faces and planes that surround a volume", {"part", "face", "plane"}),
+        _check("keep_tools", "Keep tools"),
+        _scope(),
+    ],
     "delete_part": [
         _sel("parts", "Parts to delete", {"part"}),
     ],
@@ -1136,6 +1142,9 @@ def params_to_fields(ftype, p):
     if ftype == "thicken":              # one field holds faces and surface parts
         f["faces"] = [("face", r) for r in p.get("faces", [])] + [("part", i) for i in p.get("parts", [])]
         f["scope"] = [("part", i) for i in p.get("scope", [])]
+    if ftype == "enclose":              # one field holds parts, faces and planes, one entity each
+        f["entities"] = [(e["kind"], e["ref"]) for e in p.get("entities", [])]
+        f["scope"] = [("part", i) for i in p.get("scope", [])]
     if ftype == "plane":
         f["refs_sel"] = [(k, r) for k, r in F.plane_items(p)]
     if ftype == "axis":
@@ -1268,6 +1277,9 @@ def fields_to_params(ftype, fields, p):
     if ftype == "thicken":
         p["faces"] = [r for k, r in fields.get("faces", []) if k == "face"]
         p["parts"] = [r for k, r in fields.get("faces", []) if k == "part"]
+        p["scope"] = [r for k, r in fields.get("scope", [])]
+    if ftype == "enclose":
+        p["entities"] = [{"kind": k, "ref": r} for k, r in fields.get("entities", [])]
         p["scope"] = [r for k, r in fields.get("scope", [])]
     if ftype == "plane":
         p["refs"] = [{"k": k, "ref": r} for k, r in fields.get("refs_sel", [])]

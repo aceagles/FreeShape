@@ -615,6 +615,9 @@ class MainWindow(QMainWindow):
             C("thicken", "Thicken", "Turn surfaces or faces into a solid of a set thickness, on one or both sides or "
               "about the middle. Picking a solid's face adds to it; picking a surface makes a new part.",
               lambda: F_("thicken"), "thicken surface to solid offset solid"),
+            C("enclose", "Enclose", "Make a solid from surfaces, faces and planes that surround a volume. The "
+              "surfaces are used up unless you keep them.",
+              lambda: F_("enclose"), "enclose solid from surfaces sew stitch knit"),
             C("delete_part", "Delete part", "Remove the selected parts from the model from this point on.",
               lambda: F_("delete_part"), "remove erase discard body"),
             C("sm_base", "Sheet metal", "A flat sheet from a sketch with thickness, bend radius and K-factor.",
@@ -896,6 +899,7 @@ class MainWindow(QMainWindow):
                           ("move_face", "Move face — push or pull flat faces"),
                           ("offset_surface", "Offset surface — a new surface a set distance from faces"),
                           ("thicken", "Thicken — turn surfaces or faces into a solid"),
+                          ("enclose", "Enclose — a solid from surfaces that surround a volume"),
                           ("delete_part", "Delete part — remove parts from the model from here on")):
             self._tb(h, name, tip, lambda _=False, n=name: self.start_feature(n))
         h.addWidget(_sep())

@@ -163,6 +163,11 @@ def draw(name: str, p: QPainter):
         p.drawLine(QPointF(5, 9), QPointF(20, 9))
         p.drawLine(QPointF(20, 9), QPointF(27, 5))
         _box(p, 4, 15, 18, 6, 6)
+    elif name == "enclose":
+        _box(p, 5, 6, 22, 20, 6)
+        p.setPen(_pen(ORANGE, 2.2))
+        p.drawLine(QPointF(5, 6), QPointF(27, 26))
+        p.drawLine(QPointF(27, 6), QPointF(5, 26))
     elif name == "delete_part":
         _box(p, 4, 10, 18, 16, 6)
         p.setPen(_pen(RED, 2.8))

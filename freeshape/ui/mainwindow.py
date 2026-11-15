@@ -273,6 +273,14 @@ class MainWindow(QMainWindow):
         pm.addAction(icon("drawing", 16), "Create Drawing…", lambda: self.new_drawing())
         plus.setMenu(pm)
         tl.addWidget(plus)
+        # which Document the tabs that follow belong to; hidden while only loose files are open
+        self.tab_document = QLabel()
+        self.tab_document.setObjectName("tabDocument")
+        self.tab_document.setMaximumWidth(240)
+        self.tab_document.setStyleSheet("QLabel#tabDocument { color: #1f2328; font-weight: 600; padding: 0 12px;"
+                                        " background: #e3e8ef; border-right: 1px solid #d5d9de; }")
+        self.tab_document.hide()
+        tl.addWidget(self.tab_document)
         tl.addWidget(self.tabs, 1)
         tl.addStretch(0)
         self.units_label = QLabel("Units: millimetre")
@@ -1954,6 +1962,7 @@ class MainWindow(QMainWindow):
             doc.refresh(solve=False, notify=False)
         elif doc.kind == "drawing":
             doc.refresh(notify=False)
+        self._refresh_tab_groups()
 
     def _document_info(self, path):
         """{"id", "name", "tab"} for a recent entry that is a Document folder, else None."""
@@ -2199,6 +2208,7 @@ class MainWindow(QMainWindow):
         self.merge_action.setText(f"Merge another Workspace into “{current}”…" if current
                                   else "Merge another Workspace…")
         self.doc_label.set_workspace(current, menu if fd is not None else None)
+        self._refresh_tab_groups()                  # the open Document changed, so which tabs are its own did too
         if problem:
             self.doc_label.setToolTip(f"Workspaces are unavailable: {problem}")
         else:
@@ -3691,7 +3701,33 @@ class MainWindow(QMainWindow):
         i = self._tab_index(doc)
         if i >= 0:
             self.tabs.setTabText(i, doc.name + (" •" if doc.dirty else ""))
-            self.tabs.setTabToolTip(i, (doc.path or doc.name) + "\nDouble-click to rename · right-click or middle-click to close")
+            where = ""
+            if self.folder is not None:
+                where = f"\nIn the Document “{self.folder.name}”" if self._folder_tab(doc) is not None else \
+                    f"\nLoose file: not part of the Document “{self.folder.name}”"
+            self.tabs.setTabToolTip(i, (doc.path or doc.name) + where
+                                    + "\nDouble-click to rename · right-click or middle-click to close")
+
+    def _refresh_tab_groups(self):
+        """Show which tabs belong to the open Document: its name at the left of the tab strip, its tabs together
+        straight after it, and every other tab after those with a "Loose file" badge. With no Document open
+        every tab is a loose file and nothing is marked. Only moves and marks tabs; never closes one."""
+        fd = self.folder
+        self.tab_document.setVisible(fd is not None)
+        self.tab_document.setText(fd.name if fd is not None else "")
+        self.tab_document.setToolTip(f"Document “{fd.name}”\n{fd.path}\nThe tabs up to the first "
+                                     f"“{self.tabs.LOOSE_BADGE}” one are this Document's" if fd is not None else "")
+        own = 0
+        for i in range(self.tabs.count()):
+            if self._folder_tab(self.docs.get(self.tabs.tabData(i))) is not None:
+                if i != own:
+                    self.tabs.moveTab(i, own)        # the loose tabs it passes keep their order
+                own += 1
+        for i in range(self.tabs.count()):
+            self.tabs.set_loose(i, fd is not None and i >= own)
+            doc = self.docs.get(self.tabs.tabData(i))
+            if doc is not None:
+                self._refresh_tab_title(doc)         # the tooltip says where the tab belongs
 
     def _add_tab(self, doc, switch=True):
         if switch and hasattr(self, "main_stack"):
@@ -3714,13 +3750,13 @@ class MainWindow(QMainWindow):
         i = self.tabs.addTab(icon({"assembly": "assembly", "drawing": "drawing"}.get(doc.kind, "part"), 16), doc.name)
         self.tabs.setTabData(i, key)
         if not switch:
-            self._refresh_tab_title(doc)
+            self._refresh_tab_groups()
             return
         if self.tabs.currentIndex() == i:
             self._switch_tab(i)
         else:
             self.tabs.setCurrentIndex(i)
-        self._refresh_tab_title(doc)
+        self._refresh_tab_groups()
 
     def _doc_changed_from(self, doc):
         if doc is self.doc:

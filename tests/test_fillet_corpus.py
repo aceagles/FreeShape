@@ -78,3 +78,16 @@ def test_square_to_circle_loft_rims_fillet_at_1mm():
 def test_the_corpus_has_no_crash_and_no_hang_in_the_cases_run_here():
     bad = {k: v["status"] for k, v in _cache.items() if v["exit"] != "0"}
     assert not bad, bad
+
+
+def test_i8_6_record_matches_the_decision_lines():
+    """I8.6 built nothing because the corpus asked for nothing: every build's DECISION says rescued_by=none
+    crash_guard=not_needed, and the record says rungs=none crash_guard=adr with the ADR present."""
+    with open(C.RESULT) as fh:
+        lines = fh.read().splitlines()
+    decisions = [ln for ln in lines if ln.startswith("DECISION fillet_corpus")]
+    assert decisions
+    for ln in decisions:
+        assert "rescued_by=none" in ln and "crash_guard=not_needed" in ln, ln
+    assert "I8.6 built: rungs=none crash_guard=adr" in lines
+    assert glob.glob(os.path.join(ROOT, "docs", "adr", "*blends-run-in-process.md"))

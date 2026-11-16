@@ -1,8 +1,48 @@
 # freeshape serve
 
-`python -m freeshape serve <Document folder> [--port N] [--allow-origin ORIGIN]...` serves one Document over HTTP
+`python -m freeshape serve <folder> [--port N] [--data-dir DIR] [--allow-origin ORIGIN]...` serves Documents over HTTP
 (ADR 0010, ADR 0014). It binds 127.0.0.1 only and has no authentication. `--host` exists only to refuse any other
 address.
+
+## One Document or a Documents root
+
+- A folder that holds `document.json` is one Document. serve opens it at start, takes its lock as `browser` (see
+  below) and answers the old routes (`/tabs`, `/tabs/<id>/...`, `/save`, `/ws`) for it, as well as the
+  Document-keyed ones.
+- Any other folder is a Documents root. serve lists the Documents in the registry, makes new ones inside the root
+  (`POST /documents {"name": ...}`) and opens one at a time by id (`POST /documents/<id>/open`). The old routes do not
+  exist there: every route names the Document, `/documents/<id>/tabs/<tab>/...`.
+
+The route table is in the docstring of `freeshape/serve.py`.
+
+## The registry, and the path rule
+
+A Document is known by its id in the registry, `documents.json` in the data directory. That file is the desktop's
+own: `--data-dir` (default: the desktop's, `$FREESHAPE_DATA_DIR` or the per-user data folder) makes serve read and
+write the same one, so a Document made by either program shows up in the other.
+
+The registry stores each Document as an absolute real path. serve must therefore see the Documents at the same path
+as the desktop. When the desktop runs in a container, its Documents are under `/config`; a serve that reaches the same
+folder as `/data/Documents` would find every Document missing. Mount the config folder at the same path in both
+places, with the same home and the same data directory. If the registry lists Documents and none of their folders
+exist, serve stops before it listens, prints the first missing path and this rule, and exits with status 1. When only
+some are missing, serve starts and lists those with `"missing": true`; they cannot be opened.
+
+Nothing in a request becomes a file path. A Document is addressed by its registry id, which is only ever a key. A new
+Document's folder is `<root>/<name made safe>`: the name must be 1..100 characters with no path separator (`/`, `\`),
+colon or control character; letters, digits, space, `.`, `_` and `-` are kept, anything else becomes `-`; leading and
+trailing dots, dashes and spaces go; at most 80 characters remain. `../x`, an absolute path or an empty name is
+refused with 400. An existing folder is never reused: the next free `<name> 2`, `<name> 3` is made.
+
+## The Document lock
+
+The desktop and serve share a Document through `.freeshape-lock` in the Document folder (`freeshape/doc_lock.py`).
+serve holds it as `browser` while a Document is open and refreshes the heartbeat every 10 seconds. If another program
+holds a live lock when serve opens the Document, it opens read-only: tabs and outputs work, and every edit and save
+answers 423 with the holder's name. `POST /documents/<id>/take-over` takes the lock and reloads the Document from its
+folder. If the lock is taken from serve while the Document is open, the next heartbeat (or the next edit) notices;
+the Document turns read-only and its sockets get a `lock` message. Closing releases the lock. At most one Document is
+open at a time; opening a second answers 409 naming the open one.
 
 ## Reaching it from the iPad
 

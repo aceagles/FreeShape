@@ -1,5 +1,4 @@
-import { Mesh, Ray, Scene, Vector3, WebGLRenderer } from 'three'
-import type { MeshBVH } from 'three-mesh-bvh'
+import { Scene, Vector3, WebGLRenderer } from 'three'
 import { PointerModule } from '../input/pointer'
 import type { NavHost } from '../input/pointer'
 import type { StudioOutputs } from '../wire'
@@ -7,6 +6,8 @@ import { viewportBackground } from './colors'
 import { ViewCamera } from './camera'
 import type { CameraState, StandardView } from './camera'
 import { STANDARD_VIEWS } from './camera'
+import { PickIndex, rayPoint, viewRay } from './pick'
+import type { PickFilter, PickHit, PickKind, PickPointer } from './pick'
 import { buildScene, EMPTY_STATS } from './scene'
 import type { BuiltScene, SceneStats } from './scene'
 
@@ -21,6 +22,8 @@ export interface ViewportReport extends SceneStats {
   highlightedPart: string | null
   /** Why nothing is drawn when the tab on screen is not a Part Studio (its kind: assembly, drawing, variables); null otherwise. */
   emptyKind: string | null
+  /** Test hook: what a pointer of this kind would pick at a view position (CSS pixels from the top left), null for nothing. */
+  pickAt(x: number, y: number, pointer: PickPointer, filter?: readonly PickKind[]): PickHit | null
 }
 
 declare global {
@@ -38,6 +41,7 @@ export class ViewportController implements NavHost {
   private renderer: WebGLRenderer
   private readonly scene = new Scene()
   private built: BuiltScene | null = null
+  private picker: PickIndex | null = null
   private revision: number | null = null
   private frames = 0
   private pending = 0
@@ -77,6 +81,7 @@ export class ViewportController implements NavHost {
     }
     this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, selectedPart: this.selectedPart })
     this.scene.add(this.built.root)
+    this.picker = new PickIndex(outputs, this.built)
     this.highlighted = this.built.stats.visiblePartIds.includes(this.selectedPart ?? '') ? this.selectedPart : null
     if (this.built.hasModel) this.planeHalf = this.built.stats.planeHalf
     this.revision = outputs.revision
@@ -96,6 +101,7 @@ export class ViewportController implements NavHost {
       this.built.dispose()
       this.built = null
     }
+    this.picker = null
     this.highlighted = null
     this.planeHalf = null
     this.revision = null
@@ -139,26 +145,15 @@ export class ViewportController implements NavHost {
 
   /** The model point under a view position (CSS pixels from the top left): the nearest hit of a ray along the view. */
   pickPoint(x: number, y: number): Vector3 | null {
-    if (!this.built) return null
-    const { back } = this.view.axes()
-    const ray = new Ray(this.view.unproject(x, y).addScaledVector(back, this.view.depthRadius * 8), back.clone().negate())
-    let best: Vector3 | null = null
-    let bestDistance = Infinity
-    this.built.root.updateMatrixWorld(true)
-    this.built.root.traverse((o) => {
-      const bvh = o.userData['bvh'] as MeshBVH | undefined
-      if (!(o instanceof Mesh) || !bvh) return
-      const local = ray.clone().applyMatrix4(o.matrixWorld.clone().invert())
-      const hit = bvh.raycastFirst(local, 2)
-      if (!hit) return
-      const world = hit.point.clone().applyMatrix4(o.matrixWorld)
-      const d = world.distanceTo(ray.origin)
-      if (d < bestDistance) {
-        bestDistance = d
-        best = world
-      }
-    })
-    return best
+    return this.built ? rayPoint(this.built.root, viewRay(this.view, x, y)) : null
+  }
+
+  /**
+   * What is under a view position for this pointer kind (see pick.ts), or null. Nothing is drawn by it and nothing is
+   * kept: the pointer wiring (card I4.2) calls it, and so does the test hook `pickAt`.
+   */
+  pickAt(x: number, y: number, pointer: PickPointer, filter?: PickFilter): PickHit | null {
+    return this.picker ? this.picker.pick(this.view, x, y, pointer, filter) : null
   }
 
   requestRender(): void {
@@ -186,6 +181,7 @@ export class ViewportController implements NavHost {
       frames: this.frames,
       highlightedPart: this.highlighted,
       emptyKind: this.emptyKind,
+      pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
     }
   }
 

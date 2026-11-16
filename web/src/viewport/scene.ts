@@ -138,8 +138,10 @@ function partGroup(part: Part, mesh: PartMesh, translucent: boolean, materials: 
   for (const grp of groups) g.addGroup(grp.start, grp.count, matFor(grp.color))
   const list = [...cache.values()]
   const mesh3 = new Mesh(g, list.length === 1 ? list[0] : list)
-  // Built once so picking (a later card) can ray-cast it; a part has a few thousand triangles at most.
-  mesh3.userData['bvh'] = new MeshBVH(g)
+  // Built once so picking can ray-cast it. `indirect` keeps the index buffer as the server sent it (a plain build sorts it
+  // in place, which would break `triangleFace[faceIndex]` and rewrite the response's typed array): a hit's `faceIndex`
+  // is then the triangle's own number, the one `triangleFace` and `faceRanges` use.
+  mesh3.userData['bvh'] = new MeshBVH(g, { indirect: true })
   mesh3.userData['partId'] = part.id
   mesh3.name = `part:${part.id}`
   mesh3.renderOrder = translucent ? 2 : 0
@@ -217,7 +219,8 @@ function planeObjects(o: Vec3, x: Vec3, n: Vec3, half: number, materials: Materi
   return g
 }
 
-function axisLine(o: Vec3, d: Vec3, span: readonly [number, number] | null, materials: Material[]): Line {
+/** The two ends of a drawn construction axis: its span padded by a tenth each side, or the default half-length. Picking uses the same ends. */
+export function axisEnds(o: Vec3, d: Vec3, span: readonly [number, number] | null): [Vector3, Vector3] {
   let t0 = -sceneDraw.planeHalf
   let t1 = sceneDraw.planeHalf
   if (span && span[1] - span[0] > 1e-9) {
@@ -226,8 +229,11 @@ function axisLine(o: Vec3, d: Vec3, span: readonly [number, number] | null, mate
     t1 = span[1] + pad
   }
   const dv = new Vector3(...d).normalize()
-  const a = new Vector3(...o).addScaledVector(dv, t0)
-  const b = new Vector3(...o).addScaledVector(dv, t1)
+  return [new Vector3(...o).addScaledVector(dv, t0), new Vector3(...o).addScaledVector(dv, t1)]
+}
+
+function axisLine(o: Vec3, d: Vec3, span: readonly [number, number] | null, materials: Material[]): Line {
+  const [a, b] = axisEnds(o, d, span)
   const g = new BufferGeometry().setFromPoints([a, b])
   const c = rgb(sceneColor.plane).multiplyScalar(0.8)
   const m = new LineDashedMaterial({ color: c, dashSize: 6, gapSize: 3, depthWrite: false })
@@ -317,7 +323,8 @@ export function fitBoundsFor(model: Bounds, half: number): Bounds {
   return side(union) <= 2.5 * side(model) ? union : model
 }
 
-const DEFAULT_PLANES: readonly { name: string; o: Vec3; x: Vec3; n: Vec3 }[] = [
+/** The three default planes: name, origin, x direction and normal (the third axis is normal x x). Picking uses the same frames. */
+export const DEFAULT_PLANES: readonly { name: string; o: Vec3; x: Vec3; n: Vec3 }[] = [
   { name: 'Top', o: [0, 0, 0], x: [1, 0, 0], n: [0, 0, 1] },
   { name: 'Front', o: [0, 0, 0], x: [1, 0, 0], n: [0, -1, 0] },
   { name: 'Right', o: [0, 0, 0], x: [0, 1, 0], n: [1, 0, 0] },

@@ -26,6 +26,8 @@ import type { Bounds, Triple } from './camera'
 import { MIN_HALF } from './camera'
 import { LookOverlay } from './looks'
 import type { LookItem, LookSources } from './looks'
+import { buildSketchRegions } from './sketchRegions'
+import type { DrawnRegion } from './sketchRegions'
 import { setLook, shadedMaterial } from './shading'
 
 export interface SceneStats {
@@ -394,10 +396,16 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   const stats: SceneStats = { ...EMPTY_STATS, visiblePartIds: [], partColors: {} }
   /** Per drawn part: what the highlight changes. */
   const looks = new Map<string, { shaders: ShaderMaterial[]; line: LineMaterial | null; edge: Color }>()
-  const sources: { parts: Map<string, { part: Part; geometry: BufferGeometry }>; planes: Map<string, readonly Vector3[]>; axes: Map<string, readonly [Vector3, Vector3]> } = {
+  const sources: {
+    parts: Map<string, { part: Part; geometry: BufferGeometry }>
+    planes: Map<string, readonly Vector3[]>
+    axes: Map<string, readonly [Vector3, Vector3]>
+    regions: Map<string, DrawnRegion>
+  } = {
     parts: new Map(),
     planes: new Map(),
     axes: new Map(),
+    regions: new Map(),
   }
 
   const drawn = outputs.parts.filter((p) => !p.hidden && p.mesh)
@@ -457,6 +465,9 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     root.add(l)
     stats.axes++
   }
+  const sketchRegions = buildSketchRegions(outputs, materials, geometries)
+  sources.regions = sketchRegions.regions
+  root.add(sketchRegions.group)
   const triad = triadObject(materials)
   root.add(triad)
   if (opts.ghost) {

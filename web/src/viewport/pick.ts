@@ -3,6 +3,8 @@ import type { Object3D } from 'three'
 import type { MeshBVH } from 'three-mesh-bvh'
 import { elementName } from '../wire'
 import type { Part, StudioOutputs, Vec3 } from '../wire'
+import { inRegion, visibleRegions } from '../sketch/regions'
+import type { RegionShape } from '../sketch/regions'
 import type { ViewCamera } from './camera'
 import { axisEnds, DEFAULT_PLANES } from './scene'
 import type { BuiltScene } from './scene'
@@ -17,8 +19,8 @@ import type { BuiltScene } from './scene'
  * What the desktop's `pick` can return, and what is here:
  *   face, edge, vertex, part ........ here (part only when the filter has `part` and not `face`, as on the desktop)
  *   plane (default and the studio's), axis ... here
- *   region, sketch_line, sketch_point, connector ... not here: sketch items and mate connectors are drawn by the
- *   sketch slice, and the scene has nothing to hit before that. Their kinds are not in `PickKind` yet.
+ *   region ......................... here (card I7.13): the regions of a sketch the eye shows, found on the sketch plane
+ *   sketch_line, sketch_point, connector ... not here: the scene has nothing to hit for them; their kinds are not in `PickKind` yet.
  *
  * INDEX BASE. `index` is 0-based, as everywhere in the client (see wire/types.ts). Add 1 when it goes back to the
  * server. `name` is the Element name the outputs carry for it (null when the element has none), which needs no index.
@@ -28,7 +30,7 @@ import type { BuiltScene } from './scene'
  * the pointer are skipped.
  */
 
-export type PickKind = 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis'
+export type PickKind = 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region'
 
 /** `touch` is a finger (the Pointer Events name); the pointer module's pen and mouse use the same words. */
 export type PickPointer = 'pen' | 'touch' | 'mouse'
@@ -51,7 +53,7 @@ export const TOLERANCE: Readonly<Record<PickPointer, Tolerances>> = {
 }
 
 /** What a pick considers when no filter is given: everything the scene has (the desktop leaves vertices out; the card puts them first). */
-export const DEFAULT_KINDS: readonly PickKind[] = ['face', 'edge', 'vertex', 'plane', 'axis']
+export const DEFAULT_KINDS: readonly PickKind[] = ['face', 'edge', 'vertex', 'plane', 'axis', 'region']
 
 interface PickBase {
   /** Where, in the studio's coordinates (mm): the ray's hit on a face or plane, the nearest point of an edge or axis, the vertex. */
@@ -93,7 +95,16 @@ export interface DatumPick extends PickBase {
   readonly distancePx: number | null
 }
 
-export type PickHit = ElementPick | PartPick | DatumPick
+/** A region of a sketch: `part` is the id of the sketch feature, `index` the 0-based region, `name` its Element name (null when it has none). */
+export interface RegionPick extends PickBase {
+  readonly kind: 'region'
+  readonly part: string
+  readonly index: number
+  readonly name: string | null
+  readonly distancePx: null
+}
+
+export type PickHit = ElementPick | PartPick | DatumPick | RegionPick
 
 export type PickFilter = ReadonlySet<PickKind> | readonly PickKind[]
 
@@ -154,6 +165,16 @@ interface DatumPlane {
   readonly n: Vector3
 }
 
+interface RegionPlane {
+  readonly sketch: string
+  readonly o: Vector3
+  readonly x: Vector3
+  readonly y: Vector3
+  readonly n: Vector3
+  readonly shapes: readonly RegionShape[]
+  readonly names: ReadonlyArray<string | null>
+}
+
 interface DatumAxis {
   readonly key: string
   readonly a: Vector3
@@ -170,6 +191,7 @@ export class PickIndex {
   private readonly parts: PartEntry[] = []
   private readonly planes: DatumPlane[] = []
   private readonly axes: DatumAxis[] = []
+  private readonly regions: RegionPlane[] = []
   private readonly planeHalf: number
 
   // flat tables over every drawn part, in the scene's order
@@ -261,6 +283,10 @@ export class PickIndex {
     for (const [key, a] of Object.entries(outputs.axes)) {
       const [pa, pb] = axisEnds(a.o, a.d, a.span)
       this.axes.push({ key, a: pa, b: pb })
+    }
+    for (const r of visibleRegions(outputs)) {
+      const names = outputs.sketches.find((s) => s.id === r.sketch)?.regionNames ?? []
+      this.regions.push({ sketch: r.sketch, o: new Vector3(...r.origin), x: new Vector3(...r.x), y: new Vector3(...r.y), n: new Vector3(...r.normal), shapes: r.shapes, names })
     }
   }
 
@@ -482,6 +508,27 @@ export class PickIndex {
       }
     }
     const faceWanted = allowed.has('face') || allowed.has('part')
+    // a sketch's region, on its plane: in front of the nearest face or level with it, and before the plane it lies in
+    if (allowed.has('region')) {
+      let region: { depth: number; r: RegionPlane; shape: RegionShape; point: Vector3 } | null = null
+      const d = ray.direction
+      for (const r of this.regions) {
+        const denom = d.dot(r.n)
+        if (Math.abs(denom) < 1e-9) continue
+        const t = r.o.clone().sub(ray.origin).dot(r.n) / denom
+        if (t <= 0 || (region !== null && t >= region.depth - TIE_MM)) continue
+        const q = ray.origin.clone().addScaledVector(d, t)
+        const rel = q.clone().sub(r.o)
+        const u = rel.dot(r.x)
+        const v = rel.dot(r.y)
+        const shape = r.shapes.find((s) => inRegion(s, u, v))
+        if (shape) region = { depth: t, r, shape, point: q }
+      }
+      if (region && (face === null || !faceWanted || region.depth <= faceDistance + levelSlack)) {
+        const p = region.point
+        return { kind: 'region', part: region.r.sketch, index: region.shape.index, name: region.r.names[region.shape.index] ?? null, point: [p.x, p.y, p.z], distancePx: null }
+      }
+    }
     if (plane && (face === null || !faceWanted || plane.depth <= faceDistance + levelSlack)) {
       return { kind: 'plane', part: null, index: -1, name: null, key: plane.key, point: [plane.point.x, plane.point.y, plane.point.z], distancePx: null }
     }

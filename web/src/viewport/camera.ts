@@ -264,6 +264,14 @@ export class ViewCamera {
     c.updateMatrixWorld(true)
   }
 
+  /** Put the view back as `state()` gave it (target, zoom, direction and roll; the size stays as it is now). */
+  restore(s: CameraState): void {
+    this.target.set(...s.target)
+    this.scale = s.scale
+    this.back.set(...s.back).normalize()
+    this.roll = s.roll
+  }
+
   state(): CameraState {
     return {
       target: tri(this.target),

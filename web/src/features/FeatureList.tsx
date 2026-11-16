@@ -251,7 +251,7 @@ export function FeatureList({ outputs, selected, edits, onEdit, onSelect }: Prop
                   slot={slot}
                   canMenu={!edits.disabled}
                   onSelect={() => onSelect(row.feature.id)}
-                  onEdit={onEdit && row.feature.type !== 'sketch' ? () => onEdit(row.feature) : undefined}
+                  onEdit={onEdit ? () => onEdit(row.feature) : undefined}
                   onMenu={(el) => open(row.feature, row.index, el)}
                 />
               )}
@@ -262,7 +262,7 @@ export function FeatureList({ outputs, selected, edits, onEdit, onSelect }: Prop
       </ul>
       {menu && (
         <Popover anchor={menu.anchor} label={`${menu.feature.name} menu`} onClose={close}>
-          {onEdit && menu.feature.type !== 'sketch' && (
+          {onEdit && (
             <PopoverItem
               label="Edit"
               icon={<Icon d={paths.extrude} />}

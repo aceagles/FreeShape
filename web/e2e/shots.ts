@@ -6,8 +6,9 @@ import { dragRollbackTo, featureMenu, featureRow, longPressFeature } from './sup
 import { partEye, partMenu, partRow, longPressPart } from './support/parts.ts'
 import { edgeSpot, faceSpots, planeSpot, vertexSpot } from './support/pick.ts'
 import type { Spot } from './support/pick.ts'
-import { canvasCentre, fingerDrag, fingerTap, sendPointer, twoFingers } from './support/pointer.ts'
+import { canvasCentre, fingerDrag, fingerTap, penStroke, sendPointer, twoFingers } from './support/pointer.ts'
 import type { PointerStep } from './support/pointer.ts'
+import { chooseWithRing, place, regionSpot, screenFor } from './support/draw.ts'
 import { openNewSketch, openSketchFeature, screenOf, settledSketch } from './support/sketch.ts'
 import { settled } from './support/viewport.ts'
 import { gizmoOf, openAssemblyTab, readAssembly, settledAssembly } from './support/assembly.ts'
@@ -1281,6 +1282,50 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    name: 'sketch-plane-ask',
+    mock: 'browsing', // the Sketch tool with nothing selected: the small dialog asks for a plane, the three default planes as buttons
+    steps: async (page) => {
+      await openApp(page)
+      await page.locator('[data-tool="sketch"]').click()
+      await page.getByRole('dialog', { name: 'Sketch on which plane?' }).waitFor()
+    },
+  },
+  {
+    name: 'sketch-discard',
+    mock: 'sketch', // Cancel on a sketch with a change: asks before the change is thrown away
+    steps: async (page) => {
+      await openApp(page)
+      await featureMenu(page, 'Bracket profile', 'Edit')
+      await page.locator('[data-strip="sketch"]').waitFor()
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.paints ?? 0) > 0)
+      await chooseWithRing(page, 'point')
+      await place(page, await screenFor(page, 20, 30))
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.points ?? 0) > 0)
+      await page.getByTestId('sketch-cancel').click()
+      await page.getByRole('dialog', { name: 'Discard this sketch?' }).waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'region-selected',
+    mock: 'browsing', // back in the Part Studio after Done: the new sketch's region is drawn, the pen has picked it ("1 region")
+    steps: async (page) => {
+      await commitRectangleAndPickRegion(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'region-extrude',
+    mock: 'dialog', // Extrude started from the picked region: its profile field reads "Region 1 of Sketch ..."
+    steps: async (page) => {
+      await commitRectangleAndPickRegion(page)
+      await page.locator('.tool-strip').getByRole('button', { name: /^Create/ }).click()
+      await page.getByRole('menuitem', { name: /^Extrude/ }).click()
+      await page.getByTestId('pad').waitFor()
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** Listen for the open sketch's data (call before it opens); `lineWith(type)` is the first line a constraint of that type holds. */
@@ -1381,4 +1426,22 @@ async function renameFirstTab(page: Page): Promise<void> {
 /** Waits until the viewport has drawn at least this many parts. */
 async function waitParts(page: Page, n: number): Promise<void> {
   await page.waitForFunction((k) => (window.__freeshapeViewport?.visibleParts ?? 0) >= k, n)
+}
+
+/** A rectangle on the Top plane clear of the Bracket, Done, and the pen on its region: the Part Studio with the region selected. */
+async function commitRectangleAndPickRegion(page: Page): Promise<void> {
+  await openApp(page)
+  await openNewSketch(page, 'Top')
+  await chooseWithRing(page, 'rectangle')
+  await place(page, await screenFor(page, -30, -10))
+  await place(page, await screenFor(page, -10, 10))
+  await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 4)
+  const rev = await page.evaluate(() => window.__freeshapeViewport?.revision ?? 0)
+  await page.getByTestId('sketch-done').click()
+  await page.locator('[data-strip="feature"]').waitFor()
+  await page.waitForFunction((r) => (window.__freeshapeViewport?.revision ?? 0) > r, rev)
+  const at = await regionSpot(page)
+  await penStroke(page, at, at)
+  await page.getByTestId('selection-count').getByText('1 region').waitFor()
+  await settled(page)
 }

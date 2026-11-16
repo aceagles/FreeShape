@@ -13,7 +13,7 @@ import type { SelItem } from './dialogApi'
 
 /**
  * The kinds the view may pick for a field that wants `want` (the route's own strings). A face also fills a plane or an
- * axis field (the route turns it into one). What the refs route has no pick for (a sketch region, a datum plane or
+ * axis field (the route turns it into one). A region field takes a sketch's region (card I7.13). What the refs route has no pick for (a datum plane or
  * axis, a connector) is left out: a field that wants only those cannot be filled from the view, and nothing is pickable.
  */
 const KINDS_OF_WANT: Record<string, readonly PickKind[]> = {
@@ -23,6 +23,7 @@ const KINDS_OF_WANT: Record<string, readonly PickKind[]> = {
   plane: ['face'],
   axis: ['face'],
   part: ['part'],
+  region: ['region'],
   path: ['edge'],
   element: ['face', 'edge'],
 }
@@ -37,7 +38,7 @@ export function pickKinds(want: readonly string[] | undefined): PickKind[] {
 export function refPick(item: SelectionItem, want: readonly string[]): Record<string, unknown> | null {
   if (item.part === null) return null
   if (item.kind === 'part') return { part: item.part, kind: 'part', want }
-  if (item.kind !== 'face' && item.kind !== 'edge' && item.kind !== 'vertex') return null
+  if (item.kind !== 'face' && item.kind !== 'edge' && item.kind !== 'vertex' && item.kind !== 'region') return null
   return { part: item.part, kind: item.kind, index: item.index + 1, want }
 }
 
@@ -55,6 +56,11 @@ export const BASE_LOADING = 'The model this feature is built on has not arrived 
 export function baseIndex(item: SelectionItem, drawn: StudioOutputs | null, base: StudioOutputs | null): number | null | undefined {
   if (base === null) return undefined
   if (drawn === base || item.kind === 'part') return item.index
+  if (item.kind === 'region') {
+    // a region is the sketch's: found in the base by its Element name (`part` is the sketch's feature id)
+    const at = item.name === null ? -1 : (base.sketches.find((s) => s.id === item.part)?.regionNames.indexOf(item.name) ?? -1)
+    return at >= 0 ? at : null
+  }
   if (item.name === null || item.part === null || (item.kind !== 'face' && item.kind !== 'edge' && item.kind !== 'vertex')) return null
   const part = base.parts.find((p) => p.id === item.part)
   if (!part) return null
@@ -211,8 +217,8 @@ export function nameIndex(outputs: StudioOutputs): NameIndex {
 /**
  * The drawn elements a field's items stand for, to highlight. An item is a reference, not a pick: it is matched to the
  * outputs by Element name within its part (the part is `ref.part`; without one, the first part that has the name). A plane
- * or axis taken from a face highlights that face. An item without a name (a legacy reference, a face's edges, a region, a
- * part) is listed in the chips and not highlighted: nothing in the outputs says which element it is.
+ * or axis taken from a face highlights that face. A region is matched to its sketch's regions (by name, else by its centroid
+ * and area). An item without a name (a legacy reference, a face's edges, a part) is listed in the chips and not highlighted: nothing in the outputs says which element it is.
  */
 export function highlightItems(items: readonly SelItem[], outputs: StudioOutputs | null): SelectionItem[] {
   if (outputs === null) return []
@@ -220,6 +226,15 @@ export function highlightItems(items: readonly SelItem[], outputs: StudioOutputs
   const out: SelectionItem[] = []
   for (const it of items) {
     const ref = asRecord(it.ref)
+    if (it.kind === 'region' && ref) {
+      const id = ref['sketch']
+      const at = typeof id === 'string' ? regionIndex(ref, outputs, id) : -1
+      if (at >= 0 && typeof id === 'string') {
+        const name = outputs.sketches.find((x) => x.id === id)?.regionNames[at] ?? null
+        out.push({ id: idOfItem('region', id, name, at, null), kind: 'region', part: id, index: at, name, key: null })
+      }
+      continue
+    }
     const sub = asRecord(ref?.['face']) ?? asRecord(ref?.['edge'])
     const name = it.name ?? (it.kind === 'plane' || it.kind === 'axis' ? nameOfRef(sub) : null)
     if (!name) continue

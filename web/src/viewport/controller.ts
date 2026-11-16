@@ -1,4 +1,5 @@
 import { Scene, Vector3, WebGLRenderer } from 'three'
+import type { Object3D } from 'three'
 import { ManipulatorLayer } from '../dialog/manipulator'
 import { PointerModule } from '../input/pointer'
 import type { NavHost } from '../input/pointer'
@@ -109,6 +110,9 @@ export class ViewportController implements NavHost {
   private readonly manipulators: ManipulatorLayer
   private looks = 0
   private sketchMode: SketchMode | null = null
+  /** The view as it was when the sketch opened: put back when it closes (the sketch squares and fits the view to itself). */
+  private beforeSketch: CameraState | null = null
+  private sketchStore: SketchStore | null = null
   private readonly unsubscribe: () => void
 
   /** Throws when the browser cannot create a WebGL context. The viewport draws and picks for `selection`. */
@@ -134,8 +138,16 @@ export class ViewportController implements NavHost {
    */
   setSketch(store: SketchStore | null): void {
     if (this.disposed) return
+    // the same store again (an effect that re-ran for another reason) changes nothing: no new sketch mode, no camera move
+    if (store !== null && store === this.sketchStore) return
+    this.sketchStore = store
+    if (store && this.sketchMode === null) this.beforeSketch = this.view.state()
     this.sketchMode?.dispose()
     this.sketchMode = null
+    if (!store && this.beforeSketch) {
+      this.view.restore(this.beforeSketch)
+      this.beforeSketch = null
+    }
     if (store) {
       this.sketchMode = new SketchMode(
         {
@@ -152,9 +164,16 @@ export class ViewportController implements NavHost {
       // the sketch's Drag handles gave up the hook: the drag arrows of a preview take it back
       this.pointer.setHandleHandler(this.manipulators)
     }
-    if (this.built) setSeeThrough(this.built.root, store !== null)
+    if (this.built) this.seeThrough(this.built.root, store !== null)
     this.report()
     this.requestRender()
+  }
+
+  /** Solids see-through while a sketch is open, and the committed sketches' regions not drawn (the open sketch shows its own). */
+  private seeThrough(root: Object3D, on: boolean): void {
+    setSeeThrough(root, on)
+    const regions = root.getObjectByName('sketch-regions')
+    if (regions) regions.visible = !on
   }
 
   /** Draw the selection and the Aim: once per change, and the view is drawn again once. */
@@ -201,7 +220,7 @@ export class ViewportController implements NavHost {
     this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, ghost })
     if (preview && ghost) this.tinted = { feature: preview.feature, parts: this.built.stats.ghostParts }
     this.scene.add(this.built.root)
-    if (this.sketchMode) setSeeThrough(this.built.root, true)
+    if (this.sketchMode) this.seeThrough(this.built.root, true)
     this.picker = new PickIndex(outputs, this.built)
     this.highlighted = this.built.setLook(this.selection.getState().items, this.selection.getAimed())
     if (this.built.hasModel) this.planeHalf = this.built.stats.planeHalf

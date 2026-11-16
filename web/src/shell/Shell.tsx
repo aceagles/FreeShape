@@ -31,6 +31,8 @@ import { SketchStore } from '../sketch/store'
 import { ConstraintNote } from '../sketch/ConstraintNote'
 import { ConstraintStore, attachDeleteKey, isConstrainTool } from '../sketch/constraints'
 import type { SketchTarget } from '../sketch/store'
+import { DiscardSketch, PlaneChooser } from '../sketch/StartDialogs'
+import { startSketch } from '../sketch/start'
 import { runSketchTool, SKETCH_STRIP, sketchToolState, stripActive } from '../sketch/strip'
 import { StudioViewport } from '../viewport/StudioViewport'
 import type { PreviewLook } from '../viewport/controller'
@@ -70,6 +72,8 @@ type Modal =
   | { kind: 'delete'; tab: TabInfo }
   | { kind: 'leave' }
   | { kind: 'takeover' }
+  | { kind: 'plane' }
+  | { kind: 'discard' }
   | { kind: 'message'; title: string; text: string }
 
 declare global {
@@ -234,13 +238,18 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const startEdit = useCallback(
     (feature: { id: string; name: string }) => {
       if (currentTab === null || dialog !== null) return
+      // a sketch is edited in the sketch session, not in a feature dialog
+      if (studio?.features.find((f) => f.id === feature.id)?.type === 'sketch') {
+        if (docId.current !== null) sketchStore.open({ document: docId.current, tab: currentTab, feature: feature.id })
+        return
+      }
       setCollapsed(false)
       setPreview(null)
       setDialogBase(null)
       setHoldUntil(null)
       setEditing({ tab: currentTab, id: feature.id, name: feature.name })
     },
-    [currentTab, dialog],
+    [currentTab, dialog, studio, sketchStore],
   )
   const endEdit = useCallback((r: { accepted: boolean; revision: number | null }) => {
     setEditing(null)
@@ -262,6 +271,20 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
       selection.clear()
     },
     [currentTab, tabKind, editing, dialog, toolTypes, picks, selection],
+  )
+  // the Sketch tool: a new sketch on the selected plane or face, else ask for a plane
+  const beginSketch = useCallback(
+    (plane?: string) => {
+      if (currentTab === null || docId.current === null || tabKind !== 'studio' || readOnly) return
+      const target = { document: docId.current, tab: currentTab }
+      if (plane !== undefined) return void sketchStore.open({ ...target, plane: { kind: 'std', name: plane } })
+      startSketch({ ...target, store: sketchStore, items: picked.items }).then(
+        (r) => (r === 'choose' ? setModal({ kind: 'plane' }) : r === null ? selection.clear() : failText('Could not start the sketch', r)),
+        (e) => fail('Could not start the sketch', e),
+      )
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentTab, tabKind, readOnly, sketchStore, picked.items, selection, failText],
   )
   const showPreview = preview !== null && (editingHere !== null || (holdUntil !== null && (studio?.revision ?? 0) < holdUntil))
   // while a dialog is open the view draws its base (what picks resolve against) and the preview as a ghost over it;
@@ -377,7 +400,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
                 nav={sketch.nav}
                 onNav={(n) => sketchStore.setNav(n)}
                 onNormalTo={() => sketchStore.normalTo()}
-                onCancel={() => sketchStore.cancel()}
+                onCancel={() => (sketch.view?.canUndo ? setModal({ kind: 'discard' }) : sketchStore.cancel())}
                 onDone={() => sketchStore.commit()}
               />
             }
@@ -386,10 +409,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           <ToolStrip
             strip="feature"
             defs={FEATURE_STRIP}
-            stateOf={(id) => stateOf(toolTypes, id)}
+            stateOf={(id) => (id === 'sketch' && tabKind === 'studio' ? 'ok' : stateOf(toolTypes, id))}
             disabled={tabKind !== 'studio' || editing !== null || dialog !== null || sketch.open || sketch.opening}
             width={width}
-            onStart={startTool}
+            onStart={(id) => (id === 'sketch' ? beginSketch() : startTool(id))}
           />
         )}
         <div className="shell-main">
@@ -413,7 +436,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
               selected={selectedFeature}
               selectedPart={selectedPart}
               edits={panelEdits}
-              onEdit={studio !== null && !editingHere && dialog === null ? startEdit : undefined}
+              onEdit={studio !== null && !editingHere && dialog === null && !sketch.open ? startEdit : undefined}
               onSelect={api.selectFeature}
               onSelectPart={api.selectPart}
               onCollapsedChange={setCollapsed}
@@ -498,6 +521,24 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
               })
             }}
             onCancel={closeModal}
+          />
+        )}
+        {modal?.kind === 'plane' && (
+          <PlaneChooser
+            onPlane={(n) => {
+              setModal(null)
+              beginSketch(n)
+            }}
+            onCancel={closeModal}
+          />
+        )}
+        {modal?.kind === 'discard' && (
+          <DiscardSketch
+            onDiscard={() => {
+              setModal(null)
+              sketchStore.cancel()
+            }}
+            onKeep={closeModal}
           />
         )}
         {modal?.kind === 'takeover' && (

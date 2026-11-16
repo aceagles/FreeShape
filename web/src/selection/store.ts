@@ -57,8 +57,8 @@ export interface SelectionState {
   readonly field: boolean
 }
 
-const SINGULAR: Record<PickKind, string> = { face: 'face', edge: 'edge', vertex: 'vertex', part: 'part', plane: 'plane', axis: 'axis' }
-const PLURAL: Record<PickKind, string> = { face: 'faces', edge: 'edges', vertex: 'vertices', part: 'parts', plane: 'planes', axis: 'axes' }
+const SINGULAR: Record<PickKind, string> = { face: 'face', edge: 'edge', vertex: 'vertex', part: 'part', plane: 'plane', axis: 'axis', region: 'region' }
+const PLURAL: Record<PickKind, string> = { face: 'faces', edge: 'edges', vertex: 'vertices', part: 'parts', plane: 'planes', axis: 'axes', region: 'regions' }
 
 /** The chip's text: "Nothing selected", "1 face", "3 edges", "2 faces, 1 edge" (two kinds), "5 items" (three or more kinds). */
 export function countText(items: readonly { kind: PickKind }[]): string {
@@ -227,6 +227,13 @@ export class SelectionStore {
       }
       if (it.kind === 'axis') {
         if (it.key !== null && it.key in outputs.axes) keep.push(it)
+        continue
+      }
+      if (it.kind === 'region') {
+        // a region is the sketch's (`part` is the sketch feature's id): found again by its Element name, else by its number
+        const sk = outputs.sketches.find((x) => x.id === it.part)
+        const at = sk === undefined ? -1 : it.name !== null ? sk.regionNames.indexOf(it.name) : it.index < sk.regions.length ? it.index : -1
+        if (at >= 0) keep.push(at === it.index ? it : { ...it, index: at })
         continue
       }
       const part = it.part === null ? undefined : parts.get(it.part)

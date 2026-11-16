@@ -6,6 +6,8 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 import { color, sceneColor } from '../theme/tokens'
 import type { Part } from '../wire'
 import { rgb } from './colors'
+import type { DrawnRegion } from './sketchRegions'
+import { regionKey } from './sketchRegions'
 import { setLook, shadedMaterial } from './shading'
 import type { Look } from './shading'
 
@@ -23,7 +25,7 @@ import type { Look } from './shading'
 
 /** What the overlay needs to know about an item (the selection store's items have these fields). */
 export interface LookItem {
-  readonly kind: 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis'
+  readonly kind: 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region'
   readonly part: string | null
   /** 0-based index of a face, edge or vertex; -1 otherwise. */
   readonly index: number
@@ -38,6 +40,8 @@ export interface LookSources {
   parts: ReadonlyMap<string, { part: Part; geometry: BufferGeometry }>
   planes: ReadonlyMap<string, readonly Vector3[]>
   axes: ReadonlyMap<string, readonly [Vector3, Vector3]>
+  /** The regions of the sketches on show, by `regionKey` (a Part Studio's scene only). */
+  regions?: ReadonlyMap<string, DrawnRegion>
 }
 
 /** Line widths and dot sizes, in CSS pixels. Chosen to read on a tablet from arm's length with a pen tip in the way. */
@@ -143,6 +147,8 @@ export class LookOverlay {
         return this.plane(item, look)
       case 'axis':
         return this.axis(item, look)
+      case 'region':
+        return this.region(item, look)
     }
   }
 
@@ -254,6 +260,21 @@ export class LookOverlay {
     }
     if (look === 'select') this.wide(loop, rgb(CASING), LOOK_SIZE.planeOutline, 5)
     else this.wide(loop, this.colour(look), LOOK_SIZE.planeOutline, 5)
+  }
+
+  private region(item: LookItem, look: Exclude<Look, null>): void {
+    const r = item.part === null ? undefined : this.sources.regions?.get(regionKey(item.part, item.index))
+    if (!r) return
+    const fill = new BufferGeometry()
+    fill.setAttribute('position', new BufferAttribute(r.positions, 3))
+    fill.setIndex(new BufferAttribute(r.indices, 1))
+    const m = new MeshBasicMaterial({ color: this.builtIn(this.colour(look)), transparent: true, opacity: look === 'select' ? 0.5 : 0.36, depthWrite: false, side: DoubleSide })
+    const o = new Mesh(fill, m)
+    o.renderOrder = 3.6
+    this.materials.push(m)
+    this.root.add(o)
+    if (look === 'select') this.wide(r.outline, rgb(CASING), LOOK_SIZE.faceOutline, 5)
+    else this.wide(r.outline, this.colour(look), LOOK_SIZE.faceOutline, 5)
   }
 
   private axis(item: LookItem, look: Exclude<Look, null>): void {

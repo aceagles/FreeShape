@@ -71,7 +71,7 @@ export function Viewport({
   // sketch mode follows the store that has the sketch open (after the controller exists: the effect above runs first)
   useEffect(() => {
     controller.current?.setSketch(sketch)
-    return () => controller.current?.setSketch(null)
+    // no cleanup that sets null: a re-run with the same sketch must not leave and re-enter sketch mode (the controller's own dispose ends it)
   }, [sketch, store, failed])
 
   return (

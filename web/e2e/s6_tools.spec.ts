@@ -8,8 +8,8 @@ import { readViewport } from './support/viewport.ts'
 
 // Slice S6, the feature toolbar (card I6.2) in the real client against `freeshape serve`: select something in the view,
 // tap a tool, see the create dialog with the selection in its profile field, accept, and see the new feature in the list.
-// The bracket's sketch regions cannot be picked in the view yet (sketch picks come with the sketch slice), so the test
-// selects a face: the Extrude dialog's profile field takes faces and regions alike.
+// This test selects a face; the Extrude dialog's profile field takes faces and regions alike, and a region of a sketch the
+// eye shows can be picked in the view too (card I7.13, s7_start.spec.ts).
 
 test.afterEach(async ({ page }) => closeAll(page.request))
 

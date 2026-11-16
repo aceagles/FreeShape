@@ -38,7 +38,7 @@ export function reconcileAssembly(selection: SelectionStore, outputs: AssemblyOu
       continue
     }
     const part = outputs.parts[inst.part]
-    if (!part || it.kind === 'plane' || it.kind === 'axis') continue
+    if (!part || it.kind === 'plane' || it.kind === 'axis' || it.kind === 'region') continue
     if (it.name !== null) {
       const index = indexOf(part, it.kind, it.name)
       if (index !== undefined) keep.push(index === it.index ? it : { ...it, index })

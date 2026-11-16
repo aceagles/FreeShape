@@ -188,8 +188,9 @@ it('a face picked for an edge field comes back as a list of edges: each becomes 
 
 it('maps a field want to view kinds, names a region from its sketch, and highlights items by Element name', () => {
   expect(pickKinds(['edge'])).toEqual(['edge'])
-  expect(pickKinds(['region', 'face'])).toEqual(['face'])
-  expect(pickKinds(['region'])).toEqual([])
+  // a sketch's region can be picked in the view (card I7.13)
+  expect(pickKinds(['region', 'face'])).toEqual(['region', 'face'])
+  expect(pickKinds(['region'])).toEqual(['region'])
   expect(pickKinds(['plane', 'face', 'axis'])).toEqual(['face'])
   const sketch = bracket.sketches[0]
   const feature = bracket.features.find((f) => f.id === sketch?.id)

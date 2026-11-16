@@ -32,6 +32,19 @@
 .group-row[data-aim] {
   background: var(--c-accentSoft);
 }
+.group-row[data-lit] {
+  background: var(--c-accentSoft);
+}
+/* a dot on a Constrain tool that fits the selection: a hint, the tool is on either way */
+.group-row[data-fit] .group-tool::after {
+  content: '';
+  margin-left: auto;
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--c-accent);
+}
 .group-tool {
   flex: 1;
   min-width: 0;

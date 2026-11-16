@@ -1003,7 +1003,7 @@ export const shots: ShotState[] = [
   },
   {
     name: 'sketch-constrain-list',
-    mock: 'constrain', // the Constrain group open, two columns, every tool dimmed until its card
+    mock: 'constrain', // the Constrain group open, two columns, every tool on (F15: any tool can be chosen first), none marked
     steps: async (page) => {
       await openApp(page)
       await openSketchFeature(page, 'Bracket profile')
@@ -1014,7 +1014,7 @@ export const shots: ShotState[] = [
   },
   {
     name: 'sketch-constrain-fits',
-    mock: 'constrain', // a line selected: the Constrain group open, the tools the server says fit are on and the rest dimmed
+    mock: 'constrain', // a line selected: the Constrain group open, every tool on, a dot on the ones the server says fit
     steps: async (page) => {
       const data = sketchData(page)
       await openApp(page)
@@ -1022,7 +1022,21 @@ export const shots: ShotState[] = [
       await tapSketchLine(page, data, data.line(0))
       await page.locator('.tool-strip').getByRole('button', { name: /^Constrain/ }).click()
       await page.getByRole('menu', { name: 'Constrain' }).waitFor()
-      await page.locator('.group-row[data-state="ok"]').first().waitFor()
+      await page.locator('.group-row[data-fit]').first().waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-constrain-pick',
+    mock: 'sketch', // a line selected, then Parallel (needs two lines): the tool stays lit and the hint names what to pick next
+    steps: async (page) => {
+      const data = sketchData(page)
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await tapSketchLine(page, data, data.line(0))
+      await page.locator('.tool-strip').getByRole('button', { name: /^Constrain/ }).click()
+      await page.locator('.group-row[data-tool="parallel"] .group-tool').click()
+      await page.getByTestId('constraint-hint').waitFor()
     },
     after: closeAllDiscard,
   },
@@ -1035,7 +1049,7 @@ export const shots: ShotState[] = [
       await openSketchFeature(page, 'Bracket profile')
       await tapSketchLine(page, data, data.lineWith('horizontal'))
       await page.locator('.tool-strip').getByRole('button', { name: /^Constrain/ }).click()
-      await page.locator('.group-row[data-tool="vertical"][data-state="ok"]').waitFor()
+      await page.locator('.group-row[data-tool="vertical"][data-fit]').waitFor()
       await page.locator('.group-row[data-tool="vertical"] .group-tool').click()
       await page.getByTestId('constraint-note').waitFor()
     },

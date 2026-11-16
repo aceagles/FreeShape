@@ -58,6 +58,8 @@ export interface SketchState {
   tool: string
   /** Bumps when the tool is tapped again, so a shape in progress starts over. */
   toolSeq: number
+  /** A Constrain tool is collecting picks: a tap adds to the selection or takes the item off it, as in Multi mode. */
+  picking: boolean
   /** How many points of a shape in progress are committed (set by the drawing tools). */
   drawing: number
   /** Items of a drag in progress as they are drawn (moved points, radii, a dimension's label); null when none is dragged (I7.9). */
@@ -72,7 +74,7 @@ export interface Made {
   entities: string[]
 }
 
-const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, drawing: 0, live: null, preview: null }
+const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, picking: false, drawing: 0, live: null, preview: null }
 
 const same = (a: SketchHit | null, b: SketchHit | null): boolean => a === b || (a !== null && b !== null && a.kind === b.kind && a.id === b.id)
 
@@ -216,8 +218,8 @@ export class SketchStore {
   select(hit: SketchHit | null): void {
     const now = this.state.selected
     let next: readonly SketchHit[]
-    if (hit === null) next = this.state.multi ? now : []
-    else if (this.state.multi) next = now.some((i) => same(i, hit)) ? now.filter((i) => !same(i, hit)) : [...now, hit]
+    if (hit === null) next = this.state.multi || this.state.picking ? now : []
+    else if (this.state.multi || this.state.picking) next = now.some((i) => same(i, hit)) ? now.filter((i) => !same(i, hit)) : [...now, hit]
     else next = [hit]
     if (next !== now) this.set({ selected: next })
   }
@@ -226,6 +228,9 @@ export class SketchStore {
   }
   clearSelection(): void {
     if (this.state.selected.length > 0) this.set({ selected: [] })
+  }
+  setPicking(on: boolean): void {
+    if (on !== this.state.picking) this.set({ picking: on })
   }
   setMulti(on: boolean): void {
     this.set({ multi: on })

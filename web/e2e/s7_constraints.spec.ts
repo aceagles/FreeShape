@@ -2,8 +2,9 @@ import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { openApp } from './support/app.ts'
 import { closeAll } from './support/docs.ts'
-import { fingerTap } from './support/pointer.ts'
-import { openSketchFeature, screenOf, settledSketch } from './support/sketch.ts'
+import { fingerTap, sendPointer } from './support/pointer.ts'
+import type { Point } from './support/pointer.ts'
+import { openNewSketch, openSketchFeature, screenOf, settledSketch, uvAt } from './support/sketch.ts'
 
 // Slice S7, constraints (card I7.10) against `freeshape serve`: the Constrain group enables what the server's sketch.fits
 // lists for the selection, a tap on a tool sends sketch.constrain, a conflict is refused with a message and changes nothing,
@@ -46,13 +47,15 @@ async function tapLine(page: Page, w: ReturnType<typeof wire>, id: string) {
   await expect(page.getByTestId('selection-count')).toHaveText('1 item')
 }
 
-test('the Constrain buttons that are on are the tools sketch.fits lists, and with nothing selected none is', async ({ page }) => {
+test('every Constrain tool is on, and the ones sketch.fits lists for the selection carry a marker', async ({ page }) => {
   const w = wire(page)
   await openApp(page)
   await openSketchFeature(page, 'Bracket profile')
   await group(page).click()
   await expect(rows(page)).toHaveCount(12)
-  await expect(page.locator('.group-row[data-state="ok"]')).toHaveCount(0)
+  // with nothing selected every tool can be chosen, and none is marked as fitting
+  await expect(page.locator('.group-row[data-state="ok"]')).toHaveCount(12)
+  await expect(page.locator('.group-row[data-fit]')).toHaveCount(0)
   await page.getByTestId('strip-scrim').click({ position: { x: 5, y: 700 } })
   const [first] = await lineIds(page)
   await tapLine(page, w, first!)
@@ -60,8 +63,9 @@ test('the Constrain buttons that are on are the tools sketch.fits lists, and wit
   const tools = w.got.filter((m) => m['type'] === 'sketch.fitted').at(-1)!['tools'] as string[]
   expect(tools.length).toBeGreaterThan(0)
   await group(page).click()
-  await expect(page.locator('.group-row[data-state="ok"]')).toHaveCount(tools.length)
-  for (const t of tools) await expect(page.locator(`.group-row[data-tool="${t}"]`)).toHaveAttribute('data-state', 'ok')
+  await expect(page.locator('.group-row[data-state="ok"]')).toHaveCount(12)
+  await expect(page.locator('.group-row[data-fit]')).toHaveCount(tools.length)
+  for (const t of tools) await expect(page.locator(`.group-row[data-tool="${t}"]`)).toHaveAttribute('data-fit', '')
 })
 
 test('a conflict shows a message and changes nothing; Delete on a selected glyph removes that constraint', async ({ page }) => {
@@ -99,4 +103,60 @@ test('a conflict shows a message and changes nothing; Delete on a selected glyph
   await page.keyboard.press('Delete')
   await expect.poll(() => w.sent.filter((m) => m['type'] === 'sketch.unconstrain').at(-1)).toEqual({ type: 'sketch.unconstrain', constraint: horizontal.id })
   await expect(glyphs(page, 'horizontal')).toHaveCount(n - 1)
+})
+
+/** The screen position of a sketch point (u, v in mm): the plane's axes are read off the view. */
+async function screenFor(page: Page, u: number, v: number): Promise<Point> {
+  const o = await screenOf(page, 'point', 'origin')
+  const a = (await uvAt(page, o.x + 100, o.y))!
+  const b = (await uvAt(page, o.x, o.y + 100))!
+  const m = [
+    [a[0] / 100, b[0] / 100],
+    [a[1] / 100, b[1] / 100],
+  ]
+  const det = m[0]![0]! * m[1]![1]! - m[0]![1]! * m[1]![0]!
+  return { x: o.x + (m[1]![1]! * u - m[0]![1]! * v) / det, y: o.y + (-m[1]![0]! * u + m[0]![0]! * v) / det }
+}
+
+test('with one point selected, choosing Coincident waits for a second point and then makes the constraint; Esc leaves the mode', async ({ page }) => {
+  const w = wire(page)
+  await openApp(page)
+  await openNewSketch(page, 'Top')
+  // two free points, put down with the pen
+  const place = async (p: Point) => sendPointer(page, [{ phase: 'down', kind: 'pen', id: 10, x: p.x - 3, y: p.y }, { phase: 'move', kind: 'pen', id: 10, ...p }, { phase: 'up', kind: 'pen', id: 10, ...p, pressure: 0 }])
+  const a = await screenFor(page, 20, 20)
+  const b = await screenFor(page, -10, 30)
+  const pointTool = async () => {
+    await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
+    await page.locator('.group-row[data-tool="point"] .group-tool').click()
+  }
+  const added = () => w.sent.filter((m) => m['type'] === 'sketch.add').length
+  await pointTool()
+  await place(a)
+  await expect.poll(added).toBe(1)
+  await pointTool()
+  await place(b)
+  await expect.poll(added).toBe(2)
+  await page.locator('.tool-strip [data-tool="select"]').click()
+  await fingerTap(page, a)
+  await expect(page.getByTestId('selection-count')).toHaveText('1 point')
+  await expect.poll(() => w.got.filter((m) => m['type'] === 'sketch.fitted').length).toBeGreaterThan(0)
+  // Coincident does not fit one point: it is still chosen, and says what to pick next
+  await group(page).click()
+  await page.locator('.group-row[data-tool="coincident"] .group-tool').click()
+  await expect(page.getByTestId('constraint-hint')).toContainText('Coincident')
+  await expect(page.locator('.tool-strip [data-group="constrain"]')).toBeVisible()
+  expect(w.sent.filter((m) => m['type'] === 'sketch.constrain')).toEqual([])
+  // the second point completes it
+  await fingerTap(page, b)
+  await expect.poll(() => w.sent.filter((m) => m['type'] === 'sketch.constrain').length).toBe(1)
+  const sent = w.sent.filter((m) => m['type'] === 'sketch.constrain')[0]!
+  expect(sent['tool']).toBe('coincident')
+  expect((sent['picks'] as string[]).length).toBe(2)
+  await expect.poll(() => w.got.filter((m) => m['type'] === 'sketch.constrained').at(-1)?.['accepted']).toBe(true)
+  expect(w.got.filter((m) => m['type'] === 'sketch.constrained').at(-1)!['made']).toHaveLength(1)
+  // Esc leaves the mode
+  await expect(page.getByTestId('constraint-hint')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('constraint-hint')).toHaveCount(0)
 })

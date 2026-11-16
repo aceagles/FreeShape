@@ -28,6 +28,8 @@ export interface ToolStripProps {
   width: number
   /** The tool that is on (a sketch strip's drawing tool). */
   active?: string | null
+  /** Tools to mark with a small dot (a hint only: the Constrain tools that fit the selection). */
+  marked?: (id: string) => boolean
   /** A tool starts: a tap on it, or a release on its row. */
   onStart: (id: string) => void
   pins?: PinStore
@@ -47,7 +49,7 @@ interface Open {
  * else closes it. Each row has a pin button: a pinned tool is also a button on the strip after the groups, up to a cap
  * that keeps the strip from overflowing. One component for the feature strip and, later, the sketch strip.
  */
-export function ToolStrip({ strip, defs, stateOf, disabled, width, active, onStart, pins = userPins(), trailing }: ToolStripProps) {
+export function ToolStrip({ strip, defs, stateOf, disabled, width, active, marked, onStart, pins = userPins(), trailing }: ToolStripProps) {
   const pinned = useSyncExternalStore(pins.subscribe, pins.getSnapshot)[strip]
   const [openRaw, setOpen] = useState<Open | null>(null)
   // a strip that is switched off (a dialog opened) shows no list
@@ -127,7 +129,7 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, onSta
         icon={<ToolIcon name={d.tools[0]!.icon} />}
         group
         gap={(d.gap ?? 0) > 0}
-        active={isOpen}
+        active={isOpen || (active != null && d.tools.some((t) => t.id === active))}
         data-group={d.key}
         data-group-part=""
         aria-expanded={isOpen}
@@ -173,6 +175,8 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, onSta
             className="group-row"
             data-tool={tool.id}
             data-state={state}
+            data-fit={marked?.(tool.id) ? '' : undefined}
+            data-lit={active === tool.id ? '' : undefined}
             data-aim={aim === tool.id && state === 'ok' ? '' : undefined}
             onPointerEnter={() => held.current && setAim(tool.id)}
             onPointerMove={() => held.current && aim !== tool.id && setAim(tool.id)}

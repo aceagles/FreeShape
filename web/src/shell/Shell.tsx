@@ -30,7 +30,7 @@ import { DimensionTool } from '../sketch/dimension'
 import { EditDock, EditHint } from '../sketch/EditPad'
 import { EditTools } from '../sketch/tools/edit'
 import { SketchStore } from '../sketch/store'
-import { ConstraintNote } from '../sketch/ConstraintNote'
+import { ConstraintHint, ConstraintNote } from '../sketch/ConstraintNote'
 import { attachKeys } from '../input/keys'
 import { sketchKeys } from '../sketch/keys'
 import { ConstraintStore, isConstrainTool } from '../sketch/constraints'
@@ -131,8 +131,8 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const [constraints] = useState(() => new ConstraintStore(sketchStore, store))
   useEffect(() => {
     constraints.attach()
-    // the keyboard: Esc steps back in the sketch, Delete removes a selected constraint (one keymap, input/keys.ts)
-    const off = attachKeys({ ...sketchKeys(sketchStore), delete: () => constraints.removeSelected() })
+    // the keyboard: Esc leaves constraint pick mode first, then steps back in the sketch, Delete removes a selected constraint (one keymap, input/keys.ts)
+    const off = attachKeys(sketchKeys(sketchStore, constraints))
     return () => {
       off()
       constraints.detach()
@@ -402,14 +402,17 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           <ToolStrip
             strip="sketch"
             defs={SKETCH_STRIP}
-            stateOf={(id) => (isConstrainTool(id) ? (constraintState.enabled.has(id) ? 'ok' : 'dimmed') : sketchToolState(id))}
+            stateOf={(id) => (isConstrainTool(id) ? 'ok' : sketchToolState(id))}
+            marked={(id) => isConstrainTool(id) && constraints.fits(id)}
             width={width}
-            active={dimensionOn ? 'dimension' : stripActive(sketch.tool === 'dimension' ? 'select' : sketch.tool)}
+            active={constraintState.picking ?? (dimensionOn ? 'dimension' : stripActive(sketch.tool === 'dimension' ? 'select' : sketch.tool))}
             onStart={(id) => {
-              // Delete and Construct act on the selection and change no tool; a Constrain tool acts on it and leaves Select on
+              // Delete and Construct act on the selection and change no tool; a Constrain tool acts on it at once when it fits,
+              // and otherwise waits for picks with Select on (the desktop's flow)
               if (id === 'delete' || id === 'construct') return runSketchTool(sketchStore, id)
+              if (isConstrainTool(id) && constraints.getState().picking === id) return constraints.leave()
               sketchStore.chooseTool(isConstrainTool(id) ? 'select' : id)
-              constraints.apply(id)
+              if (isConstrainTool(id)) constraints.choose(id)
             }}
             trailing={
               <SketchBar
@@ -499,6 +502,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             <div className="chip-slot" data-testid="chip-slot" data-region="selection-chip">
               {sketchHere ? <SketchChip store={sketchStore} /> : <SelectionChip store={selection} />}
               {sketchHere && <ConstraintNote store={constraints} />}
+              {sketchHere && <ConstraintHint store={constraints} sketch={sketchStore} />}
               {sketchHere && <DimensionHint tool={dimension} />}
               {sketchHere && <EditHint tool={edit} />}
             </div>

@@ -35,6 +35,9 @@ Routes (an exact table; no part of a request is ever joined to a file path):
                                 move_to also replies "placements": {instance id: 4x4} of the instances it changed
     POST /documents/<id>/tabs/<tab>/refs       body: {"picks": [pick, ...]}; reply {"document", "tab", "revision",
                                 "items": [item, ...]}, one item per pick, in order (I4.3; see "Refs" below)
+    POST /documents/<id>/tabs/<tab>/import[?name=<file>&new_tab=1]  body: the STEP or BREP bytes (application/octet-stream,
+                                up to MAX_UPLOAD, this route only); one add_feature of an import feature (I11.1); reply
+                                {"document", "tab", "feature", "parts", "rebuilt", "tabs"}; 415 not STEP/BREP, 413, 423
     POST /documents/<id>/tabs/<tab>/features/<fid>/dialog        open a feature dialog (I5.3; see "Dialogs" below)
     POST /documents/<id>/tabs/<tab>/features/dialog              open a dialog for a NEW feature (I6.1; "Dialogs")
     GET  /documents/<id>/tabs/<tab>/features/types[?picks=<JSON>]  feature types, label, standard, can_start (I6.1)
@@ -745,6 +748,11 @@ class _Open:
         raise DocumentLocked(self.id, state["holder"])
 
 
+MAX_UPLOAD = 64 * 1024 * 1024   # the body limit of POST .../import alone (the component library's largest file is 52 MB)
+UPLOAD_DEADLINE = 120.0         # seconds for the whole body of that upload
+_IMPORT_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/import$")
+
+
 class _Server:
     """The aiohttp server: bound to 127.0.0.1 when made, running once `serve_forever` is called (it blocks, on its
     own event loop, until `shutdown`). Each open Document has its own `lock` serialising its session calls; those
@@ -1224,6 +1232,9 @@ class _Server:
         m = _MATE_PATH.match(path)
         if m is not None:
             return "mates." + (m.group(4) or "open"), m.group(1), m.group(2), "POST"
+        m = _IMPORT_PATH.match(path)
+        if m is not None:
+            return "import", m.group(1), m.group(2), "POST"  # the body is the file's bytes, not JSON
         m = _DIALOG_PATH.match(path)
         if m is not None:
             verb = "open" if m.group(4) else ("new" if m.group(5) == "dialog" else m.group(5) or m.group(7))
@@ -1280,7 +1291,7 @@ class _Server:
         if method != want:
             return self._fail(405, "method not allowed", [("Allow", want)])
         body = None
-        if method == "POST":
+        if method == "POST" and route != "import":
             body = await self._body(request)
             if not isinstance(body, dict):
                 return body                                        # the refusal response
@@ -1383,6 +1394,8 @@ class _Server:
             return await self._rename_tab(d, tab, body)
         if route == "refs":
             return await self._refs(d, tab, body, request)
+        if route == "import":
+            return await self._import(d, tab, request)
         if route.startswith("dialog."):
             return await self._dialog(d, tab, route[7:], body, request)
         if route.startswith("mates."):
@@ -1719,6 +1732,64 @@ class _Server:
         items, revision = await self._in_session(d, lambda: (d.session.refs(tab, picks, dialog),
                                                             d.revisions.get(tab)))
         return self._json(200, {"document": d.id, "tab": tab, "revision": revision, "items": items})
+
+    async def _import(self, d, tab, request):
+        """POST /documents/<id>/tabs/<tab>/import?name=<file name>[&new_tab=1], the body the file's bytes
+        (application/octet-stream, at most MAX_UPLOAD): one add_feature of an import feature at the roll-back bar of
+        the Part Studio `tab`, or of a new Part Studio named after the file with new_tab=1. 200 {"document", "tab",
+        "feature": {"id", "name", "error"}, "parts": [{"id", "name"}], "rebuilt", "tabs"}. 415 unless the body starts
+        with ISO-10303-21; (STEP) or DBRep_DrawableShape (BREP); 413 over MAX_UPLOAD, from the Content-Length, before
+        any of it is read; 423 on a read-only Document. `name` is shown only (see `step_import.clean_file_name`)."""
+        from . import step_import
+        if (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower() != "application/octet-stream":
+            return self._fail(415, "Content-Type must be application/octet-stream")
+        new_tab = request.query.get("new_tab", "0")
+        if new_tab not in ("0", "1"):
+            return self._fail(400, "new_tab must be 1 or 0")
+        raw = request.headers.get("Content-Length")
+        if request.headers.get("Transfer-Encoding") is not None or raw is None:
+            return self._fail(411, "Content-Length is required")
+        raw = raw.strip()
+        if not raw.isascii() or not raw.isdigit():
+            return self._fail(400, "Content-Length is not a number")
+        n = int(raw)
+        if n > MAX_UPLOAD:
+            return self._fail(413, f"body over {MAX_UPLOAD} bytes")
+
+        def check():                                                 # refused before the body is read
+            d.check_writable()
+            return next((t["kind"] for t in d.session.tabs() if t["id"] == tab), None)
+        kind = await self._in_session(d, check)
+        if new_tab == "0" and kind != "studio":
+            return self._fail(400, "the tab is not a Part Studio")
+        try:
+            data = await asyncio.wait_for(request.content.readexactly(n), UPLOAD_DEADLINE) if n else b""
+        except asyncio.TimeoutError:
+            return self._fail(408, "request body too slow")
+        except asyncio.IncompleteReadError:
+            return self._fail(400, "body shorter than Content-Length")
+        fmt = step_import.sniff(data)
+        if fmt is None:
+            return self._fail(415, "the body is not a STEP (ISO-10303-21;) or BREP (DBRep_DrawableShape) file")
+        fname = step_import.clean_file_name(request.query.get("name"), fmt)
+        client, _ = self._edit_meta(request.headers.get("X-Client-Id"), None)
+        if new_tab == "1":
+            if len(d.tab_ids) >= MAX_TABS:
+                return self._fail(409, f"a Document holds at most {MAX_TABS} tabs")
+            stem = os.path.splitext(fname)[0]
+            tab, _ = await self._tabs_changed(d, lambda: d.session.add_tab("studio", stem))
+        before = await self._in_session(d, lambda: d.session.outputs(tab))
+        feature = step_import.import_feature(fname, data)
+        del data
+        rebuilt = await self._edit(d, tab, {"op": "add_feature", "feature": feature}, client, None)
+        after, tabs = await self._in_session(d, lambda: (d.session.outputs(tab), self._tab_view(d)))
+        seen = {f.id for f in before.features}
+        made = next((f for f in after.features if f.id not in seen), None)
+        held = {p.id for p in before.parts}
+        return self._json(200, {
+            "document": d.id, "tab": next(t for t in tabs if t["id"] == tab), "rebuilt": rebuilt, "tabs": tabs,
+            "feature": None if made is None else {"id": made.id, "name": made.name, "error": made.error},
+            "parts": [{"id": p.id, "name": p.name} for p in after.parts if p.id not in held]})
 
     # ------------------------------------------------------------------ feature dialogs (I5.3)
     def _dialog_client(self, request):

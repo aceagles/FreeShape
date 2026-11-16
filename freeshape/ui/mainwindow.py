@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from .. import kernel as K
 from .. import measure as M
 from .. import features as F
+from .. import step_import
 from ..document import PartStudioDoc
 from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
@@ -5169,15 +5170,8 @@ class MainWindow(QMainWindow):
             if not F.is_brep_name(fname) and not read_step_in_background(raw, prog, self):
                 self.status.showMessage("Import cancelled", 5000)
                 return
-            data = base64.b64encode(raw).decode()
-            if into_current:
-                doc = self.doc
-            else:
-                doc = PartStudioDoc()
-                doc.name = os.path.splitext(fname)[0]
-            f = doc.make_feature("import")
-            f["name"] = "Import " + fname
-            f["params"] = {"data": data, "filename": fname}
+            doc = self.doc if into_current else step_import.new_studio(fname)
+            f = step_import.import_feature(fname, raw, doc)
             prog.stage("Building the parts…")
             self.viewport.progress_cb = prog.step
             if not into_current:

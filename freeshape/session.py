@@ -64,6 +64,7 @@ from . import doc_folder as DF
 from . import docstore as DS
 from . import kernel as K
 from .engine import EngineError, LinkCycleError, ProcessEngine, TabErrored
+from .engine.contract import BadPick
 from .engine import wire
 from .engine.executor import read_data
 from . import links
@@ -280,6 +281,19 @@ class DocumentSession:
             raise SessionError(f"tab {tab!r}: {e}") from e
         self._note(tab, out)
         return out
+
+    def refs(self, tab, picks):
+        """Picks turned into stored references by the tab's Part Studio (`engine.Engine.refs`): one answer per pick,
+        in order. A query: it changes nothing (no edit, no revision, no undo step, not dirty). Raises SessionError
+        for an unknown tab, a tab that is not a Part Studio, or a pick that is malformed or names a part, sketch
+        or element the tab does not have (the message names the field, "picks[2].index: ...")."""
+        self._need_open(tab)
+        try:
+            return self._retry(tab, lambda: self._eng.refs(tab, picks))
+        except BadPick as e:
+            raise SessionError(str(e)) from e
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
 
     def outputs_wire(self, tab):
         """`outputs(tab)` as engine wire bytes (freeshape.engine.wire), what a browser client decodes."""

@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -20,13 +21,15 @@ from .. import assembly as A
 from .. import drawing as D
 from ..document import PartStudioDoc
 from ..variable_studio import VariableStudioDoc
-from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
+from .contract import (ASSEMBLY_OPS, BadPick, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
                        DrawingOutputs, Engine, EngineError, InstanceOut, MateOut, StudioOutputs, VariablesOutputs,
                        plain)
-from .encode import Encoder, connector_out, feature_list, sketch_out
+from .encode import Encoder, connector_out, element_names, feature_list, sketch_out
 from .inputs import CrossTabInputs
 from .linkgraph import live_package, package_digest, propagate
 from .. import blobstore
+from .. import kernel as K
+from .. import picking as PK
 from .. import links
 from .. import tabkinds as TK
 
@@ -173,6 +176,9 @@ class _Tab:
 
     def outputs(self):
         raise NotImplementedError
+
+    def refs(self, picks):
+        raise EngineError(f"only a Part Studio has elements to pick (this tab is a {self.kind})")
 
 
 def apply_part_override(doc, edit):
@@ -359,6 +365,14 @@ class StudioTab(_Tab):
         else:
             self.doc.python_builds[fid] = copy.deepcopy(build)
 
+    def refs(self, picks):
+        try:
+            picks = PK.parse_picks(picks)
+        except ValueError as e:
+            raise BadPick(str(e)) from None
+        reader = _StudioRefs(self.doc)
+        return [reader.one(i, p) for i, p in enumerate(picks)]
+
     def outputs(self):
         self.sync()
         doc, enc = self.doc, self.engine.encoder
@@ -384,6 +398,57 @@ class StudioTab(_Tab):
                              planes=planes, axes=axes, error_refs=plain(dict(getattr(doc, "error_refs", {}))),
                              features=features, folders=folders, rollback=rollback,
                              can_undo=bool(doc.can_undo()), can_redo=bool(doc.can_redo()))
+
+
+def _need_index(at, what, n, index):
+    if index > n:
+        raise BadPick(f"{at}.index: {what} has {n} (got {index}, the first is 1)")
+
+
+class _StudioRefs:
+    """`StudioTab.refs`: the picks read against the model as last built. Reads, never writes: the tab's Document
+    is not touched, nothing is rebuilt and no revision moves."""
+
+    def __init__(self, doc):
+        self.st = doc.state
+        self.counts = {}
+
+    def counts_of(self, pid, kind):
+        key = (pid, kind)
+        if key not in self.counts:
+            shape = self.st.parts[pid].shape
+            self.counts[key] = len((K.faces if kind == "face" else K.edges if kind == "edge" else K.vertex_points)(shape))
+        return self.counts[key]
+
+    def one(self, i, pick):
+        st, at = self.st, f"picks[{i}]"
+        kind, pid, want = pick["kind"], pick["part"], set(pick["want"])
+        if kind in ("region", "sketch_line", "sketch_point"):
+            sr = st.sketches.get(pid)
+            if sr is None:
+                raise BadPick(f"{at}.part: no sketch {pid!r} in this tab")
+            if kind == "region":
+                _need_index(at, "the sketch has regions: it", len(sr.regions), pick["index"])
+                key = (pid, pick["index"] - 1)
+            else:
+                if pick["entity"] not in sr.sketch.entities:
+                    raise BadPick(f"{at}.entity: no entity {pick['entity']!r} in sketch {pid!r}")
+                key = (pid, pick["entity"])
+        elif pid not in st.parts:
+            raise BadPick(f"{at}.part: no part {pid!r} in this tab")
+        elif kind == "part":
+            key = (pid,)
+        else:
+            _need_index(at, f"part {pid!r} has {kind}s: it", self.counts_of(pid, kind), pick["index"])
+            key = (pid, pick["index"] - 1)
+        part = st.parts.get(pid)
+        names = {pid: element_names(SimpleNamespace(shape=part.shape, named=st.named(pid)))} if part else {}
+        item = PK.make_item({p: q.shape for p, q in st.parts.items()}, st.sketches, kind, key, want,
+                            st.named, names)
+        if item is not None:
+            return PK.result_of(item)
+        code, reason = PK.refusal(kind, want, shape=part.shape if kind == "face" and part else None)
+        return {"ok": False, "code": code, "reason": reason}
 
 
 class VariablesTab(_Tab):
@@ -747,3 +812,6 @@ class InProcessEngine(Engine):
 
     def outputs(self, tab):
         return self._get(tab).outputs()
+
+    def refs(self, tab, picks):
+        return self._get(tab).refs(picks)

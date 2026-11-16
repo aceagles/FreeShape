@@ -509,6 +509,11 @@ class ProcessEngine(Engine):
     def outputs(self, tab):
         return self._call(self._get(tab), "outputs")
 
+    def refs(self, tab, picks):
+        """Picks turned into stored references by the tab's worker (contract.Engine.refs). A query: no edit is
+        logged, no revision moves and nothing is rebuilt."""
+        return self._call(self._get(tab), "refs", picks)
+
     # ------------------------------------------------------------------ crashes
     def errored(self, tab):
         """Why the tab's worker stopped, or None while it is running."""

@@ -32,6 +32,8 @@ Routes (an exact table; no part of a request is ever joined to a file path):
     GET  /documents/<id>/tabs/<tab>/outputs    the tab's outputs in the engine wire format (octet-stream)
     GET  /documents/<id>/tabs/<tab>/mesh.json  display meshes, see `mesh_document`
     POST /documents/<id>/tabs/<tab>/edit       body: a contract edit dict; reply {"rebuilt": [ids]}
+    POST /documents/<id>/tabs/<tab>/refs       body: {"picks": [pick, ...]}; reply {"document", "tab", "revision",
+                                "items": [item, ...]}, one item per pick, in order (I4.3; see "Refs" below)
     POST /documents/<id>/save                  body: {} ; reply {"saved": [ids]}
     GET  /ws?client=<id>[&document=<id>]       the live channel (WebSocket, JSON text messages; `_Server._socket`)
   On a server over one Document folder the old un-prefixed routes stay as aliases for that Document:
@@ -39,6 +41,39 @@ Routes (an exact table; no part of a request is ever joined to a file path):
   An edit or save on a Document this server does not hold the lock of answers 423 {"error", "document", "holder"}.
   A Document id is a key into the open table and the registry; it is never joined to a path. A new Document's
   folder name is made from its name by `folder_name_for`.
+
+Refs (I4.3, freeshape/picking.py). A pick in the Browser client's viewport is turned into the stored reference a
+feature's params hold (an Element name plus a geometric signature), by the same code the desktop uses. It is a
+query: it changes nothing (no edit, no revision, no undo step, not dirty, no rebuild), so a read-only Document
+answers it too (the client may show what is under the pen while it cannot edit). Part Studio tabs only; another
+kind of tab is a 400. A pick is
+    {"part": id, "kind": kind, "index": n | "entity": id, "point": [x, y, z], "want": [kind, ...]}
+  kind   "face", "edge", "vertex", "part", "region", "sketch_line" or "sketch_point".
+  part   the part's id; for "region", "sketch_line" and "sketch_point" the id of the sketch feature.
+  index  the element's 1-BASED index, as the engine's Element names and `PartOut.names` count (the first face is
+         1): required for face, edge, vertex and region (a sketch's region i is regions[i - 1]), absent for the
+         others. A client whose decoder counts from 0 adds 1 (web/src/wire/types.ts). 0 and a number past the end
+         are a 400.
+  entity the sketch entity id ("l3", "c1", "pt2"), required for "sketch_line" and "sketch_point", absent otherwise.
+  point  optional, three finite numbers (the hit point in model coordinates). It is checked and not used: the answer
+         does not depend on it.
+  want   the kinds the field being filled accepts: any of freeshape.picking.WANTED (face, edge, vertex, plane, axis,
+         part, path, region, element, sketch_line, sketch_point, axis_feature, axis_connector, connector, feature),
+         as a dialog field's own `want`. The answer depends on it exactly as on the desktop: a face is a "face"
+         reference for a face field, its edges ("edges", a list) for an edge field, a "plane" for a plane field.
+  Up to 200 picks; unknown fields are refused. A malformed body, an unknown part or sketch, or an index out of range
+  is a 400 {"error": "picks[2].index: ..."} naming the field. Nothing is partly answered.
+Each item is either
+    {"ok": true, "kind": k, "ref": ..., "name": n}   `ref` is exactly what the feature's params store (send it back
+         unchanged in an edit); `kind` is the item kind the field stores it as ("face", "edge", "edges", "vertex",
+         "region", "plane", "axis", "part", "path", "sketch_line", "sketch", ...); `name` is the Element name of
+         the face, edge or vertex (also of the face a plane or axis came from) or null (a part, a region without
+         a name, a legacy reference). Compare it with the name the client already holds for that index.
+    {"ok": false, "code": c, "reason": text}   the pick cannot fill that field; `reason` is a sentence to show.
+         codes: "wrong_kind" (nothing in `want` takes this kind: a vertex for an edge field says "A vertex cannot be
+         used here; an edge is needed"; a face is not one, it gives its edges),
+         "not_flat" (a plane is wanted, the face is curved), "no_axis" (an axis is wanted, the face is not round),
+         "no_region" (a sketch line that bounds no closed area), "nothing_here" (the right kind, but no item).
 
 The live channel (I1.5). `GET /ws?client=<id>` (the id is 8..64 of letters, digits, `_`, `-`; the server makes one
 when it is missing) upgrades after the same Host and Origin checks as every route. `&document=<id>` subscribes to
@@ -109,11 +144,11 @@ _DOC_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _TAB_PATH = re.compile(r"^/tabs/([A-Za-z0-9_-]{1,64})/(outputs|mesh\.json|edit)$")
 _DOC_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})"
                        r"(?:/(open|close|take-over|save|tabs|recover|discard-autosave)"
-                       r"|/tabs/([A-Za-z0-9_-]{1,64})(?:/(outputs|mesh\.json|edit|rename))?)$")
+                       r"|/tabs/([A-Za-z0-9_-]{1,64})(?:/(outputs|mesh\.json|edit|rename|refs))?)$")
 _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POST", "tabs": "GET", "recover": "POST",
               "discard-autosave": "POST"}
 _FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
-_EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST", "rename": "POST"}
+_EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST", "rename": "POST", "refs": "POST"}
 MAX_TABS = 200                  # tabs one Document may hold through POST /documents/<id>/tabs
 _CLIENT_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
                "img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; base-uri 'none'; "
@@ -1013,7 +1048,7 @@ class _Server:
             return self._fail(400, "body shorter than Content-Length")
         try:
             obj = json.loads(data.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError, RecursionError):        # a body nested past the parser's depth
             return self._fail(400, "body is not valid JSON")
         if not isinstance(obj, dict):
             return self._fail(400, "body must be a JSON object")
@@ -1083,6 +1118,8 @@ class _Server:
             return self._fail(404, "not found")
         if route == "rename":
             return await self._rename_tab(d, tab, body)
+        if route == "refs":
+            return await self._refs(d, tab, body)
         if route == "tab":
             return await self._delete_tab(d, tab)
         if route == "outputs":
@@ -1375,6 +1412,21 @@ class _Server:
             return self._fail(409, f"a Document holds at most {MAX_TABS} tabs")
         tid, tabs = await self._tabs_changed(d, lambda: d.session.add_tab(kind, name))
         return self._json(201, {"document": d.id, "tab": next(t for t in tabs if t["id"] == tid), "tabs": tabs})
+
+    async def _refs(self, d, tab, body):
+        """POST /documents/<id>/tabs/<tab>/refs {"picks": [...]}: 200 {"document", "tab", "revision", "items": [...]}.
+        See "Refs" in the module docstring. A query, so it is allowed on a read-only Document and never touches
+        the lock, the revision or the dirty flag."""
+        from . import picking
+        extra = sorted(str(k) for k in body if k != "picks")
+        if extra:
+            return self._fail(400, f"{extra[0][:40]}: unknown field")
+        try:
+            picks = picking.parse_picks(body.get("picks"))
+        except ValueError as e:
+            return self._fail(400, str(e))
+        items, revision = await self._in_session(d, lambda: (d.session.refs(tab, picks), d.revisions.get(tab)))
+        return self._json(200, {"document": d.id, "tab": tab, "revision": revision, "items": items})
 
     async def _rename_tab(self, d, tab, body):
         """POST /documents/<id>/tabs/<tab>/rename {"name": ...}: 200 {"tab": <tab>, "tabs": [...]}."""

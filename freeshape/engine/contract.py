@@ -49,6 +49,11 @@ class TabErrored(EngineError):
         self.reason = reason
 
 
+class BadPick(EngineError):
+    """A pick `refs` cannot read: a field of the wrong type or range, a part or sketch the tab does not have, an
+    index past the end. The message names the field ("picks[2].index: ..."); the tab is untouched."""
+
+
 class LinkCycleError(EngineError):
     """Tabs that consume each other, directly or through a chain. `tabs` lists the cycle, first tab repeated last.
     Raised by `submit_edit` after the edit itself has been applied; nothing is rebuilt for the cycle."""
@@ -360,6 +365,22 @@ class Engine(abc.ABC):
     @abc.abstractmethod
     def outputs(self, tab) -> TabOutputs:
         ...
+
+    @abc.abstractmethod
+    def refs(self, tab, picks) -> list:
+        """Turn picks into stored references (I4.3). A QUERY: it reads the tab as last built and changes nothing --
+        no edit, no revision, no undo step, no rebuild of this tab or of any tab that consumes it. A Part Studio
+        only (EngineError for another kind).
+
+        `picks` is a list of dicts, each {"part": part id (a sketch feature id for kinds "region", "sketch_line"
+        and "sketch_point"), "kind": "face" | "edge" | "vertex" | "part" | "region" | "sketch_line" |
+        "sketch_point", "index": the element's 1-based index (face, edge, vertex, region: the rule of "Element
+        indices" above), "entity": a sketch entity id (sketch_line, sketch_point), "point": [x, y, z] (optional),
+        "want": [kinds the selection field accepts, from freeshape.picking.WANTED]}. Raises BadPick for a pick that
+        is malformed or names something the tab does not have.
+
+        Returns one dict per pick, in order: {"ok": True, "kind": the item's kind, "ref": the reference as a
+        feature's params store it, "name": its Element name or None} or {"ok": False, "code", "reason"}."""
 
     # ------------------------------------------------------------------ the Link graph
     def rebuild_dependents(self, tab) -> list:

@@ -21,6 +21,7 @@ from . import preview_rows as PR
 from . import theme
 from .numparse import parse_number, fmt, has_vars
 from .viewport import Pick
+from ..picking import make_item, region_touching  # noqa: F401 -- region_touching: re-exported, tests import it here
 
 OP_LABELS = [("new", "New"), ("add", "Add"), ("remove", "Remove"), ("intersect", "Intersect")]
 SURFACE_OP_LABELS = OP_LABELS[:2]        # Remove and Intersect are not available for surfaces
@@ -46,36 +47,6 @@ def _show(v):
 
 
 # ---------------------------------------------------------------------- pick <-> ref conversion
-
-def region_touching(sr, eid):
-    """Index of the sketch region whose outline runs along sketch entity `eid` (the smallest such region, so a
-    hole's circle picks the hole rather than the plate around it), or None."""
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
-    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
-    from OCP.gp import gp_Pnt
-    try:
-        pts = sr.sketch.polyline(eid, 16)
-    except Exception:
-        return None
-    if not len(pts):
-        return None
-    u, v = pts[len(pts) // 2]
-    P = sr.plane.to_world(u, v)
-    vert = BRepBuilderAPI_MakeVertex(gp_Pnt(*map(float, P))).Vertex()
-    best = None
-    for ri, face in enumerate(sr.regions):
-        dd = None
-        for e in K.edges(face):
-            ext = BRepExtrema_DistShapeShape(vert, e)
-            if ext.IsDone():
-                d = ext.Value()
-                dd = d if dd is None else min(dd, d)
-        if dd is not None and dd < 1e-5 * max(1.0, float(np.linalg.norm(P))) + 1e-6:
-            area = K.face_info(face).get("area", 0.0)
-            if best is None or area < best[0]:
-                best = (area, ri)
-    return None if best is None else best[1]
-
 
 def _cross(c, s):
     """A three-axis cross of half-length `s` at point `c`, as one polyline."""
@@ -123,136 +94,15 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
     """Convert a viewport pick into a (kind, ref) item for a selection field.
 
     `state` is the ModelState the viewport is showing; with it a picked face, edge or vertex stores
-    the element's name next to its signature (a part without a map gives a signature-only reference)."""
-    k = pick.kind
-    names = (lambda pid: state.named(pid)) if state is not None else (lambda pid: None)
-
-    def engine_named(ref, pid, kind, idx):
-        # a Part Studio tab drawn from the engine: the name comes from the part's element-name map by
-        # the picked element's 1-based index, not from re-finding the element in a rebuilt shape
-        n = ((getattr(state, "engine_names", None) or {}).get(pid) or {}).get(kind, {}).get(idx + 1)
-        if n:
-            ref["name"] = n
-        return ref
-    if "element" in want and k in ("face", "edge"):      # a Mate connector: one face or one edge, never a face's edges
-        pid, i = pick.key
-        shape = vp.part_shapes.get(pid)
-        if shape is None:
-            return None
-        sub = (K.faces if k == "face" else K.edges)(shape)[i]
-        return (k, engine_named(F.make_ref(pid, sub, k, shape, names(pid)), pid, k, i))
-    if k == "region" and "region" in want:
-        fid, ri = pick.key
-        for sfid, sr, _ in vp.sketches:
-            if sfid == fid and ri < len(sr.regions):
-                return ("region", F.region_ref(sr, fid, sr.regions[ri]))
-    if k == "face":
-        pid, fi = pick.key
-        shape = vp.part_shapes.get(pid)
-        if shape is None:
-            return None
-        face = K.faces(shape)[fi]
-        if "face" in want:
-            return ("face", engine_named(F.make_ref(pid, face, "face", shape, names(pid)), pid, "face", fi))
-        if "plane" in want:
-            pl = K.planar_face_plane(face)
-            if pl is not None:
-                return ("plane", {"kind": "face",
-                                  "face": engine_named(F.make_ref(pid, face, "face", shape, names(pid)), pid, "face", fi),
-                                  "origin": pl.origin.tolist(), "xdir": pl.xdir.tolist()})
-        if "edge" in want:          # selecting a face selects all of its edges (fillet/chamfer)
-            return ("edges", [F.make_ref(pid, e, "edge", shape, names(pid)) for e in K.edges(face)])
-        if "axis" in want and F.round_face_axis(face) is not None:      # a cylinder, cone, torus, disc or ring
-            return ("axis", {"kind": "face",
-                             "face": engine_named(F.make_ref(pid, face, "face", shape, names(pid)), pid, "face", fi)})
-        if "part" in want:
-            return ("part", pid)
-    if k == "part" and "part" in want:
-        return ("part", pick.key[0])
-    if k == "edge":
-        pid, ei = pick.key
-        shape = vp.part_shapes.get(pid)
-        if shape is None:
-            return None
-        edge = K.edges(shape)[ei]
-        if "edge" in want:
-            return ("edge", engine_named(F.make_ref(pid, edge, "edge", shape, names(pid)), pid, "edge", ei))
-        if "axis" in want:
-            return ("axis", {"kind": "edge",
-                             "edge": engine_named(F.make_ref(pid, edge, "edge", shape, names(pid)), pid, "edge", ei)})
-    if k == "sketch_line" and "region" in want:
-        # clicking a sketch's line (or circle) picks the closed area it bounds
-        fid, eid = pick.key
-        for sfid, sr, _ in vp.sketches:
-            if sfid != fid or not sr.regions:
-                continue
-            ri = region_touching(sr, eid)
-            if ri is not None:
-                return ("region", F.region_ref(sr, fid, sr.regions[ri]))
-        return None
-    if k == "sketch_line" and "path" in want:
-        fid, eid = pick.key
-        return ("path", {"kind": "sketch_chain", "sketch": fid, "entity": eid})
-    if k == "edge" and "path" in want:
-        pid, ei = pick.key
-        shape = vp.part_shapes.get(pid)
-        if shape is not None:
-            return ("path", {"kind": "edge", "edge": F.make_ref(pid, K.edges(shape)[ei], "edge", shape, names(pid))})
-    if k == "sketch_line" and "axis" in want:
-        fid, eid = pick.key
-        for sfid, sr, _ in vp.sketches:
-            if sfid == fid and sr.sketch.entities.get(eid, {}).get("type") in ("circle", "arc"):
-                return ("axis", {"kind": "sketch_circle", "sketch": fid, "entity": eid})
-        return ("axis", {"kind": "sketch_line", "sketch": fid, "line": eid})
-    if k == "vertex" and "vertex" in want:
-        pid, vi = pick.key
-        shape = vp.part_shapes.get(pid)
-        if shape is None:
-            return None
-        pts = K.vertex_points(shape)
-        if vi >= len(pts):
-            return None
-        return ("vertex", engine_named(F.make_vertex_ref(pid, pts[vi], shape, names(pid)), pid, "vertex", vi))
-    if k == "plane" and "plane" in want:
-        key = pick.key
-        if key[0] == "std":
-            return ("plane", {"kind": "std", "name": key[1]})
-        return ("plane", {"kind": "plane", "fid": key[1]})
-    # the Axis tool's own picks (its refs_sel field asks for these with "sketch_line", "sketch_point",
-    # "axis_feature" and "connector"; revolve and the patterns do not)
-    if k == "sketch_line" and "sketch_line" in want:
-        fid, eid = pick.key
-        ref = {"kind": "sketch_line", "sketch": fid, "line": eid}
-        if "axis_connector" in want:        # the Plane tool: plane_role needs the entity type, it has no model state
-            for sfid, sr, _ in vp.sketches:
-                if sfid == fid:
-                    ref["etype"] = sr.sketch.entities.get(eid, {}).get("type", "line")
-        return ("sketch_line", ref)
-    if k == "sketch_point" and "sketch_point" in want:
-        return _sketch_point_item(vp, pick)
-    if k == "axis" and ("axis_feature" in want or "axis" in want):
-        return ("axis", {"kind": "axis", "fid": pick.key[0]})
-    if k == "connector" and "connector" in want:
-        return ("connector", {"fid": pick.key[0]})
-    if k == "connector" and ("axis" in want or "axis_connector" in want):
-        # a mate connector where an axis is asked for: its Z axis, by reference to the connector (the viewport pick
-        # does not say which arrow of the triad was hit)
-        return ("axis", {"kind": "connector", "fid": pick.key[0], "axis": "z"})
-    return None
-
-
-def _sketch_point_item(vp, pick):
-    """A sketch point as the ADR 0011 sketch-geometry reference ("sketch" item), as the Mate connector tool stores it."""
-    from .. import sketchref
-    fid, eid = pick.key
-    for sfid, sr, _ in vp.sketches:
-        if sfid == fid:
-            try:
-                d = sketchref.describe(sr.sketch.to_dict(), eid, "point")
-            except K.KernelError:
-                return None
-            return ("sketch", {"sketch": fid, "entity": eid, "role": "point", "etype": d["etype"], "sig": d["sig"]})
-    return None
+    the element's name next to its signature (a part without a map gives a signature-only reference).
+    The conversion itself is `picking.make_item`, which the server shares; the viewport gives it only its part
+    shapes and its sketches."""
+    sketches = {}
+    for sfid, sr, _ in getattr(vp, "sketches", ()):       # a stand-in viewport may hold no sketches
+        sketches.setdefault(sfid, sr)
+    return make_item(getattr(vp, "part_shapes", {}), sketches, pick.kind, pick.key, want,
+                     (lambda pid: state.named(pid)) if state is not None else None,
+                     getattr(state, "engine_names", None))
 
 
 def item_label(doc, item):

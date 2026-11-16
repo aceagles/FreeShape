@@ -3,6 +3,7 @@ import type { LiveDrag } from './drag'
 import type { SketchHit } from './pick'
 import type { PickPointer } from '../viewport/pick'
 import { constructionPlan, deletionIds } from './select'
+import { isDrawTool } from './tools/shapes'
 import { parseSketchView } from './wire'
 import type { Frame, FrameEdge, SketchView, Uv } from './wire'
 
@@ -66,6 +67,8 @@ export interface SketchState {
   live: LiveDrag | null
   /** What the tool on shows for the pen's Aim (I7.12); null when it shows nothing. */
   preview: SketchPreview | null
+  /** Construction mode (F20): what the drawing tools make now is construction geometry. Off when a sketch opens and when it closes; it stays on across tools, as the desktop's does. */
+  construction: boolean
 }
 
 /** What a `sketch.add` made: the ids of the point of each pick and of the entities. */
@@ -74,9 +77,19 @@ export interface Made {
   entities: string[]
 }
 
-const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, picking: false, drawing: 0, live: null, preview: null }
+const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, picking: false, drawing: 0, live: null, preview: null, construction: false }
 
 const same = (a: SketchHit | null, b: SketchHit | null): boolean => a === b || (a !== null && b !== null && a.kind === b.kind && a.id === b.id)
+
+/**
+ * Whether the Construct button shows pressed: with entities selected, when every one is construction (a press then makes
+ * them real); with none, when construction mode is on. So the button always shows what a press will undo.
+ */
+export function constructionPressed(state: Pick<SketchState, 'open' | 'view' | 'selected' | 'construction'>): boolean {
+  if (!state.open || !state.view) return false
+  const plan = constructionPlan(state.view.sketch, state.selected)
+  return plan ? !plan.value : state.construction
+}
 
 /** The words for what is selected: "1 point", "2 points, 1 line", "Nothing selected". */
 export function selectionText(items: readonly SketchHit[]): string {
@@ -244,17 +257,25 @@ export class SketchStore {
       this.adds.push(resolve)
     })
   }
-  /** Choose a tool from the strip or the quick menu. A tool that is already on starts its shape over; the Rectangle then turns over between corner and centre. */
+  /**
+   * Choose a tool from the strip, the Desktop toolbar or the quick menu. Delete and Construct act on the selection and change
+   * no tool (I7.9). A tool that is already on is put away: the tool goes back to Select and the shape in progress, the
+   * dimension's picks or a Constrain tool's picks are dropped (F20). Select chosen with Select on does nothing but tell the
+   * tools to start over, so it also ends a Constrain tool's pick mode. Choosing a drawing tool drops the selection, as the
+   * desktop's set_tool does, so Construct then has no selection to act on and sets the mode.
+   */
   chooseTool(id: string): void {
     if (!this.state.open) return
-    // Delete and Construct act on the selection and change no tool (I7.9)
     if (id === 'delete') return this.deleteSelected()
     if (id === 'construct') return this.toggleConstruction()
     const now = this.state.tool
-    const family = (t: string) => (t === 'center_rectangle' ? 'rectangle' : t)
-    if (family(now) !== id) return this.set({ tool: id, toolSeq: this.state.toolSeq + 1, drawing: 0 })
-    if (this.state.drawing === 0 && id === 'rectangle') return this.set({ tool: now === 'rectangle' ? 'center_rectangle' : 'rectangle', toolSeq: this.state.toolSeq + 1 })
+    if (now === id && id !== 'select') return this.leaveTool()
+    if (now !== id) return this.set({ tool: id, toolSeq: this.state.toolSeq + 1, drawing: 0, ...(isDrawTool(id) && this.state.selected.length > 0 ? { selected: [] } : {}) })
     this.set({ toolSeq: this.state.toolSeq + 1, drawing: 0 })
+  }
+  /** Back to Select with whatever the tool had in progress given up. The same step as the second Esc, and the first when nothing is in progress. */
+  private leaveTool(): void {
+    this.set({ tool: 'select', toolSeq: this.state.toolSeq + 1, drawing: 0 })
   }
   /**
    * End the shape in progress without adding anything: a chained line stops where it is, a rectangle half placed is dropped.
@@ -274,7 +295,7 @@ export class SketchStore {
     if (!s.open) return false
     if (this.endShape()) return true
     if (s.tool !== 'select') {
-      this.set({ tool: 'select', toolSeq: s.toolSeq + 1, drawing: 0 })
+      this.leaveTool()
       return true
     }
     if (s.selected.length > 0) {
@@ -300,12 +321,17 @@ export class SketchStore {
     if (this.transport.send({ type: 'sketch.delete', ids })) this.set({ selected: [] })
   }
 
-  /** Make the selected entities construction, or real again when they all are construction. */
+  /**
+   * Construct, as the desktop's toggle_construction (Q): with entities selected, make them construction, or real again when they
+   * all are (the selection stays, so a second press reverses it); with none, turn construction mode on or off. A selection of
+   * points or dimensions only has no entity to flag, so it sets the mode too. Also the command the sketch's Q key will call.
+   */
   toggleConstruction(): void {
     const view = this.state.view
     if (!this.state.open || !view) return
     const plan = constructionPlan(view.sketch, this.state.selected)
     if (plan) this.transport.send({ type: 'sketch.construction', ids: plan.ids, value: plan.value })
+    else this.set({ construction: !this.state.construction })
   }
 
   private settleAdds(made: Made | null, all = false): void {

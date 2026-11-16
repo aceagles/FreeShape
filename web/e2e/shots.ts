@@ -1743,6 +1743,33 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // F20: Construct pressed with nothing selected (the mode), one construction line drawn dashed grey, and a second one being drawn with its band dashed grey
+    name: 'sketch-construct-mode',
+    mock: 'sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      await page.locator('[data-strip="sketch"] [data-group="draw"]').click()
+      await page.locator('.group-row[data-tool="line"] .group-tool').click()
+      await page.locator('[data-strip="sketch"] [data-tool="construct"]').click()
+      const a = await screenFor(page, -30, -10)
+      const b = await screenFor(page, 20, 15)
+      await place(page, a)
+      await place(page, b)
+      await place(page, b)
+      await page.locator('.sketch-layer path[data-dashed]').first().waitFor({ state: 'attached' })
+      const c = await screenFor(page, -30, 20)
+      const d = await screenFor(page, 15, 30)
+      await place(page, c)
+      await sendPointer(page, [
+        { phase: 'down', kind: 'pen', id: 10, x: d.x - 3, y: d.y },
+        { phase: 'move', kind: 'pen', id: 10, ...d },
+      ])
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I9.9: drag a selection box with the mouse from above left of the bracket to below its middle; `release` lets the button go. */

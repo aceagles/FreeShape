@@ -8,13 +8,13 @@ const t = (id: string, label: string): ToolDef => ({ id, label, icon: id })
 
 /**
  * The sketch strip, in the layout's order (plans/browser-client/layout-mock/Main.dc.html, sketch and constrain states):
- * Select, a Draw group (the drawing tools, then Trim, Corner fillet and Use edge, which change what is drawn), Dimension, a Constrain group, Construct and Delete, then the user's pins. Each tool's icon is its
+ * Select, a Draw group (the drawing tools, with the Rectangle in both forms, then Trim, Corner fillet and Use edge, which change what is drawn), Dimension, a Constrain group, Construct and Delete, then the user's pins. Each tool's icon is its
  * stroke path in tools/inlinePaths.ts. The Constrain list is two columns because it has more than seven rows. It has the
  * twelve tools the server has: the mock's 13th, Point on, is Coincident on a point and a curve there.
  */
 export const SKETCH_STRIP: readonly StripDef[] = [
   { kind: 'tool', tool: t('select', 'Select') },
-  { kind: 'group', key: 'draw', name: 'Draw', gap: space.s10, tools: [t('line', 'Line'), t('rectangle', 'Rectangle'), t('circle', 'Circle'), t('arc', 'Arc'), t('point', 'Point'), t('trim', 'Trim'), t('corner_fillet', 'Corner fillet'), t('use_edge', 'Use edge')] },
+  { kind: 'group', key: 'draw', name: 'Draw', gap: space.s10, tools: [t('line', 'Line'), t('rectangle', 'Rectangle'), t('center_rectangle', 'Center rectangle'), t('circle', 'Circle'), t('arc', 'Arc'), t('point', 'Point'), t('trim', 'Trim'), t('corner_fillet', 'Corner fillet'), t('use_edge', 'Use edge')] },
   { kind: 'tool', tool: t('dimension', 'Dimension') },
   {
     kind: 'group',
@@ -41,10 +41,10 @@ export const SKETCH_STRIP: readonly StripDef[] = [
 ]
 
 /** The tools whose cards are done: Select picks and selects in the view (I7.7); the drawing tools place points (I7.8); Dimension is I7.11; Construct and Delete act on the selection (I7.9). Every other button waits for its card and stays dimmed. */
-const WIRED: ReadonlySet<string> = new Set(['select', 'dimension', 'line', 'rectangle', 'circle', 'arc', 'point', 'construct', 'delete', 'trim', 'corner_fillet', 'use_edge'])
+const WIRED: ReadonlySet<string> = new Set(['select', 'dimension', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'construct', 'delete', 'trim', 'corner_fillet', 'use_edge'])
 
-/** The strip button that is lit for a tool: the Rectangle stays lit in its centre form. */
-export const stripActive = (tool: string): string => (tool === 'center_rectangle' ? 'rectangle' : tool)
+/** The strip button that is lit for a tool: the tool's own (the Center rectangle has its own row, as on the Desktop toolbar). */
+export const stripActive = (tool: string): string => tool
 
 export const sketchToolState = (id: string): ToolState => (WIRED.has(id) ? 'ok' : 'dimmed')
 
@@ -130,6 +130,8 @@ export interface SketchRowContext {
   drawing: boolean
   canUndo: boolean
   canRedo: boolean
+  /** The Construct button is pressed (store.constructionPressed). */
+  constructing: boolean
   /** A drawing tool, Select or Dimension chosen; a Constrain tool starts as the tablet's does. */
   onTool: (id: string) => void
   onUndo: () => void
@@ -148,13 +150,13 @@ const CHOOSABLE: readonly string[] = ['select', 'line', 'rectangle', 'center_rec
 export function sketchRowCommands(c: SketchRowContext): Record<string, ToolbarCommand> {
   const out: Record<string, ToolbarCommand> = {}
   for (const id of CHOOSABLE) {
-    // the Corner rectangle on while it is on does nothing: choosing it again would turn it into the centre form (store.chooseTool)
-    out[id] = { run: () => (id === 'rectangle' && c.active === 'rectangle' && !c.drawing ? undefined : c.onTool(id)), pressed: c.active === id }
+    // the tool that is on, chosen again, goes back to Select (store.chooseTool)
+    out[id] = { run: () => c.onTool(id), pressed: c.active === id }
   }
   out.undo = { run: c.onUndo, enabled: c.canUndo }
   out.redo = { run: c.onRedo, enabled: c.canRedo }
   out.delete = { run: c.onDelete }
-  out.construct = { run: c.onConstruct }
+  out.construct = { run: c.onConstruct, pressed: c.constructing }
   out.normal_to = { run: c.onNormalTo }
   out.fit = { run: c.onFit }
   out.finish = { run: c.onFinish }

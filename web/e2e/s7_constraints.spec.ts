@@ -134,7 +134,7 @@ test('with one point selected, choosing Coincident waits for a second point and 
   await pointTool()
   await place(a)
   await expect.poll(added).toBe(1)
-  await pointTool()
+  // the Point tool is still on (choosing it again would go back to Select, F20)
   await place(b)
   await expect.poll(added).toBe(2)
   await page.locator('.tool-strip [data-tool="select"]').click()

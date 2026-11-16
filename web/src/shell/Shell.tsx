@@ -30,7 +30,7 @@ import { DimensionDock, DimensionHint } from '../sketch/DimensionPad'
 import { DimensionTool } from '../sketch/dimension'
 import { EditDock, EditHint } from '../sketch/EditPad'
 import { EditTools } from '../sketch/tools/edit'
-import { SketchStore } from '../sketch/store'
+import { constructionPressed, SketchStore } from '../sketch/store'
 import { ConstraintHint, ConstraintNote } from '../sketch/ConstraintNote'
 import { attachKeys, keymapFor } from '../input/keys'
 import type { KeyCommand } from '../input/keys'
@@ -462,11 +462,13 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   }
   // the Desktop sketch toolbar: what a tool button does is what the tablet strip's does (a Constrain tool is tool-first)
   const askCancelSketch = () => (sketch.view?.canUndo ? setModal({ kind: 'discard' }) : sketchStore.cancel())
+  const constructing = constructionPressed(sketch)
   const sketchCommands = sketchRowCommands({
     active: constraintState.picking ?? (dimensionOn ? 'dimension' : sketch.tool === 'dimension' ? 'select' : sketch.tool),
     drawing: sketch.drawing > 0,
     canUndo: undoCmd.enabled,
     canRedo: redoCmd.enabled,
+    constructing: constructing,
     onTool: (id) => {
       if (isConstrainTool(id) && constraints.getState().picking === id) return constraints.leave()
       sketchStore.chooseTool(isConstrainTool(id) ? 'select' : id)
@@ -570,6 +572,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
             stateOf={(id) => (isConstrainTool(id) ? 'ok' : sketchToolState(id))}
             marked={(id) => isConstrainTool(id) && constraints.fits(id)}
             width={width}
+            toggled={(id) => (id === 'construct' ? constructing : undefined)}
             active={constraintState.picking ?? (dimensionOn ? 'dimension' : stripActive(sketch.tool === 'dimension' ? 'select' : sketch.tool))}
             onStart={(id) => {
               // Delete and Construct act on the selection and change no tool; a Constrain tool acts on it at once when it fits,

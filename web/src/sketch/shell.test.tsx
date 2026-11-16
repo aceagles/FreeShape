@@ -104,3 +104,40 @@ it('the sketch strip and its right end fit a 1024 pixel window with the two pins
   // buttons and pins at their layout widths, then the toggle (106), Normal to (64), Cancel and Done (about 76 and 84 with their margins)
   expect(stripWidth(SKETCH_STRIP, 2) + 106 + 2 + 64 + 2 + 6 + 76 + 4 + 84).toBeLessThanOrEqual(1024)
 })
+
+it('Construct with nothing selected shows pressed on the strip, and the mode ends when the sketch closes (F20)', async () => {
+  const { store, sock } = await shell()
+  await openSketch(sock)
+  const construct = () => document.querySelector('[data-strip="sketch"] [data-tool="construct"]')!
+  expect(construct().getAttribute('aria-pressed')).toBe('false')
+  fireEvent.click(construct())
+  expect(construct().getAttribute('aria-pressed')).toBe('true')
+  expect(construct().hasAttribute('data-active')).toBe(true)
+  // nothing was sent: a mode is the client's
+  expect(sock.sent.some((m) => m['type'] === 'sketch.construction')).toBe(false)
+  // the mode stays while the tool changes
+  fireEvent.click(document.querySelector('[data-strip="sketch"] [data-tool="select"]')!)
+  expect(construct().getAttribute('aria-pressed')).toBe('true')
+  fireEvent.click(construct())
+  expect(construct().getAttribute('aria-pressed')).toBe('false')
+  fireEvent.click(construct())
+  sock.say({ type: 'sketch.cancelled', document: 'd', tab: 'T1', feature: null })
+  await waitFor(() => expect(document.querySelector('[data-strip="feature"]')).not.toBeNull())
+  await openSketch(sock)
+  expect(construct().getAttribute('aria-pressed')).toBe('false')
+  store.stop()
+})
+
+it('the Select button on the strip and the lit tool pressed again both go back to Select (F20)', async () => {
+  const { store, sock } = await shell()
+  await openSketch(sock)
+  const strip = () => document.querySelector('[data-strip="sketch"]')!
+  const lit = () => [...strip().querySelectorAll('[data-active]')].map((e) => e.getAttribute('data-tool') ?? e.getAttribute('data-group'))
+  fireEvent.click(strip().querySelector('[data-group="draw"]')!)
+  fireEvent.pointerUp(document.querySelector('.group-row[data-tool="line"] .group-tool')!)
+  expect(lit()).toContain('draw')
+  fireEvent.pointerDown(strip().querySelector('[data-group="draw"]')!)
+  fireEvent.pointerUp(document.querySelector('.group-row[data-tool="line"] .group-tool')!)
+  expect(lit()).toEqual(['select'])
+  store.stop()
+})

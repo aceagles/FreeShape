@@ -106,10 +106,12 @@ it('Polygon, Spline and Insert DXF/SVG are disabled with the desktop-only note; 
     expect(button(id).getAttribute('aria-pressed')).toBe('true')
     expect(button('select').getAttribute('aria-pressed')).toBe('false')
   }
-  // the Corner rectangle pressed again stays the corner form; the Center rectangle is its own button
-  fireEvent.click(button('rectangle'))
+  // the tool that is on, pressed again, goes back to Select (F20); the Center rectangle is its own button
   fireEvent.click(button('rectangle'))
   expect(button('rectangle').getAttribute('aria-pressed')).toBe('true')
+  fireEvent.click(button('rectangle'))
+  expect(button('rectangle').getAttribute('aria-pressed')).toBe('false')
+  expect(button('select').getAttribute('aria-pressed')).toBe('true')
   fireEvent.click(button('center_rectangle'))
   expect(button('center_rectangle').getAttribute('aria-pressed')).toBe('true')
   expect(button('rectangle').getAttribute('aria-pressed')).toBe('false')

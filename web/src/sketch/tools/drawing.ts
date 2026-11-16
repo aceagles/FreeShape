@@ -43,8 +43,8 @@ export const LAST_POINT_REACH: Record<PickPointer, number> = { mouse: 6, pen: 12
 /** What the active tool asks for, shown at the foot of the view; a mouse has the keyboard and a right button, a pen or finger has neither. */
 const HINT: Record<DrawTool, string> = {
   line: 'Line: press and lift to place each point. Tap the last point, or tap Line again, to stop.',
-  rectangle: 'Rectangle: place two opposite corners. Tap Rectangle again for a centre rectangle.',
-  center_rectangle: 'Centre rectangle: place the centre, then a corner. Tap Rectangle again for corners.',
+  rectangle: 'Rectangle: place two opposite corners. Tap Rectangle again to stop.',
+  center_rectangle: 'Centre rectangle: place the centre, then a corner. Tap Center rectangle again to stop.',
   circle: 'Circle: place the centre, then a point on the circle.',
   arc: 'Arc: place the start, the end, then a point on the arc.',
   point: 'Point: place a point.',
@@ -203,10 +203,12 @@ export class DrawTools {
   private finish(tool: DrawTool, picks: Pick[]): void {
     const end = picks[picks.length - 1]!
     this.sent++
+    // construction mode (F20): the shape is made construction in the same message, so it is one undo step
+    const construction = this.store.getState().construction && tool !== 'point'
     // the next start of a chain: where this line ended, the point the server makes for it. A line that closed on a point ends the chain.
     const next: Pick | null = tool === 'line' && end.snap?.kind !== 'point' ? { uv: end.uv, snap: null } : null
     const job = async (): Promise<void> => {
-      const made = await this.store.add(addBody(tool, picks))
+      const made = await this.store.add(addBody(tool, picks, construction))
       if (next && made) next.point = made.points[1]
     }
     this.queue = this.queue.then(job, job)
@@ -236,7 +238,9 @@ export class DrawTools {
     let out = ''
     if (ctx) {
       const tool = this.tool
-      const line = (pts: P[], dash?: string): string => `<path d="M${pts.map((q) => `${n(q.x)} ${n(q.y)}`).join('L')}" fill="none" stroke="${color.accent}" stroke-width="1.5" ${dash ? `stroke-dasharray="${dash}" ` : ''}stroke-linecap="round" stroke-linejoin="round"/>`
+      // in construction mode the band is drawn as the construction it will become: grey and dashed as a construction stroke is
+      const cons = this.store.getState().construction && tool !== 'point'
+      const line = (pts: P[], dash?: string): string => `<path d="M${pts.map((q) => `${n(q.x)} ${n(q.y)}`).join('L')}" fill="none" stroke="${cons ? sketchColor.construction : color.accent}" stroke-width="1.5" ${dash ? `stroke-dasharray="${dash}" ` : ''}stroke-linecap="round" stroke-linejoin="round"/>`
       for (const pk of this.picks) {
         const q = ctx.toView(pk.uv)
         out += `<circle data-kind="pick" cx="${n(q.x)}" cy="${n(q.y)}" r="5" fill="${color.white}" stroke="${color.accent}" stroke-width="2"/>`
@@ -247,7 +251,7 @@ export class DrawTools {
           const g = ctx.toView(aim.guide)
           out += `<path data-kind="guide" d="M${n(g.x)} ${n(g.y)}L${n(aim.at.x)} ${n(aim.at.y)}" fill="none" stroke="${sketchColor.aimed}" stroke-width="1.5" stroke-dasharray="2 5" stroke-linecap="round"/>`
         }
-        for (const poly of rubberBand(tool, this.picks, aim.uv)) out += `<g data-kind="band">${line(poly.map((u) => ctx.toView(u)), '6 4')}</g>`
+        for (const poly of rubberBand(tool, this.picks, aim.uv)) out += `<g data-kind="band"${cons ? ' data-construction=""' : ''}>${line(poly.map((u) => ctx.toView(u)), cons ? '8 6' : '6 4')}</g>`
         const text = aim.snap ? SNAP_TEXT[aim.snap.kind] : aim.infer ? INFER_TEXT[aim.infer] : ''
         const ring = aim.snap ? sketchColor.aimed : aim.infer ? sketchColor.aimed : color.accent
         const { x, y } = aim.at

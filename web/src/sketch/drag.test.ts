@@ -274,9 +274,11 @@ describe('Delete and Construct', () => {
     r.store.toggleConstruction()
     expect(r.sent.at(-1)).toEqual({ type: 'sketch.construction', ids: ['e6', 'e1'], value: true })
     r.sent.length = 0
+    // a selection of a point has no entity to flag: it sets the construction mode, as the desktop does
     r.store.setSelection([{ kind: 'point', id: 'p3' }])
     r.store.toggleConstruction()
     expect(r.sent).toEqual([])
+    expect(r.store.getState().construction).toBe(true)
   })
 
   it('the helpers', () => {

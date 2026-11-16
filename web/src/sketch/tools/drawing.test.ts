@@ -141,10 +141,8 @@ describe('the other drawing tools', () => {
     close((r.adds()[0]!['picks'] as number[][])[1]!, B)
   })
 
-  it('tapping Rectangle again with nothing in progress makes it a centre rectangle', async () => {
-    r.store.chooseTool('rectangle')
-    r.store.chooseTool('rectangle')
-    expect(r.store.getState().tool).toBe('center_rectangle')
+  it('the Center rectangle tool sends a centre rectangle', async () => {
+    r.store.chooseTool('center_rectangle')
     r.stroke(r.at(A))
     r.stroke(r.at(B))
     await r.flush()

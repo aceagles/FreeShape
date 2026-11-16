@@ -67,12 +67,13 @@ export function deletionIds(selected: readonly SketchHit[]): string[] {
 }
 
 /**
- * What the Construct button sends for a selection, or null when no entity is selected: construction is a flag of an
+ * What the Construct button sends for a selection, or null when no line, curve or text is selected (the button then sets the construction mode): construction is a flag of an
  * entity. When every selected entity is construction it turns them real, otherwise it makes them all construction, so a
  * mixed selection ends in one state.
  */
 export function constructionPlan(sketch: SketchData, selected: readonly SketchHit[]): { ids: string[]; value: boolean } | null {
-  const ids = selected.filter((h) => h.kind === 'entity' && h.id in sketch.entities).map((h) => h.id)
+  // a point entity is always construction and the server refuses it, so it is left out
+  const ids = selected.filter((h) => h.kind === 'entity' && h.id in sketch.entities && sketch.entities[h.id]!.type !== 'point').map((h) => h.id)
   if (ids.length === 0) return null
   return { ids, value: !ids.every((id) => sketch.entities[id]?.construction === true) }
 }

@@ -28,6 +28,8 @@ export interface ToolStripProps {
   width: number
   /** The tool that is on (a sketch strip's drawing tool). */
   active?: string | null
+  /** Whether a toggle tool (the sketch strip's Construct) is on: true or false for a toggle, undefined for any other tool. A toggle that is on is lit and aria-pressed. */
+  toggled?: (id: string) => boolean | undefined
   /** Tools to mark with a small dot (a hint only: the Constrain tools that fit the selection). */
   marked?: (id: string) => boolean
   /** A tool starts: a tap on it, or a release on its row. */
@@ -49,7 +51,7 @@ interface Open {
  * else closes it. Each row has a pin button: a pinned tool is also a button on the strip after the groups, up to a cap
  * that keeps the strip from overflowing. One component for the feature strip and, later, the sketch strip.
  */
-export function ToolStrip({ strip, defs, stateOf, disabled, width, active, marked, onStart, pins = userPins(), trailing }: ToolStripProps) {
+export function ToolStrip({ strip, defs, stateOf, disabled, width, active, toggled, marked, onStart, pins = userPins(), trailing }: ToolStripProps) {
   const pinned = useSyncExternalStore(pins.subscribe, pins.getSnapshot)[strip]
   const [openRaw, setOpen] = useState<Open | null>(null)
   // a strip that is switched off (a dialog opened) shows no list
@@ -106,7 +108,8 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, marke
         key={`tool:${tool.id}${extra.pinned ? ':pin' : ''}`}
         label={tool.label}
         icon={<ToolIcon name={tool.icon} />}
-        active={active === tool.id}
+        active={active === tool.id || toggled?.(tool.id) === true}
+        aria-pressed={toggled?.(tool.id)}
         gap={(extra.gap ?? 0) > 0}
         pinned={extra.pinned && pinnedButtons[0]?.id === tool.id}
         data-tool={tool.id}

@@ -8,13 +8,13 @@ const t = (id: string, label: string): ToolDef => ({ id, label, icon: id })
 
 /**
  * The sketch strip, in the layout's order (plans/browser-client/layout-mock/Main.dc.html, sketch and constrain states):
- * Select, a Draw group (the drawing tools, with the Rectangle in both forms, then Trim, Corner fillet and Use edge, which change what is drawn), Dimension, a Constrain group, Construct and Delete, then the user's pins. Each tool's icon is its
+ * Select, a Draw group (the drawing tools, with the Rectangle in both forms, then Trim, Corner fillet and Use edge, which change what is drawn, then Mirror and the two patterns, which copy it; a Copy group of their own between Constrain and Construct made the strip 58 px too wide for 1024, decision d-s14-strip), Dimension, a Constrain group, Construct and Delete, then the user's pins. Each tool's icon is its
  * stroke path in tools/inlinePaths.ts. The Constrain list is two columns because it has more than seven rows. It has the
  * twelve tools the server has: the mock's 13th, Point on, is Coincident on a point and a curve there.
  */
 export const SKETCH_STRIP: readonly StripDef[] = [
   { kind: 'tool', tool: t('select', 'Select') },
-  { kind: 'group', key: 'draw', name: 'Draw', gap: space.s10, tools: [t('line', 'Line'), t('rectangle', 'Rectangle'), t('center_rectangle', 'Center rectangle'), t('circle', 'Circle'), t('arc', 'Arc'), t('point', 'Point'), t('trim', 'Trim'), t('corner_fillet', 'Corner fillet'), t('use_edge', 'Use edge')] },
+  { kind: 'group', key: 'draw', name: 'Draw', gap: space.s10, tools: [t('line', 'Line'), t('rectangle', 'Rectangle'), t('center_rectangle', 'Center rectangle'), t('circle', 'Circle'), t('arc', 'Arc'), t('point', 'Point'), t('trim', 'Trim'), t('corner_fillet', 'Corner fillet'), t('use_edge', 'Use edge'), { ...t('sk_mirror', 'Mirror'), icon: 'mirror' }, { ...t('sk_lpattern', 'Linear pattern'), icon: 'linear_pattern' }, { ...t('sk_cpattern', 'Circular pattern'), icon: 'circular_pattern' }] },
   { kind: 'tool', tool: t('dimension', 'Dimension') },
   {
     kind: 'group',
@@ -41,7 +41,7 @@ export const SKETCH_STRIP: readonly StripDef[] = [
 ]
 
 /** The tools whose cards are done: Select picks and selects in the view (I7.7); the drawing tools place points (I7.8); Dimension is I7.11; Construct and Delete act on the selection (I7.9). Every other button waits for its card and stays dimmed. */
-const WIRED: ReadonlySet<string> = new Set(['select', 'dimension', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'construct', 'delete', 'trim', 'corner_fillet', 'use_edge'])
+const WIRED: ReadonlySet<string> = new Set(['select', 'dimension', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'construct', 'delete', 'trim', 'corner_fillet', 'use_edge', 'sk_mirror'])
 
 /** The strip button that is lit for a tool: the tool's own (the Center rectangle has its own row, as on the Desktop toolbar). */
 export const stripActive = (tool: string): string => tool
@@ -144,7 +144,7 @@ export interface SketchRowContext {
 }
 
 /** The tools of the sketch row the client has: the ones the server and the sketch store do (sketch/store.ts, constraints.ts). */
-const CHOOSABLE: readonly string[] = ['select', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'dimension', 'corner_fillet', 'use_edge', 'trim', ...CONSTRAIN]
+const CHOOSABLE: readonly string[] = ['select', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'dimension', 'corner_fillet', 'use_edge', 'trim', 'sk_mirror', ...CONSTRAIN]
 
 /** The commands DesktopToolbar needs to draw the sketch row: every tool the client has, the active one pressed. */
 export function sketchRowCommands(c: SketchRowContext): Record<string, ToolbarCommand> {

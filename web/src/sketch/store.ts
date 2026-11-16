@@ -38,8 +38,8 @@ export interface SketchPointerTool {
   escape?(): boolean
 }
 
-/** What the Trim and Use edge tools show for the Aim: the piece of a line a Trim would remove, or the model edge a Use would bring in. Both in sketch coordinates. */
-export type SketchPreview = { kind: 'trim'; from: Uv; to: Uv } | { kind: 'edge'; points: readonly Uv[] }
+/** What the Trim, Use edge and copy tools show for the Aim: the piece of a line a Trim would remove, the model edge a Use would bring in, or the copies a Mirror would make (each an outline). All in sketch coordinates. */
+export type SketchPreview = { kind: 'trim'; from: Uv; to: Uv } | { kind: 'edge'; points: readonly Uv[] } | { kind: 'copies'; outlines: readonly (readonly Uv[])[] }
 
 export interface SketchState {
   /** No sketch is open. */

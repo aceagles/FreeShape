@@ -38,7 +38,7 @@ export interface SketchLook {
   handles?: readonly HandleSpot[]
   grabbed?: SketchHit | null
   /** What a Trim would remove or a Use edge would bring in, in view pixels (I7.12). */
-  preview?: { kind: 'trim' | 'edge'; pts: readonly P[] } | null
+  preview?: { kind: 'trim' | 'edge'; pts: readonly P[] } | { kind: 'copies'; lines: readonly (readonly P[])[] } | null
 }
 
 const colourOf = (s: ScreenStroke | { status: Status; construction?: boolean }): string =>
@@ -120,7 +120,11 @@ export function sketchMarkup(layout: ScreenLayout, look: SketchLook, width: numb
   }
   for (const d of layout.dims) out.push(dimMarkup(d, look))
   for (const g of layout.glyphs) out.push(glyphMarkup(g, look))
-  if (look.preview && look.preview.pts.length > 1) {
+  if (look.preview?.kind === 'copies') {
+    // the copies a Mirror would make: a dashed ghost in the accent colour, nothing hit-tested
+    const d = look.preview.lines.map((l) => path(l, false)).join('')
+    if (d !== '') out.push(`<g data-kind="preview" data-preview="copies"><path d="${d}" fill="none" stroke="${color.accent}" stroke-width="2.5" stroke-opacity="0.85" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 5"/></g>`)
+  } else if (look.preview && look.preview.pts.length > 1) {
     const edge = look.preview.kind === 'edge'
     const d = path(look.preview.pts, false)
     out.push(

@@ -92,12 +92,12 @@ it('the tooltips carry the desktop sketch keys', () => {
 
 it('Polygon, Spline and Insert DXF/SVG are disabled with the desktop-only note; Line, Corner rectangle and Circle choose their tool and show pressed', async () => {
   const { store, sock } = await mountSketch()
-  for (const id of ['polygon', 'spline', 'insert_file', 'arc_center', 'ellipse', 'text', 'offset', 'slot', 'sk_mirror', 'sk_lpattern', 'sk_cpattern', 'extend']) {
+  for (const id of ['polygon', 'spline', 'insert_file', 'arc_center', 'ellipse', 'text', 'offset', 'slot', 'sk_lpattern', 'sk_cpattern', 'extend']) {
     expect(button(id).disabled).toBe(true)
     expect(button(id).title).toBe(DESKTOP_ONLY)
   }
   // every tool the client has is on
-  for (const id of ['select', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'construct', 'dimension', 'coincident', 'normal', 'corner_fillet', 'use_edge', 'trim', 'delete', 'normal_to', 'fit', 'finish']) {
+  for (const id of ['select', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'construct', 'dimension', 'coincident', 'normal', 'corner_fillet', 'use_edge', 'trim', 'sk_mirror', 'delete', 'normal_to', 'fit', 'finish']) {
     expect(button(id).disabled, id).toBe(false)
   }
   expect(button('select').getAttribute('aria-pressed')).toBe('true')
@@ -116,6 +116,23 @@ it('Polygon, Spline and Insert DXF/SVG are disabled with the desktop-only note; 
   expect(button('center_rectangle').getAttribute('aria-pressed')).toBe('true')
   expect(button('rectangle').getAttribute('aria-pressed')).toBe('false')
   expect(sketchSent(sock)).toEqual([{ type: 'sketch.open', document: 'd', tab: 'T1', plane: { kind: 'std', name: 'Front' } }])
+  store.stop()
+})
+
+it('Mirror is enabled and pressed while it is the tool; pressed again it goes back to Select; the two patterns stay disabled (I14.2)', async () => {
+  const { store } = await mountSketch()
+  expect(button('sk_mirror').disabled).toBe(false)
+  expect(button('sk_mirror').getAttribute('aria-pressed')).toBe('false')
+  fireEvent.click(button('sk_mirror'))
+  expect(button('sk_mirror').getAttribute('aria-pressed')).toBe('true')
+  expect(button('select').getAttribute('aria-pressed')).toBe('false')
+  fireEvent.click(button('sk_mirror'))
+  expect(button('sk_mirror').getAttribute('aria-pressed')).toBe('false')
+  expect(button('select').getAttribute('aria-pressed')).toBe('true')
+  for (const id of ['sk_lpattern', 'sk_cpattern']) {
+    expect(button(id).disabled).toBe(true)
+    expect(button(id).title).toBe(DESKTOP_ONLY)
+  }
   store.stop()
 })
 

@@ -5,7 +5,7 @@ import { holderOf, makeStore, stubFetch, tab } from '../test/fakes'
 import { fixture } from '../test/fixtures'
 import { openedMessage } from './testFixture'
 import { stripWidth } from '../tools/defs'
-import { SKETCH_STRIP } from './strip'
+import { SKETCH_STRIP, sketchToolState } from './strip'
 
 // The sketch in the whole Shell (card I7.7): the sketch strip replaces the feature strip, the sketch is drawn from the
 // session's answer, and the 2D / 3D toggle, Normal to, Cancel and Done talk to the server's sketch session.
@@ -103,6 +103,13 @@ it('the 2D / 3D toggle and Normal to steer the view; Cancel and Done send the se
 it('the sketch strip and its right end fit a 1024 pixel window with the two pins the cap allows', () => {
   // buttons and pins at their layout widths, then the toggle (106), Normal to (64), Cancel and Done (about 76 and 84 with their margins)
   expect(stripWidth(SKETCH_STRIP, 2) + 106 + 2 + 64 + 2 + 6 + 76 + 4 + 84).toBeLessThanOrEqual(1024)
+})
+
+it('the Draw group ends with Mirror and the two patterns; Mirror is wired and the patterns are dimmed until I14.3 (d-s14-strip)', () => {
+  const draw = SKETCH_STRIP.find((d) => d.kind === 'group' && d.key === 'draw')
+  const ids = draw?.kind === 'group' ? draw.tools.map((t) => t.id) : []
+  expect(ids.slice(-3)).toEqual(['sk_mirror', 'sk_lpattern', 'sk_cpattern'])
+  expect([sketchToolState('sk_mirror'), sketchToolState('sk_lpattern'), sketchToolState('sk_cpattern')]).toEqual(['ok', 'dimmed', 'dimmed'])
 })
 
 it('Construct with nothing selected shows pressed on the strip, and the mode ends when the sketch closes (F20)', async () => {

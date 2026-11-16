@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react'
 import { NumberPad, PadField } from '../pad/NumberPad'
 import { usePadEditor } from '../pad/usePadEditor'
 import type { ShellApi } from '../shell/ShellContext'
+import type { CopyTools } from './tools/copy'
 import type { EditTools, FilletPadState } from './tools/edit'
 import './sketch.css'
 
@@ -33,6 +34,17 @@ export function EditHint({ tool }: { tool: EditTools }) {
   if (hint === null) return null
   return (
     <div className="sketch-hint" role="status" data-testid="edit-hint">
+      {hint}
+    </div>
+  )
+}
+
+/** What Mirror wants next, or the server's refusal of it, in the same place as the edit tools' hint. */
+export function CopyHint({ tool }: { tool: CopyTools }) {
+  const { hint } = useSyncExternalStore(tool.subscribe, tool.getState)
+  if (hint === null) return null
+  return (
+    <div className="sketch-hint" role="status" data-testid="copy-hint">
       {hint}
     </div>
   )

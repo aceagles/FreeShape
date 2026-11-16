@@ -2013,6 +2013,82 @@ export const shots: ShotState[] = [
       await settled(page)
     },
   },
+  {
+    // I14.2: the Draw group open on a new sketch: Trim, Corner fillet and Use edge, then Mirror and the two patterns, which stay dimmed until I14.3 (the strip has no Copy group of its own: it would not fit 1024)
+    name: 'sketch-copy-group',
+    mock: 'flyout',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
+      await page.locator('.group-row[data-tool="sk_mirror"]').waitFor()
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I14.2: a line of the bracket profile selected, Mirror chosen and the pen down on the opposite line: the hint at the top left and the ghost of the copy
+    name: 'sketch-mirror-aim',
+    mock: 'sketch',
+    steps: async (page) => {
+      const opened = editOpened(page)
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await settledSketch(page)
+      const sk = opened().sketch
+      const lines = Object.keys(sk.entities).filter((k) => sk.entities[k]!.type === 'line')
+      const mid = async (id: string) => {
+        const a = await screenOf(page, 'point', sk.entities[id]!.p1!)
+        const b = await screenOf(page, 'point', sk.entities[id]!.p2!)
+        return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+      }
+      await place(page, await mid(lines[0]!))
+      await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
+      await page.locator('.group-row[data-tool="sk_mirror"]').click()
+      await page.getByTestId('copy-hint').waitFor()
+      const at = await mid(lines[2]!)
+      // the press starts well off the line, so that sliding onto it is a move and not a hold: the quick menu stays shut
+      await sendPointer(page, [
+        { phase: 'down', kind: 'pen', id: 10, x: at.x - 40, y: at.y },
+        { phase: 'move', kind: 'pen', id: 10, ...at },
+      ])
+      await page.locator('.sketch-layer g[data-preview="copies"]').waitFor({ state: 'attached' })
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I14.2: the Desktop sketch row with Mirror pressed, a line selected, and the hint over the view
+    name: 'desktop-sketch-mirror',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      const bar = page.locator('[data-strip="sketch"]')
+      await bar.getByRole('button', { name: 'Line', exact: true }).click()
+      const a = await screenFor(page, -30, -10)
+      const b = await screenFor(page, 20, 15)
+      for (const p of [a, b, b]) {
+        await sendPointer(page, [
+          { phase: 'move', kind: 'mouse', id: 20, ...p },
+          { phase: 'down', kind: 'mouse', id: 20, ...p, button: 0 },
+          { phase: 'up', kind: 'mouse', id: 20, ...p, button: 0 },
+        ])
+      }
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 1)
+      await bar.getByRole('button', { name: 'Select', exact: true }).click()
+      const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
+      await sendPointer(page, [
+        { phase: 'move', kind: 'mouse', id: 20, ...m },
+        { phase: 'down', kind: 'mouse', id: 20, ...m, button: 0 },
+        { phase: 'up', kind: 'mouse', id: 20, ...m, button: 0 },
+      ])
+      await bar.getByRole('button', { name: 'Mirror', exact: true }).click()
+      await page.getByTestId('copy-hint').waitFor()
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

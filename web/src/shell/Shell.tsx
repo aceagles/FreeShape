@@ -33,7 +33,8 @@ import { SketchBar } from '../sketch/SketchBar'
 import { SketchChip } from '../sketch/SketchChip'
 import { DimensionDock, DimensionHint } from '../sketch/DimensionPad'
 import { DimensionTool } from '../sketch/dimension'
-import { EditDock, EditHint } from '../sketch/EditPad'
+import { CopyHint, EditDock, EditHint } from '../sketch/EditPad'
+import { CopyTools } from '../sketch/tools/copy'
 import { EditTools } from '../sketch/tools/edit'
 import { constructionPressed, SketchStore } from '../sketch/store'
 import { ConstraintHint, ConstraintNote } from '../sketch/ConstraintNote'
@@ -209,6 +210,12 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     edit.attach()
     return () => edit.detach()
   }, [edit])
+  // Mirror (I14.2), and the patterns after it: the copy tools collect picks, preview and send in one place
+  const [copy] = useState(() => new CopyTools({ sketch: sketchStore, transport: store }))
+  useEffect(() => {
+    copy.attach()
+    return () => copy.detach()
+  }, [copy])
   const dimensionOn = useSyncExternalStore(dimension.subscribe, dimension.getState).active
   const [modal, setModal] = useState<Modal | null>(null)
   const [saving, setSaving] = useState(false)
@@ -798,6 +805,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
               {sketchHere && <ConstraintHint store={constraints} sketch={sketchStore} />}
               {sketchHere && <DimensionHint tool={dimension} />}
               {sketchHere && <EditHint tool={edit} />}
+              {sketchHere && <CopyHint tool={copy} />}
             </div>
           </div>
         </div>

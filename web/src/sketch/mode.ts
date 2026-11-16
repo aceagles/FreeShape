@@ -20,6 +20,7 @@ import type { DrawStats } from './draw'
 import type { Uv } from './wire'
 import { QuickMenu } from './quickmenu'
 import { sketchToolState } from './strip'
+import { COPY_TOOLS } from './tools/copy'
 import { EDIT_TOOLS } from './tools/trim'
 import { DrawTools } from './tools/drawing'
 import type { DrawReport } from './tools/drawing'
@@ -275,7 +276,7 @@ export class SketchMode {
   /** Select is the tool: no drawing tool and no Dimension is on, so an item can be dragged. */
   private get selecting(): boolean {
     const tool = this.store.getState().tool
-    return !this.draw.active && tool !== 'dimension' && !EDIT_TOOLS.has(tool)
+    return !this.draw.active && tool !== 'dimension' && !EDIT_TOOLS.has(tool) && !COPY_TOOLS.has(tool)
   }
 
   /** The Drag handles of the selected items now. */
@@ -394,10 +395,11 @@ export class SketchMode {
   }
 
   /** The screen path of the tool's preview, for the layer. */
-  private previewPath(p: SketchPreview | null): { kind: 'trim' | 'edge'; pts: { x: number; y: number }[] } | null {
+  private previewPath(p: SketchPreview | null): { kind: 'trim' | 'edge'; pts: { x: number; y: number }[] } | { kind: 'copies'; lines: { x: number; y: number }[][] } | null {
     const f = this.store.getState().view?.frame
     if (!p || !f) return null
     const { view } = this.host
+    if (p.kind === 'copies') return { kind: 'copies', lines: p.outlines.map((o) => o.map((uv) => uvToView(view, f, uv))) }
     return { kind: p.kind, pts: (p.kind === 'trim' ? [p.from, p.to] : p.points).map((uv) => uvToView(view, f, uv)) }
   }
 

@@ -22,6 +22,11 @@ export interface AssemblyEdits {
   setHidden(instance: string, hidden: boolean): void
   /** The fixed toggle of an instance (set_fixed). */
   setFixed(instance: string, fixed: boolean): void
+  /** Undo and redo of the Assembly (the engine's undo and redo ops; the outputs do not say whether there is a step to take). */
+  undo(): void
+  redo(): void
+  /** The fixed toggle of several instances: one set_fixed each, one after the other; stops at the first that fails. */
+  setFixedAll(instances: readonly string[], fixed: boolean): Promise<void>
   /** Delete one instance and the mates on it (delete_instances); resolves false when it failed. */
   deleteInstance(instance: string): Promise<boolean>
   /** A drag by a Drag handle: move_begin, move_to (the latest only while one is in flight) and move_end. */
@@ -228,6 +233,13 @@ export function useAssembly({ store, tab, tabKind, readOnly, documentName, onErr
       disabled,
       setHidden: (instance, hidden) => void act(hidden ? 'Could not hide the instance' : 'Could not show the instance', { op: 'set_hidden', instance, value: hidden }),
       setFixed: (instance, fixed) => void act(fixed ? 'Could not fix the instance' : 'Could not free the instance', { op: 'set_fixed', instance, value: fixed }),
+      undo: () => void act('Could not undo', { op: 'undo' }),
+      redo: () => void act('Could not redo', { op: 'redo' }),
+      setFixedAll: async (instances, fixed) => {
+        for (const instance of instances) {
+          if (!(await act(fixed ? 'Could not fix the instance' : 'Could not free the instance', { op: 'set_fixed', instance, value: fixed }))) return
+        }
+      },
       deleteInstance: (instance) => act('Could not delete the instance', { op: 'delete_instances', ids: [instance] }),
     }),
     [busy, disabled, act, drag],

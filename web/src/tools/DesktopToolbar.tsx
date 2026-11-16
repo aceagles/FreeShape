@@ -15,6 +15,12 @@ export interface ToolbarCommand {
   enabled?: boolean
   /** A toggle that is on. */
   pressed?: boolean
+  /** The button's name where the shell has a better one than the layout's (a type's label from the server). */
+  label?: string
+  /** The tooltip's text before the key, where the shell has one (a type's help from the server). */
+  tip?: string
+  /** Why the button is off, as its tooltip. */
+  note?: string
 }
 
 export interface DesktopToolbarProps {
@@ -27,8 +33,8 @@ export interface DesktopToolbarProps {
   busy?: boolean
   /** A feature tool starts: the same call as a tablet strip button's. */
   onStart: (id: string) => void
-  /** Which row this is, for `data-strip` (default the feature row). */
-  strip?: 'feature' | 'sketch'
+  /** Which row this is, for `data-strip` (default the feature row): 'sketch', 'assembly'. */
+  strip?: string
 }
 
 /**
@@ -46,6 +52,7 @@ export function DesktopToolbar({ layout, stateOf, commands, busy, onStart, strip
       const cmd = commands[id]
       const has = cmd !== undefined
       const on = has && cmd.enabled !== false
+      const tipped = has ? desktopTip({ ...e, tip: cmd.tip ?? e.tip }) : tip
       return (
         <button
           key={id}
@@ -53,9 +60,9 @@ export function DesktopToolbar({ layout, stateOf, commands, busy, onStart, strip
           className={e.text !== undefined ? `tb-button tb-text${e.accent ? ' tb-accent' : ''}` : 'tb-button'}
           data-tool={id}
           data-state={has ? (on ? 'ok' : 'off') : 'desktop'}
-          aria-label={e.tool.label}
+          aria-label={cmd?.label ?? e.tool.label}
           aria-pressed={has && cmd.pressed !== undefined ? cmd.pressed : undefined}
-          title={has ? tip : DESKTOP_ONLY_NOTE}
+          title={has ? (on ? tipped : (cmd.note ?? tipped)) : DESKTOP_ONLY_NOTE}
           disabled={!on}
           onClick={() => cmd?.run()}
         >

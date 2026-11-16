@@ -48,6 +48,7 @@ Routes (an exact table; no part of a request is ever joined to a file path):
     POST /documents/<id>/tabs/<tab>/export  body: {"root", "format", ...}; saves the same export into an export root
                                 (I11.13; see "Export roots" below); reply 201 {"root", "name", "bytes", "replaced",
                                 "skipped"}; 404 unknown root, 409 name taken, 413, 507
+    GET  /documents/<id>/tabs/<tab>/assembly/types   mate and relation types of an Assembly tab (I9.5; see "Assembly types")
     POST /documents/<id>/tabs/<tab>/features/<fid>/dialog        open a feature dialog (I5.3; see "Dialogs" below)
     POST /documents/<id>/tabs/<tab>/features/dialog              open a dialog for a NEW feature (I6.1; "Dialogs")
     GET  /documents/<id>/tabs/<tab>/features/types[?picks=<JSON>]  feature types, label, standard, can_start (I6.1)
@@ -75,6 +76,13 @@ Studio only; absent is every part), and for an STL `preset` (Coarse, Medium, Fin
 Studio tab, a format that is not step or stl, an unknown or repeated parameter, an unknown part id and an option out of
 range are a 400. A read-only Document exports too (nothing in it changes). The making of an export is one method,
 `_Server._make_export`, which a route that saves the bytes elsewhere calls as well.
+
+Assembly types (I9.5). GET .../tabs/<tab>/assembly/types answers what the Assembly toolbar draws, read from
+freeshape/assembly.py: 200 {"document", "tab", "mates": [{"id", "label", "help", "freedoms": [name, ...]}],
+"relations": [{"id", "label", "help"}]}. The mates are MATE_TYPES in its order (`freedoms` is MATE_VALUE_DOFS: the
+names of the Mate values the type has, translations tx, ty, tz in mm and rotations rz in degrees, [] for fastened
+and ball); the relations are RELATION_TYPES in its order. A query: no X-Client-Id, allowed read-only. A tab that is
+not an Assembly is a 400 naming its kind.
 
 Refs (I4.3, freeshape/picking.py). A pick in the Browser client's viewport is turned into the stored reference a
 feature's params hold (an Element name plus a geometric signature), by the same code the desktop uses. It is a
@@ -461,7 +469,7 @@ _DOC_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _TAB_PATH = re.compile(r"^/tabs/([A-Za-z0-9_-]{1,64})/(outputs|mesh\.json|edit)$")
 _DOC_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})"
                        r"(?:/(open|close|take-over|save|tabs|recover|discard-autosave)"
-                       r"|/tabs/([A-Za-z0-9_-]{1,64})(?:/(outputs|mesh\.json|edit|rename|refs))?)$")
+                       r"|/tabs/([A-Za-z0-9_-]{1,64})(?:/(outputs|mesh\.json|edit|rename|refs|assembly/types))?)$")
 _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POST", "tabs": "GET", "recover": "POST",
               "discard-autosave": "POST"}
 _DIALOG_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})"
@@ -474,7 +482,8 @@ MAX_DIALOGS = 8                 # open dialogs one client may hold (feature and 
 MATE_UPDATE_KEYS = ("type", "name", "a", "b", "flip", "offset", "angle", "turn90")
 MAX_DIALOGS_TOTAL = 256         # and all clients together
 _FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
-_EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST", "rename": "POST", "refs": "POST"}
+_EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST", "rename": "POST", "refs": "POST",
+                 "assembly/types": "GET"}
 MAX_TABS = 200                  # tabs one Document may hold through POST /documents/<id>/tabs
 _CLIENT_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
                "manifest-src 'self'; img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; "
@@ -1500,6 +1509,8 @@ class _Server:
             return await self._export(d, tab, request)
         if route == "export.save":
             return await self._export_save(d, tab, body)
+        if route == "assembly/types":
+            return await self._assembly_types(d, tab)
         if route.startswith("dialog."):
             return await self._dialog(d, tab, route[7:], body, request)
         if route.startswith("mates."):
@@ -2317,6 +2328,18 @@ class _Server:
         types = [{"type": t, "label": FEATURE_LABELS.get(t) or t.replace("_", " ").capitalize(), "standard": t not in custom,
                   "can_start": bool(can.get(t))} for t in DSC.startable_feature_types()]
         return self._json(200, {"document": d.id, "tab": tab, "revision": revision, "types": types})
+
+    async def _assembly_types(self, d, tab):
+        """GET .../tabs/<tab>/assembly/types: the mate and relation types of freeshape/assembly.py (see "Assembly
+        types" in the module docstring). 400 for a tab that is not an Assembly."""
+        kind = await self._in_session(d, lambda: next((t["kind"] for t in d.session.tabs() if t["id"] == tab), None))
+        if kind != "assembly":
+            return self._fail(400, f"tab {tab!r} is a {kind}, not an assembly")
+        from . import assembly as ASM
+        mates = [{"id": t, "label": label, "help": tip, "freedoms": list(ASM.MATE_VALUE_DOFS[t])}
+                 for t, (label, tip) in ASM.MATE_TYPES.items()]
+        relations = [{"id": t, "label": spec["label"], "help": spec["help"]} for t, spec in ASM.RELATION_TYPES.items()]
+        return self._json(200, {"document": d.id, "tab": tab, "mates": mates, "relations": relations})
 
     async def _rename_tab(self, d, tab, body):
         """POST /documents/<id>/tabs/<tab>/rename {"name": ...}: 200 {"tab": <tab>, "tabs": [...]}."""

@@ -12,13 +12,14 @@ import { AssemblyPanel } from '../assembly/AssemblyPanel'
 import { AssemblyViewport } from '../assembly/AssemblyViewport'
 import { instanceItem, selectedInstance } from '../assembly/select'
 import { useAssembly } from '../assembly/useAssembly'
+import { assemblyCommands, assemblyStrip, assemblyToolState, instancesOf, isAuthoringTool, S10_NOTE, useAssemblyTypes } from '../assembly/strip'
 import { FeaturePanel } from '../features/FeaturePanel'
 import { useFeatureEdits } from '../features/useFeatureEdits'
 import { useStudioOutputs } from '../features/studioOutputs'
 import { SelectionChip } from '../selection/SelectionChip'
 import { partItem, SelectionStore } from '../selection/store'
 import { useSelection } from '../selection/useSelection'
-import { DESKTOP_TOOLBAR, FEATURE_STRIP } from '../tools/defs'
+import { ASSEMBLY_TOOLBAR, DESKTOP_TOOLBAR, FEATURE_STRIP } from '../tools/defs'
 import { picksOf } from '../tools/picks'
 import type { Pick } from '../tools/picks'
 import { DesktopToolbar } from '../tools/DesktopToolbar'
@@ -381,6 +382,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const [visibility] = useState(() => new ViewVisibility())
   const tabView = visibility.tab(`${doc?.id ?? ''}:${currentTab ?? ''}`)
   const viewState = useSyncExternalStore(tabView.subscribe, tabView.getState)
+  const assemblyTypes = useAssemblyTypes(documentId, tabKind === 'assembly' ? currentTab : null)
 
   const add = async (kind: 'studio' | 'assembly') => {
     try {
@@ -501,6 +503,17 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     send: (edit) => (currentTab === null ? Promise.reject(new Error('no tab')) : store.edit(currentTab, edit)),
     fail,
   })
+  const assemblyTools = assemblyCommands({
+    types: assemblyTypes,
+    instances: assembly.outputs?.instances ?? [],
+    selected: instancesOf(picked.items),
+    readOnly,
+    undo: assembly.edits.undo,
+    redo: assembly.edits.redo,
+    setFixedAll: assembly.edits.setFixedAll,
+    view: (c) => void runViewCommand(c),
+    say: failText,
+  })
   const commands: Commands = {
     'view.planes': () => void visibilityKeys['view.planes']!(),
     'view.showAll': () => void visibilityKeys['view.showAll']!(),
@@ -614,6 +627,19 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
               />
             }
           />
+        ) : tabKind === 'assembly' ? (
+          desktop ? (
+            <DesktopToolbar layout={ASSEMBLY_TOOLBAR} strip="assembly" stateOf={() => 'off'} commands={assemblyTools} onStart={() => {}} />
+          ) : (
+            <ToolStrip
+              strip="assembly"
+              defs={assemblyStrip(assemblyTypes)}
+              stateOf={(id) => assemblyToolState(id, assemblyTools)}
+              note={(id) => (isAuthoringTool(id) ? S10_NOTE : undefined)}
+              width={width}
+              onStart={(id) => assemblyTools[id]?.run()}
+            />
+          )
         ) : desktop && tabKind === 'studio' ? (
           <DesktopToolbar
             layout={DESKTOP_TOOLBAR}

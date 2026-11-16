@@ -1802,6 +1802,43 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I9.5: the Assembly toolbar in Tablet mode, an instance selected (Fix and Move are on, Insert and the mates wait for S10)
+    name: 'assembly-toolbar',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-instance="I2"]').click()
+      await page.getByTestId('gizmo').waitFor()
+      await settledAssembly(page)
+    },
+  },
+  {
+    // I9.5: the Tablet Assembly strip's Mate group open: the eight types, each with the S10 note
+    name: 'assembly-toolbar-mate-group',
+    mock: 'flyout',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-group="mate"]').click({ position: { x: 20, y: 20 } })
+      await page.getByRole('menu', { name: 'Mate' }).waitFor()
+      await settledAssembly(page)
+    },
+  },
+  {
+    // I9.5: the desktop's assembly toolbar in Desktop mode, an instance selected, beside the desktop program's Assembly
+    name: 'desktop-assembly-toolbar',
+    mode: 'desktop',
+    desktop: 'desktop-assembly',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-instance="I2"]').click()
+      await page.getByTestId('gizmo').waitFor()
+      await settledAssembly(page)
+    },
+  },
 ]
 
 /** I9.9: drag a selection box with the mouse from above left of the bracket to below its middle; `release` lets the button go. */

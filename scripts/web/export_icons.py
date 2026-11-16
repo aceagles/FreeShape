@@ -29,11 +29,17 @@ TOOLS = (
     # the Desktop-mode feature toolbar's other buttons (web/src/tools/defs.ts DESKTOP_TOOLBAR)
     "undo", "redo", "variable", "variable_studio_ref", "configs", "derived", "history", "plugin",
     "flat", "flat_dxf", "nest", "mate_connector", "import", "export", "section", "interference", "fit", "iso",
+    # the Assembly toolbar (web/src/assembly/strip.ts)
+    "insert", "m_fastened", "m_revolute", "m_slider", "m_cylindrical", "m_planar", "m_pin_slot", "m_parallel", "m_ball",
+    "r_linear", "r_gear", "r_rack_pinion", "r_screw", "group", "bom", "explode",
 )
+# Files named differently from the desktop icon they draw: "fix" would hide the sketch strip's Fix (Constrain) glyph,
+# which the client draws from the stroke path of that name (src/tools/inlinePaths.ts).
+ALIASES = {"asm_fix": "fix"}
 SIZE = 32
 
 
-def render(name: str) -> bytes:
+def render(name: str, draws: str | None = None) -> bytes:
     from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRectF, QSize
     from PySide6.QtGui import QPainter
     from PySide6.QtSvg import QSvgGenerator
@@ -51,7 +57,7 @@ def render(name: str) -> bytes:
     gen.setDescription("")
     p = QPainter(gen)
     p.setRenderHint(QPainter.Antialiasing)
-    icons.draw(name, p)
+    icons.draw(draws or name, p)
     p.end()
     buf.close()
     return bytes(data)
@@ -65,8 +71,8 @@ def main(argv: list[str]) -> int:
     app = QGuiApplication.instance() or QGuiApplication([])  # noqa: F841 (fonts for the few icons with text)
     OUT.mkdir(parents=True, exist_ok=True)
     stale = []
-    for name in TOOLS:
-        svg = render(name)
+    for name, draws in [(n, None) for n in TOOLS] + list(ALIASES.items()):
+        svg = render(name, draws)
         path = OUT / f"{name}.svg"
         if check:
             if not path.exists() or path.read_bytes() != svg:
@@ -76,7 +82,7 @@ def main(argv: list[str]) -> int:
     if check:
         print("stale: " + ", ".join(stale) if stale else "icons up to date")
         return 1 if stale else 0
-    print(f"wrote {len(TOOLS)} icons to {OUT.relative_to(ROOT)}")
+    print(f"wrote {len(TOOLS) + len(ALIASES)} icons to {OUT.relative_to(ROOT)}")
     return 0
 
 

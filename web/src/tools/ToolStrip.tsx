@@ -16,9 +16,11 @@ export const STRIP_FULL_TEXT = 'The strip is full. Unpin a tool to pin another.'
 
 /** More rows than this and a group's list is two columns, as the layout's Constrain list is. */
 const ONE_COLUMN_ROWS = 7
+const NO_PINS: readonly string[] = []
 
 export interface ToolStripProps {
-  strip: StripKind
+  /** 'assembly' is the Assembly tab's strip (card I9.5): no pins. */
+  strip: StripKind | 'assembly'
   defs: readonly StripDef[]
   /** What a tool can do now (see useToolTypes). */
   stateOf: (id: string) => ToolState
@@ -26,6 +28,8 @@ export interface ToolStripProps {
   disabled?: boolean
   /** The window's width: it sets how many pins fit. */
   width: number
+  /** Why a tool that is off is off, where that is not the desktop's note: the tooltip of its button and the note under its name in a group's list. */
+  note?: (id: string) => string | undefined
   /** The tool that is on (a sketch strip's drawing tool). */
   active?: string | null
   /** Whether a toggle tool (the sketch strip's Construct) is on: true or false for a toggle, undefined for any other tool. A toggle that is on is lit and aria-pressed. */
@@ -51,8 +55,10 @@ interface Open {
  * else closes it. Each row has a pin button: a pinned tool is also a button on the strip after the groups, up to a cap
  * that keeps the strip from overflowing. One component for the feature strip and, later, the sketch strip.
  */
-export function ToolStrip({ strip, defs, stateOf, disabled, width, active, toggled, marked, onStart, pins = userPins(), trailing }: ToolStripProps) {
-  const pinned = useSyncExternalStore(pins.subscribe, pins.getSnapshot)[strip]
+export function ToolStrip({ strip, defs, stateOf, note, disabled, width, active, toggled, marked, onStart, pins = userPins(), trailing }: ToolStripProps) {
+  const pinnable = strip !== 'assembly'
+  const stored = useSyncExternalStore(pins.subscribe, pins.getSnapshot)
+  const pinned = strip === 'assembly' ? NO_PINS : stored[strip]
   const [openRaw, setOpen] = useState<Open | null>(null)
   // a strip that is switched off (a dialog opened) shows no list
   const open = disabled ? null : openRaw
@@ -60,7 +66,7 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, toggl
   // whether a press that opened a list is still held (read by handlers only, so it is not state)
   const held = useRef(false)
 
-  const cap = pinCap(strip, width)
+  const cap = strip === 'assembly' ? 0 : pinCap(strip, width)
   // the pins that have a button, in the order of the groups; a stored pin the strip no longer has is not counted
   const shown = groupTools(defs).filter((t) => pinned.includes(t.id))
   const full = shown.length >= cap
@@ -93,7 +99,7 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, toggl
     if (!disabled && stateOf(tool.id) === 'ok') onStart(tool.id)
   }
   const togglePin = (tool: ToolDef) => {
-    if (full && !pinned.includes(tool.id)) return
+    if (strip === 'assembly' || (full && !pinned.includes(tool.id))) return
     pins.toggle(strip, tool.id)
   }
   const release = () => {
@@ -114,7 +120,7 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, toggl
         pinned={extra.pinned && pinnedButtons[0]?.id === tool.id}
         data-tool={tool.id}
         data-state={state}
-        title={state === 'desktop' ? `${tool.label}: ${DESKTOP_ONLY_NOTE.toLowerCase()}` : undefined}
+        title={state === 'desktop' ? `${tool.label}: ${DESKTOP_ONLY_NOTE.toLowerCase()}` : note?.(tool.id)}
         disabled={state === 'off' || state === 'desktop'}
         aria-disabled={state === 'dimmed' ? true : undefined}
         onClick={() => start(tool)}
@@ -124,7 +130,7 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, toggl
 
   const groupButton = (d: Extract<StripDef, { kind: 'group' }>) => {
     const isOpen = open?.key === d.key
-    const usable = !disabled && d.tools.some((t) => stateOf(t.id) !== 'off')
+    const usable = !disabled && d.tools.some((t) => stateOf(t.id) !== 'off' || note?.(t.id) !== undefined)
     return (
       <StripButton
         key={`group:${d.key}`}
@@ -166,7 +172,7 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, toggl
       data-group-part=""
       role="menu"
       aria-label={d.name}
-      style={{ left, gridTemplateColumns: `repeat(${d.tools.length > ONE_COLUMN_ROWS ? 2 : 1}, 216px)` }}
+      style={{ left, gridTemplateColumns: `repeat(${d.tools.length > ONE_COLUMN_ROWS ? 2 : 1}, ${d.tools.some((t) => note?.(t.id) !== undefined) ? 276 : 216}px)` }}
     >
       {d.tools.map((tool) => {
         const state = stateOf(tool.id)
@@ -203,9 +209,10 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, toggl
               <ToolIcon name={tool.icon} />
               <span className="group-text">
                 <span className="group-name">{tool.label}</span>
-                {state === 'desktop' && <span className="group-note">{DESKTOP_ONLY_NOTE}</span>}
+                {state === 'desktop' ? <span className="group-note">{DESKTOP_ONLY_NOTE}</span> : note?.(tool.id) !== undefined && <span className="group-note">{note(tool.id)}</span>}
               </span>
             </button>
+            {pinnable && (
             <button
               type="button"
               className="pin-button"
@@ -223,10 +230,11 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, toggl
             >
               <Icon d={paths.pin} px={22} sw={1.8} fill={on ? 'currentColor' : 'none'} />
             </button>
+            )}
           </div>
         )
       })}
-      {full && (
+      {pinnable && full && (
         <div className="group-full" data-testid="strip-full">
           {STRIP_FULL_TEXT}
         </div>

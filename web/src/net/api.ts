@@ -154,3 +154,25 @@ export const postEdit = (doc: string, tab: string, edit: Record<string, unknown>
 export async function fetchOutputsBytes(doc: string, tab: string, signal?: AbortSignal): Promise<ArrayBuffer> {
   return (await request('GET', `${tabPath(doc, tab)}/outputs`, { signal })).arrayBuffer()
 }
+
+/** One mate type of GET .../assembly/types: its id, label and help (freeshape/assembly.py MATE_TYPES) and the names of its Mate values (MATE_VALUE_DOFS). */
+export interface MateTypeInfo {
+  id: string
+  label: string
+  help: string
+  freedoms: string[]
+}
+/** One relation type of GET .../assembly/types (RELATION_TYPES). */
+export interface RelationTypeInfo {
+  id: string
+  label: string
+  help: string
+}
+export interface AssemblyTypesReply {
+  document: string
+  tab: string
+  mates: MateTypeInfo[]
+  relations: RelationTypeInfo[]
+}
+/** The mate and relation types of an Assembly tab, in the order the toolbar shows them. A query: no client id. */
+export const fetchAssemblyTypes = (doc: string, tab: string, signal?: AbortSignal) => json<AssemblyTypesReply>('GET', `${tabPath(doc, tab)}/assembly/types`, { signal })

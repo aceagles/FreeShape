@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="11.2889mm" height="11.2889mm"
+ viewBox="0 0 32 32"
+ xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.2" baseProfile="tiny">
+<title>asm_fix</title>
+<defs>
+</defs>
+<g fill="none" stroke="black" stroke-width="1" fill-rule="evenodd" stroke-linecap="square" stroke-linejoin="bevel" >
+
+<g fill="none" stroke="#3b4250" stroke-opacity="1" stroke-width="1" stroke-linecap="square" stroke-linejoin="bevel" transform="matrix(1,0,0,1,0,0)"
+font-family="Sans Serif" font-size="17" font-weight="700" font-style="normal" 
+>
+<text fill="#3b4250" fill-opacity="1" stroke="none" xml:space="preserve" x="8.375" y="21.875" font-family="Sans Serif" font-size="17" font-weight="700" font-style="normal" 
+ >⚓</text>
+</g>
+</g>
+</svg>

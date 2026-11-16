@@ -193,3 +193,48 @@ export const desktopToolIds = (layout: DesktopLayout): string[] => [...layout.it
 
 /** What a desktop button's tooltip says: `<label> (<key>)` where the desktop has a key. */
 export const desktopTip = (e: Exclude<DesktopEntry, { kind: 'separator' }>): string => `${e.tip ?? e.tool.label}${e.key !== undefined ? ` (${e.key})` : ''}`
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The Assembly toolbar (card I9.5): ids and places only. The labels and help of the mate and relation types come from the
+// server (GET .../assembly/types; web/src/assembly/strip.ts), so the client holds no copy of them.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** The mate types in the order of freeshape/assembly.py MATE_TYPES; a tool id is `m_<id>` (the desktop's icon names). */
+export const MATE_IDS: readonly string[] = ['fastened', 'revolute', 'slider', 'cylindrical', 'planar', 'pin_slot', 'parallel', 'ball']
+/** The relation types in the order of RELATION_TYPES; a tool id is `r_<id>`. */
+export const RELATION_IDS: readonly string[] = ['linear', 'gear', 'rack_pinion', 'screw']
+/** The desktop's shortcuts of the mate buttons (`_build_assembly_toolbar`). */
+const MATE_KEYS: Readonly<Record<string, string>> = { fastened: 'Shift+F', revolute: 'Shift+R', slider: 'Shift+L' }
+
+/** A mate or relation type's name made from its id until the server's label is here ("pin_slot" -> "Pin slot"). */
+export const typeName = (id: string): string => id[0]!.toUpperCase() + id.slice(1).replace(/_/g, ' ')
+
+/**
+ * The desktop's assembly toolbar (freeshape/ui/mainwindow.py `_build_assembly_toolbar`), in its order and with its
+ * separators: Undo Redo | Insert | the mates | the relations | Move Fix Group | Interference, Linear pattern, Circular
+ * pattern, BOM, Explode, Export; at the right end Section, Fit, Iso. Every button is a command: an Assembly has no feature types.
+ */
+export const ASSEMBLY_TOOLBAR: DesktopLayout = {
+  items: [
+    command(t('undo', 'Undo'), 'Ctrl+Z'),
+    command(t('redo', 'Redo'), 'Ctrl+Y'),
+    SEP,
+    command(t('insert', 'Insert'), 'I', 'Insert — add parts from your Part Studios or a file'),
+    SEP,
+    ...MATE_IDS.map((id) => command(t(`m_${id}`, `${typeName(id)} mate`), MATE_KEYS[id])),
+    SEP,
+    ...RELATION_IDS.map((id) => command(t(`r_${id}`, `${typeName(id)} relation`))),
+    SEP,
+    command(t('move', 'Move'), undefined, 'Move / rotate the selected parts by exact amounts'),
+    command(t('asm_fix', 'Fix', 'asm_fix'), undefined, 'Fix / unfix the selected parts'),
+    command(t('group', 'Group'), undefined, 'Group the selected parts so they move as one body'),
+    SEP,
+    command(t('interference', 'Interference detection')),
+    command(t('linear_pattern', 'Linear pattern'), undefined, 'Linear pattern of the selected parts'),
+    command(t('circular_pattern', 'Circular pattern'), undefined, 'Circular pattern of the selected parts'),
+    command(t('bom', 'Bill of materials')),
+    command(t('explode', 'Exploded view')),
+    command(t('export', 'Export')),
+  ],
+  trailing: [command(t('section', 'Section view'), 'Shift+X'), command(t('fit', 'Zoom to fit'), 'F'), command(t('iso', 'Isometric'), 'Shift+7')],
+}

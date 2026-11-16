@@ -55,19 +55,30 @@ def stl_options(preset=None, defl=None, angle=None, ascii=None) -> dict:
 
 
 MAX_EXPORT_NAME = 100              # characters of a file name's stem
+MAX_NAME_BYTES = 255               # bytes of UTF-8 in a whole file name (the limit of most file systems)
 _NAME_SWAP = '<>:"|?*'             # characters a file name may not hold on Windows
 
 
-def export_file_name(name, fmt) -> str:
-    """The name a download of `name` is saved under, never a path: what follows the last `/` or `\\`, control
-    characters dropped, `<>:"|?*` swapped for `_`, leading dots dropped, an ending `.stl`, `.step` or `.stp` (any
-    case) taken off, at most MAX_EXPORT_NAME characters, then `.stl` or `.step`. "export" when nothing is left."""
+def display_name(name) -> str:
+    """`name` as shown, never as a path: what follows the last `/` or `\\`, characters that are not printable
+    dropped, stripped. The one rule behind `step_import.clean_file_name` and `export_file_name`."""
     text = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
-    text = "".join("_" if c in _NAME_SWAP else c for c in text if c.isprintable()).strip()
+    return "".join(c for c in text if c.isprintable()).strip()
+
+
+def export_file_name(name, fmt) -> str:
+    """The name an export of `name` is saved under (a download, or a file in an export root: the one rule, never a
+    path): `display_name`, `<>:"|?*` swapped for `_`, leading dots dropped, an ending `.stl`, `.step` or `.stp` (any
+    case) taken off, at most MAX_EXPORT_NAME characters and, with the extension, MAX_NAME_BYTES bytes of UTF-8, then
+    `.stl` or `.step`. "export" when nothing is left."""
+    text = "".join("_" if c in _NAME_SWAP else c for c in display_name(name))
     low = text.lower()
     for ext in (".stl", ".step", ".stp"):
         if low.endswith(ext):
             text = text[:-len(ext)]
             break
-    text = text.strip().lstrip(".").strip()
-    return (text[:MAX_EXPORT_NAME] or "export") + (".stl" if fmt == "stl" else ".step")
+    ext = ".stl" if fmt == "stl" else ".step"
+    stem = text.strip().lstrip(".").strip()[:MAX_EXPORT_NAME]
+    while stem and len((stem + ext).encode("utf-8")) > MAX_NAME_BYTES:
+        stem = stem[:-1]
+    return (stem or "export") + ext

@@ -157,12 +157,12 @@ def _import(s, doc_id, body, tab="T1", ctype="application/json", **query):
 
 def test_files_lists_the_configured_root(srv):
     s = srv()
-    assert s.get("/files") == {"roots": [{"name": "lib", "files": 4, "max_upload": SV.MAX_UPLOAD}]}
+    assert s.get("/files") == {"roots": [{"name": "lib", "files": 4, "max_upload": SV.MAX_UPLOAD}], "export_roots": []}
 
 
 def test_no_roots_is_an_empty_list_and_any_root_name_is_404(srv):
     s = srv(roots=[])
-    assert s.get("/files") == {"roots": []}
+    assert s.get("/files") == {"roots": [], "export_roots": []}
     s.get("/files/lib", 404)
 
 

@@ -9,6 +9,7 @@ import base64
 import os
 
 from .document import PartStudioDoc
+from .export_options import display_name
 
 MAX_FILE_NAME = 100             # longest file name kept for display
 STEP_MAGIC = b"ISO-10303-21;"
@@ -34,9 +35,7 @@ def clean_file_name(name, kind="step") -> str:
     MAX_FILE_NAME characters. A name with nothing left is "import.step" / "import.brep". The feature reads a file
     as BREP by its extension (`features.is_brep_name`), so the name ends in an extension of `kind`; where it does
     not, the right one is appended (`a.brep` holding STEP is `a.brep.step`)."""
-    text = str(name or "")
-    text = text.replace("\\", "/").rsplit("/", 1)[-1]
-    text = "".join(c for c in text if c.isprintable()).strip()
+    text = display_name(name)
     ext = ".brep" if kind == "brep" else ".step"
     if not text or set(text) <= {"."}:
         return "import" + ext

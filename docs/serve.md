@@ -65,6 +65,34 @@ The browser sends the public name as `Host` and as `Origin`. serve refuses both 
 This list is the defence against cross-site and DNS-rebinding requests on a port that can edit a Document. Name only
 origins you control, and put access control (for example the tunnel's own login) in front of them, because serve has none.
 
+## Export roots
+
+`--export-root NAME=PATH` (repeatable) names a folder the client can save an export into, as well as download it, so a
+program on the same machine (Bambu Studio) can read it without a round trip. File roots (`--file-root`) stay read-only;
+an export root is separate. NAME is 1 to 32 of a-z, 0-9 and `-`, and differs from every file root's name.
+
+- PATH must be an existing folder this user can write. serve refuses to start, with a message, when a root is equal to,
+  inside or around the Documents root, a Document (served or in the registry), the `--data-dir`, a file root or another
+  export root.
+- `GET /files` lists them as `export_roots: [{"name", "max_bytes"}]`. They are not browsed: `GET /files/<name>` is 404.
+- `POST /documents/<id>/tabs/<tab>/export` with `{"root", "format", "name"?, "parts"?, "preset"?, "defl"?, "angle"?,
+  "ascii"?, "replace"?}` makes the export as `GET .../export` does and saves it as one file, directly in the root (no
+  sub-folders). The name is the tab's name unless `name` is given, made safe by the same rule as a download's name,
+  with the extension of the format. A name that exists is a 409 `exists` unless `replace` is true; a symlink, a folder
+  or a FIFO in the way is a 409 either way. Reply 201 `{"root", "name", "bytes", "replaced", "skipped"}`. No reply holds
+  a server path. An export over 256 MiB is a 413; a full folder is a 507 with no partial file left.
+- The file is written under a temporary name in the same folder, then linked (or, with `replace`, renamed) into place
+  relative to a directory descriptor of the root. A root swapped for a symlink after start is refused. Where the file
+  system refuses hard links, serve creates the name with O_EXCL and copies instead; a reader can then see the file
+  while it is being copied.
+- The saved file has mode 0644, whatever the umask. In a setgid folder (the shared folder is `ncr:docker`, 2775) it gets
+  the folder's group, so a program running as the same user and group reads it. serve and that program must run as the
+  same user, or the folder must otherwise let both write.
+- At start a root's own `.freeshape-export-*.tmp` files older than an hour (left by a crash) are removed; other files
+  are never touched.
+
+In the preview: `--export-root shared=/config/Shared`, a folder that is mounted read-write there.
+
 ## Running in a container
 
 The tunnel's proxy runs on the host and connects to 127.0.0.1:<port> there. A container's loopback is its own, so

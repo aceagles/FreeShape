@@ -39,12 +39,15 @@ Routes (an exact table; no part of a request is ever joined to a file path):
                                 up to MAX_UPLOAD, this route only); one add_feature of an import feature (I11.1); reply
                                 {"document", "tab", "feature", "parts", "rebuilt", "tabs"}; 415 not STEP/BREP, 413, 423;
                                 or the body {"root", "entry"} (application/json): the entry of a file root (I11.2)
-    GET  /files                                the file roots: {"roots": [{"name", "files", "max_upload"}]} (I11.2; see
-                                "File roots" below)
+    GET  /files                                the file roots: {"roots": [{"name", "files", "max_upload"}],
+                                "export_roots": [{"name", "max_bytes"}]} (I11.2, I11.13; see "File roots" below)
     GET  /files/<root>[?dir=<folder>&q=<words>&offset=&limit=]  one folder of the root, or the search results
     POST /files/<root>/rescan                  rebuild the root's index; reply {"root", "files"}
     GET  /documents/<id>/tabs/<tab>/export?format=step|stl[&parts=<ids>&preset=&defl=&angle=&ascii=]  the tab as a
                                 STEP or STL download (I11.3; see "Export" below)
+    POST /documents/<id>/tabs/<tab>/export  body: {"root", "format", ...}; saves the same export into an export root
+                                (I11.13; see "Export roots" below); reply 201 {"root", "name", "bytes", "replaced",
+                                "skipped"}; 404 unknown root, 409 name taken, 413, 507
     POST /documents/<id>/tabs/<tab>/features/<fid>/dialog        open a feature dialog (I5.3; see "Dialogs" below)
     POST /documents/<id>/tabs/<tab>/features/dialog              open a dialog for a NEW feature (I6.1; "Dialogs")
     GET  /documents/<id>/tabs/<tab>/features/types[?picks=<JSON>]  feature types, label, standard, can_start (I6.1)
@@ -365,6 +368,24 @@ feature (an existing one with the session's params, a new one added at the rollb
 changed, and recover brings it back as an unsaved edit. It stays in every later autosave of that Document while it is
 open on this server.
 
+Export roots (I11.13). `--export-root NAME=PATH` (repeatable; NAME as a file root's, and different from every file root's)
+names a writable folder an export can be saved into, for a program on the same machine that reads it (Bambu Studio);
+see freeshape/export_roots.py. PATH must be an existing folder this user can write. Serve refuses to start when a root
+is equal to, inside or around the Documents root, a served or registered Document, the data folder, a file root or
+another export root, so a saved export can never replace a Document or a library file. An export root is not listed or
+browsed (GET /files/<export root> is 404) and a file root is never written to.
+  POST .../tabs/<tab>/export  body (application/json, at most MAX_BODY): {"root": an export root's name, "name": file
+                         name (optional; the tab's name), "format": "step" | "stl", "parts", "preset", "defl", "angle",
+                         "ascii" (as the GET route; "parts" a list of ids), "replace": true | false (default false)}.
+                         The export is made by `_make_export`, the GET route's own code, then saved as `<name>.step` or
+                         `.stl`, one path component made by `export_options.export_file_name`, written by
+                         `ExportRoot.write` off the event loop. 201 {"root", "name", "bytes", "replaced", "skipped": [names
+                         of surface bodies left out of an STL]}; 400 as the GET route, and for a body key that is not
+                         one of those; 404 for a root that is not an export root; 409 {"error": "exists", "name"} when the
+                         name is taken and "replace" is not set, 409 when it is a symlink, a folder or another thing that
+                         is not a regular file; 413 for an export over MAX_EXPORT_SAVE; 507 when the folder is full.
+                         No reply names a server path. A read-only Document can save an export.
+
 File roots (I11.2). `--file-root NAME=PATH` (repeatable; NAME is 1 to 32 of a-z 0-9 -; PATH an existing folder) names a
 read-only folder of STEP files; see freeshape/file_roots.py. Nothing writes into a root, a request value is never joined
 to a path (`dir` is looked up in the index's folders, files are reached by opaque entry ids) and symlinks are left out.
@@ -397,10 +418,12 @@ from pathlib import Path
 
 from . import autosave as AS
 from . import doc_lock
+from . import export_roots as ER
 from . import file_roots as FR
 
 BIND_HOST = "127.0.0.1"
 MAX_BODY = 1024 * 1024
+MAX_EXPORT_SAVE = 256 * 1024 * 1024     # most bytes an export saved into an export root may hold (I11.13)
 CONNECTION_TIMEOUT = 15.0       # seconds an idle keep-alive connection is kept open
 SESSION_THREADS = 8             # threads for session calls (they queue on the session lock, one runs at a time)
 BODY_DEADLINE = 30.0            # seconds for the whole body of one request
@@ -804,7 +827,7 @@ class _Server:
     def __init__(self, session=None, port=0, allow_origins=(), client_ttl=CLIENT_TTL, client_expired=None,
                  registry=None, root=None, folder=None, lock_program=None, data_dir=None,
                  autosave_interval=AUTOSAVE_INTERVAL, autosave_burst=AUTOSAVE_BURST,
-                 lock_timeout=doc_lock.DEFAULT_TIMEOUT, file_roots=()):
+                 lock_timeout=doc_lock.DEFAULT_TIMEOUT, file_roots=(), export_roots=()):
         from .session import SessionError
         self.session_error = SessionError
         self.file_roots = {}                                     # I11.2: name -> FileRoot, read-only, named at start
@@ -812,6 +835,8 @@ class _Server:
             if name in self.file_roots:
                 raise ValueError(f"file root {name!r} is named twice")
             self.file_roots[name] = FR.FileRoot(name, path)
+        self._check_export_roots(export_roots, file_roots, folder, root, data_dir, registry)
+        self.export_roots = {name: ER.ExportRoot(name, path) for name, path in export_roots}     # I11.13: writable
         self.registry = registry
         self.root = os.path.realpath(root) if root is not None else None
         self.lock_program = lock_program
@@ -1328,6 +1353,8 @@ class _Server:
                 route = "documents.list" if method == "GET" else "documents.create"
             if route == "tabs" and method == "POST":               # POST adds a tab, GET lists them
                 route, want = "tabs.add", "POST"
+            if route == "export" and method == "POST":             # I11.13: POST saves it into an export root
+                route, want = "export.save", "POST"
             if tab is not None and doc_id is None:                # old route: the tab must exist, as it always did
                 one = self._single
                 if tab not in one.tab_ids:
@@ -1449,6 +1476,8 @@ class _Server:
             return await self._import(d, tab, request)
         if route == "export":
             return await self._export(d, tab, request)
+        if route == "export.save":
+            return await self._export_save(d, tab, body)
         if route.startswith("dialog."):
             return await self._dialog(d, tab, route[7:], body, request)
         if route.startswith("mates."):
@@ -1897,7 +1926,8 @@ class _Server:
             for r in self.file_roots.values():
                 index = await self._off_loop(r.index)
                 roots.append({"name": r.name, "files": len(index.items), "max_upload": MAX_UPLOAD})
-            return self._json(200, {"roots": roots})
+            return self._json(200, {"roots": roots, "export_roots": [
+                {"name": r.name, "max_bytes": MAX_EXPORT_SAVE} for r in self.export_roots.values()]})
         root = self._file_root(_FILES_PATH.match(request.raw_path.split("?", 1)[0]).group(1))
         if root is None:
             return self._fail(404, "not found")
@@ -1974,6 +2004,51 @@ class _Server:
         return self._send(200, data, "model/stl" if name.endswith(".stl") else "model/step", [
             ("Content-Disposition", f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name, safe='')}"),
             ("X-FreeShape-Skipped", ", ".join(quote(n, safe=" ") for n in skipped))])
+
+    # ------------------------------------------------------------------ export roots (I11.13)
+    _SAVE_KEYS = ("root", "name", "replace") + _EXPORT_KEYS
+
+    @staticmethod
+    def _check_export_roots(export_roots, file_roots, folder, root, data_dir, registry):
+        """ER.OverlapError (a ValueError) for an export root that shares a name with a file root or another export
+        root, or overlaps a Document, the Documents root, the data folder or a file root."""
+        if not export_roots:
+            return
+        names = [n for n, _ in export_roots]
+        if len(set(names)) != len(names) or set(names) & {n for n, _ in file_roots}:
+            raise ER.OverlapError("an export root's name must differ from every other root's name")
+        protected = [("the Document folder", folder), ("the Documents root", root), ("the data folder", data_dir)]
+        protected += [(f"file root {n!r}", p) for n, p in file_roots]
+        if registry is not None:
+            protected += [("a Document in the registry", row["path"]) for row in registry.list_documents()]
+        ER.check_overlaps(export_roots, protected)
+
+    async def _export_save(self, d, tab, body):
+        """POST .../export (see "Export roots" in the module docstring): `_make_export`, then `ExportRoot.write` off
+        the event loop. The reply and every error name the root and the file name only."""
+        for k in body:
+            if k not in self._SAVE_KEYS:
+                return self._fail(400, f"body key {k!r}: not one of {', '.join(self._SAVE_KEYS)}")
+        name, replace, root_name = body.get("name"), body.get("replace", False), body.get("root")
+        if not isinstance(root_name, str):
+            return self._fail(400, 'the body must name an export root: {"root": name, ...}')
+        if (name is not None and not isinstance(name, str)) or not isinstance(replace, bool):
+            return self._fail(400, "name must be a string and replace true or false")
+        root = self.export_roots.get(root_name)
+        if root is None:
+            return self._fail(404, "not found")
+        data, made, skipped = await self._make_export(d, tab, {k: body.get(k) for k in self._EXPORT_KEYS})
+        fname = made if name is None else ER.clean_export_name(name, "stl" if made.endswith(".stl") else "step")
+        if len(data) > MAX_EXPORT_SAVE:
+            return self._fail(413, f"the export is over {MAX_EXPORT_SAVE} bytes")
+        try:
+            replaced = await self._off_loop(root.write, fname, data, replace)
+        except ER.ExportError as e:
+            if e.code == "exists":
+                return self._fail(409, "exists", name=fname, root=root.name)
+            return self._fail(e.status, str(e))
+        return self._json(201, {"root": root.name, "name": fname, "bytes": len(data), "replaced": replaced,
+                                "skipped": list(skipped)})
 
     # ------------------------------------------------------------------ feature dialogs (I5.3)
     def _dialog_client(self, request):
@@ -2775,9 +2850,11 @@ class _Server:
 
 def make_server(session=None, port=0, allow_origins=(), client_ttl=CLIENT_TTL, client_expired=None, *,
                 registry=None, root=None, folder=None, lock_program=None, data_dir=None,
-                autosave_interval=AUTOSAVE_INTERVAL, autosave_burst=AUTOSAVE_BURST, lock_timeout=doc_lock.DEFAULT_TIMEOUT, file_roots=()):
+                autosave_interval=AUTOSAVE_INTERVAL, autosave_burst=AUTOSAVE_BURST, lock_timeout=doc_lock.DEFAULT_TIMEOUT, file_roots=(),
+                export_roots=()):
     """A server on 127.0.0.1:`port` (bound, not yet serving). `file_roots` is a list of (name, folder) pairs, the
-    read-only roots of GET /files (I11.2). Over `session`: a single Document (the old routes
+    read-only roots of GET /files (I11.2); `export_roots` the writable ones an export is saved into (I11.13;
+    `export_roots.OverlapError` for one that overlaps a Document, the data folder or a file root). Over `session`: a single Document (the old routes
     alias it); `folder` and `lock_program` (the CLI passes "browser") make it take the Document lock, so an
     in-process server given neither has no lock file. Over `registry` and `root` instead: a Documents root, where
     Documents are created under `root` and opened by id. Callers run `serve_forever` (it blocks) and, at the end,
@@ -2786,7 +2863,7 @@ def make_server(session=None, port=0, allow_origins=(), client_ttl=CLIENT_TTL, c
     autosave timers in seconds, `lock_timeout` the age at which a heartbeat is stale; tests drive `autosave_now()`,
     `expire_idle_now()` and `refresh_locks_now()` instead of waiting for them."""
     return _Server(session, port, allow_origins, client_ttl, client_expired, registry, root, folder, lock_program,
-                   data_dir, autosave_interval, autosave_burst, lock_timeout, file_roots)
+                   data_dir, autosave_interval, autosave_burst, lock_timeout, file_roots, export_roots)
 
 
 def close_all(server, session=None, wait=10.0):
@@ -2835,7 +2912,18 @@ def main(argv=None):
     ap.add_argument("--file-root", action="append", default=[], metavar="NAME=PATH",
                     help="offer a read-only folder of STEP files to the client's file explorer (repeatable; NAME is "
                          "a-z, 0-9 and -, up to 32 characters)")
+    ap.add_argument("--export-root", action="append", default=[], metavar="NAME=PATH",
+                    help="a writable folder an export can be saved into from the client (repeatable; NAME as for "
+                         "--file-root and different from every file root's; PATH an existing folder this user can "
+                         "write, apart from the Documents, the data folder and the file roots)")
     args = ap.parse_args(argv)
+    export_roots = []
+    for value in args.export_root:
+        try:
+            export_roots.append(ER.parse_spec(value))
+        except ValueError as e:
+            print(f"freeshape serve: refusing --export-root {_clean(value, 120)!r}: {e}.", file=sys.stderr)
+            return 2
     file_roots = []
     for value in args.file_root:
         try:
@@ -2886,9 +2974,14 @@ def main(argv=None):
             return 1
         extra = {"registry": registry, "root": args.document}
     extra.update(data_dir=data, autosave_interval=args.autosave_interval, lock_timeout=args.lock_timeout,
-                 file_roots=file_roots)
+                 file_roots=file_roots, export_roots=export_roots)
     try:
         server = make_server(session, args.port, args.allow_origin, args.client_expiry, **extra)
+    except ER.OverlapError as e:
+        if session is not None:
+            session.close()
+        print(f"freeshape serve: refusing --export-root: {e}.", file=sys.stderr)
+        return 2
     except OSError as e:
         if session is not None:
             session.close()

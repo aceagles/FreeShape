@@ -15,6 +15,13 @@ export interface ShellApi {
    */
   selectedFeature: string | null
   selectFeature(id: string | null): void
+  /**
+   * The part selected in the Parts list (a part id such as "F2/1") in the current Part Studio, or null; the viewport
+   * draws it highlighted. One thing is selected at a time for now: selecting a part clears the selected feature, and
+   * selecting a feature clears the selected part. Slice 4 (card I4.2) replaces both with real selection.
+   */
+  selectedPart: string | null
+  selectPart(id: string | null): void
 }
 
 export const ShellContext = createContext<ShellApi | null>(null)

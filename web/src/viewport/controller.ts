@@ -7,7 +7,7 @@ import { viewportBackground } from './colors'
 import { ViewCamera } from './camera'
 import type { CameraState, StandardView } from './camera'
 import { STANDARD_VIEWS } from './camera'
-import { buildScene } from './scene'
+import { buildScene, EMPTY_STATS } from './scene'
 import type { BuiltScene, SceneStats } from './scene'
 
 /** What `window.__freeshapeViewport` reports, for tests that look at the page from outside. */
@@ -17,6 +17,8 @@ export interface ViewportReport extends SceneStats {
   camera: CameraState
   /** Frames drawn so far. */
   frames: number
+  /** Id of the part drawn highlighted, or null (a selected part the eye hides is not drawn, so it is null). */
+  highlightedPart: string | null
 }
 
 declare global {
@@ -24,8 +26,6 @@ declare global {
     __freeshapeViewport?: ViewportReport
   }
 }
-
-const EMPTY: SceneStats = { parts: 0, context: 0, faces: 0, edges: 0, triangles: 0, planes: 0, axes: 0 }
 
 /**
  * Owns the canvas, the renderer, the camera and the current scene of one viewport. Plain three.js: React only
@@ -41,6 +41,10 @@ export class ViewportController implements NavHost {
   private pending = 0
   private fitted = false
   private disposed = false
+  private selectedPart: string | null = null
+  private highlighted: string | null = null
+  /** Half-size of the default planes of the last scene that had a model: an emptied studio keeps it. */
+  private planeHalf: number | null = null
   readonly pointer: PointerModule
 
   /** Throws when the browser cannot create a WebGL context. */
@@ -68,17 +72,28 @@ export class ViewportController implements NavHost {
       this.scene.remove(this.built.root)
       this.built.dispose()
     }
-    this.built = buildScene(outputs)
+    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, selectedPart: this.selectedPart })
     this.scene.add(this.built.root)
+    this.highlighted = this.built.stats.visiblePartIds.includes(this.selectedPart ?? '') ? this.selectedPart : null
+    if (this.built.hasModel) this.planeHalf = this.built.stats.planeHalf
     this.revision = outputs.revision
     if (!this.fitted) this.fit()
+    this.requestRender()
+  }
+
+  /** Draw this part highlighted (the Parts list's selection), or none. */
+  setSelectedPart(id: string | null): void {
+    if (this.disposed || id === this.selectedPart) return
+    this.selectedPart = id
+    this.highlighted = this.built?.select(id) ? id : null
     this.requestRender()
   }
 
   fit(): void {
     if (!this.built) return
     this.view.fit(this.built.bounds)
-    this.fitted = true
+    // an empty studio is fitted to the default box, but the first model that is drawn is fitted too
+    this.fitted = this.built.hasModel
     this.requestRender()
   }
 
@@ -142,10 +157,11 @@ export class ViewportController implements NavHost {
 
   private report(): void {
     window.__freeshapeViewport = {
-      ...(this.built?.stats ?? EMPTY),
+      ...(this.built?.stats ?? EMPTY_STATS),
       revision: this.revision,
       camera: this.view.state(),
       frames: this.frames,
+      highlightedPart: this.highlighted,
     }
   }
 

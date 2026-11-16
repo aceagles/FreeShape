@@ -144,9 +144,81 @@
   background: var(--c-accentSoft);
 }
 
-/* Where the Parts list (card I3.3) goes: under the features, in the same scrolling body. */
+/* The Parts list: under the features, in the same scrolling body. The heading is the layout's: 12 px, 600, muted. */
 .panel-parts-slot {
   flex: none;
+}
+.parts-heading {
+  padding: var(--sp-12) var(--sp-14) var(--sp-4);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--c-muted);
+}
+.parts-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.part-row {
+  display: flex;
+  align-items: center;
+  min-height: var(--feature-row);
+}
+/* the row's button takes what the eye leaves; the eye sits flush at the right end */
+.part-select {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  align-self: stretch;
+}
+.part-swatch {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 1px solid rgba(31, 35, 40, 0.28);
+  border-radius: 4px;
+}
+.part-row[data-hidden] .part-select {
+  color: var(--c-muted);
+}
+.part-row[data-hidden] .part-select svg,
+.part-row[data-hidden] .part-swatch {
+  opacity: 0.45;
+}
+.part-eye {
+  align-self: stretch;
+  height: auto;
+  min-height: var(--touch);
+}
+.part-row[data-hidden] .part-eye {
+  color: var(--c-muted);
+}
+.part-row[data-selected] {
+  background: var(--c-selected);
+}
+
+/* The colour choice: the palette in a 5 by 2 grid of 48 px swatches. */
+.colour-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 48px);
+  gap: var(--sp-10);
+  justify-content: center;
+  margin: 0 0 var(--sp-16);
+}
+.colour-choice {
+  width: 48px;
+  height: 48px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid rgba(31, 35, 40, 0.28);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.colour-choice[aria-pressed='true'] {
+  border: 3px solid var(--c-accent);
+  box-shadow: inset 0 0 0 2px var(--c-white);
 }
 
 /* The rail: one icon per feature, a thin line under the expand button. */

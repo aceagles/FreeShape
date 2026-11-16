@@ -1,5 +1,7 @@
 import { DoubleSide, ShaderMaterial, Vector3 } from 'three'
 import type { Color } from 'three'
+import { color } from '../theme/tokens'
+import { rgb } from './colors'
 
 // The desktop's per-pixel shader (viewport.py _FRAG) in view space: key light near the viewer from the right, a soft
 // top light, a faint highlight and rim. The camera is orthographic, so the view vector is always (0, 0, 1).
@@ -13,6 +15,8 @@ void main() {
 
 const fragment = /* glsl */ `
 uniform vec3 baseColor;
+uniform vec3 tint;
+uniform float tintAmount;
 uniform float alpha;
 uniform float shine;
 varying vec3 vN;
@@ -24,7 +28,7 @@ void main() {
   vec3 L2 = normalize(vec3(-0.6, 0.8, 0.3));
   float d1 = max(dot(n, L1), 0.0);
   float d2 = max(dot(n, L2), 0.0);
-  vec3 col = baseColor * (0.50 + 0.52 * d1 + 0.06 * d2);
+  vec3 col = mix(baseColor, tint, tintAmount) * (0.50 + 0.52 * d1 + 0.06 * d2);
   float s1 = pow(max(dot(n, normalize(L1 + v)), 0.0), 18.0);
   float s2 = pow(max(dot(n, normalize(L2 + v)), 0.0), 18.0);
   float rim = pow(1.0 - max(dot(n, v), 0.0), 4.0);
@@ -32,6 +36,17 @@ void main() {
   gl_FragColor = vec4(min(col, vec3(1.0)), alpha);
 }
 `
+
+/** The selection colour (`color.selection`, the layout's amber): what a highlighted part, and later face, is tinted with. */
+const selection = rgb(color.selection)
+
+/** How far a highlighted surface goes toward the selection colour: enough to read at once, with the shading still showing the form. */
+export const HIGHLIGHT_AMOUNT = 0.7
+
+/** Tint (or stop tinting) a shaded material with the selection colour. Slice 4 uses this for a selected face's colour group. */
+export function setHighlight(m: ShaderMaterial, on: boolean): void {
+  ;(m.uniforms['tintAmount'] as { value: number }).value = on ? HIGHLIGHT_AMOUNT : 0
+}
 
 export interface ShadedOptions {
   /** 1 for a solid, less for a Context body (drawn blended, without depth writes). */
@@ -46,6 +61,8 @@ export function shadedMaterial(base: Color, { alpha = 1 }: ShadedOptions = {}): 
   const m = new ShaderMaterial({
     uniforms: {
       baseColor: { value: new Vector3(base.r, base.g, base.b) },
+      tint: { value: new Vector3(selection.r, selection.g, selection.b) },
+      tintAmount: { value: 0 },
       alpha: { value: alpha },
       shine: { value: 1 },
     },

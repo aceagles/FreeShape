@@ -8,7 +8,7 @@ import './viewport.css'
  * The 3D view of a Part Studio. Fills its parent; draws `outputs` and redraws when they change (a new revision
  * arrives as new outputs). The controller's pointer module (src/input) navigates; the view cube is the control for standard views.
  */
-export function Viewport({ outputs }: { outputs: StudioOutputs | null }) {
+export function Viewport({ outputs, selectedPart = null }: { outputs: StudioOutputs | null; selectedPart?: string | null }) {
   const host = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const controller = useRef<ViewportController | null>(null)
@@ -37,6 +37,11 @@ export function Viewport({ outputs }: { outputs: StudioOutputs | null }) {
       controller.current = null
     }
   }, [])
+
+  // the selection first, so the scene a new set of outputs builds already has it
+  useEffect(() => {
+    controller.current?.setSelectedPart(selectedPart)
+  }, [selectedPart, failed])
 
   useEffect(() => {
     if (outputs) controller.current?.setOutputs(outputs)

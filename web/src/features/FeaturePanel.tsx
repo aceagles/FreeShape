@@ -3,6 +3,7 @@ import { size } from '../theme/tokens'
 import type { FeatureEntry, StudioOutputs } from '../wire'
 import { featureIcon } from './featureIcons'
 import { FeatureList, rowTitle } from './FeatureList'
+import { PartsList } from './PartsList'
 import type { FeatureEdits } from './useFeatureEdits'
 import './features.css'
 
@@ -15,8 +16,11 @@ interface Props {
   /** The current Part Studio's outputs, or null while they load (or for a tab that is not a Part Studio). */
   outputs: StudioOutputs | null
   selected: string | null
+  /** The part selected in the Parts list (a part id), or null. */
+  selectedPart: string | null
   edits: FeatureEdits
   onSelect: (id: string) => void
+  onSelectPart: (id: string) => void
   onCollapsedChange: (collapsed: boolean) => void
 }
 
@@ -48,10 +52,10 @@ function emptyText(tabKind: string | null, outputs: StudioOutputs | null): strin
 }
 
 /**
- * The feature panel and its 56 px rail. The body is the open Part Studio's feature list; the Parts list (card I3.3)
- * goes in the slot under it.
+ * The feature panel and its 56 px rail. The body is the open Part Studio's feature list and, under it in the same
+ * scrolling body, its Parts list.
  */
-export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, edits, onSelect, onCollapsedChange }: Props) {
+export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, selectedPart, edits, onSelect, onSelectPart, onCollapsedChange }: Props) {
   const empty = emptyText(tabKind, outputs)
   const list = empty === null ? outputs : null
   if (collapsed) {
@@ -68,7 +72,7 @@ export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, ed
     )
   }
   return (
-    <section className="panel" data-testid="feature-panel" aria-label="Feature panel" data-selected-feature={selected ?? undefined}>
+    <section className="panel" data-testid="feature-panel" aria-label="Feature panel" data-selected-feature={selected ?? undefined} data-selected-part={selectedPart ?? undefined}>
       <div className="panel-header">
         <div className="panel-title">Features</div>
         <button
@@ -83,7 +87,9 @@ export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, ed
       </div>
       <div className="panel-body" data-testid="panel-body">
         {list ? <FeatureList outputs={list} selected={selected} edits={edits} onSelect={onSelect} /> : empty && <p className="panel-empty">{empty}</p>}
-        <div className="panel-parts-slot" data-testid="parts-slot" />
+        <div className="panel-parts-slot" data-testid="parts-slot">
+          {list && <PartsList outputs={list} selected={selectedPart} edits={edits} onSelect={onSelectPart} />}
+        </div>
       </div>
     </section>
   )

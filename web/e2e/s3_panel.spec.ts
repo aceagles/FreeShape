@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 import { openApp } from './support/app.ts'
 import { closeAll } from './support/docs.ts'
 import { dragRollbackTo, featureMenu, featureRow } from './support/features.ts'
+import { partEye, partMenu, partRow } from './support/parts.ts'
 import { readViewport } from './support/viewport.ts'
 
 // The feature panel (card I3.2) against `freeshape serve`: each action changes the model in the viewport and the list.
@@ -93,4 +94,91 @@ test('suppressing a feature another one needs makes that one fail, with its mess
   const box = await page.getByTestId('left-column').boundingBox()
   const row = await failed.boundingBox()
   expect((row?.x ?? 0) + (row?.width ?? 0)).toBeLessThanOrEqual((box?.x ?? 0) + (box?.width ?? 0))
+})
+
+// The Parts list (card I3.3): the Hinge's Part Studio `hinge_parts` has several parts. Every number below comes from the
+// viewport hook (window.__freeshapeViewport), read after the edit's outputs have been drawn.
+const seen = async (page: Parameters<typeof readViewport>[0]) => {
+  const v = await readViewport(page)
+  return { revision: v.revision, parts: v.parts, visibleParts: v.visibleParts, hiddenParts: v.hiddenParts, ids: v.visiblePartIds, faces: v.faces, planeHalf: v.planeHalf, highlighted: v.highlightedPart }
+}
+
+test('the eye hides a part from the view and shows it again; the visible count follows', async ({ page }) => {
+  await openApp(page, { document: 'Hinge' })
+  const names = await page.locator('.part-select[data-part] .row-name').allTextContents()
+  expect(names.length).toBeGreaterThan(1)
+  await expect(page.getByText(`Parts (${names.length})`)).toBeVisible()
+  const before = await seen(page)
+  expect(before.visibleParts).toBe(names.length)
+  const edits: string[] = []
+  page.on('request', (r) => r.url().endsWith('/edit') && edits.push(r.postData() ?? ''))
+  await partEye(page, names[0]!).click()
+  await expect.poll(async () => (await seen(page)).visibleParts).toBe(names.length - 1)
+  const hidden = await seen(page)
+  console.log(`hide ${names[0]}: ${JSON.stringify(before)} -> ${JSON.stringify(hidden)}`)
+  expect(hidden.hiddenParts).toBe(1)
+  expect(hidden.faces).toBeLessThan(before.faces)
+  expect(hidden.ids).not.toContain(before.ids[0])
+  expect(JSON.parse(edits[0]!)).toMatchObject({ op: 'set_part_override', hidden: true })
+  await expect(page.locator('[data-part-row][data-hidden]')).toHaveCount(1)
+  await partEye(page, names[0]!).click()
+  await expect.poll(async () => (await seen(page)).visibleParts).toBe(names.length)
+  const shown = await seen(page)
+  console.log(`show ${names[0]}: ${JSON.stringify(shown)}`)
+  expect(shown.faces).toBe(before.faces)
+  expect(shown.hiddenParts).toBe(0)
+})
+
+test('rename shows in the list from the next outputs; Colour changes the part in the view; Default colour puts it back', async ({ page }) => {
+  await openApp(page, { document: 'Hinge' })
+  const first = (await page.locator('.part-select[data-part] .row-name').first().textContent())!
+  const before = await seen(page)
+  const id = before.ids[0]!
+  const colorBefore = (await readViewport(page)).partColors[id]!
+  await partMenu(page, first, 'Rename')
+  const field = page.getByRole('textbox', { name: 'Name' })
+  await field.fill('Leaf A')
+  await field.press('Enter')
+  await expect(partRow(page, 'Leaf A')).toBeVisible()
+  await expect(partRow(page, new RegExp(`^${first}$`))).toHaveCount(0)
+  console.log(`rename ${first} -> Leaf A: list shows ${await page.locator('.part-select[data-part] .row-name').allTextContents()}`)
+  await partMenu(page, 'Leaf A', 'Colour')
+  await page.getByRole('button', { name: 'Dusty rose' }).click()
+  await expect.poll(async () => (await readViewport(page)).partColors[id]).toEqual([0.84, 0.58, 0.68])
+  console.log(`colour ${id}: ${JSON.stringify(colorBefore)} -> ${JSON.stringify((await readViewport(page)).partColors[id])}`)
+  await partMenu(page, 'Leaf A', 'Colour')
+  await page.getByRole('button', { name: 'Default colour' }).click()
+  // the colour the part was built with (the Hinge's base plate carries a saved override, which Default drops)
+  await expect.poll(async () => (await readViewport(page)).partColors[id]).toEqual([0.6, 0.74, 0.85])
+  console.log(`default colour ${id}: ${JSON.stringify((await readViewport(page)).partColors[id])} (the saved override was ${JSON.stringify(colorBefore)})`)
+})
+
+test('selecting a part highlights it in the view, and selecting a feature takes the highlight away', async ({ page }) => {
+  await openApp(page, { document: 'Hinge' })
+  const before = await seen(page)
+  expect(before.highlighted).toBeNull()
+  await partRow(page, new RegExp('.')).first().click()
+  await expect.poll(async () => (await seen(page)).highlighted).toBe(before.ids[0])
+  console.log(`selected part: highlighted ${(await seen(page)).highlighted}`)
+  await page.locator('.panel-row[data-feature]').first().click()
+  await expect.poll(async () => (await seen(page)).highlighted).toBeNull()
+  await expect(page.locator('.part-select[aria-current="true"]')).toHaveCount(0)
+})
+
+test('with every part hidden or failed the default planes keep their size instead of jumping', async ({ page }) => {
+  await openApp(page)
+  const before = await seen(page)
+  expect(before.planeHalf).toBeGreaterThan(0)
+  await partEye(page, 'Bracket').click()
+  await expect.poll(async () => (await seen(page)).visibleParts).toBe(0)
+  const hidden = await seen(page)
+  console.log(`all hidden: planeHalf ${before.planeHalf} -> ${hidden.planeHalf}`)
+  expect(hidden.planeHalf).toBe(before.planeHalf)
+  await partEye(page, 'Bracket').click()
+  await expect.poll(async () => (await seen(page)).visibleParts).toBe(1)
+  await featureMenu(page, 'Extrude 1', 'Suppress')
+  await expect.poll(async () => (await seen(page)).visibleParts).toBe(0)
+  const failed = await seen(page)
+  console.log(`every feature failed: planeHalf ${before.planeHalf} -> ${failed.planeHalf}`)
+  expect(failed.planeHalf).toBe(before.planeHalf)
 })

@@ -13,6 +13,12 @@ export interface FeatureEdits {
   deleteFeature(feature: string): Promise<boolean>
   /** `index` is the number of features that build (outputs.rollback). Resolves false when the edit failed. */
   setRollback(index: number): Promise<boolean>
+  /** The eye of a part (set_part_override with `hidden`). */
+  setPartHidden(part: string, hidden: boolean): void
+  /** Rename a part; resolves with a message in plain words when the server refused (the rename dialog shows it). */
+  renamePart(part: string, name: string): Promise<string | void>
+  /** `color` is r g b in 0..1, or null for the part's own colour. Resolves false when the edit failed. */
+  setPartColor(part: string, color: readonly number[] | null): Promise<boolean>
   undo(): void
   redo(): void
 }
@@ -30,7 +36,7 @@ interface Options {
 
 /**
  * The feature panel's and the top bar's edits of one Part Studio: rename_feature, set_suppressed, delete_features,
- * set_rollback, undo and redo, as the engine contract names them. The panel redraws from the outputs the next
+ * set_rollback, undo and redo, and the parts' set_part_override (hidden, name, color), as the engine contract names them. The panel redraws from the outputs the next
  * revision brings, never from what was sent.
  */
 export function useFeatureEdits({ store, tab, readOnly, documentName, onError }: Options): FeatureEdits {
@@ -77,6 +83,14 @@ export function useFeatureEdits({ store, tab, readOnly, documentName, onError }:
       },
       setSuppressed: (feature, value) => void act(value ? 'Could not suppress the feature' : 'Could not unsuppress the feature', { op: 'set_suppressed', feature, value }),
       deleteFeature: (feature) => act('Could not delete the feature', { op: 'delete_features', ids: [feature] }),
+      setPartHidden: (part, hidden) => void act(hidden ? 'Could not hide the part' : 'Could not show the part', { op: 'set_part_override', part, hidden }),
+      async renamePart(part, name) {
+        if (disabled) return
+        const r = await send({ op: 'set_part_override', part, name })
+        if (!r.sent) return 'Another change is still being saved. Try again in a moment.'
+        if (r.error !== undefined) return explainError(r.error, documentName)
+      },
+      setPartColor: (part, color) => act('Could not change the colour', { op: 'set_part_override', part, color: color === null ? null : [...color] }),
       setRollback: (index) => act('Could not move the rollback bar', { op: 'set_rollback', index }),
       undo: () => void act('Could not undo', { op: 'undo' }),
       redo: () => void act('Could not redo', { op: 'redo' }),

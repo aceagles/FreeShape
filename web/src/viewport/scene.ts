@@ -1,5 +1,6 @@
 import {
   BufferAttribute,
+  Color,
   BufferGeometry,
   DoubleSide,
   Group,
@@ -13,7 +14,7 @@ import {
   Points,
   Vector3,
 } from 'three'
-import type { Material } from 'three'
+import type { Material, ShaderMaterial } from 'three'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
@@ -23,11 +24,21 @@ import type { Part, PartMesh, StudioOutputs, Vec3 } from '../wire'
 import { edgeColor, rgb } from './colors'
 import type { Bounds, Triple } from './camera'
 import { MIN_HALF } from './camera'
-import { shadedMaterial } from './shading'
+import { setHighlight, shadedMaterial } from './shading'
 
 export interface SceneStats {
   /** Meshes drawn for the studio's own parts (hidden parts are not drawn). */
   parts: number
+  /** The same count under its plain name: parts the studio has that are drawn (not hidden by the eye). */
+  visibleParts: number
+  /** Parts the studio has that the eye hides: not drawn, no mesh and no BVH in the scene. */
+  hiddenParts: number
+  /** Ids of the drawn parts, in the studio's order. */
+  visiblePartIds: string[]
+  /** Colour each drawn part is built with (its base colour, r g b in 0..1; a face override is not in it). */
+  partColors: Record<string, number[]>
+  /** Half-size of the default planes, mm. */
+  planeHalf: number
   /** Reference parts drawn translucent. */
   context: number
   /** Faces of the drawn parts. */
@@ -40,9 +51,36 @@ export interface SceneStats {
   axes: number
 }
 
+/** What the hook says before any scene: nothing drawn. */
+export const EMPTY_STATS: SceneStats = {
+  parts: 0,
+  visibleParts: 0,
+  hiddenParts: 0,
+  visiblePartIds: [],
+  partColors: {},
+  planeHalf: 0,
+  context: 0,
+  faces: 0,
+  edges: 0,
+  triangles: 0,
+  planes: 0,
+  axes: 0,
+}
+
+export interface SceneOptions {
+  /** Half-size the default planes keep when nothing is drawn (something was a moment ago). */
+  keepPlaneHalf?: number | null
+  /** Part to draw highlighted. */
+  selectedPart?: string | null
+}
+
 export interface BuiltScene {
   root: Group
   stats: SceneStats
+  /** Draw this part highlighted (null: none). Returns whether it is drawn. Slice 4 picks faces with the same tint. */
+  select(partId: string | null): boolean
+  /** Something is drawn: the camera and the planes have a model to follow. */
+  hasModel: boolean
   /** Box round the drawn parts, never tighter than MIN_HALF; a default box when nothing is drawn. */
   bounds: Bounds
   /** Keep line widths and the origin triad right for the viewport size and zoom (mm per pixel). */
@@ -136,6 +174,10 @@ function edgeLines(part: Part, mesh: PartMesh, materials: Material[], lineMats: 
   lines.renderOrder = 1
   return lines
 }
+
+/** Edge colour and width of a highlighted part: a dark amber, a little wider, so the outline reads on the tint. */
+const HIGHLIGHT_EDGE: Rgb = [0.5, 0.3, 0.0]
+const HIGHLIGHT_EDGE_WIDTH = sceneDraw.edgeWidth * 1.5
 
 const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 
@@ -251,9 +293,10 @@ function boundsOf(parts: readonly Part[]): Bounds {
 /**
  * Half-size of the default planes. The desktop draws them 150 mm square whatever the model size; fitted into a
  * tablet view that fills the screen and clips at its edges, so here they scale with the model: 0.4 times its longest side (so they stay inside the fitted view),
- * never under sceneDraw.planeMin, and the desktop's size when nothing is drawn.
+ * never under sceneDraw.planeMin, and the desktop's size when nothing is drawn. buildScene decides what to measure
+ * when nothing is drawn: see `planeHalfOf`.
  */
-function planeHalfFor(b: Bounds): number {
+export function planeHalfFor(b: Bounds): number {
   const longest = Math.max(b.hi[0] - b.lo[0], b.hi[1] - b.lo[1], b.hi[2] - b.lo[2])
   return Math.max(longest * 0.4, sceneDraw.planeMin)
 }
@@ -269,13 +312,15 @@ const DEFAULT_PLANES: readonly { name: string; o: Vec3; x: Vec3; n: Vec3 }[] = [
  * planes, the studio's own planes and axes, and the origin. Typed-array views of the response are used in place.
  * Draw order follows viewport.py _draw_scene: faces, edges, Context bodies, translucent planes, axes, origin.
  */
-export function buildScene(outputs: StudioOutputs): BuiltScene {
+export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): BuiltScene {
   const root = new Group()
   root.name = 'studio'
   const materials: Material[] = []
   const lineMats: LineMaterial[] = []
   const geometries: BufferGeometry[] = []
-  const stats: SceneStats = { parts: 0, context: 0, faces: 0, edges: 0, triangles: 0, planes: 0, axes: 0 }
+  const stats: SceneStats = { ...EMPTY_STATS, visiblePartIds: [], partColors: {} }
+  /** Per drawn part: what the highlight changes. */
+  const looks = new Map<string, { shaders: ShaderMaterial[]; line: LineMaterial | null; edge: Color }>()
 
   const drawn = outputs.parts.filter((p) => !p.hidden && p.mesh)
   for (const [list, translucent] of [
@@ -294,7 +339,13 @@ export function buildScene(outputs: StudioOutputs): BuiltScene {
       }
       if (translucent) stats.context++
       else {
+        const list = Array.isArray(m.material) ? m.material : [m.material]
+        const line = lines ? (lines.material as LineMaterial) : null
+        looks.set(part.id, { shaders: list as ShaderMaterial[], line, edge: line ? line.color.clone() : new Color() })
         stats.parts++
+        stats.visibleParts++
+        stats.visiblePartIds.push(part.id)
+        stats.partColors[part.id] = [...colorOf(part)]
         stats.faces += mesh.faceRanges.length
         stats.edges += mesh.edges.length
         stats.triangles += mesh.indices.length / 3
@@ -302,8 +353,13 @@ export function buildScene(outputs: StudioOutputs): BuiltScene {
     }
   }
 
+  stats.hiddenParts = outputs.parts.filter((p) => p.hidden).length
   const bounds = boundsOf(drawn)
-  const half = planeHalfFor(bounds)
+  const hasModel = drawn.length > 0
+  // an emptied studio (every part gone, or hidden by the eye) keeps the planes' last size: the camera is still
+  // zoomed for the model that was there. A studio that opens empty gets the default box and the desktop's size.
+  const half = hasModel || opts.keepPlaneHalf == null ? planeHalfFor(bounds) : opts.keepPlaneHalf
+  stats.planeHalf = half
   const planes = new Group()
   planes.name = 'planes'
   for (const p of DEFAULT_PLANES) planes.add(planeObjects(p.o, p.x, p.n, half, materials))
@@ -319,9 +375,26 @@ export function buildScene(outputs: StudioOutputs): BuiltScene {
   const triad = triadObject(materials)
   root.add(triad)
 
+  const select = (partId: string | null): boolean => {
+    let found = false
+    for (const [id, look] of looks) {
+      const on = id === partId
+      found ||= on
+      for (const m of look.shaders) setHighlight(m, on)
+      if (look.line) {
+        look.line.color.copy(on ? rgb(HIGHLIGHT_EDGE) : look.edge)
+        look.line.linewidth = on ? HIGHLIGHT_EDGE_WIDTH : sceneDraw.edgeWidth
+      }
+    }
+    return found
+  }
+  select(opts.selectedPart ?? null)
+
   return {
     root,
     stats,
+    select,
+    hasModel,
     bounds,
     update(width, height, scale) {
       for (const m of lineMats) m.resolution.set(width, height)

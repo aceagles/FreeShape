@@ -33,6 +33,13 @@ export const paths = {
   chevronDown: 'M6 9l6 6 6-6',
   /** The rollback bar's Drag handle. */
   handle: 'M5 9h14 M5 15h14 M12 3v3 M12 18v3',
+  /** A part (the layout's Parts row: a cube). */
+  cube: 'M12 3l8 4.5v9L12 21l-8-4.5v-9z M12 12l8-4.5 M12 12v9 M12 12L4 7.5',
+  /** The eye of a part that shows, and of one that is hidden (the same eye, struck through). */
+  eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
+  eyeOff: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0 M4 4l16 16',
+  /** A drop, for the colour choice. */
+  drop: 'M12 3c4 5 6 8 6 11a6 6 0 0 1-12 0c0-3 2-6 6-11z',
 } as const
 
 export function Icon({ d, px = size.icon, stroke = 'currentColor', sw = 1.8, round = true }: { d: string; px?: number; stroke?: string; sw?: number; round?: boolean }) {

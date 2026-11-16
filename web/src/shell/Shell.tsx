@@ -62,6 +62,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const { tabs, document: doc, readOnly, holder, client } = useConnection(store)
   const [selected, setSelected] = useState<string | null>(null)
   const [pickedFeature, setPickedFeature] = useState<{ tab: string; id: string } | null>(null)
+  const [pickedPart, setPickedPart] = useState<{ tab: string; id: string } | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const debug = useDebugPanel()
@@ -77,6 +78,8 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const studio = outputs !== null && outputs.tab === currentTab && tabKind === 'studio' ? outputs : null
   const selectedFeature = studio !== null && pickedFeature?.tab === currentTab && studio.features.some((f) => f.id === pickedFeature.id) ? pickedFeature.id : null
 
+  const selectedPart = studio !== null && pickedPart?.tab === currentTab && studio.parts.some((p) => p.id === pickedPart.id) ? pickedPart.id : null
+
   const api = useMemo<ShellApi>(
     () => ({
       openDialog: (title, content) => {
@@ -88,9 +91,17 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
       panelCollapsed: collapsed,
       setPanelCollapsed: setCollapsed,
       selectedFeature,
-      selectFeature: (id) => setPickedFeature(id === null || currentTab === null ? null : { tab: currentTab, id }),
+      selectFeature: (id) => {
+        setPickedFeature(id === null || currentTab === null ? null : { tab: currentTab, id })
+        if (id !== null) setPickedPart(null)
+      },
+      selectedPart,
+      selectPart: (id) => {
+        setPickedPart(id === null || currentTab === null ? null : { tab: currentTab, id })
+        if (id !== null) setPickedFeature(null)
+      },
     }),
-    [dialog, collapsed, selectedFeature, currentTab],
+    [dialog, collapsed, selectedFeature, selectedPart, currentTab],
   )
   useEffect(() => {
     window.__freeshape = { shell: api }
@@ -201,8 +212,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
               tabKind={tabKind}
               outputs={studio}
               selected={selectedFeature}
+              selectedPart={selectedPart}
               edits={edits}
               onSelect={api.selectFeature}
+              onSelectPart={api.selectPart}
               onCollapsedChange={setCollapsed}
             />
             {dialog && (
@@ -212,7 +225,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             )}
           </div>
           <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport">
-            <StudioViewport outputs={outputs} />
+            <StudioViewport outputs={outputs} selectedPart={selectedPart} />
             {/* The selection chip (S4) is placed here, top left. */}
             <div className="chip-slot" data-testid="chip-slot" />
           </div>

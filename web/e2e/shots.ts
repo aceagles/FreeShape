@@ -3,6 +3,7 @@ import { openApp } from './support/app.ts'
 import { closeAll, discardAutosaveOf, holdLockClosed, idOf, releaseLock } from './support/docs.ts'
 import { longPressTab } from './support/tabs.ts'
 import { dragRollbackTo, featureMenu, featureRow, longPressFeature } from './support/features.ts'
+import { partEye, partMenu, partRow, longPressPart } from './support/parts.ts'
 import { canvasCentre, fingerDrag, twoFingers } from './support/pointer.ts'
 import { settled } from './support/viewport.ts'
 
@@ -279,6 +280,111 @@ export const shots: ShotState[] = [
     after: closeAllDiscard,
   },
   {
+    name: 'parts-list',
+    mock: 'browsing', // the bracket's one part under the rollback bar, as in the layout; the eye and the colour swatch are new
+    steps: async (page) => {
+      await openApp(page)
+      await partRow(page, 'Bracket').waitFor()
+    },
+  },
+  {
+    name: 'parts-several',
+    mock: 'browsing', // the Hinge's Part Studio: several parts (the layout draws one)
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge' })
+      await partRow(page, new RegExp('.')).first().waitFor()
+      await waitParts(page, 2)
+    },
+  },
+  {
+    name: 'part-hidden',
+    mock: 'browsing', // the layout draws no hidden part: one Hinge part hidden, its row greyed with a struck eye
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge' })
+      const first = (await partRow(page, new RegExp('.')).first().locator('.row-name').textContent()) ?? ''
+      await partEye(page, first).click()
+      await page.locator('[data-part-row][data-hidden]').waitFor()
+      await page.waitForFunction(() => (window.__freeshapeViewport?.hiddenParts ?? 0) === 1)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'part-selected',
+    mock: 'browsing', // the part tapped in the list: its row selected and the part tinted amber in the view
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge' })
+      await partRow(page, new RegExp('.')).first().click()
+      await page.waitForFunction(() => window.__freeshapeViewport?.highlightedPart != null)
+    },
+  },
+  {
+    name: 'part-selected-bracket',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await partRow(page, 'Bracket').click()
+      await page.waitForFunction(() => window.__freeshapeViewport?.highlightedPart != null)
+    },
+  },
+  {
+    name: 'part-menu',
+    mock: 'browsing', // the layout draws no part menu
+    steps: async (page) => {
+      await openApp(page)
+      await longPressPart(page, 'Bracket')
+    },
+  },
+  {
+    name: 'part-colour-choice',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await longPressPart(page, 'Bracket')
+      await page.getByRole('menuitem', { name: 'Colour', exact: true }).click()
+      await page.getByRole('group', { name: 'Colours' }).waitFor()
+    },
+  },
+  {
+    name: 'part-rename',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await partMenu(page, 'Bracket', 'Rename')
+      await page.getByRole('textbox', { name: 'Name' }).waitFor()
+    },
+  },
+  {
+    name: 'part-coloured',
+    mock: 'browsing', // a part given Dusty rose from the palette: the swatch and the model follow
+    steps: async (page) => {
+      await openApp(page)
+      await partMenu(page, 'Bracket', 'Colour')
+      await page.getByRole('button', { name: 'Dusty rose' }).click()
+      await page.waitForFunction(() => window.__freeshapeViewport?.partColors['F2/1']?.[0] === 0.84)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'planes-all-features-failed',
+    mock: 'browsing', // every part gone after the base extrude is suppressed: the default planes keep the model's size
+    steps: async (page) => {
+      await openApp(page)
+      await featureMenu(page, 'Extrude 1', 'Suppress')
+      await page.waitForFunction(() => window.__freeshapeViewport?.visibleParts === 0)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'planes-all-hidden',
+    mock: 'browsing', // the only part hidden by its eye: the planes keep their size here too
+    steps: async (page) => {
+      await openApp(page)
+      await partEye(page, 'Bracket').click()
+      await page.waitForFunction(() => window.__freeshapeViewport?.visibleParts === 0)
+    },
+    after: closeAllDiscard,
+  },
+  {
     name: 'read-only-banner',
     mock: 'browsing', // no banner in the layout; the real server, with the lock written for the desktop before opening
     steps: async (page) => {
@@ -387,4 +493,9 @@ async function renameFirstTab(page: Page): Promise<void> {
   const field = page.getByRole('textbox', { name: 'Name' })
   await field.fill(NEW_NAME)
   await field.press('Enter')
+}
+
+/** Waits until the viewport has drawn at least this many parts. */
+async function waitParts(page: Page, n: number): Promise<void> {
+  await page.waitForFunction((k) => (window.__freeshapeViewport?.visibleParts ?? 0) >= k, n)
 }

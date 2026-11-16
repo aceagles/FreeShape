@@ -1,12 +1,16 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import type { Group } from 'three'
 import { Mesh } from 'three'
-import type { Material } from 'three'
+import type { Material, ShaderMaterial } from 'three'
+import type { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { decodeOutputs, isStudio } from '../wire'
 import type { Part, StudioOutputs } from '../wire'
 import { buildScene } from './scene'
+import { HIGHLIGHT_AMOUNT } from './shading'
+import { sceneDraw } from '../theme/tokens'
 import { ViewCamera } from './camera'
 
 const dir = new URL('../../fixtures/', import.meta.url)
@@ -79,6 +83,120 @@ describe('buildScene', () => {
     expect(built.stats.parts).toBe(0)
     expect(built.bounds.hi[0]).toBe(75)
     built.dispose()
+  })
+})
+
+/** Two parts: the bracket and a copy of it moved along x (so its box is different), under another id. */
+function twoParts(secondHidden = false): StudioOutputs {
+  const out = studio()
+  const a = out.parts[0] as Part
+  const m = a.mesh as NonNullable<Part['mesh']>
+  const moved = new Float32Array(m.positions)
+  for (let i = 0; i < moved.length; i += 3) moved[i] = (moved[i] as number) + 200
+  const b: Part = { ...a, id: 'F9/1', name: 'Second', color: [0.93, 0.66, 0.45], hidden: secondHidden, mesh: { ...m, positions: moved } }
+  return { ...out, parts: [a, b] }
+}
+
+const partMeshes = (built: ReturnType<typeof buildScene>) => built.root.children.filter((c): c is Mesh => c instanceof Mesh && c.name.startsWith('part:'))
+const planeHalfOf = (built: ReturnType<typeof buildScene>): number => {
+  const fill = (built.root.getObjectByName('planes')?.children[0] as Group).children[0] as Mesh
+  const p = fill.geometry.getAttribute('position')
+  return Math.abs(p.getX(1) - p.getX(0)) / 2
+}
+
+describe('the eye', () => {
+  it('a hidden part is one fewer visible part; every other number of the hook means what it did', () => {
+    const shown = buildScene(twoParts(false))
+    const hidden = buildScene(twoParts(true))
+    expect(shown.stats).toMatchObject({ parts: 2, visibleParts: 2, hiddenParts: 0, visiblePartIds: ['F2/1', 'F9/1'] })
+    expect(hidden.stats).toMatchObject({ parts: 1, visibleParts: 1, hiddenParts: 1, visiblePartIds: ['F2/1'] })
+    expect(hidden.stats.faces).toBe(shown.stats.faces / 2)
+    expect(hidden.stats.edges).toBe(shown.stats.edges / 2)
+    shown.dispose()
+    hidden.dispose()
+  })
+
+  it('a hidden part has no mesh, no edge lines and no BVH in the scene, so nothing can pick it', () => {
+    const built = buildScene(twoParts(true))
+    expect(partMeshes(built).map((m) => m.userData['partId'])).toEqual(['F2/1'])
+    expect(built.root.getObjectByName('part:F9/1')).toBeUndefined()
+    expect(built.root.getObjectByName('edges:F9/1')).toBeUndefined()
+    const withBvh: string[] = []
+    built.root.traverse((o) => o.userData['bvh'] && withBvh.push(o.userData['partId'] as string))
+    expect(withBvh).toEqual(['F2/1'])
+    built.dispose()
+  })
+
+  it('draws a part in the colour of its outputs, and reports it', () => {
+    const built = buildScene(twoParts())
+    expect(built.stats.partColors['F9/1']).toEqual([0.93, 0.66, 0.45])
+    const second = built.root.getObjectByName('part:F9/1') as Mesh
+    const base = ((second.material as ShaderMaterial).uniforms['baseColor'] as { value: { x: number; y: number; z: number } }).value
+    expect([base.x, base.y, base.z]).toEqual([0.93, 0.66, 0.45])
+    built.dispose()
+  })
+})
+
+describe('the highlight of a selected part', () => {
+  const tint = (m: Mesh) => ((m.material as ShaderMaterial).uniforms['tintAmount'] as { value: number }).value
+  const edge = (built: ReturnType<typeof buildScene>, id: string) => (built.root.getObjectByName(`edges:${id}`) as LineSegments2).material as LineMaterial
+
+  it('tints the selected part with the selection colour and outlines it; the others are as before', () => {
+    const built = buildScene(twoParts(), { selectedPart: 'F9/1' })
+    const [a, b] = partMeshes(built) as [Mesh, Mesh]
+    expect([tint(a), tint(b)]).toEqual([0, HIGHLIGHT_AMOUNT])
+    const t = ((b.material as ShaderMaterial).uniforms['tint'] as { value: { x: number; y: number; z: number } }).value
+    expect([t.x, t.y, t.z].map((v) => Math.round(v * 255))).toEqual([255, 199, 64]) // color.selection, #ffc740
+    expect(edge(built, 'F9/1').linewidth).toBeGreaterThan(edge(built, 'F2/1').linewidth)
+    expect(built.select('F2/1')).toBe(true)
+    expect([tint(a), tint(b)]).toEqual([HIGHLIGHT_AMOUNT, 0])
+    expect(edge(built, 'F9/1').linewidth).toBe(sceneDraw.edgeWidth) // the outline goes back to the plain width
+    expect(edge(built, 'F2/1').linewidth).toBeGreaterThan(sceneDraw.edgeWidth)
+    expect(built.select(null)).toBe(false)
+    expect([tint(a), tint(b)]).toEqual([0, 0])
+    built.dispose()
+  })
+
+  it('a selected part the eye hides is not drawn, and select says so', () => {
+    const built = buildScene(twoParts(true), { selectedPart: 'F9/1' })
+    expect(built.select('F9/1')).toBe(false)
+    expect(built.select('F2/1')).toBe(true)
+    built.dispose()
+  })
+})
+
+describe('the default planes of an emptied studio', () => {
+  it('keep the size they had when every part is gone (a failed base feature) instead of jumping to the empty size', () => {
+    const full = buildScene(studio())
+    const before = planeHalfOf(full)
+    expect(before).toBeGreaterThan(0)
+    expect(full.stats.planeHalf).toBe(before)
+    const emptied = buildScene({ ...studio(), parts: [] }, { keepPlaneHalf: full.stats.planeHalf })
+    expect(planeHalfOf(emptied)).toBe(before)
+    expect(emptied.hasModel).toBe(false)
+    // what it did before: the size of the default box, here a different number
+    expect(planeHalfOf(buildScene({ ...studio(), parts: [] }))).not.toBe(before)
+    full.dispose()
+    emptied.dispose()
+  })
+
+  it('keep their size when the eye hides every part', () => {
+    const full = buildScene(studio())
+    const out = studio()
+    const allHidden = buildScene({ ...out, parts: out.parts.map((p) => ({ ...p, hidden: true })) }, { keepPlaneHalf: full.stats.planeHalf })
+    expect(allHidden.stats.parts).toBe(0)
+    expect(planeHalfOf(allHidden)).toBe(planeHalfOf(full))
+    full.dispose()
+    allHidden.dispose()
+  })
+
+  it('a studio opened empty gets the empty-studio size, and a model that comes after sizes them to itself', () => {
+    const fresh = buildScene({ ...studio(), parts: [] })
+    expect(planeHalfOf(fresh)).toBe(60) // 0.4 of the default 150 mm box
+    const back = buildScene(studio(), { keepPlaneHalf: 60 })
+    expect(planeHalfOf(back)).not.toBe(60)
+    fresh.dispose()
+    back.dispose()
   })
 })
 

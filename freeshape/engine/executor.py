@@ -176,7 +176,8 @@ class _Tab:
 
 
 def apply_part_override(doc, edit):
-    """The `set_part_override` edit on a Part Studio Document: a part's name / color (None puts it back), or
+    """The `set_part_override` edit on a Part Studio Document: a part's name / color (None puts it back) and
+    `hidden` (the eye: true hides the part, false shows it; a view setting, no undo step), or
     `colors`, a {part: color} for several parts in one undo step. The window runs this too, so both copies of a
     tab change the same way."""
     colors = edit.get("colors")
@@ -184,19 +185,27 @@ def apply_part_override(doc, edit):
         doc.set_part_colors(colors)
         return
     part = _need(edit, "part")
+    hidden = edit.get("hidden")
+    if hidden is not None:
+        if not isinstance(hidden, bool):
+            raise EngineError("set_part_override: hidden is true or false")
+        if part not in doc.state.parts:
+            raise EngineError(f"no part {part!r} in “{doc.name}”")
     kw = {k: edit[k] for k in ("name", "color") if k in edit}
     gone = [k for k, v in kw.items() if v is None]
-    if not gone:
+    if kw and not gone:
         doc.set_part_override(part, **kw)
-        return
-    doc.checkpoint()
-    ov = doc.part_overrides.setdefault(part, {})
-    ov.update({k: v for k, v in kw.items() if v is not None})
-    for k in gone:
-        ov.pop(k, None)
-    if not ov:
-        del doc.part_overrides[part]
-    doc.rebuild()
+    elif gone:
+        doc.checkpoint()
+        ov = doc.part_overrides.setdefault(part, {})
+        ov.update({k: v for k, v in kw.items() if v is not None})
+        for k in gone:
+            ov.pop(k, None)
+        if not ov:
+            del doc.part_overrides[part]
+        doc.rebuild()
+    if hidden is not None:      # the eye: a view setting like the desktop's toggle, so no undo step
+        doc.set_parts_hidden([part], hidden)
 
 
 class StudioTab(_Tab):

@@ -37,6 +37,7 @@ from .. import picking as PK
 from .. import sketch_ops as OPS
 from ..sketch import Sketch
 from .. import links
+from .. import mate_session as MS
 from .. import tabkinds as TK
 
 KINDS = TK.KINDS            # the registered tab kinds (freeshape/tabkinds.py), a live view
@@ -206,6 +207,9 @@ class _Tab:
 
     def project_edge(self, plane, pick):
         raise EngineError(f"only a Part Studio has edges to project (this tab is a {self.kind})")
+
+    def mate_dialog(self, verb, dialog, arg=None):
+        raise EngineError(f"only an Assembly has mates (this tab is a {self.kind})")
 
 
 def apply_part_override(doc, edit):
@@ -936,6 +940,74 @@ class AssemblyTab(_ConsumerTab):
     def _move_end(self, edit):
         self._drag_close()
 
+    # -- mates from a mate dialog (I10.5): the edits its accept sends, checked here because any client may send them
+    def _checked_mate(self, edit):
+        m = _need(edit, "mate")
+        if not isinstance(m, dict) or not isinstance(m.get("id"), str) or m.get("type") not in A.MATE_TYPES:
+            raise EngineError("mate: must be a mate dict with an id and a mate type")
+        m = copy.deepcopy(m)
+        for side in ("a", "b"):
+            c = m.get(side)
+            fr = c.get("frame") if isinstance(c, dict) else None
+            if not isinstance(fr, dict) or not all(isinstance(fr.get(k), (list, tuple)) and len(fr[k]) == 3
+                                                   for k in ("o", "z", "x")):
+                raise EngineError(f"mate.{side}: must be a connector with a frame")
+            self._instance(c.get("inst"))
+        if m["a"]["inst"] == m["b"]["inst"]:
+            raise EngineError(MS.SAME_PART)
+        m.setdefault("name", A.MATE_TYPES[m["type"]][0])
+        return m
+
+    def _add_mate(self, edit):
+        m = self._checked_mate(edit)
+        if self.doc.mate(m["id"]) is not None or self.doc.instance(m["id"]) is not None:
+            raise EngineError(f"mate.id: {m['id']!r} is in use")
+        self.doc.add_mate(m)
+
+    def _replace_mate(self, edit):
+        m = self._checked_mate(edit)
+        self._mate(m["id"])
+        self.doc.replace_mate(m)
+
+    # -- mate dialog sessions (I10.5): {dialog id: MateSession}, kept here, never in the saved data
+    def mate_dialog(self, verb, dialog, arg=None):
+        sessions = self.__dict__.setdefault("mate_sessions", {})
+        if verb == "close":
+            sessions.pop(dialog, None)
+            return None
+        self.sync()
+        if verb == "open":
+            if dialog in sessions:
+                raise EngineError(f"mate dialog {dialog!r} is already open")
+            try:
+                s = MS.MateSession.start(self.doc, arg.get("type"), arg.get("mate"),
+                                         [tuple(p) for p in arg.get("picks") or ()])
+            except MS.MateSessionError as e:
+                raise EngineError(str(e)) from e
+            sessions[dialog] = s
+            return {**s.view(), **s.preview_detached()}
+        s = sessions.get(dialog)
+        if s is None:
+            raise EngineError(f"no mate dialog {dialog!r} on this tab")
+        if verb == "update":
+            try:
+                refused = s.apply(arg)
+            except MS.MateSessionError as e:
+                raise EngineError(str(e)) from e
+            got = s.preview_detached()
+            if refused:
+                got["error"] = refused
+            return {**s.view(), **got}
+        if verb == "result":
+            if not s.is_new and self.doc.mate(s.mate["id"]) is None:
+                raise EngineError(f"the mate {s.mate.get('name')!r} was deleted")
+            try:
+                m = s.result()
+            except MS.MateSessionError as e:
+                raise EngineError(str(e)) from e
+            return {"op": "add_mate" if s.is_new else "replace_mate", "mate": plain(m)}
+        raise EngineError(f"unknown mate dialog request {verb!r}")
+
 
 class DrawingTab(_ConsumerTab):
     kind = "drawing"
@@ -1164,6 +1236,18 @@ class InProcessEngine(Engine):
 
     def feature(self, tab, feature):
         return self._get(tab).feature_info(feature)
+
+    def mate_dialog_open(self, tab, dialog, spec):
+        return self._get(tab).mate_dialog("open", dialog, spec)
+
+    def mate_dialog_update(self, tab, dialog, changes):
+        return self._get(tab).mate_dialog("update", dialog, changes)
+
+    def mate_dialog_result(self, tab, dialog):
+        return self._get(tab).mate_dialog("result", dialog)
+
+    def mate_dialog_close(self, tab, dialog):
+        return self._get(tab).mate_dialog("close", dialog)
 
     def start_feature(self, tab, type, picks):
         return self._get(tab).start_feature(type, picks)

@@ -41,6 +41,9 @@ Routes (an exact table; no part of a request is ever joined to a file path):
     POST /documents/<id>/tabs/<tab>/dialog/<did>/update|accept|cancel
     GET  /documents/<id>/tabs/<tab>/dialog/<did>/preview         the dialog's newest preview (I5.4), wire format
     GET  /documents/<id>/tabs/<tab>/dialog/<did>/base            the model the dialog picks against (F3), wire format
+    POST /documents/<id>/tabs/<tab>/mates/dialog                 open a mate dialog on an Assembly (I10.5; see
+                                "Mate dialogs" below)
+    POST /documents/<id>/tabs/<tab>/mates/dialog/<did>/update|accept|cancel
     POST /documents/<id>/save                  body: {} ; reply {"saved": [ids]}
     GET  /ws?client=<id>[&document=<id>]       the live channel (WebSocket, JSON text messages; `_Server._socket`)
   On a server over one Document folder the old un-prefixed routes stay as aliases for that Document:
@@ -152,6 +155,49 @@ At most MAX_DIALOGS (8) per client and MAX_DIALOGS_TOTAL (256) in all (409). Bod
           empty and its feature list is the committed one. A client draws it under the preview while the dialog is
           open and resolves picks on it (refs with "dialog": did), so what the pen hits is what the feature can use.
           It is built on each request, from the committed model; fetch it again after a `changed` push.
+
+Mate dialogs (I10.5, freeshape/mate_session.py, the desktop's MateDialog). A mate dialog adds a mate to an Assembly
+tab or edits one. X-Client-Id is required, ownership, expiry and the limits (counted together with the feature
+dialogs) are as for "Dialogs". The dialog itself (a MateSession) lives in the Assembly tab's engine worker
+(contract.Engine.mate_dialog_open / _update / _result / _close); a worker that is restarted loses it, and its next
+update is a 400. Every reply but cancel's is a preview: the session previews the mate as the desktop does
+(place_for_mate, then solve) on the committed Assembly and puts it back, so nothing changes until accept (no
+revision, undo step or dirty flag; a read-only Document may open and update one). Bodies take no unknown field.
+  open    POST .../tabs/<tab>/mates/dialog  body {"type": a mate type ("fastened", "revolute", "slider", "cylindrical",
+          "planar", "ball", "pin_slot", "parallel", ...: assembly.MATE_TYPES), "picks": [side pick, at most 2]
+          (optional; the first fills a, the next on another instance b; one that cannot be used is dropped)} for a
+          new mate, or {"mate": mate id} to edit a stored one. 201 {"dialog": did, "document", "tab", "revision",
+          ...the view below}. Fewer than two parts in the Assembly is a 400 "Insert at least two parts before adding a
+          mate"; so is an unknown type or mate, or a tab that is not an Assembly.
+  view    {"mate": the mate id (a new mate's is taken at open), "new": bool, "type", "name", "flip": bool,
+           "offset": mm, "angle": degrees, "a": side or null, "b": side or null,
+           "placements": {instance id: 4x4 nested lists}, every instance as previewed (a mate with an empty side
+                         previews as the Assembly solves without it),
+           "values": [{"dof": "rz" | "tz" | "tx" | "ty", "label", "value", "unit": "°" | "mm"}], the mate's Mate
+                     values as previewed (empty for fastened and ball),
+           "error": null, or the message of a pick the update refused, else the previewed mate's solver error,
+           "dof": the previewed Assembly's degrees of freedom}
+          side = {"instance", "kind": "face" | "edge" | "connector" | "named" | ..., "index": the 1-based element
+                  index (null for a connector), "connector": the connector's id (null for a face or edge),
+                  "what": "circular edge", "flat face", ..., "world": {"o", "z", "x"} the connector frame placed by
+                  the previewed placement of its instance}
+  side pick  {"instance": id, "kind": "face" | "edge", "index": 1-based element index (PartOut.names counts),
+          "point": [x, y, z] world click point (optional; picks the end of a round face; ignored for an edge)},
+          through AssemblyDoc.connector; or {"instance": id, "connector": id} for the instance's own connector
+          (a Part Studio's published mate connector or a Standard part's named one, I10.3), through named_connector.
+  update  POST .../mates/dialog/<did>/update  body any of {"type", "name": text, "a": side pick or null (clears it),
+          "b": the same, "flip": bool, "offset": number (mm), "angle": number (degrees), "turn90": true (the angle
+          goes up 90 degrees, modulo 360, after any "angle")}, applied in that order. 200 {"dialog", "document",
+          "tab", "revision", ...the view}. A pick that cannot be used, or a side on the instance the other side is
+          on ("Pick the second connector on a different part."), leaves that side as it was and its message is the
+          reply's "error"; a new mate whose name is still a default one is renamed with its type. An unknown key or
+          a value of the wrong type is a 400 naming it and nothing is applied.
+  accept  POST .../mates/dialog/<did>/accept  body {}; sends add_mate (new) or replace_mate (edited; it keeps its
+          id), one undo step, closes the dialog, 200 {"rebuilt", "revision", "mate": its id}, and the `changed` push.
+          A side still empty is a 400 "Pick a mate connector on each of the two parts first." and the dialog stays
+          open; 423 on a read-only Document. Limits are not edited here: an edited mate keeps the limits its type
+          still has. Rename, suppress and delete of mates are the edit route's rename, set_suppressed, delete_mates.
+  cancel  POST .../mates/dialog/<did>/cancel  body {}; closes it, changes nothing, 200 {"cancelled": true}.
 
 The live channel (I1.5). `GET /ws?client=<id>` (the id is 8..64 of letters, digits, `_`, `-`; the server makes one
 when it is missing) upgrades after the same Host and Origin checks as every route. `&document=<id>` subscribes to
@@ -340,8 +386,11 @@ _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POS
 _DIALOG_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})"
                           r"(?:/features/(?:([A-Za-z0-9_.-]{1,64})/(dialog)|(dialog|types))"
                           r"|/dialog/([0-9a-f]{16})/(update|accept|cancel|preview|base))$")
+_MATE_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/mates/dialog"
+                        r"(?:/([0-9a-f]{16})/(update|accept|cancel))?$")
 MAX_PICKS_QUERY = 8000          # longest query string of GET .../features/types
-MAX_DIALOGS = 8                 # open dialogs one client may hold
+MAX_DIALOGS = 8                 # open dialogs one client may hold (feature and mate dialogs together)
+MATE_UPDATE_KEYS = ("type", "name", "a", "b", "flip", "offset", "angle", "turn90")
 MAX_DIALOGS_TOTAL = 256         # and all clients together
 _FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
 _EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST", "rename": "POST", "refs": "POST"}
@@ -1172,6 +1221,9 @@ class _Server:
         single-Document server and carry doc_id None (the caller fills in the one Document)."""
         if path == "/documents":
             return "documents", None, None, None             # GET lists, POST creates
+        m = _MATE_PATH.match(path)
+        if m is not None:
+            return "mates." + (m.group(4) or "open"), m.group(1), m.group(2), "POST"
         m = _DIALOG_PATH.match(path)
         if m is not None:
             verb = "open" if m.group(4) else ("new" if m.group(5) == "dialog" else m.group(5) or m.group(7))
@@ -1333,6 +1385,8 @@ class _Server:
             return await self._refs(d, tab, body, request)
         if route.startswith("dialog."):
             return await self._dialog(d, tab, route[7:], body, request)
+        if route.startswith("mates."):
+            return await self._mate_dialog(d, tab, route[6:], body, request)
         if route == "tab":
             return await self._delete_tab(d, tab)
         if route == "outputs":
@@ -1689,6 +1743,77 @@ class _Server:
             table = (self.clients.get(client).data or {}).get("dialogs") or {}
             for did in [k for k, (doc, _) in table.items() if doc == doc_id]:
                 del table[did]
+            mates = (self.clients.get(client).data or {}).get("mate_dialogs") or {}
+            for did in [k for k, (doc, _) in mates.items() if doc == doc_id]:
+                del mates[did]
+
+    # ------------------------------------------------------------------ mate dialogs (I10.5)
+    def _client_mate_dialogs(self, client, make=False):
+        """The client's {dialog id: (Document id, tab id)} table of mate dialogs (the dialogs themselves live in the
+        Assembly tab's engine worker, freeshape/mate_session.py), or None. `make` as in `_client_dialogs`."""
+        entry = self.clients.get(client)
+        if entry is None and make:
+            self._client_dialogs(client, make=True)
+            entry = self.clients.get(client)
+        return None if entry is None else entry.data.setdefault("mate_dialogs", {})
+
+    def _open_dialog_count(self, client=None):
+        """Feature and mate dialogs open for `client`, or for every client when None."""
+        def of(c):
+            data = self.clients.get(c).data or {}
+            return len(data.get("dialogs") or {}) + len(data.get("mate_dialogs") or {})
+        return of(client) if client is not None else sum(of(c) for c in self.clients.ids())
+
+    async def _close_mates(self, items):
+        """Tell the workers to forget mate dialogs [(Document id, tab, dialog id)] (an expired client's)."""
+        for doc_id, tab, did in items:
+            d = self.docs.get(doc_id)
+            if d is None:
+                continue
+            try:
+                await self._in_session(d, lambda: d.session.close_mate_dialog(tab, did))
+            except Exception:                                    # noqa: BLE001  (the tab or its worker went away)
+                pass
+
+    async def _mate_dialog(self, d, tab, verb, body, request):
+        """The mate dialog routes; see "Mate dialogs" in the module docstring."""
+        client = self._dialog_client(request)
+        allowed = {"open": ("type", "picks", "mate"), "update": MATE_UPDATE_KEYS}.get(verb, ())
+        extra = sorted(str(k) for k in body if k not in allowed)
+        if extra:
+            return self._fail(400, f"{extra[0][:40]}: unknown field")
+        if verb == "open":
+            if "mate" in body and ("type" in body or "picks" in body):
+                return self._fail(400, "mate: give either a mate to edit or a type and picks, not both")
+            table = self._client_mate_dialogs(client, make=True)
+            if self._open_dialog_count(client) >= MAX_DIALOGS:
+                return self._fail(409, f"a client may hold at most {MAX_DIALOGS} open dialogs")
+            if self._open_dialog_count() >= MAX_DIALOGS_TOTAL:
+                return self._fail(409, "too many open dialogs")
+
+            def work():
+                did, got = d.session.open_mate_dialog(tab, body.get("type"), body.get("mate"), body.get("picks", []))
+                return did, got, d.revisions.get(tab)
+            did, got, revision = await self._in_session(d, work)
+            table[did] = (d.id, tab)
+            return self._json(201, {"dialog": did, "document": d.id, "tab": tab, "revision": revision, **got})
+        did = _MATE_PATH.match(request.raw_path.split("?", 1)[0]).group(3)
+        table = self._client_mate_dialogs(client)
+        if table is None or table.get(did) != (d.id, tab):
+            return self._fail(404, "not found")                  # another client's dialog is not found either
+        if verb == "update":
+            got = await self._in_session(d, lambda: (d.session.update_mate_dialog(tab, did, body),
+                                                     d.revisions.get(tab)))
+            return self._json(200, {"dialog": did, "document": d.id, "tab": tab, "revision": got[1], **got[0]})
+        if verb == "cancel":
+            table.pop(did, None)
+            await self._close_mates([(d.id, tab, did)])
+            return self._json(200, {"cancelled": True})
+        edit = await self._in_session(d, lambda: d.session.mate_dialog_edit(tab, did))       # accept
+        rebuilt = await self._edit(d, tab, edit, client, None)
+        table.pop(did, None)
+        await self._close_mates([(d.id, tab, did)])
+        return self._json(200, {"rebuilt": rebuilt, "revision": d.revisions.get(tab), "mate": edit["mate"]["id"]})
 
     async def _dialog(self, d, tab, verb, body, request):
         """The dialog routes; see "Dialogs" in the module docstring."""
@@ -2038,6 +2163,9 @@ class _Server:
         """The registry's on_expire: an expired client's unfinished sketch is kept for the autosave (on the event
         loop, then off it), then `then(entry)` (the caller's own callback) runs."""
         def expired(entry):
+            mates = (entry.data or {}).pop("mate_dialogs", None) or {}
+            if mates:
+                self._spawn(self._close_mates([(doc, tab, did) for did, (doc, tab) in mates.items()]))
             sk = (entry.data or {}).pop("sketch", None)
             if sk is not None:
                 self._spawn(self._keep_expired(sk))

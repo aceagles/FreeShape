@@ -104,6 +104,8 @@ ASSEMBLY_OPS = {
     "move_begin": "instance: start a drag; remembers every placement and opens one undo step",
     "move_to": "T (4x4 world motion applied to the placements at move_begin; latest wins), then solve",
     "move_end": "close the drag (nothing moved: the undo step is dropped)",
+    "add_mate": "mate (a whole mate dict, as a mate dialog's result gives it; its id must be free): one undo step",
+    "replace_mate": "mate (a whole mate dict, matched by its id): one undo step",
     "undo": "", "redo": "",
     "save": "path (optional)",
 }
@@ -475,6 +477,34 @@ class Engine(abc.ABC):
                         sketch coordinates,
              "ref": the reference the entity stores as `src` so it follows the part, or None}.
         EngineError for an edge that is neither straight nor circular on the plane; BadPick for a malformed pick."""
+
+    # ------------------------------------------------------------------ mate dialogs (I10.5, freeshape/mate_session.py)
+    @abc.abstractmethod
+    def mate_dialog_open(self, tab, dialog, spec) -> dict:
+        """Open a mate dialog `dialog` (an id the caller picks) on an Assembly tab: a MateSession kept in the tab (in
+        its worker for the process executor) until `mate_dialog_close`. `spec` is {"type": a mate type, "picks":
+        [(instance, "face" | "edge", 0-based index, point or None)]} for a new mate, or {"mate": id} for a stored one.
+        A QUERY for the tab: no edit, no revision, no undo step; the session previews and puts the Assembly back
+        (MateSession.preview_detached). Returns `mate_dialog_update`'s answer. EngineError with the desktop's
+        message for an Assembly with fewer than two parts, an unknown type or mate, an id already open, or a tab
+        that is not an Assembly."""
+
+    @abc.abstractmethod
+    def mate_dialog_update(self, tab, dialog, changes) -> dict:
+        """Apply `changes` (mate_session.parse_changes's output) to the open mate dialog and preview it. A QUERY.
+        Returns {**MateSession.view(), "placements": {instance id: 4x4} as previewed, "values": [{"dof", "label",
+        "value", "unit"}], "error": a refused pick's message, else the previewed mate's error, else None,
+        "dof": the previewed degrees of freedom}. EngineError for a dialog that is not open."""
+
+    @abc.abstractmethod
+    def mate_dialog_result(self, tab, dialog) -> dict:
+        """The edit that accepts the open mate dialog: {"op": "add_mate" | "replace_mate", "mate": the mate}. A QUERY:
+        the dialog stays open (the caller submits the edit, then closes it). EngineError with the desktop's message
+        while a side is empty, or for a dialog that is not open, or an edited mate that is gone."""
+
+    @abc.abstractmethod
+    def mate_dialog_close(self, tab, dialog) -> None:
+        """Forget the mate dialog (nothing changes; a dialog that is not open is no error)."""
 
     # ------------------------------------------------------------------ the Link graph
     def rebuild_dependents(self, tab) -> list:

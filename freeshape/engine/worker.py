@@ -357,6 +357,8 @@ class _Worker:
             return self.engine.sketch_frame(self.tab, arg)
         if op == "project_edge":                  # a query: one model edge as the sketch entity it gives (I7.1)
             return self.engine.project_edge(self.tab, arg["plane"], arg["pick"])
+        if op == "mate_dialog":                   # an Assembly's mate dialog session (I10.5): a query, kept in this worker
+            return self.engine._get(self.tab).mate_dialog(arg["verb"], arg["dialog"], arg.get("arg"))
         if op == "data":
             return self.data()
         raise EngineError(f"unknown worker call {op!r}")

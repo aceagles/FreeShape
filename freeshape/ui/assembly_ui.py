@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from .. import kernel as K
 from .. import assembly as A
+from ..mate_session import NEED_TWO_PARTS, VALUE_LABELS, MateSession, MateSessionError, can_start, value_unit
 from . import filedlg
 from .icons import icon
 from . import preview_rows as PR
@@ -78,14 +79,8 @@ def _hline():
 
 # =========================================================================== left panel
 
-# What each Mate value is called in the UI, and its unit (rotations in degrees, translations in mm).
-VALUE_LABELS = {"rz": "Rotation", "tz": "Slide", "tx": "Slide X", "ty": "Slide Y"}
-
-
-def value_unit(dof):
-    return "°" if dof.startswith("r") else "mm"
-
-
+# What each Mate value is called in the UI, and its unit (rotations in degrees, translations in mm): VALUE_LABELS and
+# value_unit, imported from freeshape/mate_session.py.
 def value_rows(mate):
     """(freedom, label, text, unit) for each Mate value of `mate`; empty for fastened and ball."""
     vals = mate.get("values") or {}
@@ -991,10 +986,8 @@ class MateDialog(QFrame):
         _floating(self)
         self.ctl = ctl
         self.doc = ctl.doc
-        self.mate = copy.deepcopy(mate)
+        self.session = MateSession(self.doc, mate, is_new)      # the state, picks and preview (freeshape/mate_session.py)
         self.is_new = is_new
-        self._backup = copy.deepcopy(self.doc.instances)
-        self._backup_mates = copy.deepcopy(self.doc.mates)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._preview)
@@ -1094,6 +1087,14 @@ class MateDialog(QFrame):
         self.show()
         self.schedule()
 
+    @property
+    def mate(self):
+        return self.session.mate
+
+    @mate.setter
+    def mate(self, m):
+        self.session.mate = m
+
     def _num_row(self, label, value, key, unit):
         w = QWidget()
         h = QHBoxLayout(w)
@@ -1126,7 +1127,7 @@ class MateDialog(QFrame):
 
     # ------------------------------------------------------------------ state
     def set_type(self, t, preview=True):
-        self.mate["type"] = t
+        self.session.set_type(t, rename=False)          # the title carries the name; accept reads it from there
         for k, b in self.type_buttons.items():
             b.setChecked(k == t)
         label, tip = A.MATE_TYPES[t]
@@ -1151,11 +1152,7 @@ class MateDialog(QFrame):
 
     # read-only Mate values: one row per freedom, kept current while the document changes
     def _refresh_values(self):
-        live = self.doc.mate(self.mate["id"]) if not self.is_new else None
-        src = dict(self.mate)
-        if live is not None and live["type"] == self.mate["type"]:
-            src["values"] = live.get("values")
-        rows = value_rows(src)
+        rows = value_rows(self.session.values_source())
         if list(self.value_labels) != [r[0] for r in rows]:
             while self.values_lay.count():
                 self.values_lay.takeAt(0).widget().deleteLater()
@@ -1242,13 +1239,12 @@ class MateDialog(QFrame):
             self.doc.listeners.remove(self._doc_notified)
 
     def _rotate90(self):
-        a = (float(self.mate.get("angle", 0.0) or 0.0) + 90.0) % 360.0
-        self.mate["angle"] = a
+        a = self.session.rotate90()
         self.angle.setText(fmt(a))
         self.schedule()
 
     def _clear(self, side):
-        self.mate[side] = None
+        self.session.clear(side)
         self.activate(self.fa if side == "a" else self.fb)
         self._refresh_fields()
         self.schedule()
@@ -1296,20 +1292,18 @@ class MateDialog(QFrame):
 
     def pick_named(self, iid, cid):
         """Use instance `iid`'s own published connector `cid` for the active field."""
+        self._picked(lambda side: self.session.pick_named(side, iid, cid))
+
+    def _picked(self, pick):
+        """Run `pick(side)` (a MateSession pick) for the active field; show its refusal, or move on to the next field."""
         try:
-            c = self.doc.named_connector(iid, cid)
-        except Exception as e:
-            self._error(f"Can't use that: {e}")
+            nxt = pick("a" if self.active is self.fa else "b")
+        except MateSessionError as e:
+            self._error(str(e))
             return
-        side = "a" if self.active is self.fa else "b"
-        other = self.mate.get("b" if side == "a" else "a")
-        if other and other["inst"] == iid:
-            self._error("Pick the second connector on a different part.")
-            return
-        self.mate[side] = c
-        if side == "a" and not self.mate.get("b"):
+        if nxt == "b":
             self.activate(self.fb)
-        elif side == "b" and not self.mate.get("a"):
+        elif nxt == "a":
             self.activate(self.fa)
         self._refresh_fields()
         self.schedule()
@@ -1381,23 +1375,7 @@ class MateDialog(QFrame):
 
     def pick_sketch(self, iid, eid, role):
         """Use `role` of sketch entity `eid` on Sketch instance `iid` for the active field."""
-        try:
-            c = self.doc.sketch_end(iid, eid, role)
-        except Exception as e:
-            self._error(f"Can't use that: {e}")
-            return
-        side = "a" if self.active is self.fa else "b"
-        other = self.mate.get("b" if side == "a" else "a")
-        if other and other["inst"] == iid:
-            self._error("Pick the second connector on a different part.")
-            return
-        self.mate[side] = c
-        if side == "a" and not self.mate.get("b"):
-            self.activate(self.fb)
-        elif side == "b" and not self.mate.get("a"):
-            self.activate(self.fa)
-        self._refresh_fields()
-        self.schedule()
+        self._picked(lambda side: self.session.pick_sketch(side, iid, eid, role))
 
     def handle_miss(self):
         """A click that hit no face or edge: it may still be on a connector triad or a sketch point floating off the part."""
@@ -1437,38 +1415,10 @@ class MateDialog(QFrame):
         click = vp.surface_point(*vp.last_click) if vp.last_click else None
         if pick.kind == "edge" and vp.last_click:
             click = None
-        try:
-            c = self.doc.connector(iid, pick.kind, idx, click, snap)
-        except Exception as e:
-            self._error(f"Can't use that: {e}")
-            return
-        side = "a" if self.active is self.fa else "b"
-        other = self.mate.get("b" if side == "a" else "a")
-        if other and other["inst"] == iid:
-            self._error("Pick the second connector on a different part.")
-            return
-        self.mate[side] = c
-        if side == "a" and not self.mate.get("b"):
-            self.activate(self.fb)
-        elif side == "b" and not self.mate.get("a"):
-            self.activate(self.fa)
-        self._refresh_fields()
-        self.schedule()
+        self._picked(lambda side: self.session.pick_element(side, iid, pick.kind, idx, click, snap))
 
     def _apply_preselection(self, picks):
-        for pk in picks:
-            if pk.kind not in ("face", "edge"):
-                continue
-            side = "a" if not self.mate.get("a") else "b" if not self.mate.get("b") else None
-            if side is None:
-                break
-            iid, idx = pk.key
-            if side == "b" and self.mate["a"]["inst"] == iid:
-                continue
-            try:
-                self.mate[side] = self.doc.connector(iid, pk.kind, idx, None)
-            except Exception:
-                pass
+        self.session.preselect([(pk.key[0], pk.kind, pk.key[1], None) for pk in picks if pk.kind in ("face", "edge")])
         self.ctl.w.viewport.clear_selection()
 
     def _error(self, text):
@@ -1481,23 +1431,10 @@ class MateDialog(QFrame):
         self._timer.start(30)
 
     def _restore(self):
-        self.doc.instances = copy.deepcopy(self._backup)
-        self.doc.mates = copy.deepcopy(self._backup_mates)
+        self.session.restore()
 
     def _preview(self):
-        self._restore()
-        m = self.mate
-        if m.get("a") and m.get("b"):
-            mates = [x for x in self.doc.mates if x["id"] != m["id"]]
-            mates.append(m)
-            self.doc.mates = mates
-            self.doc.place_for_mate(m)
-            self.doc.solve()
-            err = self.doc.errors.get(m["id"])
-            self._error(err or "")
-        else:
-            self.doc.solve()
-            self._error("")
+        self._error(self.session.preview())
         self._refresh_values()
         self.ctl.show_scene()
         self.ctl.update_triads()
@@ -1505,19 +1442,17 @@ class MateDialog(QFrame):
     def accept(self):
         self._timer.stop()
         self.mate["name"] = self.title.text().strip() or self.mate["name"]
-        if not (self.mate.get("a") and self.mate.get("b")):
-            self._error("Pick a mate connector on each of the two parts first.")
+        try:
+            self.session.check_complete()
+        except MateSessionError as e:
+            self._error(str(e))
             return
         try:
             self.limits = self.limit_values()
         except ValueError as e:
             self._error(str(e))
             return
-        lim = {d: v for d, v in (self.mate.get("limits") or {}).items() if d in self.limits}
-        if lim:
-            self.mate["limits"] = lim          # drop limits on freedoms a changed type no longer has
-        else:
-            self.mate.pop("limits", None)
+        self.session.prune_limits()            # drop limits on freedoms a changed type no longer has
         self._detach()
         self._restore()
         self.accepted.emit()
@@ -1525,8 +1460,7 @@ class MateDialog(QFrame):
     def reject(self):
         self._timer.stop()
         self._detach()
-        self._restore()
-        self.doc.solve()
+        self.session.cancel()
         self.rejected.emit()
 
     def keyPressEvent(self, e):
@@ -2371,8 +2305,8 @@ class AssemblyController:
             if self.mate_dialog is not None and self.mate_dialog.is_new and edit_mid is None:
                 self.mate_dialog.set_type(mtype)
             return
-        if len([i for i in self.doc.instances if i["id"] in self.doc.parts]) < 2:
-            w.status.showMessage("Insert at least two parts before adding a mate", 5000)
+        if not can_start(self.doc):
+            w.status.showMessage(NEED_TWO_PARTS, 5000)
             return
         self.close_insert()
         if edit_mid:

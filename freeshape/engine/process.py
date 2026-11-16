@@ -618,6 +618,29 @@ class ProcessEngine(Engine):
         """One model edge as a sketch entity, from the tab's worker (contract.Engine.project_edge). A query."""
         return self._call(self._get(tab), "project_edge", {"plane": plane, "pick": pick})
 
+    def _mate_dialog(self, tab, verb, dialog, arg=None):
+        t = self._get(tab)
+        if t.kind != "assembly":
+            raise EngineError(f"only an Assembly has mates (this tab is a {t.kind})")
+        return self._call(t, "mate_dialog", {"verb": verb, "dialog": dialog, "arg": copy.deepcopy(arg)})
+
+    def mate_dialog_open(self, tab, dialog, spec):
+        """Open a mate dialog in the tab's worker (contract.Engine.mate_dialog_open). A query: no edit is logged. A
+        worker that is restarted loses its mate dialogs."""
+        return self._mate_dialog(tab, "open", dialog, spec)
+
+    def mate_dialog_update(self, tab, dialog, changes):
+        """Change and preview a mate dialog in the tab's worker (contract.Engine.mate_dialog_update). A query."""
+        return self._mate_dialog(tab, "update", dialog, changes)
+
+    def mate_dialog_result(self, tab, dialog):
+        """The edit that accepts a mate dialog (contract.Engine.mate_dialog_result). A query."""
+        return self._mate_dialog(tab, "result", dialog)
+
+    def mate_dialog_close(self, tab, dialog):
+        """Forget a mate dialog in the tab's worker (contract.Engine.mate_dialog_close)."""
+        return self._mate_dialog(tab, "close", dialog)
+
     def start_feature(self, tab, type, picks):
         """A new feature seeded from picks (contract.Engine.start_feature). A query."""
         return self._call(self._get(tab), "start_feature", {"type": type, "picks": picks})

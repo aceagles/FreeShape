@@ -71,6 +71,7 @@ from . import links
 from . import dialog_schema as DSC
 from . import features as F
 from . import picking as PK
+from . import mate_session as MS
 from .expr import ExprError, fmt, has_vars, parse_number
 from . import tabkinds as TK
 from .docstore import ChainedBlobs, HeldBlobs
@@ -977,6 +978,62 @@ class DocumentSession:
             self._state[tid] = ("crashed", str(e))
         except EngineError as e:
             self._state[tid] = ("error", str(e))
+
+    # ------------------------------------------------------------------ mate dialogs (I10.5)
+    def _mate_call(self, tab, call):
+        self._need_open(tab)
+        try:
+            return self._retry(tab, call)
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
+
+    def open_mate_dialog(self, tab, mtype=None, mate=None, picks=()):
+        """Open a mate dialog on an Assembly tab, for a new mate of `mtype` (seeded from `picks`, the route's
+        [{"instance", "kind", "index" (1-based), "point"?}]) or for the stored mate of id `mate`. A query: nothing
+        changes. Returns (dialog id, the engine's answer, see contract.Engine.mate_dialog_update). The dialog lives in
+        the tab's worker until `close_mate_dialog`. SessionError for a malformed request, an Assembly with fewer than
+        two parts (the desktop's message), an unknown type or mate, or a tab that is not an Assembly."""
+        import secrets
+        if mate is not None:
+            if not isinstance(mate, str) or not 1 <= len(mate) <= 64:
+                raise SessionError("mate: must be a mate id")
+            spec = {"mate": mate}
+        else:
+            if mtype not in MS.A.MATE_TYPES:
+                raise SessionError(f"type: not a mate type ({', '.join(MS.A.MATE_TYPES)})")
+            try:
+                spec = {"type": mtype, "picks": MS.parse_picks(list(picks) if isinstance(picks, (list, tuple))
+                                                              else picks)}
+            except ValueError as e:
+                raise SessionError(str(e)) from e
+        did = secrets.token_hex(8)
+        return did, self._mate_call(tab, lambda: self._eng.mate_dialog_open(tab, did, spec))
+
+    def update_mate_dialog(self, tab, dialog, changes):
+        """Apply an update body ({type, name, a, b, flip, offset, angle, turn90}, see mate_session.parse_changes) to an
+        open mate dialog and preview it; the engine's answer. A query. SessionError for a malformed body (naming the
+        field; nothing is applied) or a dialog that is not open."""
+        try:
+            parsed = MS.parse_changes(changes)
+        except ValueError as e:
+            raise SessionError(str(e)) from e
+        return self._mate_call(tab, lambda: self._eng.mate_dialog_update(tab, dialog, parsed))
+
+    def mate_dialog_edit(self, tab, dialog):
+        """The edit that accepts an open mate dialog ({"op": "add_mate" | "replace_mate", "mate"}); the dialog stays
+        open. SessionError with the desktop's message while a side is empty."""
+        return self._mate_call(tab, lambda: self._eng.mate_dialog_result(tab, dialog))
+
+    def close_mate_dialog(self, tab, dialog):
+        """Forget a mate dialog (cancel, or after its accept). Nothing changes."""
+        self._mate_call(tab, lambda: self._eng.mate_dialog_close(tab, dialog))
+
+    def accept_mate_dialog(self, tab, dialog):
+        """Accept an open mate dialog: its edit through `submit_edit` (one undo step), then the dialog is closed.
+        Returns the rebuilt tab ids. A refusal leaves the dialog open."""
+        rebuilt = self.submit_edit(tab, self.mate_dialog_edit(tab, dialog))
+        self.close_mate_dialog(tab, dialog)
+        return rebuilt
 
     # ------------------------------------------------------------------ sketch sessions (I7.3)
     def sketch_feature(self, tab, fid):

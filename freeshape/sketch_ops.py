@@ -424,6 +424,130 @@ def polygon(sk: Sketch, centre, corner, sides: int, mode: str = "inscribed", con
     return lines, circ
 
 
+# --------------------------------------------------------------------------- drawing tools
+# The Qt-free body of the sketcher's rectangle, centre rectangle, circle and three-point / centre arc tools.
+# Each takes picks: a position (sketch coords), or (position, src) where src says which point the pick is:
+# None to make a new one, a point id to reuse, or a callable returning a point id (the desktop's snapping, which
+# is called at the moment the point is needed so point ids come out in the order the tools always made them).
+
+def _pick(p):
+    if isinstance(p, tuple) and len(p) == 2 and not np.isscalar(p[0]) and not isinstance(p[0], float):
+        return np.asarray(p[0], float), p[1]
+    return np.asarray(p, float), None
+
+
+def _pid(sk: Sketch, uv, src):
+    if src is None:
+        return sk.add_point(*uv)
+    return src() if callable(src) else src
+
+
+def circumcenter(a, b, c):
+    """Centre of the circle through three points, or None when they are in line."""
+    a, b, c = map(np.asarray, (a, b, c))
+    d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
+    if abs(d) < 1e-12:
+        return None
+    ux = ((a @ a) * (b[1] - c[1]) + (b @ b) * (c[1] - a[1]) + (c @ c) * (a[1] - b[1])) / d
+    uy = ((a @ a) * (c[0] - b[0]) + (b @ b) * (a[0] - c[0]) + (c @ c) * (b[0] - a[0])) / d
+    return np.array([ux, uy])
+
+
+def _four_lines(sk: Sketch, a, b, c, d, construction):
+    l1 = sk.add_line(a, b, construction)
+    l2 = sk.add_line(b, c, construction)
+    l3 = sk.add_line(c, d, construction)
+    l4 = sk.add_line(d, a, construction)
+    sk.add_constraint("horizontal", l1)
+    sk.add_constraint("horizontal", l3)
+    sk.add_constraint("vertical", l2)
+    sk.add_constraint("vertical", l4)
+    return [l1, l2, l3, l4]
+
+
+def rect(sk: Sketch, corner, opposite, construction=False):
+    """Axis-aligned rectangle between two opposite corners: four lines, two horizontal and two vertical.
+    Returns the line ids, from the first corner round to it."""
+    (u0, s0), (u1, s1) = _pick(corner), _pick(opposite)
+    if np.linalg.norm(u1 - u0) < TOL:
+        raise ValueError("Rectangle corners are in the same place")
+    a = _pid(sk, u0, s0)
+    c = _pid(sk, u1, s1)
+    b = sk.add_point(u1[0], u0[1])
+    d = sk.add_point(u0[0], u1[1])
+    return _four_lines(sk, a, b, c, d, construction)
+
+
+def center_rect(sk: Sketch, centre, corner, construction=False):
+    """Rectangle about `centre` through `corner`. As rect, plus a construction diagonal marked helper with the
+    centre as its midpoint, so the centre stays in the middle when a side is dragged. Returns the four line
+    ids and then the diagonal's."""
+    (u0, s0), (u1, s1) = _pick(centre), _pick(corner)
+    if np.linalg.norm(u1 - u0) < TOL:
+        raise ValueError("Rectangle corner is at the centre")
+    ctr = _pid(sk, u0, s0)
+    half = u1 - u0
+    a = sk.add_point(*(u0 - half))
+    c = _pid(sk, u1, s1)
+    b = sk.add_point(u0[0] + half[0], u0[1] - half[1])
+    d = sk.add_point(u0[0] - half[0], u0[1] + half[1])
+    lines = _four_lines(sk, a, b, c, d, construction)
+    diag = sk.add_line(a, c, True)
+    sk.entities[diag]["helper"] = True
+    sk.add_constraint("midpoint", ctr, diag)
+    return lines + [diag]
+
+
+def circle(sk: Sketch, centre, radius: float, construction=False) -> str:
+    """Circle about `centre`. Returns its id."""
+    u0, s0 = _pick(centre)
+    if radius < 1e-6:
+        raise ValueError("Radius is too small")
+    return sk.add_circle(_pid(sk, u0, s0), radius, construction)
+
+
+def arc3(sk: Sketch, start, end, through, construction=False) -> str:
+    """Arc between two end picks passing through a third (the order the tool is clicked in). The centre is the
+    circumcentre; the ends are swapped when the counter-clockwise arc start-end would miss `through` (a clockwise
+    pick). The third pick is kept as a real point, point_on the arc, so the arc stays defined by its three points.
+    Returns the arc id."""
+    (p1, s1), (p2, s2), (p3, s3) = _pick(start), _pick(end), _pick(through)
+    ctr = circumcenter(p1, p2, p3)
+    if ctr is None:
+        raise ValueError("The three points are in line")
+    if not _ccw_contains(ctr, p1, p2, p3):
+        p1, s1, p2, s2 = p2, s2, p1, s1
+    c = sk.add_point(*ctr)
+    a = _pid(sk, p1, s1)
+    b = _pid(sk, p2, s2)
+    aid = sk.add_arc(c, a, b, construction)
+    m = _pid(sk, p3, s3)
+    if m not in (a, b, c):
+        sk.add_constraint("point_on", m, aid)
+        if m not in sk.points or not any(m in sk.entity_points(e) for e in sk.entities):
+            sk.add_point_entity(m)
+    return aid
+
+
+def arc_center(sk: Sketch, centre, start, end, sweep: float = 1.0, construction=False) -> str:
+    """Arc about `centre` from `start`; `end` only gives the direction of the arc's far end (it is moved onto
+    the circle through `start` unless it is an existing point). sweep < 0: the pen went clockwise, so the ends
+    swap. Returns the arc id."""
+    (cu, cs), (p1, s1), (p2, s2) = _pick(centre), _pick(start), _pick(end)
+    r = float(np.linalg.norm(p1 - cu))
+    if r < 1e-9:
+        raise ValueError("Arc radius is too small")
+    v = p2 - cu
+    if np.linalg.norm(v) > 1e-9:
+        p2 = cu + v / np.linalg.norm(v) * r
+    c = _pid(sk, cu, cs)
+    a = _pid(sk, p1, s1)
+    b = _pid(sk, p2, s2)
+    if sweep < 0:
+        a, b = b, a
+    return sk.add_arc(c, a, b, construction)
+
+
 # --------------------------------------------------------------------------- extend
 
 def _crossings_along(sk: Sketch, oid, a, d):

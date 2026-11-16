@@ -1395,30 +1395,13 @@ class Sketcher:
             if np.linalg.norm(uv - u0) < 1e-9:
                 return True
             self.push_undo()
+            first = (u0, lambda: self._point_at(u0, s0, self._first_cons))
+            second = (uv, lambda: self._point_at(uv, snap, icons))
             if t == "rect":
-                a = self._point_at(u0, s0, self._first_cons)
-                c = self._point_at(uv, snap, icons)
-                b = sk.add_point(uv[0], u0[1])
-                d = sk.add_point(u0[0], uv[1])
+                l1, l2 = OPS.rect(sk, first, second, cons)[:2]
             else:
-                ctr = self._point_at(u0, s0, self._first_cons)
-                half = uv - u0
-                a = sk.add_point(*(u0 - half))
-                c = self._point_at(uv, snap, icons)
-                b = sk.add_point(u0[0] + half[0], u0[1] - half[1])
-                d = sk.add_point(u0[0] - half[0], u0[1] + half[1])
-            l1 = sk.add_line(a, b, cons)
-            l2 = sk.add_line(b, c, cons)
-            l3 = sk.add_line(c, d, cons)
-            l4 = sk.add_line(d, a, cons)
-            sk.add_constraint("horizontal", l1)
-            sk.add_constraint("horizontal", l3)
-            sk.add_constraint("vertical", l2)
-            sk.add_constraint("vertical", l4)
-            if t == "center_rect":
-                diag = sk.add_line(a, c, True)
-                sk.entities[diag]["helper"] = True
-                sk.add_constraint("midpoint", ctr, diag)
+                l1, l2 = OPS.center_rect(sk, first, second, cons)[:2]
+            a, c = sk.entities[l1]["p1"], sk.entities[l2]["p2"]
             self.temp = []
             self.changed(True)
             pa, pc = sk.P(a), sk.P(c)
@@ -1439,8 +1422,9 @@ class Sketcher:
             if r < 1e-6:
                 return True
             self.push_undo()
-            c = self._point_at(c_uv, cs, self._first_cons)
-            cid = sk.add_circle(c, r, cons)
+            first_cons = self._first_cons
+            cid = OPS.circle(sk, (c_uv, lambda: self._point_at(c_uv, cs, first_cons)), r, cons)
+            c = sk.entities[cid]["c"]
             self.temp = []
             self.changed(True)
             ctr = sk.P(c)
@@ -1475,20 +1459,8 @@ class Sketcher:
             if ctr is None:
                 return True
             self.push_undo()
-            if not _ccw_contains(ctr, p1, p2, p3):
-                p1, s1, p2, s2 = p2, s2, p1, s1
-            c = sk.add_point(*ctr)
-            a = self._point_at(p1, s1)
-            b = self._point_at(p2, s2)
-            aid = sk.add_arc(c, a, b, cons)
-            # keep the third point: a real point on the arc, so it can be dragged, attached to other geometry
-            # or dimensioned, and the arc follows (the arc is defined by its three points, not just two + radius)
-            if not (s3 and s3[0] == "point" and s3[1] in (a, b)):
-                m = self._point_at(p3, s3)
-                if m not in (a, b, c):
-                    sk.add_constraint("point_on", m, aid)
-                    if m not in sk.points or not any(m in sk.entity_points(e) for e in sk.entities):
-                        sk.add_point_entity(m)
+            OPS.arc3(sk, (p1, lambda: self._point_at(p1, s1)), (p2, lambda: self._point_at(p2, s2)),
+                     (p3, lambda: self._point_at(p3, s3)), cons)
             self.changed(True)           # no radius prompt: the arc stays defined by its three points
             return True
         if t == "spline":
@@ -1552,12 +1524,8 @@ class Sketcher:
             if r < 1e-9:
                 return True
             self.push_undo()
-            c = self._point_at(cu, cs)
-            a = self._point_at(p1, s1)
-            b = sk.add_point(*p2) if not (s2 and s2[0] == "point") else s2[1]
-            if self.arc_sweep < 0:
-                a, b = b, a
-            aid = sk.add_arc(c, a, b, cons)
+            aid = OPS.arc_center(sk, (cu, lambda: self._point_at(cu, cs)), (p1, lambda: self._point_at(p1, s1)),
+                                 (p2, s2[1] if s2 and s2[0] == "point" else None), self.arc_sweep, cons)
             self.changed(True)
             self._offer_arc(vp, aid)
             return True
@@ -2842,13 +2810,7 @@ def _pt_line_dist(p, a, b):
 
 
 def _circumcenter(a, b, c):
-    a, b, c = map(np.asarray, (a, b, c))
-    d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
-    if abs(d) < 1e-12:
-        return None
-    ux = ((a @ a) * (b[1] - c[1]) + (b @ b) * (c[1] - a[1]) + (c @ c) * (a[1] - b[1])) / d
-    uy = ((a @ a) * (c[0] - b[0]) + (b @ b) * (a[0] - c[0]) + (c @ c) * (b[0] - a[0])) / d
-    return np.array([ux, uy])
+    return OPS.circumcenter(a, b, c)
 
 
 def _ang(c, p):

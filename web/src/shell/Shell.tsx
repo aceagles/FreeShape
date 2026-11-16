@@ -20,6 +20,7 @@ import { FeaturePanel } from '../features/FeaturePanel'
 import { useFeatureEdits } from '../features/useFeatureEdits'
 import { useStudioOutputs } from '../features/studioOutputs'
 import { SelectionChip } from '../selection/SelectionChip'
+import { filterKinds, FILTER_KEYS } from '../selection/filter'
 import { partItem, SelectionStore } from '../selection/store'
 import { useSelection } from '../selection/useSelection'
 import { ASSEMBLY_TOOLBAR, DESKTOP_TOOLBAR, FEATURE_STRIP } from '../tools/defs'
@@ -322,6 +323,16 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     },
     [currentTab, dialog, studio, sketchStore],
   )
+  // a mouse double click (`_viewport_double`): a sketch's region opens the sketch, a plane of the studio opens its dialog; nothing else, and nothing while a dialog or a sketch has the view
+  useEffect(() => {
+    selection.setDoubleClickHandler((item) => {
+      if (tabKind !== 'studio' || studio === null || editingHere !== null || dialog !== null || sketch.open || sketch.opening) return
+      const id = item.kind === 'region' ? item.part : item.kind === 'plane' ? item.key : null
+      const feature = id === null ? undefined : studio.features.find((f) => f.id === id && (item.kind === 'region' ? f.type === 'sketch' : f.type === 'plane'))
+      if (feature !== undefined) startEdit(feature)
+    })
+    return () => selection.setDoubleClickHandler(null)
+  })
   const endEdit = useCallback((r: { accepted: boolean; revision: number | null }) => {
     setEditing(null)
     setDialogBase(null)
@@ -393,6 +404,10 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const [visibility] = useState(() => new ViewVisibility())
   const tabView = visibility.tab(`${doc?.id ?? ''}:${currentTab ?? ''}`)
   const viewState = useSyncExternalStore(tabView.subscribe, tabView.getState)
+  // Desktop mode's Select menu (I9.14): this tab's filter goes to every pick and to the box; Tablet mode has none
+  useEffect(() => {
+    selection.setUserFilter(desktop ? filterKinds(viewState.select) : undefined)
+  }, [selection, desktop, viewState.select])
   const assemblyTypes = useAssemblyTypes(documentId, tabKind === 'assembly' ? currentTab : null)
 
   const add = async (kind: 'studio' | 'assembly') => {
@@ -466,7 +481,12 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   }, [])
   // what the Desktop menus can run now; an item with no command here is shown disabled ("Desktop only for now")
   const currentInfo = tabs.find((t) => t.id === currentTab) ?? null
-  const menuState: MenuState = { readOnly, tabKind, sketchOpen: sketchHere, checks: { 'view.planes': anyPlaneShown(viewState, studio) } }
+  const menuState: MenuState = {
+    readOnly,
+    tabKind,
+    sketchOpen: sketchHere,
+    checks: { 'view.planes': anyPlaneShown(viewState, studio), ...Object.fromEntries(FILTER_KEYS.map((k) => [`select.${k}`, viewState.select[k]])) },
+  }
   const canUndo = studio?.canUndo === true && !edits.busy && !editingHere && !sketch.open
   const canRedo = studio?.canRedo === true && !edits.busy && !editingHere && !sketch.open
   // Undo and Redo, one each for the top bar, the Desktop toolbar and Ctrl+Z / Ctrl+Y: the open sketch's, else the Part Studio's
@@ -542,6 +562,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   })
   const commands: Commands = {
     'view.planes': () => void visibilityKeys['view.planes']!(),
+    ...Object.fromEntries(FILTER_KEYS.map((k) => [`select.${k}`, () => tabView.toggleSelect(k)])),
+    'select.reset': () => tabView.resetSelect(),
     'view.showAll': () => void visibilityKeys['view.showAll']!(),
     'document.cancelSketch': askCancelSketch,
     'document.newStudio': () => void add('studio'),

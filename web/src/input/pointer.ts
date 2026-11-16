@@ -58,6 +58,11 @@ export interface PenHandler {
   /** The button was released: select what the box holds; `additive` when Shift or Ctrl was held at the release. */
   boxEnd?(box: BoxDrag, additive: boolean): void
   boxCancel?(): void
+  /**
+   * Desktop mode, the mouse only (I9.14, the desktop's `mouseDoubleClickEvent`): the left button went down a second time close
+   * to the first click. The second press then neither Aims, Commits nor starts a box. Only a handler with this method gets it.
+   */
+  doubleClick?(p: PenPoint): void
 }
 
 /**
@@ -111,6 +116,9 @@ const TAP_SLOP = 10
 /** Two taps within this time (ms) and distance (px) make a double tap. */
 const DOUBLE_TAP_TIME = 400
 const DOUBLE_TAP_DISTANCE = 40
+/** A mouse double click: the second press within this many ms and pixels of the first click's release (Qt's 400 ms; its distance is a few pixels). */
+const DOUBLE_CLICK_TIME = 400
+const DOUBLE_CLICK_DISTANCE = 6
 /** Wheel zoom: factor per pixel of wheel travel. */
 const WHEEL_RATE = 0.0015
 const LINE_PIXELS = 16
@@ -170,7 +178,9 @@ export class PointerModule {
   /** Desktop mode (I9.9): a left drag of the mouse may draw a selection box. Pen, finger and Tablet mode are unchanged by it. */
   private desktopMode = false
   /** The mouse's left press in Desktop mode: where it went down, whether it became a box, or was refused one. */
-  private leftPress: { x: number; y: number; box: boolean; refused: boolean } | null = null
+  private leftPress: { x: number; y: number; box: boolean; refused: boolean; double?: boolean } | null = null
+  /** The last plain left click of the mouse in Desktop mode (where and when it was released), for a double click. */
+  private lastClick: { x: number; y: number; t: number } | null = null
   private cursorAt: ((p: { x: number; y: number } | null) => void) | null = null
 
   constructor(
@@ -192,6 +202,7 @@ export class PointerModule {
   /** The mouse Aims by hovering (and while the left button is down), and Commits when the left button is released. */
   setMouseHandler(handler: PenHandler | null): void {
     this.mousePick = handler
+    this.lastClick = null
   }
 
   /** A Drag handle takes a press (pen, finger or mouse left button) before selection and navigation. */
@@ -323,6 +334,13 @@ export class PointerModule {
       if (this.mouseId !== null || this.mouseSelectId !== null) return
       if (e.button === 0) {
         this.mouseSelectId = e.pointerId
+        const was = this.lastClick
+        this.lastClick = null
+        if (this.desktopMode && this.mousePick?.doubleClick && was && e.timeStamp - was.t < DOUBLE_CLICK_TIME && Math.hypot(p.x - was.x, p.y - was.y) <= DOUBLE_CLICK_DISTANCE) {
+          this.leftPress = { x: p.x, y: p.y, box: false, refused: true, double: true }
+          this.mousePick.doubleClick(this.penPoint(e))
+          return
+        }
         this.leftPress = this.desktopMode ? { x: p.x, y: p.y, box: false, refused: false } : null
         this.mousePick?.press?.(this.penPoint(e))
         this.mousePick?.aim(this.penPoint(e))
@@ -408,6 +426,7 @@ export class PointerModule {
 
   /** Desktop mode, the left button held: an Aim until it has moved past BOX_SLOP, then a box if the handler takes one. */
   private leftDrag(press: NonNullable<PointerModule['leftPress']>, p: PenPoint): void {
+    if (press.double) return
     if (!press.box && !press.refused && Math.abs(p.x - press.x) + Math.abs(p.y - press.y) > BOX_SLOP) {
       if (this.mousePick?.boxStart?.(p)) press.box = true
       else press.refused = true
@@ -475,6 +494,8 @@ export class PointerModule {
         const press = this.leftPress
         this.leftPress = null
         const pt = this.penPoint(e)
+        if (press?.double) return
+        if (!press?.box && this.desktopMode) this.lastClick = { x: pt.x, y: pt.y, t: e.timeStamp }
         if (press?.box) this.mousePick?.boxEnd?.({ x0: press.x, y0: press.y, x1: pt.x, y1: pt.y }, pt.shift === true || pt.ctrl === true)
         else this.mousePick?.commit(pt)
         return

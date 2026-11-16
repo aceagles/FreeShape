@@ -109,7 +109,8 @@ describe('a click in Desktop mode', () => {
     expect(r.selection.getState().items.map((i) => `${i.kind}:${i.index}`)).toEqual([`face:${a!.hit.index}`, `face:${b!.hit.index}`])
     click(r, a!)
     expect(r.selection.getState().items.map((i) => `${i.kind}:${i.index}`)).toEqual([`face:${b!.hit.index}`])
-    click(r, a!)
+    // a third face, not `a` again: two quick clicks on one spot are a double click (I9.14), which toggles nothing
+    click(r, faces[2]!)
     click(r, empty, { shift: true })
     expect(r.selection.getState().items).toHaveLength(2)
     click(r, empty, { ctrl: true })

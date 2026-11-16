@@ -1,3 +1,5 @@
+import { DEFAULT_FILTER } from '../selection/filter'
+import type { FilterKey, SelectFilter } from '../selection/filter'
 import type { AssemblyOutputs, StudioOutputs } from '../wire'
 
 /**
@@ -21,9 +23,11 @@ export interface ViewState {
   readonly isolate: readonly string[] | null
   /** Shift+T: these parts or instances are drawn see-through. */
   readonly transparent: readonly string[]
+  /** The Select menu's filter (card I9.14), kept per tab for the session as the desktop keeps it in its window. */
+  readonly select: SelectFilter
 }
 
-export const DEFAULT_VIEW: ViewState = { hiddenPlanes: [], connectors: true, mates: true, isolate: null, transparent: [] }
+export const DEFAULT_VIEW: ViewState = { hiddenPlanes: [], connectors: true, mates: true, isolate: null, transparent: [], select: DEFAULT_FILTER }
 
 type Listener = () => void
 
@@ -56,6 +60,16 @@ export class TabView {
   toggleDefaultPlane = (name: string): void => {
     const h = this.state.hiddenPlanes
     this.set({ hiddenPlanes: h.includes(name) ? h.filter((n) => n !== name) : [...h, name] })
+  }
+
+  /** Select menu: tick or untick one kind. */
+  toggleSelect(key: FilterKey): void {
+    this.set({ select: { ...this.state.select, [key]: !this.state.select[key] } })
+  }
+
+  /** Select > Reset to default. */
+  resetSelect(): void {
+    if (this.state.select !== DEFAULT_FILTER) this.set({ select: DEFAULT_FILTER })
   }
 
   /** Set the mate connectors and mates flags (Shift+P in an Assembly). */

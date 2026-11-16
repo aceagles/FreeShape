@@ -84,12 +84,12 @@ it('the Document menu lists the desktop items in order; wired items run, others 
   expect(calls.some((c) => c.method === 'DELETE' && c.url.endsWith('/tabs/T1'))).toBe(true)
 })
 
-it('the View menu keeps its separators; the toggles and Select items are disabled', () => {
+it('the View menu keeps its separators; the Select items are wired (I9.14) and the other toggles are disabled', () => {
   expect(viewMenu.filter((e) => e.kind === 'separator').length).toBe(2)
   expect(MENU_BAR.map((m) => m.label)).toEqual(['Document', 'View', 'Select'])
   mount()
   act(() => screen.getByRole('button', { name: 'Select' }).click())
-  for (const b of screen.getAllByRole('menuitemcheckbox') as HTMLButtonElement[]) expect(b.disabled).toBe(true)
+  for (const b of screen.getAllByRole('menuitemcheckbox') as HTMLButtonElement[]) expect(b.disabled).toBe(false)
   act(() => screen.getByRole('button', { name: 'Select' }).click())
   act(() => screen.getByRole('button', { name: 'View' }).click())
   expect((screen.getByRole('menuitem', { name: /^Front/ }) as HTMLButtonElement).disabled).toBe(false)

@@ -58,6 +58,11 @@ export function wireSelection(pointer: PointerModule, selection: SelectionStore,
     }
     mouse.boxCancel = () => box.draw(null)
   }
+  // Desktop mode: a double click on something (the desktop's `mouseDoubleClickEvent` picks with its filter and tells the window)
+  mouse.doubleClick = (p) => {
+    const item = itemAt(p.x, p.y, 'mouse')
+    if (item) selection.doubleClick(item)
+  }
   let before: readonly SelectionItem[] | null = null
   pointer.setPenHandler(picking('pen'))
   pointer.setMouseHandler(mouse)

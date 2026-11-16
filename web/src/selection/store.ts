@@ -83,6 +83,9 @@ export class SelectionStore {
   private picker: ((item: SelectionItem | null) => void) | null = null
   private readonly listeners = new Set<Listener>()
   private filter: PickFilter | undefined = undefined
+  /** The Select menu's kinds (I9.14, Desktop mode), or undefined: no menu filter. A dialog's own `filter` goes first. */
+  private userFilter: readonly PickKind[] | undefined = undefined
+  private doubleClickHandler: ((item: SelectionItem) => void) | null = null
 
   /** Called after any change of the items, the mode or the Aim, once per change. Returns the way to stop. */
   readonly subscribe = (listener: Listener): (() => void) => {
@@ -105,7 +108,30 @@ export class SelectionStore {
 
   /** What a pick may land on (a dialog's field asks for faces only, say); undefined: everything the scene has. */
   get pickFilter(): PickFilter | undefined {
-    return this.filter
+    return this.filter ?? this.userFilter
+  }
+
+  /**
+   * The Select menu's filter (card I9.14; the desktop's `user_filter`): the kinds a click or a box may take, or undefined for
+   * the client's own defaults (Tablet mode). A dialog's selection field still decides what it takes (`setPickFilter`).
+   * Narrowing it drops the selected items it no longer allows, as the desktop does (not while a dialog has the view, and not when the mode changes).
+   */
+  setUserFilter(kinds: readonly PickKind[] | undefined): void {
+    const same = kinds === this.userFilter || (kinds !== undefined && this.userFilter !== undefined && kinds.length === this.userFilter.length && kinds.every((k, i) => k === this.userFilter![i]))
+    if (same) return
+    const was = this.userFilter
+    this.userFilter = kinds
+    // what a tick took away goes from the selection; what the filter never allowed (a part the Parts list selected) stays
+    if (kinds !== undefined && was !== undefined && this.saved === null) this.setItems(this.items.filter((i) => kinds.includes(i.kind) || !was.includes(i.kind)), true)
+  }
+
+  /** The shell's answer to a mouse double click on an item (Desktop mode, I9.14): open its sketch or its plane's dialog. */
+  setDoubleClickHandler(handler: ((item: SelectionItem) => void) | null): void {
+    this.doubleClickHandler = handler
+  }
+
+  doubleClick(item: SelectionItem): void {
+    this.doubleClickHandler?.(item)
   }
 
   setPickFilter(filter: PickFilter | undefined): void {

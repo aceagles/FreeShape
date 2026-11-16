@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { SelectionStore } from '../selection/store'
 import type { StudioOutputs } from '../wire'
 import { ViewportController } from './controller'
+import type { PreviewLook } from './controller'
 import { ViewCube } from './ViewCube'
 import { notDrawnText } from './notDrawn'
 import './viewport.css'
@@ -10,7 +11,7 @@ import './viewport.css'
  * The 3D view of a Part Studio. Fills its parent; draws `outputs` and redraws when they change (a new revision
  * arrives as new outputs), with `selection` drawn on it. The controller's pointer module (src/input) navigates; the view cube is the control for standard views.
  */
-export function Viewport({ outputs, selection, tabKind = 'studio' }: { outputs: StudioOutputs | null; selection?: SelectionStore; tabKind?: string | null }) {
+export function Viewport({ outputs, selection, tabKind = 'studio', preview = null }: { outputs: StudioOutputs | null; selection?: SelectionStore; tabKind?: string | null; preview?: PreviewLook | null }) {
   // a viewport mounted on its own keeps its own selection; the shell passes the one it shares with the chip and the Parts list
   const [own] = useState(() => new SelectionStore())
   const store = selection ?? own
@@ -20,6 +21,8 @@ export function Viewport({ outputs, selection, tabKind = 'studio' }: { outputs: 
   const canvas = useRef<HTMLCanvasElement>(null)
   const controller = useRef<ViewportController | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
+  const previewNumber = preview?.number ?? null
+  const previewFeature = preview?.feature ?? null
 
   useEffect(() => {
     const el = host.current
@@ -46,9 +49,9 @@ export function Viewport({ outputs, selection, tabKind = 'studio' }: { outputs: 
   }, [store])
 
   useEffect(() => {
-    if (outputs) controller.current?.setOutputs(outputs)
+    if (outputs) controller.current?.setOutputs(outputs, previewNumber === null ? null : { number: previewNumber, feature: previewFeature! })
     else controller.current?.clear(message === null ? null : tabKind)
-  }, [outputs, message, tabKind, failed])
+  }, [outputs, previewNumber, previewFeature, message, tabKind, failed])
 
   return (
     <div ref={host} className="viewport" data-testid="viewport">

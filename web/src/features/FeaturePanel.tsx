@@ -19,6 +19,8 @@ interface Props {
   /** The part selected in the Parts list (a part id), or null. */
   selectedPart: string | null
   edits: FeatureEdits
+  /** Open the feature's dialog; absent while one is open or when no edit can start. */
+  onEdit?: (feature: FeatureEntry) => void
   onSelect: (id: string) => void
   onSelectPart: (id: string) => void
   onCollapsedChange: (collapsed: boolean) => void
@@ -55,7 +57,7 @@ function emptyText(tabKind: string | null, outputs: StudioOutputs | null): strin
  * The feature panel and its 56 px rail. The body is the open Part Studio's feature list and, under it in the same
  * scrolling body, its Parts list.
  */
-export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, selectedPart, edits, onSelect, onSelectPart, onCollapsedChange }: Props) {
+export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, selectedPart, edits, onEdit, onSelect, onSelectPart, onCollapsedChange }: Props) {
   const empty = emptyText(tabKind, outputs)
   const list = empty === null ? outputs : null
   if (collapsed) {
@@ -86,7 +88,7 @@ export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, se
         </button>
       </div>
       <div className="panel-body" data-testid="panel-body">
-        {list ? <FeatureList outputs={list} selected={selected} edits={edits} onSelect={onSelect} /> : empty && <p className="panel-empty">{empty}</p>}
+        {list ? <FeatureList outputs={list} selected={selected} edits={edits} onEdit={onEdit} onSelect={onSelect} /> : empty && <p className="panel-empty">{empty}</p>}
         <div className="panel-parts-slot" data-testid="parts-slot">
           {list && <PartsList outputs={list} selected={selectedPart} edits={edits} onSelect={onSelectPart} />}
         </div>

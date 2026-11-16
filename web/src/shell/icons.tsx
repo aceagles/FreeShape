@@ -38,6 +38,9 @@ export const paths = {
   /** The eye of a part that shows, and of one that is hidden (the same eye, struck through). */
   eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
   eyeOff: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0 M4 4l16 16',
+  /** Accept, and the direction flip of an Extrude, as in the layout's dialog. */
+  check: 'M5 12l5 5 9-10',
+  flip: 'M8 20V5 M5 8l3-3 3 3 M16 4v15 M13 16l3 3 3-3',
   /** A drop, for the colour choice. */
   drop: 'M12 3c4 5 6 8 6 11a6 6 0 0 1-12 0c0-3 2-6 6-11z',
 } as const

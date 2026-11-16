@@ -87,11 +87,11 @@ export class ApiError extends Error {
   }
 }
 
-const seg = encodeURIComponent
-const docPath = (doc: string): string => `/documents/${seg(doc)}`
-const tabPath = (doc: string, tab: string): string => `${docPath(doc)}/tabs/${seg(tab)}`
+export const seg = encodeURIComponent
+export const docPath = (doc: string): string => `/documents/${seg(doc)}`
+export const tabPath = (doc: string, tab: string): string => `${docPath(doc)}/tabs/${seg(tab)}`
 
-async function request(method: string, path: string, init: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal } = {}): Promise<Response> {
+export async function request(method: string, path: string, init: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal } = {}): Promise<Response> {
   let res: Response
   try {
     res = await fetch(path, {
@@ -115,7 +115,7 @@ async function request(method: string, path: string, init: { body?: unknown; hea
   throw new ApiError(res.status, typeof body.error === 'string' ? body.error : `The server answered ${res.status}.`, body)
 }
 
-async function json<T>(method: string, path: string, init?: Parameters<typeof request>[2]): Promise<T> {
+export async function json<T>(method: string, path: string, init?: Parameters<typeof request>[2]): Promise<T> {
   return (await (await request(method, path, init)).json()) as T
 }
 

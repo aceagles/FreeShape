@@ -6,6 +6,8 @@ import type { TabInfo } from '../net/connection'
 import { useConnection } from '../net/react'
 import { PadDemo, padResult } from '../pad/PadDemo'
 import type { PadDemoOptions, PadResult } from '../pad/PadDemo'
+import { FeatureDialog } from '../dialog/FeatureDialog'
+import type { PreviewState } from '../dialog/useFeatureDialog'
 import { FeaturePanel } from '../features/FeaturePanel'
 import { useFeatureEdits } from '../features/useFeatureEdits'
 import { useStudioOutputs } from '../features/studioOutputs'
@@ -78,6 +80,11 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const [pickedFeature, setPickedFeature] = useState<{ tab: string; id: string; revision: number } | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [dialog, setDialog] = useState<DialogState | null>(null)
+  // the feature dialog open over the panel (the dialog area is its own: it carries Cancel and Accept), and the preview it drew
+  const [editing, setEditing] = useState<{ tab: string; id: string; name: string } | null>(null)
+  const [preview, setPreview] = useState<(PreviewState & { feature: string }) | null>(null)
+  // after Accept the preview stays drawn until the revision it made arrives, so the view does not flash the old model
+  const [holdUntil, setHoldUntil] = useState<number | null>(null)
   const debug = useDebugPanel()
   const [modal, setModal] = useState<Modal | null>(null)
   const [saving, setSaving] = useState(false)
@@ -102,16 +109,19 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   // what is selected belongs to the tab on screen: a tab change empties it
   useEffect(() => {
     selection.clear()
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setEditing(null)
   }, [currentTab, selection])
 
   const api = useMemo<ShellApi>(
     () => ({
       openDialog: (title, content) => {
+        if (editing !== null) return
         setCollapsed(false)
         setDialog({ title, content })
       },
       closeDialog: () => setDialog(null),
-      dialogOpen: dialog !== null,
+      dialogOpen: dialog !== null || editing !== null,
       panelCollapsed: collapsed,
       setPanelCollapsed: setCollapsed,
       selectedFeature,
@@ -126,7 +136,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
       },
       selection,
     }),
-    [dialog, collapsed, selectedFeature, selectedPart, currentTab, selection],
+    [dialog, editing, collapsed, selectedFeature, selectedPart, currentTab, selection],
   )
   useEffect(() => {
     window.__freeshape = {
@@ -146,6 +156,26 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const fail = (title: string, e: unknown) => setModal({ kind: 'message', title, text: explainError(e, name) })
   const failText = useCallback((title: string, text: string) => setModal({ kind: 'message', title, text }), [])
   const edits = useFeatureEdits({ store, tab: tabKind === 'studio' ? currentTab : null, readOnly, documentName: name, onError: failText })
+
+  const editingHere = editing !== null && editing.tab === currentTab ? editing : null
+  const panelEdits = useMemo(() => (editingHere ? { ...edits, disabled: true } : edits), [edits, editingHere])
+  const startEdit = useCallback(
+    (feature: { id: string; name: string }) => {
+      if (currentTab === null || dialog !== null) return
+      setCollapsed(false)
+      setPreview(null)
+      setHoldUntil(null)
+      setEditing({ tab: currentTab, id: feature.id, name: feature.name })
+    },
+    [currentTab, dialog],
+  )
+  const endEdit = useCallback((r: { accepted: boolean; revision: number | null }) => {
+    setEditing(null)
+    if (r.accepted && r.revision !== null) setHoldUntil(r.revision)
+    else setPreview(null)
+  }, [])
+  const showPreview = preview !== null && (editingHere !== null || (holdUntil !== null && (studio?.revision ?? 0) < holdUntil))
+  const variables = useMemo(() => Object.keys(studio?.variables ?? {}).map((n) => n.replace(/^#/, '')), [studio])
 
   const add = async (kind: 'studio' | 'assembly') => {
     try {
@@ -219,8 +249,8 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           currentTab={currentTab}
           readOnly={readOnly}
           saving={saving}
-          canUndo={studio?.canUndo === true && !edits.busy}
-          canRedo={studio?.canRedo === true && !edits.busy}
+          canUndo={studio?.canUndo === true && !edits.busy && !editingHere}
+          canRedo={studio?.canRedo === true && !edits.busy && !editingHere}
           onUndo={edits.undo}
           onRedo={edits.redo}
           debugOpen={debug.open}
@@ -238,16 +268,30 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           <div className="left-column" data-region="left-column" data-testid="left-column" style={{ width: column }}>
             <FeaturePanel
               collapsed={collapsed}
-              locked={dialog !== null}
+              locked={dialog !== null || editingHere !== null}
               tabKind={tabKind}
               outputs={studio}
               selected={selectedFeature}
               selectedPart={selectedPart}
-              edits={edits}
+              edits={panelEdits}
+              onEdit={studio !== null && !editingHere && dialog === null ? startEdit : undefined}
               onSelect={api.selectFeature}
               onSelectPart={api.selectPart}
               onCollapsedChange={setCollapsed}
             />
+            {editingHere && doc && (
+              <FeatureDialog
+                key={`${editingHere.tab}:${editingHere.id}`}
+                store={store}
+                documentId={doc.id}
+                documentName={name}
+                tab={editingHere.tab}
+                feature={editingHere}
+                variables={variables}
+                onPreview={(p) => setPreview(p === null ? null : { ...p, feature: editingHere.id })}
+                onDone={endEdit}
+              />
+            )}
             {dialog && (
               <DialogArea title={dialog.title} onClose={() => setDialog(null)}>
                 {dialog.content}
@@ -255,7 +299,12 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             )}
           </div>
           <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport">
-            <StudioViewport outputs={studio} selection={selection} tabKind={tabKind} />
+            <StudioViewport
+              outputs={showPreview ? preview.outputs : studio}
+              preview={showPreview ? { number: preview.number, feature: preview.feature } : null}
+              selection={selection}
+              tabKind={tabKind}
+            />
             <div className="chip-slot" data-testid="chip-slot" data-region="selection-chip">
               <SelectionChip store={selection} />
             </div>

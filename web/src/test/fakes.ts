@@ -45,7 +45,7 @@ export interface Call {
   headers: Record<string, string>
 }
 
-type Reply = { status?: number; json?: unknown; bytes?: ArrayBuffer }
+type Reply = { status?: number; json?: unknown; bytes?: ArrayBuffer; headers?: Record<string, string> }
 /** Stubs fetch: every request is recorded, `answer` decides the reply (default 404). */
 export function stubFetch(answer: (call: Call) => Reply | undefined): Call[] {
   const calls: Call[] = []
@@ -59,7 +59,7 @@ export function stubFetch(answer: (call: Call) => Reply | undefined): Call[] {
     calls.push(call)
     const r = answer(call)
     if (!r) return new Response('', { status: 404 })
-    if (r.bytes) return new Response(r.bytes, { status: r.status ?? 200 })
+    if (r.bytes) return new Response(r.bytes, { status: r.status ?? 200, headers: r.headers })
     return new Response(JSON.stringify(r.json ?? {}), { status: r.status ?? 200 })
   })
   return calls

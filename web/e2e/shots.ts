@@ -28,6 +28,16 @@ export interface ShotState {
   after?: (page: Page) => Promise<void>
 }
 
+/** Double tap the bracket's Extrude 1 and wait for its dialog with the pad on Depth. */
+async function openExtrudeDialog(page: Page): Promise<void> {
+  await openApp(page)
+  await featureRow(page, 'Extrude 1').dblclick()
+  await page.getByTestId('pad').waitFor()
+}
+async function padKeys(page: Page, ...names: string[]): Promise<void> {
+  for (const n of names) await page.getByTestId('pad').getByRole('button', { name: n, exact: true }).click()
+}
+
 /** Sizes of the screen, as the layout has them (key = the mock's size key). */
 export const SIZES = [
   { key: '1024', width: 1024, height: 768 },
@@ -109,6 +119,75 @@ export const shots: ShotState[] = [
       await page.getByRole('option', { name: '#width' }).click()
       for (const n of ['Multiply', '2', 'Plus', 'Open bracket', '1', 'Decimal point', '5', 'Close bracket', 'mm']) await key(n)
     },
+  },
+  {
+    name: 'feature-dialog',
+    mock: 'dialog', // the bracket's Extrude 1 from a double tap: Depth on the pad, Cancel and Accept in the header
+    steps: async (page) => {
+      await openExtrudeDialog(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'feature-dialog-preview',
+    mock: 'dialog', // Depth 50 entered: the pad has closed, the view draws the preview with the new body tinted
+    steps: async (page) => {
+      await openExtrudeDialog(page)
+      await padKeys(page, '5', '0', 'Enter')
+      await page.waitForFunction(() => (window.__freeshapeViewport?.preview ?? 0) >= 1)
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'feature-dialog-end-list',
+    mock: 'dialog', // the End type list open (more options than fit as segments), the pad closed
+    steps: async (page) => {
+      await openExtrudeDialog(page)
+      await padKeys(page, 'Cancel')
+      await page.getByRole('button', { name: /^End type/ }).click()
+      await page.getByRole('radiogroup', { name: 'End type' }).waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'feature-dialog-error',
+    mock: 'dialog', // a depth of 0 refused: the message under the field, the last good value kept
+    steps: async (page) => {
+      await openExtrudeDialog(page)
+      await padKeys(page, 'Backspace', '0', 'Enter')
+      await page.locator('.dlg-message').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'feature-dialog-desktop-only',
+    mock: 'dialog', // a Mate connector has a row only the desktop can edit: a message and no Accept
+    steps: async (page) => {
+      await openApp(page)
+      const id = await idOf(page.request, 'Bracket')
+      const r = await page.request.post(`/documents/${id}/tabs/T1/edit`, { data: { op: 'add_feature', feature: { id: 'F20', type: 'mate_connector', name: 'Mate connector 1', params: {} } } })
+      if (!r.ok()) throw new Error(`could not add a mate connector: ${await r.text()}`)
+      await featureRow(page, 'Mate connector 1').waitFor()
+      await featureRow(page, 'Mate connector 1').dblclick()
+      await page.getByTestId('desktop-only').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'feature-dialog-read-only',
+    mock: 'dialog', // the desktop holds the Document: Accept is refused in plain words and the dialog keeps its values
+    steps: async (page) => {
+      await holdLockClosed(page.request, 'bracket', 'desktop')
+      await openApp(page)
+      await page.getByTestId('read-only-banner').waitFor()
+      await featureRow(page, 'Extrude 1').dblclick()
+      await page.getByTestId('pad').waitFor()
+      await padKeys(page, '5', '0', 'Enter')
+      await page.locator('.dialog-header').getByRole('button', { name: 'Accept', exact: true }).click()
+      await page.getByTestId('dialog-problem').waitFor()
+    },
+    after: async () => releaseLock('bracket'),
   },
   {
     name: 'orbited',

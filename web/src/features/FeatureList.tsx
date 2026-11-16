@@ -17,6 +17,7 @@ interface Props {
   outputs: StudioOutputs
   selected: string | null
   edits: FeatureEdits
+  onEdit?: (feature: FeatureEntry) => void
   onSelect: (id: string) => void
 }
 
@@ -32,7 +33,10 @@ function stateOf(f: FeatureEntry, rolledBack: boolean): 'failed' | 'suppressed' 
 /** The row's title: a failed feature reads "<name> failed", as in the layout. */
 export const rowTitle = (f: FeatureEntry): string => (f.error !== null ? `${f.name} failed` : f.name)
 
-function FeatureButton({ feature, index, indent, selected, rolledBack, slot, canMenu, onSelect, onMenu }: {
+/** Two taps on a row this close together (ms) are a double tap. */
+const DOUBLE_TAP_MS = 400
+
+function FeatureButton({ feature, index, indent, selected, rolledBack, slot, canMenu, onSelect, onEdit, onMenu }: {
   feature: FeatureEntry
   index: number
   indent: boolean
@@ -41,9 +45,11 @@ function FeatureButton({ feature, index, indent, selected, rolledBack, slot, can
   slot: number | null
   canMenu: boolean
   onSelect: () => void
+  onEdit?: () => void
   onMenu: (el: HTMLElement) => void
 }) {
   const press = useLongPress((el) => canMenu && onMenu(el))
+  const lastTap = useRef<number | null>(null)
   const state = stateOf(feature, rolledBack)
   return (
     <li data-row="" data-slot={slot ?? undefined}>
@@ -57,7 +63,16 @@ function FeatureButton({ feature, index, indent, selected, rolledBack, slot, can
         data-indent={indent ? '' : undefined}
         aria-current={selected ? 'true' : undefined}
         aria-haspopup={canMenu ? 'menu' : undefined}
-        onClick={onSelect}
+        onClick={(e) => {
+          onSelect()
+          // a double tap opens the feature's dialog (the click's own time stamp: no timer)
+          const before = lastTap.current
+          lastTap.current = e.timeStamp
+          if (onEdit && before !== null && e.timeStamp - before <= DOUBLE_TAP_MS) {
+            lastTap.current = null
+            onEdit()
+          }
+        }}
         {...press}
       >
         <Icon d={featureIcon(feature.type)} px={size.iconSmall} stroke={state === 'failed' ? 'var(--c-danger)' : 'var(--c-inkSoft)'} />
@@ -111,7 +126,7 @@ interface Drag {
  * (Rename, Suppress or Unsuppress, Delete, Roll to here). The bar moves only by its Drag handle, and one set_rollback
  * is sent when the handle is released. Delete asks first; Rename asks for the new name.
  */
-export function FeatureList({ outputs, selected, edits, onSelect }: Props) {
+export function FeatureList({ outputs, selected, edits, onEdit, onSelect }: Props) {
   const [menu, setMenu] = useState<{ feature: FeatureEntry; index: number; anchor: Anchor } | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [openChoice, setOpenChoice] = useState<Record<string, boolean>>({})
@@ -236,6 +251,7 @@ export function FeatureList({ outputs, selected, edits, onSelect }: Props) {
                   slot={slot}
                   canMenu={!edits.disabled}
                   onSelect={() => onSelect(row.feature.id)}
+                  onEdit={onEdit && row.feature.type !== 'sketch' ? () => onEdit(row.feature) : undefined}
                   onMenu={(el) => open(row.feature, row.index, el)}
                 />
               )}
@@ -246,6 +262,17 @@ export function FeatureList({ outputs, selected, edits, onSelect }: Props) {
       </ul>
       {menu && (
         <Popover anchor={menu.anchor} label={`${menu.feature.name} menu`} onClose={close}>
+          {onEdit && menu.feature.type !== 'sketch' && (
+            <PopoverItem
+              label="Edit"
+              icon={<Icon d={paths.extrude} />}
+              disabled={edits.busy}
+              onClick={() => {
+                close()
+                onEdit(menu.feature)
+              }}
+            />
+          )}
           <PopoverItem
             label="Rename"
             icon={<Icon d={paths.sketch} />}

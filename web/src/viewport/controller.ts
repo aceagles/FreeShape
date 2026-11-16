@@ -10,6 +10,7 @@ import type { CameraState, StandardView } from './camera'
 import { STANDARD_VIEWS } from './camera'
 import { PickIndex, rayPoint, viewRay } from './pick'
 import type { PickFilter, PickHit, PickKind, PickPointer } from './pick'
+import { tintFeature } from './previewTint'
 import { buildScene, EMPTY_STATS } from './scene'
 import type { BuiltScene, SceneStats } from './scene'
 
@@ -24,6 +25,11 @@ export interface ViewportReport extends SceneStats {
   highlightedPart: string | null
   /** Why nothing is drawn when the tab on screen is not a Part Studio (its kind: assembly, drawing, variables); null otherwise. */
   emptyKind: string | null
+  /** Test hook: the number of the dialog preview drawn in place of the committed model, or null. */
+  preview: number | null
+  /** Test hook: the feature whose result is drawn tinted (a dialog's edited feature), or null; `tintedParts` is how many parts. */
+  tintedFeature: string | null
+  tintedParts: number
   /** Test hook: the selection store, as a reader sees it (card I4.2). */
   selection: SelectionReport
   /** Test hook: what a pointer of this kind would pick at a view position (CSS pixels from the top left), null for nothing. */
@@ -31,6 +37,12 @@ export interface ViewportReport extends SceneStats {
 }
 
 /** An item of the selection as the test hook reports it. */
+/** A dialog's preview drawn in place of the committed outputs: its number, and the feature whose result is tinted. */
+export interface PreviewLook {
+  number: number
+  feature: string
+}
+
 export interface SelectionItemReport {
   kind: PickKind
   part: string | null
@@ -76,6 +88,8 @@ export class ViewportController implements NavHost {
   private disposed = false
   private highlighted: string | null = null
   private emptyKind: string | null = null
+  private previewNumber: number | null = null
+  private tinted: { feature: string; parts: number } | null = null
   /** Half-size of the default planes of the last scene that had a model: an emptied studio keeps it. */
   private planeHalf: number | null = null
   readonly pointer: PointerModule
@@ -118,8 +132,16 @@ export class ViewportController implements NavHost {
   }
 
   /** Replace the drawn model with this studio. The first model is fitted; later ones keep the camera. */
-  setOutputs(outputs: StudioOutputs): void {
+  setOutputs(shown: StudioOutputs, preview: PreviewLook | null = null): void {
     if (this.disposed) return
+    let outputs = shown
+    this.previewNumber = preview?.number ?? null
+    this.tinted = null
+    if (preview) {
+      const t = tintFeature(shown, preview.feature)
+      outputs = t.outputs
+      this.tinted = { feature: preview.feature, parts: t.tinted }
+    }
     // what is selected survives the rebuild when its part and Element name are still there (see SelectionStore.reconcile)
     this.selection.reconcile(outputs)
     if (this.built) {
@@ -154,6 +176,8 @@ export class ViewportController implements NavHost {
     this.revision = null
     this.fitted = false
     this.emptyKind = kind
+    this.previewNumber = null
+    this.tinted = null
     this.requestRender()
   }
 
@@ -220,6 +244,9 @@ export class ViewportController implements NavHost {
       frames: this.frames,
       highlightedPart: this.highlighted,
       emptyKind: this.emptyKind,
+      preview: this.previewNumber,
+      tintedFeature: this.tinted?.feature ?? null,
+      tintedParts: this.tinted?.parts ?? 0,
       selection: {
         count: this.selection.getState().items.length,
         items: this.selection.getState().items.map(reportItem),

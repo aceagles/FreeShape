@@ -69,6 +69,22 @@ function defaultUrl(clientId: string): string {
 type Listener = () => void
 type RevisionListener = (revision: number) => void
 
+/** The server's `preview` message: a feature dialog's newest preview is ready to fetch (sent to the client that owns the dialog only). */
+export interface PreviewMessage {
+  document: string
+  tab: string
+  dialog: string
+  feature: string
+  preview: number
+  /** The committed revision the preview was built on. */
+  revision: number
+  /** The feature built. False: it failed, and the model is the one before it (when `outputs`). */
+  ok: boolean
+  /** There is a model to fetch. */
+  outputs: boolean
+  error: string | null
+}
+
 /**
  * The live connection to `freeshape serve`: connects to /ws with this tab's client id, reconnects with backoff when
  * the socket closes, keeps the tab list and each tab's revision, and pings every 250 ms while the page is visible.
@@ -80,6 +96,7 @@ export class ConnectionStore {
   private socket: SocketLike | null = null
   private listeners = new Set<Listener>()
   private tabListeners = new Map<string, Set<RevisionListener>>()
+  private previewListeners = new Set<(m: PreviewMessage) => void>()
   private retry: ReturnType<typeof setTimeout> | null = null
   private pinger: ReturnType<typeof setInterval> | null = null
   private attempts = 0
@@ -132,6 +149,14 @@ export class ConnectionStore {
     set.add(listener)
     return () => {
       set.delete(listener)
+    }
+  }
+
+  /** Call `listener` with every `preview` message of the Document being watched; returns the unsubscribe function. */
+  onPreview(listener: (m: PreviewMessage) => void): () => void {
+    this.previewListeners.add(listener)
+    return () => {
+      this.previewListeners.delete(listener)
     }
   }
 
@@ -293,6 +318,11 @@ export class ConnectionStore {
           this.update({ document: null, tabs: [], revisions: {}, readOnly: false, holder: null, ended: 'not-open' })
         }
         break
+      case 'preview': {
+        const p = parsePreview(m)
+        if (p !== null) this.previewListeners.forEach((l) => l(p))
+        break
+      }
       case 'pong':
         if (typeof m.t === 'number') {
           this.rtt.record(this.now() - m.t)
@@ -351,6 +381,22 @@ export class ConnectionStore {
   private update(patch: Partial<ConnectionState>): void {
     this.state = { ...this.state, ...patch }
     this.listeners.forEach((l) => l())
+  }
+}
+
+function parsePreview(m: Record<string, unknown>): PreviewMessage | null {
+  if (typeof m.document !== 'string' || typeof m.tab !== 'string' || typeof m.dialog !== 'string' || typeof m.feature !== 'string') return null
+  if (typeof m.preview !== 'number' || typeof m.revision !== 'number') return null
+  return {
+    document: m.document,
+    tab: m.tab,
+    dialog: m.dialog,
+    feature: m.feature,
+    preview: m.preview,
+    revision: m.revision,
+    ok: m.ok === true,
+    outputs: m.outputs === true,
+    error: typeof m.error === 'string' ? m.error : null,
   }
 }
 

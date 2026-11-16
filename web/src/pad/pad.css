@@ -104,17 +104,20 @@
   -webkit-overflow-scrolling: touch;
 }
 .pad-var {
-  height: var(--touch);
-  padding: 0 var(--sp-12);
+  min-height: var(--touch);
+  padding: var(--sp-4) var(--sp-8);
   border: 1px solid var(--c-line);
   border-radius: var(--r-sm);
   background: var(--c-white);
   color: var(--c-ink);
   font: inherit;
+  font-size: var(--fs-tab);
+  line-height: 1.15;
   text-align: left;
+  /* a long name wraps to a second line (and breaks inside a word) so that similar names stay apart: #wall_thick / ness */
+  white-space: normal;
+  overflow-wrap: anywhere;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   cursor: pointer;
 }
 .pad-vars-empty {

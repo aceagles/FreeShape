@@ -13,15 +13,18 @@ export function useDialogDock(): HTMLElement | null {
  * The dialog area: covers the feature panel exactly (the panel column's own box, so the viewport never changes
  * width). It is empty; feature dialogs (S3), the pad (S5) and the rest fill `children`. Opened through useShell().
  */
-export function DialogArea({ title, onClose, children }: { title: string; onClose: () => void; children?: ReactNode }) {
+export function DialogArea({ title, onClose, actions, children }: { title: string; onClose: () => void; actions?: ReactNode; children?: ReactNode }) {
   const [dock, setDock] = useState<HTMLElement | null>(null)
   return (
     <div className="dialog-area" data-region="dialog" role="dialog" aria-label={title || 'Dialog'}>
       <div className="dialog-header">
         <div className="dialog-title">{title}</div>
-        <button type="button" className="icon-button dialog-close" aria-label="Close dialog" onClick={onClose}>
-          <Icon d={paths.close} />
-        </button>
+        {/* a dialog with its own buttons (a feature dialog: Cancel and Accept) replaces the close button */}
+        {actions ?? (
+          <button type="button" className="icon-button dialog-close" aria-label="Close dialog" onClick={onClose}>
+            <Icon d={paths.close} />
+          </button>
+        )}
       </div>
       <DockContext.Provider value={dock}>
         <div className="dialog-body">{children}</div>

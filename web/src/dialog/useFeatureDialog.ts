@@ -1,0 +1,200 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { ApiError } from '../net/api'
+import type { ConnectionStore, PreviewMessage } from '../net/connection'
+import { explainError } from '../shell/errors'
+import { decodeOutputs, isStudio } from '../wire'
+import type { StudioOutputs } from '../wire'
+import { acceptFeatureDialog, cancelFeatureDialog, fetchPreviewBytes, openFeatureDialog, updateFeatureDialog } from './dialogApi'
+import type { DialogView, OpenReply } from './dialogApi'
+
+/** The model a dialog's update produced, drawn in place of the committed one. */
+export interface PreviewState {
+  outputs: StudioOutputs
+  /** The preview's number (the newest is drawn; an older one that arrives late is dropped). */
+  number: number
+}
+
+export interface FeatureDialogState {
+  phase: 'opening' | 'open' | 'failed'
+  /** Why the dialog could not open (phase 'failed'). */
+  failure: string | null
+  opened: OpenReply | null
+  view: DialogView | null
+  /** What each row last refused, by key. */
+  errors: Record<string, string>
+  /** What was sent and not yet answered, by key: the field shows it at once. */
+  sent: Record<string, unknown>
+  /** The feature failed to build with these values (the model drawn is the one before it). */
+  previewError: string | null
+  /** Accept was refused or failed; the dialog stays open with every value. */
+  problem: string | null
+  /** Accept is on its way. */
+  accepting: boolean
+  set(values: Record<string, unknown>): void
+  accept(): Promise<void>
+  cancel(): void
+}
+
+interface Options {
+  store: ConnectionStore
+  documentId: string
+  documentName: string
+  tab: string
+  feature: string
+  /** The preview to draw, or null for the committed model again. */
+  onPreview: (p: PreviewState | null) => void
+  /** The dialog is over. `revision` is the revision an accept made (null for Cancel). */
+  onDone: (result: { accepted: boolean; revision: number | null }) => void
+}
+
+/**
+ * One feature dialog against the server: opens it, sends each change as one dialog update (one at a time, in order),
+ * follows the previews the server pushes for it, and ends it with Accept or Cancel. Leaving the screen with the dialog
+ * still open cancels it on the server.
+ */
+export function useFeatureDialog({ store, documentId, documentName, tab, feature, onPreview, onDone }: Options): FeatureDialogState {
+  const [phase, setPhase] = useState<FeatureDialogState['phase']>('opening')
+  const [failure, setFailure] = useState<string | null>(null)
+  const [opened, setOpened] = useState<OpenReply | null>(null)
+  const [view, setView] = useState<DialogView | null>(null)
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [sent, setSent] = useState<Record<string, unknown>>({})
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [problem, setProblem] = useState<string | null>(null)
+  const [accepting, setAccepting] = useState(false)
+
+  const latest = useRef({ onPreview, onDone, documentName })
+  useEffect(() => {
+    latest.current = { onPreview, onDone, documentName }
+  })
+  const dialog = useRef<string | null>(null)
+  const over = useRef(false)
+  const queue = useRef<Promise<void>>(Promise.resolve())
+  const pending = useRef<Record<string, unknown>>({})
+  const shown = useRef(0)
+  const client = store.getState().client
+
+  const onPreviewMessage = useCallback(
+    async (m: PreviewMessage) => {
+      if (m.dialog !== dialog.current || over.current || m.preview < shown.current) return
+      if (!m.outputs) {
+        setPreviewError(m.error ?? 'The preview could not be built.')
+        return
+      }
+      try {
+        const got = await fetchPreviewBytes(documentId, tab, m.dialog, client)
+        // a newer preview may have been drawn while this one loaded, or the dialog may be over
+        if (got === null || over.current || got.number < shown.current) return
+        const out = decodeOutputs(got.bytes)
+        if (!isStudio(out)) return
+        shown.current = got.number
+        latest.current.onPreview({ outputs: out, number: got.number })
+        if (got.number === m.preview) setPreviewError(m.ok ? null : m.error)
+      } catch {
+        // the model of this preview did not arrive: the last one stays drawn
+      }
+    },
+    [documentId, tab, client],
+  )
+
+  useEffect(() => {
+    let dead = false
+    const stop = store.onPreview((m) => void onPreviewMessage(m))
+    openFeatureDialog(documentId, tab, feature, client).then(
+      (r) => {
+        if (dead) {
+          void cancelFeatureDialog(documentId, tab, r.dialog, client).catch(() => {})
+          return
+        }
+        dialog.current = r.dialog
+        setOpened(r)
+        setView(r)
+        setPhase('open')
+      },
+      (e: unknown) => {
+        if (dead) return
+        setFailure(explainError(e, latest.current.documentName))
+        setPhase('failed')
+      },
+    )
+    return () => {
+      dead = true
+      stop()
+      const did = dialog.current
+      if (did !== null && !over.current) {
+        over.current = true
+        latest.current.onPreview(null)
+        void cancelFeatureDialog(documentId, tab, did, client).catch(() => {})
+      }
+    }
+  }, [store, documentId, tab, feature, client, onPreviewMessage])
+
+  const flush = useCallback(async () => {
+    const values = pending.current
+    if (Object.keys(values).length === 0 || dialog.current === null || over.current) return
+    pending.current = {}
+    try {
+      const r = await updateFeatureDialog(documentId, tab, dialog.current, client, values)
+      if (over.current) return
+      setView(r)
+      setErrors((old) => {
+        const next = { ...old }
+        for (const k of Object.keys(values)) {
+          if (r.errors[k] !== undefined) next[k] = r.errors[k]
+          else delete next[k]
+        }
+        return next
+      })
+      setProblem(null)
+    } catch (e) {
+      if (!over.current) setProblem(explainError(e, latest.current.documentName))
+    } finally {
+      setSent((old) => {
+        const next = { ...old }
+        for (const k of Object.keys(values)) if (next[k] === values[k]) delete next[k]
+        return next
+      })
+    }
+  }, [documentId, tab, client])
+
+  const set = useCallback(
+    (values: Record<string, unknown>) => {
+      if (over.current) return
+      Object.assign(pending.current, values)
+      setSent((old) => ({ ...old, ...values }))
+      queue.current = queue.current.then(flush)
+    },
+    [flush],
+  )
+
+  const accept = useCallback(async () => {
+    if (over.current || dialog.current === null) return
+    setAccepting(true)
+    setProblem(null)
+    try {
+      await queue.current
+      const r = await acceptFeatureDialog(documentId, tab, dialog.current, client)
+      over.current = true
+      latest.current.onDone({ accepted: true, revision: r.revision })
+    } catch (e) {
+      const name = latest.current.documentName
+      setProblem(
+        e instanceof ApiError && e.status === 423
+          ? `"${name}" is open read-only here, so Accept did nothing. Your values stay in the dialog: use Take over in the banner and Accept again, or Cancel.`
+          : explainError(e, name),
+      )
+    } finally {
+      setAccepting(false)
+    }
+  }, [documentId, tab, client])
+
+  const cancel = useCallback(() => {
+    if (over.current) return
+    over.current = true
+    const did = dialog.current
+    if (did !== null) void cancelFeatureDialog(documentId, tab, did, client).catch(() => {})
+    latest.current.onDone({ accepted: false, revision: null })
+  }, [documentId, tab, client])
+
+  return { phase, failure, opened, view, errors, sent, previewError, problem, accepting, set, accept, cancel }
+}

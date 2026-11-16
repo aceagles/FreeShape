@@ -33,6 +33,8 @@ export interface SketchConstraint {
   /** A dimension: where its label sits (sketch coordinates), and where the measured geometry was when it was put there. */
   pos?: Uv
   pos_anchor?: Uv
+  /** A dimension made from an expression: the text as typed ("#w*2"); `value` is what it evaluates to. */
+  expr?: string
 }
 
 export interface SketchData {
@@ -94,6 +96,7 @@ export function parseSketchData(raw: unknown): SketchData | null {
   for (const c of raw['constraints'])
     if (isObj(c) && typeof c['id'] === 'string' && typeof c['type'] === 'string' && Array.isArray(c['refs']))
       constraints.push({ id: c['id'], type: c['type'], refs: c['refs'].filter((r): r is string => typeof r === 'string'), ...(isNum(c['value']) ? { value: c['value'] } : {}),
+        ...(typeof c['expr'] === 'string' && c['expr'].trim() !== '' ? { expr: c['expr'] } : {}),
         ...(isUv(c['pos']) ? { pos: c['pos'] } : {}),
         ...(isUv(c['pos_anchor']) ? { pos_anchor: c['pos_anchor'] } : {}),
       })

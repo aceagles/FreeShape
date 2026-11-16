@@ -216,3 +216,20 @@ it('a refusal is shown by the pad alone: the sketch chip does not say it again',
   expect(r.store.getState().error).toBeNull()
   expect(screen.getByTestId('dimension-refusal')).toBeTruthy()
 })
+
+it('a dimension made from an expression opens the pad on that text, not on its number', () => {
+  const r = rig()
+  const open = openedMessage()
+  const sk = open['sketch'] as { constraints: Record<string, unknown>[] }
+  sk.constraints = sk.constraints.map((c) => (c['id'] === 'k3' ? { ...c, value: 40, expr: '#w*2' } : c))
+  r.say(open)
+  act(() => void r.tool.doubleTap({ kind: 'dimension', id: 'k3' }))
+  expect(r.field()).toBe('#w*2')
+  // leaving it alone sends nothing; typing over it sends the new text
+  r.tap('Enter')
+  expect(r.sent).toEqual([])
+  act(() => void r.tool.doubleTap({ kind: 'dimension', id: 'k3' }))
+  r.tap('3', 'Multiply', '4')
+  r.tap('Enter')
+  expect(r.sent).toEqual([{ type: 'sketch.dimension.set', constraint: 'k3', value: '3*4' }])
+})

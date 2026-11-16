@@ -301,7 +301,8 @@ export class DimensionTool implements SketchPointerTool {
     if (!c || c.value === undefined) return false
     this.closePad()
     this.clearPicks()
-    const text = padText(c.type, c.value)
+    // a dimension made from an expression opens on that text, so it can be edited
+    const text = c.expr ?? padText(c.type, c.value)
     this.placing = null
     this.target = c.id
     this.sent = null

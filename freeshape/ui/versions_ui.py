@@ -320,6 +320,9 @@ class VersionsUI:
             return "No Document is open."
         if self.view is not None:
             return "Close the read-only version first."
+        refused = self.w.lock_refusal("create a Version", write=True)
+        if refused:
+            return refused
         self.w._leave_modes()
         if not self.w._save_document():
             return "The Document could not be saved, so no version was created."
@@ -471,7 +474,7 @@ class VersionsUI:
     def update_links(self, document=None):
         """Re-pin the cross-Document links (of `document`, or all) to the newest version and re-render."""
         fd = self.w.folder
-        if fd is None:
+        if fd is None or self.w.lock_refusal("update links", write=True):
             return 0
         n = links.update_cross_links(fd, document=document)
         for tab in fd.tabs:
@@ -502,7 +505,7 @@ class VersionsUI:
         """After a confirmation naming the source folder, clone it again and open the result in place of this one."""
         w = self.w
         source = self.import_source()
-        if source is None:
+        if source is None or w.lock_refusal("import again", write=True):
             return False
         r = QMessageBox.question(w, APP_NAME, f"Import “{os.path.basename(source)}” again from\n{source}?\n\n"
                                  "This replaces the imported copy with a fresh one and picks up the versions the "

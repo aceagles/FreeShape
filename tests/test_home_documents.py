@@ -184,6 +184,7 @@ def test_crash_with_unsaved_tab_offers_that_document_and_tab(make_window, tmp_pa
     # the process dies: its autosave folder is now owned by a dead pid
     dead = next(p for p in range(4_000_000, 4_100_000) if not MW.MainWindow._process_alive(p))
     os.rename(tmp_path / "autosave" / "pid", tmp_path / "autosave" / str(dead))
+    w._unlock_document()     # its Document lock (stale within a minute of a real crash)
 
     seen = []
     monkeypatch.setattr(MW.QMessageBox, "question", staticmethod(lambda *a, **k: seen.append(a[2]) or QMessageBox.Yes))

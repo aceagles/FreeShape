@@ -168,6 +168,7 @@ def test_recovered_session_sorts_tabs_into_their_document(make_window, tmp_path,
     # the process dies: its autosave folder is now owned by a dead pid
     dead = next(p for p in range(4_000_000, 4_100_000) if not MW.MainWindow._process_alive(p))
     os.rename(tmp_path / "autosave" / "pid", tmp_path / "autosave" / str(dead))
+    w._unlock_document()     # its Document lock (stale within a minute of a real crash)
 
     monkeypatch.setattr(MW.QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
     w2 = make_window()

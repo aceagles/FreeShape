@@ -5,6 +5,7 @@ import base64
 import copy
 import os
 import sys
+import threading
 import weakref
 
 import numpy as np
@@ -24,6 +25,7 @@ from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
 from .. import blobstore
 from .. import doc_folder
+from .. import doc_lock
 from .. import docstore
 from .. import doc_registry
 from .. import tabkinds as TK
@@ -135,6 +137,45 @@ class _DocChip(QToolButton):
             self.style().polish(self)
 
 
+class _LockHold:
+    """The Document lock this window holds and the plain thread that keeps its heartbeat fresh.
+
+    The thread is not the Qt event loop: a rebuild, an import or a hidden-line view can stall the window for longer
+    than the lock timeout, and the server would then see the lock as stale. It touches no widget. When a refresh
+    finds the lock gone it sets `lost` and stops; the window polls `lost` from a QTimer on the Qt thread."""
+
+    def __init__(self, lock, interval):
+        self.lock = lock
+        self.lost = threading.Event()
+        self._stop = threading.Event()
+        self._interval = interval
+        self._thread = threading.Thread(target=self._run, name="freeshape-doc-lock", daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while not self._stop.wait(self._interval):
+            try:
+                if not self.lock.refresh():
+                    self.lost.set()
+                    return
+            except OSError:
+                pass            # a failed write (share briefly unreachable): try again at the next beat
+
+    def close(self, release=True):
+        """Stop the thread (joined, so it cannot write after this returns), then release the lock."""
+        self._stop.set()
+        if self._thread is not threading.current_thread():
+            self._thread.join(10)
+        if release:
+            try:
+                self.lock.release()
+            except OSError:
+                pass
+
+    def running(self):
+        return self._thread.is_alive()
+
+
 def _sep():
     f = QFrame()
     f.setObjectName("sep")
@@ -152,6 +193,10 @@ class MainWindow(QMainWindow):
         self.doc = None             # the document in the current tab
         self.docs = {}              # tab key -> Document
         self.folder = None          # the open folder Document (doc_folder.FolderDocument), if any
+        self._lock_hold = None      # the Document lock this window holds, with its heartbeat thread (_LockHold)
+        self._lock_ro = None        # {"holder": doc_lock.Holder | None, "lost": bool} while the open Document is read-only
+        self._lock_path = None      # the folder _lock_hold / _lock_ro are about
+        self._lock_takeover = None  # (folder, Lock) handed from take_over to the reopen that follows it
         self._views = {}            # tab key -> saved camera state
         self._studio_counter = 0
         self.mode = "idle"          # idle | dialog | sketch
@@ -216,6 +261,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._build_topbar())
+        root.addWidget(self._build_lock_banner())
         self.main_stack = QStackedWidget()
         self.main_stack.currentChanged.connect(lambda i: self.doc_label.set_plain(i != 0))   # Home: the name alone
         work = QWidget()
@@ -295,6 +341,7 @@ class MainWindow(QMainWindow):
         pm.addAction(icon("assembly", 16), "Create Assembly", self.new_assembly)
         pm.addAction(icon("drawing", 16), "Create Drawing…", lambda: self.new_drawing())
         plus.setMenu(pm)
+        self._lock_plus = plus
         tl.addWidget(plus)
         # which Document the tabs that follow belong to; hidden while only loose files are open
         self.tab_document = QLabel()
@@ -333,6 +380,7 @@ class MainWindow(QMainWindow):
         hp.clearRecent.connect(self._clear_recent)
         self.setAcceptDrops(True)
         self.setCentralWidget(central)
+        self.main_stack.currentChanged.connect(lambda _i: self._apply_lock_state())     # the banner shows on the work page
 
         self.measure = QLabel(self.viewport)
         self.measure.setStyleSheet("background: rgba(255,255,255,235); border: 1px solid %s; border-radius: 5px;"
@@ -427,6 +475,9 @@ class MainWindow(QMainWindow):
         self._add_action(m, "About FreeShape", self.show_about)
         self._add_action(m, "Quit", self.close, "Ctrl+Q")
         menu_btn.setMenu(m)
+        self._lock_actions = [a for a in m.actions() if a.text() in (
+            "New Part Studio", "New Assembly", "New Drawing…", "Add files to Document…", "Save", "Save as…",
+            "Import STEP / BREP (new tab)…", "Import STEP / BREP into this tab…")]
         h.addWidget(menu_btn)
         view_btn = QToolButton()
         view_btn.setObjectName("menuButton")
@@ -1168,9 +1219,10 @@ class MainWindow(QMainWindow):
         sc("Shift+S", lambda: self.start_sketch() if self.mode == "idle" and not self.is_dwg else None)
         sc("Shift+E", lambda: self._feature_from_sketch("extrude"))
         sc("Shift+W", lambda: self._feature_from_sketch("revolve"))
-        sc("Shift+F", lambda: self.asm.start_mate("fastened") if self.is_asm else self.start_feature("fillet"))
+        sc("Shift+F", lambda: self._refuse_edit() or (self.asm.start_mate("fastened") if self.is_asm
+                                                      else self.start_feature("fillet")))
 
-        sc("N", lambda: self.dwg.set_tool("note") if self.is_dwg else self._normal_key())
+        sc("N", lambda: self._refuse_edit() or self.dwg.set_tool("note") if self.is_dwg else self._normal_key())
         # Onshape's visibility keys. Window shortcuts, so they work with the focus in a list as well as in the
         # 3D view; where a key does not apply (_vis_key) the widget that would have had it gets it instead.
         self._vis_shortcuts = {}
@@ -1365,6 +1417,8 @@ class MainWindow(QMainWindow):
 
     # ================================================================== feature dialogs
     def start_feature(self, ftype, edit_fid=None, preselect=None):
+        if self._refuse_edit():
+            return
         if self.is_asm or self.is_dwg:
             return
         door = ftype if ftype in F.FRONT_DOORS else None        # a front door (I7.9): its type plus a marker
@@ -1503,6 +1557,8 @@ class MainWindow(QMainWindow):
         self._populate_lists()
 
     def edit_feature(self, fid):
+        if self._refuse_edit():
+            return
         f = self.doc.feature(fid)
         if f is None or self.mode != "idle":
             return
@@ -1521,6 +1577,8 @@ class MainWindow(QMainWindow):
 
     # ================================================================== sketch mode
     def start_sketch(self, edit_fid=None):
+        if self._refuse_edit():
+            return
         if self.mode != "idle" or self.is_asm or self.is_dwg:
             return
         extra, base = [], None
@@ -2320,6 +2378,7 @@ class MainWindow(QMainWindow):
     def _adopt_document(self, fd):
         """Show every tab of an opened Document and make it the open Document."""
         self.folder = fd
+        self._lock_document(fd)
         fd.resolver.flat_pattern_of = self.flat_pattern_of
         loose_blank = [d for d in self.docs.values() if self._is_pristine(d)]
         for tab in fd.tabs:
@@ -2340,6 +2399,7 @@ class MainWindow(QMainWindow):
             self._views.pop(id(d), None)
         self._note_document_tab(fd, active.id if active is not None else None)
         self._add_recent(fd.path)
+        self._apply_lock_state()
         self._refresh_workspaces()
 
     def _close_document(self):
@@ -2362,6 +2422,7 @@ class MainWindow(QMainWindow):
             self._drop_autosave(doc)
             self._remove_tab_silently(doc)
         self.folder = None
+        self._unlock_document()
         self._refresh_workspaces()
         return True
 
@@ -2377,6 +2438,8 @@ class MainWindow(QMainWindow):
         to tab ids. The originals are not touched. Saves the Document, since the copies are new files."""
         if self.folder is None:
             QMessageBox.information(self, APP_NAME, "Open or create a Document first, then add files to it.")
+            return []
+        if self.lock_refusal("add files", write=True):
             return []
         if paths is None:
             paths = self._pick_files_to_add()
@@ -2404,6 +2467,8 @@ class MainWindow(QMainWindow):
 
     def _save_document(self):
         fd = self.folder
+        if self.lock_refusal("save", write=True):
+            return False
         for tab in fd.tabs:
             if tab.doc is not None:
                 tab.name = tab.doc.name
@@ -2423,6 +2488,195 @@ class MainWindow(QMainWindow):
         self._add_recent(fd.path)
         self.status.showMessage(f"Saved {fd.path}", 4000)
         self._refresh_versions()
+        return True
+
+    # ================================================================== Document lock (one program edits a Document)
+    LOCK_PROGRAM = "desktop"                    # the name the server's banner shows; the server's own is "browser"
+    LOCK_TIMEOUT = doc_lock.DEFAULT_TIMEOUT
+    LOCK_INTERVAL = doc_lock.REFRESH_INTERVAL
+    _LOCK_PROGRAMS = {"browser": "the browser client", "desktop": "another FreeShape desktop window"}
+
+    def _holder_label(self, holder):
+        if holder is None:
+            return "another program"
+        return self._LOCK_PROGRAMS.get(holder.program, holder.program)
+
+    def _lock_reason(self):
+        """One line on why the open Document is read-only (the banner and the refusals use it)."""
+        ro = self._lock_ro
+        name = self.folder.name if self.folder is not None else "The Document"
+        if ro is None:
+            return ""
+        who = self._holder_label(ro["holder"])
+        if ro["lost"]:
+            if ro["holder"] is None:
+                return f"The lock on “{name}” was removed, so this window is read-only now."
+            return f"{who[:1].upper() + who[1:]} took over “{name}”, so this window is read-only now."
+        return f"“{name}” is being edited in {who}, so it is open read-only here."
+
+    def _lock_document(self, fd):
+        """Take the lock of the Document folder `fd` (a Document under the same folder keeps what it has), or mark
+        the Document read-only when another program holds it. A folder where the lock file cannot be written opens
+        as it always did, with no lock."""
+        path = fd.path and os.path.abspath(fd.path)
+        if not path or fd.read_only:
+            return
+        if self._lock_path == path and (self._lock_hold is not None or self._lock_ro is not None):
+            return
+        self._unlock_document()
+        pending, self._lock_takeover = self._lock_takeover, None
+        try:
+            if pending is not None and pending[0] == path:
+                lock = pending[1]
+            else:
+                lock = doc_lock.acquire(path, self.LOCK_PROGRAM, self.LOCK_TIMEOUT)
+        except doc_lock.LockHeld as e:
+            self._lock_path = path
+            self._lock_ro = {"holder": e.holder, "lost": False}
+            return
+        except OSError:
+            return
+        self._lock_path = path
+        self._hold_lock(lock)
+
+    def _hold_lock(self, lock):
+        hold = self._lock_hold = _LockHold(lock, self.LOCK_INTERVAL)
+        self.destroyed.connect(lambda *_a, h=hold: h.close())      # a window deleted without closing lets go too
+        timer = getattr(self, "_lock_timer", None)
+        if timer is None:
+            timer = self._lock_timer = QTimer(self)
+            timer.timeout.connect(self._poll_lock)
+            timer.start(500)
+
+    def _unlock_document(self):
+        """Stop the heartbeat thread and release the lock (if it is still ours); forget the read-only state."""
+        hold, self._lock_hold = self._lock_hold, None
+        if hold is not None:
+            hold.close()
+        self._lock_ro = None
+        self._lock_path = None
+        self._apply_lock_state()
+
+    def _poll_lock(self):
+        """On the Qt thread: has the heartbeat thread found the lock taken from us?"""
+        hold = self._lock_hold
+        if hold is not None and hold.lost.is_set():
+            self._lost_lock()
+
+    def _lost_lock(self):
+        """The lock is no longer ours: stop the heartbeat, leave any open tool and turn the window read-only."""
+        hold, self._lock_hold = self._lock_hold, None
+        if hold is None or self._lock_path is None:
+            return
+        hold.close(release=False)
+        holder = doc_lock.holder(self._lock_path, self.LOCK_TIMEOUT)
+        self._lock_ro = {"holder": holder, "lost": True}
+        self._leave_modes()
+        self._apply_lock_state()
+        self._refresh_workspaces()
+        self.status.showMessage(self._lock_reason(), 15000)
+
+    def lock_refusal(self, what, write=False):
+        """The reason `what` is refused (also put on the status bar), or None when the open Document is ours.
+        `write` first reads the lock file, so a lock taken since the last heartbeat is noticed before a write."""
+        if self.folder is None:
+            return None
+        hold = self._lock_hold
+        if write and hold is not None and not hold.lock.still_mine():
+            self._lost_lock()
+        if self._lock_ro is None:
+            return None
+        msg = f"Can't {what}: {self._lock_reason()}"
+        self.status.showMessage(msg, 15000)
+        return msg
+
+    def _edit_locked(self):
+        """The current tab is a tab of a Document this window may not edit."""
+        return self._lock_ro is not None and self.doc is not None and self._folder_tab(self.doc) is not None
+
+    def _refuse_edit(self, doc=None):
+        """True (with a note on the status bar) when `doc`, default the current tab, may not be edited now."""
+        doc = doc or self.doc
+        if self._lock_ro is None or doc is None or self._folder_tab(doc) is None:
+            return False
+        self.status.showMessage(f"Can't edit: {self._lock_reason()}", 8000)
+        return True
+
+    def _build_lock_banner(self):
+        bar = QWidget()
+        bar.setObjectName("lockBanner")
+        bar.setStyleSheet("QWidget#lockBanner { background: #fff4dc; border-bottom: 1px solid #d5d9de; }"
+                          "QWidget#lockBanner QLabel { background: transparent; color: #1f2328; }")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(12, 6, 12, 6)
+        h.setSpacing(10)
+        self.lock_label = QLabel()
+        self.lock_label.setObjectName("lockBannerText")
+        self.lock_label.setWordWrap(True)
+        h.addWidget(self.lock_label, 1)
+        self.lock_take_over = QToolButton()
+        self.lock_take_over.setObjectName("outlineButton")
+        self.lock_take_over.setText("Take over")
+        self.lock_take_over.setToolTip("Edit this Document here instead. The other program stops being able to save.")
+        self.lock_take_over.clicked.connect(lambda _c=False: self.take_over_lock())
+        h.addWidget(self.lock_take_over)
+        bar.setVisible(False)
+        self.lock_banner = bar
+        return bar
+
+    def _apply_lock_state(self):
+        """Show or hide the banner and enable or disable the editing controls for the current tab."""
+        banner = getattr(self, "lock_banner", None)
+        if banner is None or getattr(self, "viewport", None) is None:
+            return
+        ro = self._edit_locked()
+        banner.setVisible(self._lock_ro is not None and self.folder is not None
+                          and self.main_stack.currentIndex() == 0)
+        if self._lock_ro is not None:
+            self.lock_label.setText(self._lock_reason() + " Editing, saving and Versions are off.")
+        self.tool_stack.setEnabled(not ro)
+        for a in self._lock_actions:
+            a.setEnabled(not ro)
+        self._lock_plus.setEnabled(not ro)
+        if self.is_asm:
+            self.viewport.drag_handler = None if ro else self.asm
+
+    def take_over_lock(self):
+        """Ask, then take the Document's lock from whoever holds it. With nothing unsaved here the Document is read
+        again from disk first-hand (the other program may have saved); with unsaved changes they stay as they are and
+        a save here overwrites what the other program saved."""
+        fd = self.folder
+        if fd is None or self._lock_ro is None:
+            return False
+        who = self._holder_label(self._lock_ro["holder"])
+        unsaved = fd.unsaved_tabs()
+        text = (f"Take over “{fd.name}” from {who}?\n\n{who[:1].upper() + who[1:]} may still be editing it: whatever "
+                "it has not saved is lost, and it cannot save again until it takes the Document back.")
+        if unsaved:
+            text += ("\n\nThis window has unsaved changes to " + ", ".join(f"“{n}”" for n in unsaved) +
+                     ". They are kept, and saving them replaces what the other program saved.")
+        if QMessageBox.question(self, APP_NAME, text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return False
+        path = self._lock_path
+        try:
+            lock = doc_lock.take_over(path, self.LOCK_PROGRAM, self.LOCK_TIMEOUT)
+        except OSError as e:
+            QMessageBox.warning(self, APP_NAME, f"Could not take over the Document:\n{e}")
+            return False
+        self._lock_ro = None
+        self._hold_lock(lock)
+        if not unsaved:
+            old = [t.doc for t in fd.tabs if t.doc is not None and self._tab_index(t.doc) >= 0]
+            cur = self._folder_tab(self.doc)
+            try:
+                fd.reload()
+            except (K.KernelError, OSError, ValueError) as e:
+                QMessageBox.warning(self, APP_NAME, f"The Document is yours now, but reading it again failed:\n{e}")
+            else:
+                self._reload_document_tabs(old, cur.id if cur is not None else None)
+        self._apply_lock_state()
+        self._refresh_workspaces()
+        self.status.showMessage(f"Editing “{fd.name}” here now", 6000)
         return True
 
     # ================================================================== Workspaces (git branches of the Document)
@@ -2465,7 +2719,7 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             menu.addAction(self.workspace_new)
             menu.addAction(self.merge_action)
-        self.workspace_new.setEnabled(fd is not None and problem is None)
+        self.workspace_new.setEnabled(fd is not None and problem is None and self._lock_ro is None)
         self.merge_action.setText(f"Merge another Workspace into “{current}”…" if current
                                   else "Merge another Workspace…")
         self.doc_label.set_workspace(current, menu if fd is not None else None)
@@ -2508,6 +2762,8 @@ class MainWindow(QMainWindow):
     def _workspace_op(self, what, op):
         """Run a Workspace change (`op(dirty)` on the Document) behind the dirty guard, then reload the tabs."""
         fd = self.folder
+        if self.lock_refusal("change Workspace", write=True):
+            return False
         try:
             if fd is None:
                 return False
@@ -2566,7 +2822,7 @@ class MainWindow(QMainWindow):
     def new_workspace_dialog(self):
         """Ask for a version and a name, then create the Workspace."""
         fd = self.folder
-        if fd is None:
+        if fd is None or self.lock_refusal("start a Workspace", write=True):
             return False
         try:
             versions = fd.versions()
@@ -2595,14 +2851,22 @@ class MainWindow(QMainWindow):
     def _refresh_versions(self):
         """Recompute the Versions buttons and the update badge (on open, close, save and Workspace change)."""
         self.versions_ui.refresh()
+        if self._lock_ro is not None and self.folder is not None:      # a read-only Document makes no Version
+            self.versions_ui.create_btn.setEnabled(False)
+            self.versions_ui.create_btn.setToolTip(f"Unavailable: {self._lock_reason()}")
+            self.versions_ui.updates_btn.setEnabled(False)
 
     def create_version_dialog(self):
+        if self.lock_refusal("create a Version", write=True):
+            return False
         return self.versions_ui.create_dialog()
 
     def versions_dialog(self):
         return self.versions_ui.list_dialog()
 
     def updates_dialog(self):
+        if self.lock_refusal("update links", write=True):
+            return None
         return self.versions_ui.updates_dialog()
 
     # ================================================================== Merge (another Workspace into this one)
@@ -2619,7 +2883,7 @@ class MainWindow(QMainWindow):
         btn = getattr(self, "merge_action", None)
         if btn is not None:
             btn.setVisible(fd is not None)
-            btn.setEnabled(fd is not None and not fd.read_only and fd.git_problem() is None)
+            btn.setEnabled(fd is not None and not fd.read_only and fd.git_problem() is None and self._lock_ro is None)
         self._show_document_warnings(fd)
 
     def _show_document_warnings(self, fd):
@@ -2646,7 +2910,7 @@ class MainWindow(QMainWindow):
     def merge_dialog(self):
         """Ask which Workspace to merge into the current one, then preview and merge it."""
         fd = self.folder
-        if fd is None:
+        if fd is None or self.lock_refusal("merge a Workspace", write=True):
             return False
         try:
             current = fd.current_workspace()
@@ -2669,7 +2933,7 @@ class MainWindow(QMainWindow):
         choices and returns True to merge."""
         from .. import doc_merge
         fd = self.folder
-        if fd is None:
+        if fd is None or self.lock_refusal("merge a Workspace", write=True):
             return False
         self._leave_modes()
         try:
@@ -2767,6 +3031,8 @@ class MainWindow(QMainWindow):
             self.open_document(folder)
             if self.folder is None or self.folder.id != info.get("id"):
                 return False
+        if self._lock_ro is not None:            # someone else holds the Document: recover the tab as a loose file
+            return False
         kind = info.get("kind")
         if kind not in doc_folder.LOADERS:
             return False
@@ -2860,6 +3126,8 @@ class MainWindow(QMainWindow):
         for doc in list(self.docs.values()):
             if not (doc.dirty and self._has_content(doc)):
                 continue
+            if self._lock_ro is not None and self._folder_tab(doc) is not None:
+                continue            # a read-only Document is not ours to write, not even to the autosave folder
             try:
                 links.repair_links(self._resolver_for(doc), doc)
                 if hasattr(doc, "write_blobs"):         # the blobs its data names go first (I4.9)
@@ -3206,12 +3474,16 @@ class MainWindow(QMainWindow):
 
     # ================================================================== undo / misc
     def undo(self):
+        if self._refuse_edit():
+            return
         if self.mode == "sketch":
             self._sk("undo")
         elif self.mode == "idle":
             self.doc.undo()
 
     def redo(self):
+        if self._refuse_edit():
+            return
         if self.mode == "sketch":
             self._sk("redo")
         elif self.mode == "idle":
@@ -3235,6 +3507,8 @@ class MainWindow(QMainWindow):
             self.viewport.clear_selection()
 
     def _delete_key(self):
+        if self._refuse_edit():
+            return
         if self.is_dwg:
             if self.dwg.selection:
                 self.doc.delete(self.dwg.selection)
@@ -3269,6 +3543,9 @@ class MainWindow(QMainWindow):
 
     # ================================================================== tree interactions
     def _tree_reordered(self, ids, rollback, folders=None):
+        if self._refuse_edit():
+            self._populate_lists()
+            return
         if self.mode != "idle":
             self._populate_lists()
             return
@@ -3298,6 +3575,8 @@ class MainWindow(QMainWindow):
             self.doc.set_folder_open(fo, not info.get("open", True))
 
     def _new_folder(self, ids):
+        if self._refuse_edit():
+            return
         if self.doc is None or self.is_asm or self.is_dwg or self.mode != "idle":
             return
         if not ids:
@@ -3312,6 +3591,8 @@ class MainWindow(QMainWindow):
         self._rename_folder(fo, first=True)
 
     def _rename_folder(self, fo, first=False):
+        if self._refuse_edit():
+            return
         info = self.doc.folders.get(fo)
         if info is None:
             return
@@ -3602,6 +3883,8 @@ class MainWindow(QMainWindow):
     def update_context(self, fid=None):
         """Recapture a Context feature of the current studio from its Assembly (one undoable edit). Acts on `fid`,
         else the selected Context row, else the studio's only Context feature."""
+        if self._refuse_edit():
+            return
         tab = self._folder_tab(self.doc)
         if self.is_asm or self.is_dwg or tab is None:
             return
@@ -3643,6 +3926,8 @@ class MainWindow(QMainWindow):
             self.dialog.use_origin()
 
     def _rename_feature(self, fid):
+        if self._refuse_edit():
+            return
         f = self.doc.feature(fid)
         name, ok = QInputDialog.getText(self, "Rename feature", "Name:", text=f["name"])
         if ok and name.strip():
@@ -3694,6 +3979,8 @@ class MainWindow(QMainWindow):
         m.exec(gpos)
 
     def _rename_part(self, pid):
+        if self._refuse_edit():
+            return
         p = self.doc.state.parts[pid]
         name, ok = QInputDialog.getText(self, "Rename part", "Name:", text=p.name)
         if ok and name.strip():
@@ -3708,6 +3995,8 @@ class MainWindow(QMainWindow):
     def _auto_color(self, pids):
         """Give each part a different colour. Doing it again moves along the palette, so a second go gives a
         new set of colours."""
+        if self._refuse_edit():
+            return
         pids = [p for p in pids if p in self.doc.state.parts]
         if not pids:
             return
@@ -4072,6 +4361,8 @@ class MainWindow(QMainWindow):
 
     def _set_part_material(self, pid):
         """Ask for a part's material and store it as a part override (saved with the file)."""
+        if self._refuse_edit():
+            return
         names = ["(none: weighed as PLA)"] + list(M.MATERIALS)
         cur = M.material_name(self.doc.part_overrides.get(pid, {}).get("material"))
         name, ok = QInputDialog.getItem(self, "Material", "Material of this part:", names,
@@ -4434,6 +4725,7 @@ class MainWindow(QMainWindow):
             if self.doc.kind != "drawing":
                 self._views[id(self.doc)] = self.viewport.cam.state()
         self.doc = doc
+        self._apply_lock_state()
         self._refresh_context_bar()
         self.viewport.transparent_ids = set(self._transparent.get(doc, ())) | set(self.tool_transparent)
         self.viewport.clear_selection()
@@ -4453,7 +4745,7 @@ class MainWindow(QMainWindow):
         self.view_stack.setCurrentIndex(0)
         self.tool_stack.setCurrentIndex(2 if asm else 0)
         self.left_stack.setCurrentIndex(1 if asm else 0)
-        self.viewport.drag_handler = self.asm if asm else None
+        self.viewport.drag_handler = self.asm if asm and not self._edit_locked() else None
         self.viewport.triads = []
         self.viewport.ghosts = []
         self._on_doc_changed()                 # (an Assembly or Drawing is refreshed when its inputs change: LiveTabs)
@@ -4492,6 +4784,9 @@ class MainWindow(QMainWindow):
         if i < 0:
             return
         doc = self.docs.get(self.tabs.tabData(i))
+        if doc is not None and self._lock_ro is not None and self._folder_tab(doc) is not None:
+            self._refuse_edit(doc)
+            return
         name, ok = QInputDialog.getText(self, "Rename tab", "Name:", text=doc.name)
         if ok and name.strip():
             doc.name = name.strip()
@@ -4512,6 +4807,9 @@ class MainWindow(QMainWindow):
     def _duplicate_tab(self, i):
         src = self.docs.get(self.tabs.tabData(i))
         if src is None:
+            return
+        if self._lock_ro is not None and self._folder_tab(src) is not None:
+            self._refuse_edit(src)
             return
         import json
         if src.kind == "drawing":
@@ -4553,12 +4851,16 @@ class MainWindow(QMainWindow):
         self._add_tab(doc)
 
     def new_doc(self):
+        if self._refuse_edit():
+            return
         self._leave_tab()
         doc = self._new_document()
         self._register_in_document(doc)
         self._add_tab(doc)
 
     def new_assembly(self):
+        if self._refuse_edit():
+            return
         self._leave_tab()
         self._asm_counter = getattr(self, "_asm_counter", 0) + 1
         a = AssemblyDoc()
@@ -4600,6 +4902,8 @@ class MainWindow(QMainWindow):
 
     def new_drawing(self, preselect=None):
         """Create a Drawing tab of a part, a Part Studio or an Assembly."""
+        if self._refuse_edit():
+            return
         self._leave_modes()
         from .drawing_ui import NewDrawingDialog
         sources = self.drawing_sources()
@@ -4788,7 +5092,7 @@ class MainWindow(QMainWindow):
         if self.versions_ui.refuse_save():
             return False
         if self._folder_tab(self.doc) is not None:
-            return self._save_document()
+            return self._save_document()       # refuses by itself while the Document is read-only
         if not self.doc.path:
             return self.save_as()
         if self.is_asm or self.is_dwg:
@@ -4849,12 +5153,16 @@ class MainWindow(QMainWindow):
 
     def _insert_library_part(self, path, into_current):
         """Insert a library part into this tab when it is a Part Studio or an Assembly, else in a new tab."""
+        if self._refuse_edit():
+            return
         if self.mode != "idle":
             self._leave_modes()
         can_take = self.doc is not None and getattr(self.doc, "kind", "studio") in ("studio", "assembly")
         self.import_step_file(path, into_current and can_take)
 
     def import_step_file(self, path, into_current=False):
+        if self._refuse_edit():
+            return
         from .progress import ImportProgress, read_step_in_background
         if into_current and self.is_asm:
             n = self.asm.insert_step(path)
@@ -5036,11 +5344,12 @@ class MainWindow(QMainWindow):
             pass
         if self.studio_engine is not None:
             self.studio_engine.shutdown()
+        self._unlock_document()
         e.accept()
 
     def keyPressEvent(self, e):
         # assembly keys (plain shortcuts would steal the same letters from the sketcher)
-        if self.is_asm and self.mode == "idle":
+        if self.is_asm and self.mode == "idle" and not self._edit_locked():
             k, mods = e.key(), e.modifiers()
             if k == Qt.Key_I and not mods:
                 self.asm.toggle_insert()

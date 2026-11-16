@@ -7,7 +7,8 @@ import { pathToFileURL } from 'node:url'
 import { resolve } from 'node:path'
 import { webkit } from '@playwright/test'
 import type { Browser } from '@playwright/test'
-import { SIZES, shots } from './shots.ts'
+import { DESKTOP_SIZES, SIZES, shots } from './shots.ts'
+import { modeState } from './support/mode.ts'
 
 const base = process.env.FS_BASE_URL
 if (!base) throw new Error('FS_BASE_URL is not set: run this through scripts/web/shots.sh')
@@ -20,9 +21,9 @@ const LABEL = 28
 const failures: string[] = []
 const written: string[] = []
 
-async function capture(browser: Browser, width: number, height: number, key: string, name: string, mock: string | null, steps: (typeof shots)[number]['steps'], after?: (typeof shots)[number]['after']) {
+async function capture(browser: Browser, width: number, height: number, key: string, name: string, mock: string | null, steps: (typeof shots)[number]['steps'], after?: (typeof shots)[number]['after'], mode: 'desktop' | 'tablet' = 'tablet') {
   const stem = `${name}-${width}x${height}`
-  const context = await browser.newContext({ viewport: { width, height }, hasTouch: true, deviceScaleFactor: 1, baseURL: base })
+  const context = await browser.newContext({ viewport: { width, height }, hasTouch: true, deviceScaleFactor: 1, baseURL: base, storageState: modeState(new URL(base!).origin, mode) })
   try {
     const page = await context.newPage()
     const errors: string[] = []
@@ -73,10 +74,12 @@ async function capture(browser: Browser, width: number, height: number, key: str
 mkdirSync(out, { recursive: true })
 const browser = await webkit.launch()
 try {
-  for (const size of SIZES) {
-    for (const s of shots) {
-      if (only.length && !only.includes(s.name)) continue
-      await capture(browser, size.width, size.height, size.key, s.name, s.mock === undefined ? s.name : s.mock, s.steps, s.after)
+  for (const s of shots) {
+    if (only.length && !only.includes(s.name)) continue
+    const mode = s.mode ?? 'tablet'
+    for (const size of mode === 'desktop' ? DESKTOP_SIZES : SIZES) {
+      // a Desktop-mode state has no mock beside it yet
+      await capture(browser, size.width, size.height, size.key, s.name, mode === 'desktop' ? null : s.mock === undefined ? s.name : s.mock, s.steps, s.after, mode)
     }
   }
 } finally {

@@ -51,6 +51,7 @@ import { TextPrompt } from './TextPrompt'
 import { ShellContext } from './ShellContext'
 import type { ShellApi } from './ShellContext'
 import { TopBar } from './TopBar'
+import { ModeProvider, useMode } from './mode'
 import { columnWidth } from './layout'
 import { tokenVars } from './vars'
 import './shell.css'
@@ -103,7 +104,23 @@ declare global {
  * (with the dialog area over it) beside the viewport. Regions carry the layout's `data-region` names.
  * The connection state in the top bar opens the debug panel (round trips) over the viewport.
  */
-export function Shell({ store, documentId, version, onLeave }: { store: ConnectionStore; documentId: string; version?: string; onLeave: () => void }) {
+export function Shell(props: ShellProps) {
+  return (
+    <ModeProvider>
+      <ShellBody {...props} />
+    </ModeProvider>
+  )
+}
+
+interface ShellProps {
+  store: ConnectionStore
+  documentId: string
+  version?: string
+  onLeave: () => void
+}
+
+function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
+  const mode = useMode()
   const { tabs, document: doc, readOnly, holder, client } = useConnection(store)
   const [selected, setSelected] = useState<string | null>(null)
   // One selection for the view, the chip and the Parts list; a part is one kind of item in it (see ShellApi.selection)
@@ -389,7 +406,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
 
   return (
     <ShellContext.Provider value={api}>
-      <div className="shell" style={tokenVars()} data-testid="shell">
+      <div className="shell" style={tokenVars()} data-testid="shell" data-mode={mode}>
         <TopBar
           store={store}
           currentTab={currentTab}

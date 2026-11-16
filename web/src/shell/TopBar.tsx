@@ -3,6 +3,8 @@ import { useConnection } from '../net/react'
 import { Icon, paths } from './icons'
 import { LinkStatusButton } from './LinkStatus'
 import { TabBar } from './TabBar'
+import { useMode, useSetMode } from './mode'
+import type { Mode } from './mode'
 
 interface Props {
   store: ConnectionStore
@@ -30,6 +32,8 @@ interface Props {
  */
 export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, onUndo, onRedo, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onToggleDebug }: Props) {
   const { document, tabs } = useConnection(store)
+  const mode = useMode()
+  const setMode = useSetMode()
   const dirty = tabs.some((t) => t.dirty)
   return (
     <header className="top-bar" data-region="top-bar">
@@ -59,6 +63,13 @@ export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, 
         <Icon d={paths.save} />
         {dirty && <span className="dirty-dot" data-testid="dirty-dot" />}
       </button>
+      <div className="mode-toggle" role="group" aria-label="Mode" data-testid="mode-toggle">
+        {(['desktop', 'tablet'] as Mode[]).map((m) => (
+          <button key={m} type="button" className="mode-option" aria-pressed={mode === m} data-mode={m} onClick={() => setMode(m)}>
+            {m === 'desktop' ? 'Desktop' : 'Tablet'}
+          </button>
+        ))}
+      </div>
       <LinkStatusButton store={store} open={debugOpen} onToggle={onToggleDebug} />
     </header>
   )

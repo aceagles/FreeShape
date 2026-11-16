@@ -420,3 +420,32 @@
   opacity: 0.35;
   cursor: default;
 }
+
+/* Mode toggle (Desktop | Tablet) in the top bar */
+.mode-toggle {
+  flex: none;
+  display: flex;
+  box-sizing: border-box;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--r-sm);
+  background: var(--c-accentSoft);
+}
+.mode-option {
+  min-width: var(--touch);
+  height: var(--touch);
+  padding: 0 var(--sp-10);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-inkSoft);
+  font-size: var(--fs-tab);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mode-option[aria-pressed='true'] {
+  background: var(--c-white);
+  color: var(--c-ink);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--c-line);
+}

@@ -27,6 +27,8 @@ import { gizmoOf, openAssemblyTab, readAssembly, settledAssembly } from './suppo
  */
 export interface ShotState {
   name: string
+  /** The client's mode (default tablet). A desktop state is captured at DESKTOP_SIZES with no mock beside it. */
+  mode?: 'desktop' | 'tablet'
   mock?: string | null
   steps: (page: Page) => Promise<void>
   /** Runs after the picture is taken: puts back what the steps changed in the served Document. */
@@ -83,6 +85,12 @@ function editOpened(page: Page): () => EditOpened {
   return () => got!
 }
 
+/** Sizes a Desktop-mode state is captured at (I9.13 adds the desktop reference to put beside it). */
+export const DESKTOP_SIZES = [
+  { key: '1440', width: 1440, height: 900 },
+  { key: '1920', width: 1920, height: 1080 },
+] as const
+
 export const SIZES = [
   { key: '1024', width: 1024, height: 768 },
   { key: '1366', width: 1366, height: 1024 },
@@ -110,6 +118,14 @@ async function turnRing(page: Page, radians: number, release: boolean): Promise<
 }
 
 export const shots: ShotState[] = [
+  {
+    // I9.1: the Desktop-mode shell (it still looks like Tablet mode until I9.2 onwards); 1440 x 900 and 1920 x 1080, no mock
+    name: 'desktop-browsing',
+    mode: 'desktop',
+    steps: async (page) => {
+      await openApp(page)
+    },
+  },
   {
     name: 'browsing',
     steps: async (page) => {

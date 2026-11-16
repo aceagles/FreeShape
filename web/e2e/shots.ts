@@ -146,6 +146,39 @@ export const shots: ShotState[] = [
     after: closeAllDiscard,
   },
   {
+    name: 'feature-dialog-arrow',
+    mock: 'dialog', // Extrude 1 open and the pad away: the depth arrow with its round Drag handle and its value label
+    steps: async (page) => {
+      await openExtrudeDialog(page)
+      await padKeys(page, 'Enter')
+      await page.locator('.viewport-manipulators [data-part="label"]').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'feature-dialog-drag',
+    mock: 'dialog', // the pen holds the Drag handle part-way along the arrow: the label and the preview have followed
+    steps: async (page) => {
+      await openExtrudeDialog(page)
+      const at = async () => {
+        const h = page.locator('.viewport-manipulators [data-part="handle"]')
+        return { x: Number(await h.getAttribute('cx')), y: Number(await h.getAttribute('cy')) }
+      }
+      const from = await at()
+      const [bx, by] = (await page.locator('.viewport-manipulators path').first().getAttribute('d'))!.match(/-?[\d.]+/g)!.map(Number)
+      const len = Math.hypot(from.x - bx!, from.y - by!)
+      const along = (px: number) => ({ x: from.x + ((from.x - bx!) / len) * px, y: from.y + ((from.y - by!) / len) * px })
+      await sendPointer(page, [
+        { phase: 'down', kind: 'pen', id: 10, ...from },
+        ...[1, 2, 3, 4, 5, 6].map((i) => ({ phase: 'move' as const, kind: 'pen' as const, id: 10, ...along(8 * i) })),
+      ])
+      await page.waitForFunction(() => (window.__freeshapeViewport?.preview ?? 0) >= 2)
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
     name: 'feature-dialog-preview',
     mock: 'dialog', // Depth 50 entered: the pad has closed, the view draws the preview with the new body tinted
     steps: async (page) => {

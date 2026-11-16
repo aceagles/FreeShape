@@ -41,6 +41,18 @@ export interface TapHandler {
   undoTap(): void
 }
 
+/**
+ * A Drag handle drawn over the view (a drag arrow, an Assembly gizmo). It gets the press before selection and
+ * navigation: `press` returns true when the press lands on a handle, and the pointer is then the handle's until it
+ * lifts (`move`, then `release`, or `cancel`). Set with `PointerModule.setHandleHandler`.
+ */
+export interface HandleHandler {
+  press(p: PenPoint): boolean
+  move(p: PenPoint): void
+  release(p: PenPoint): void
+  cancel(): void
+}
+
 /** A two-finger twist smaller than this (radians, 4.5 degrees) rolls nothing, so a pinch does not turn the view. */
 export const TWIST_DEAD_ZONE = (4.5 * Math.PI) / 180
 /** A tap is a touch that lasts less than this (ms) and moves no more than TAP_SLOP pixels: the one finger gesture that selects. */
@@ -82,6 +94,9 @@ export class PointerModule {
   private pen: PenHandler | null = null
   private mousePick: PenHandler | null = null
   private tapHandler: TapHandler | null = null
+  private handle: HandleHandler | null = null
+  /** The pointer that holds a Drag handle. */
+  private handleId: number | null = null
   private penId: number | null = null
   private mouseId: number | null = null
   /** The mouse's left button, held: it Aims and Commits as the pen does. */
@@ -112,6 +127,11 @@ export class PointerModule {
   /** The mouse Aims by hovering (and while the left button is down), and Commits when the left button is released. */
   setMouseHandler(handler: PenHandler | null): void {
     this.mousePick = handler
+  }
+
+  /** A Drag handle takes a press (pen, finger or mouse left button) before selection and navigation. */
+  setHandleHandler(handler: HandleHandler | null): void {
+    this.handle = handler
   }
 
   /** A finger tap Commits through this handler. */
@@ -153,6 +173,12 @@ export class PointerModule {
     e.preventDefault()
     this.capture(e.pointerId)
     const p = this.local(e)
+    // a Drag handle comes first; a second finger is a pinch, never a handle
+    const free = e.pointerType === 'touch' ? this.touches.size === 0 : e.pointerType === 'mouse' ? e.button === 0 && this.mouseId === null && this.mouseSelectId === null : this.penId === null
+    if (free && this.handleId === null && this.handle?.press(this.penPoint(e))) {
+      this.handleId = e.pointerId
+      return
+    }
     if (e.pointerType === 'pen') {
       if (this.penId !== null) return
       this.penId = e.pointerId
@@ -206,6 +232,10 @@ export class PointerModule {
   }
 
   private readonly onMove = (e: PointerEvent): void => {
+    if (this.handleId === e.pointerId) {
+      this.handle?.move(this.penPoint(e))
+      return
+    }
     if (e.pointerType === 'pen') {
       if (this.penId === e.pointerId) this.pen?.aim(this.penPoint(e))
       return
@@ -255,6 +285,11 @@ export class PointerModule {
   }
 
   private readonly onUp = (e: PointerEvent): void => {
+    if (this.handleId === e.pointerId) {
+      this.handleId = null
+      this.handle?.release(this.penPoint(e))
+      return
+    }
     if (e.pointerType === 'pen') {
       if (this.penId !== e.pointerId) return
       this.penId = null
@@ -298,6 +333,11 @@ export class PointerModule {
   }
 
   private readonly onCancel = (e: PointerEvent): void => {
+    if (this.handleId === e.pointerId) {
+      this.handleId = null
+      this.handle?.cancel()
+      return
+    }
     if (e.pointerType === 'pen') {
       if (this.penId !== e.pointerId) return
       this.penId = null

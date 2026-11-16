@@ -7,6 +7,9 @@ import type { StudioOutputs } from '../wire'
 import { acceptFeatureDialog, cancelFeatureDialog, fetchPreviewBytes, openCreateDialog, openFeatureDialog, updateFeatureDialog } from './dialogApi'
 import type { DialogView, OpenReply } from './dialogApi'
 
+/** The feature types whose preview carries drag arrows (dialog_schema.manipulators). */
+const HAS_ARROWS: ReadonlySet<string> = new Set(['extrude', 'plane'])
+
 /** The model a dialog's update produced, drawn in place of the committed one. */
 export interface PreviewState {
   outputs: StudioOutputs
@@ -171,6 +174,18 @@ export function useFeatureDialog({ store, documentId, documentName, tab, feature
     },
     [flush],
   )
+
+  // The server previews on an update, not on open. A dialog of a feature that has drag arrows sends its first number back
+  // unchanged once it is open, so the preview (and the arrows it carries) is there from the start, as on the desktop.
+  useEffect(() => {
+    if (!opened || !HAS_ARROWS.has(opened.description.type)) return
+    const text = (key: string | null): string => {
+      const v = key ? opened.values[key] : undefined
+      return v?.text ? v.text : typeof v?.value === 'number' ? String(v.value) : ''
+    }
+    const row = opened.description.fields.find((f) => f.kind === 'num' && f.visible && f.key && text(f.key) !== '')
+    if (row?.key) set({ [row.key]: text(row.key) })
+  }, [opened, set])
 
   const accept = useCallback(async () => {
     if (over.current || dialog.current === null) return

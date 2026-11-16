@@ -31,7 +31,7 @@ const num = (key: string, label: string, extra: Partial<FieldSpec> = {}): FieldS
 const choice = (key: string, label: string, options: Array<[string, string]>): FieldSpec => ({ key, kind: 'choice', standard: true, visible: true, label, options })
 const check = (key: string, label: string, extra: Partial<FieldSpec> = {}): FieldSpec => ({ key, kind: 'check', standard: true, visible: true, label, ...extra })
 
-const description = (fields: FieldSpec[], custom: string[] = []): Description => ({ type: 'extrude', fields, custom })
+const description = (fields: FieldSpec[], custom: string[] = []): Description => ({ type: 'fillet', fields, custom })
 const reply = (d: Description, extra: Partial<OpenReply> = {}): OpenReply => ({
   dialog: 'did1',
   document: 'd',

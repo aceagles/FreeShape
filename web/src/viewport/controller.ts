@@ -1,4 +1,5 @@
 import { Scene, Vector3, WebGLRenderer } from 'three'
+import { ManipulatorLayer } from '../dialog/manipulator'
 import { PointerModule } from '../input/pointer'
 import type { NavHost } from '../input/pointer'
 import { wireSelection } from '../selection/aimCommit'
@@ -93,6 +94,7 @@ export class ViewportController implements NavHost {
   /** Half-size of the default planes of the last scene that had a model: an emptied studio keeps it. */
   private planeHalf: number | null = null
   readonly pointer: PointerModule
+  private readonly manipulators: ManipulatorLayer
   private looks = 0
   private readonly unsubscribe: () => void
 
@@ -104,6 +106,8 @@ export class ViewportController implements NavHost {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' })
     this.renderer.setClearColor(viewportBackground(), 1)
     this.pointer = new PointerModule(canvas, this)
+    this.manipulators = new ManipulatorLayer(canvas.parentElement ?? document.body, this.view, () => this.requestRender())
+    this.pointer.setHandleHandler(this.manipulators)
     wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
     // the store tells us once per real change: an Aim move that lands on the same item never gets here
     this.unsubscribe = selection.subscribe(() => this.drawLook())
@@ -144,6 +148,7 @@ export class ViewportController implements NavHost {
     }
     // what is selected survives the rebuild when its part and Element name are still there (see SelectionStore.reconcile)
     this.selection.reconcile(outputs)
+    this.manipulators.set(shown.manipulators)
     if (this.built) {
       this.scene.remove(this.built.root)
       this.built.dispose()
@@ -178,6 +183,7 @@ export class ViewportController implements NavHost {
     this.emptyKind = kind
     this.previewNumber = null
     this.tinted = null
+    this.manipulators.clear()
     this.requestRender()
   }
 
@@ -231,6 +237,7 @@ export class ViewportController implements NavHost {
     if (this.disposed) return
     this.view.apply()
     this.built?.update(this.view.width, this.view.height, this.view.scale)
+    this.manipulators.update()
     this.renderer.render(this.scene, this.view.camera)
     this.frames++
     this.report()
@@ -262,6 +269,7 @@ export class ViewportController implements NavHost {
     this.disposed = true
     this.unsubscribe()
     this.pointer.dispose()
+    this.manipulators.dispose()
     if (this.pending) cancelAnimationFrame(this.pending)
     if (this.built) {
       this.scene.remove(this.built.root)

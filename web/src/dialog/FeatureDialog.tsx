@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ConnectionStore } from '../net/connection'
 import type { SelectionStore } from '../selection/store'
 import type { StudioOutputs } from '../wire'
 import { DialogArea } from '../shell/DialogArea'
 import { Icon, paths } from '../shell/icons'
 import { CheckRow, ChoiceRow, FlipButton, InfoRow, NumberRow, SelectionRow, TextRow } from './fields'
+import { setManipulatorSink } from './manipulator'
 import { visibleRows } from './schema'
 import { itemLabel } from './selectionFields'
 import { isReadOnlyField, useSelectionFields } from './useSelectionFields'
@@ -57,6 +58,19 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
   })
   // the number on the pad: the first number of the dialog opens with it, as in the layout; a tap on another moves it
   const [padKey, setPadKey] = useState<string | null | undefined>(undefined)
+  // the drag arrows in the view send their values through this dialog, and a tap on their label opens the pad
+  const { set: setValues } = dlg
+  useEffect(() => {
+    // a drag closes the pad: it would still hold the old text and send it back on Enter
+    setManipulatorSink({
+      set: (v) => {
+        setPadKey(null)
+        setValues(v)
+      },
+      edit: setPadKey,
+    })
+    return () => setManipulatorSink(null)
+  }, [setValues])
   const description = dlg.view?.description ?? null
   const rows = description ? visibleRows(description.fields) : []
   const desktopOnly = description !== null && description.custom.length > 0

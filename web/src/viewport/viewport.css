@@ -48,3 +48,13 @@
   line-height: 1.4;
   pointer-events: none;
 }
+
+/* The drag arrows of a dialog's preview: drawn over the view, never take a pointer (the pointer module does). */
+.viewport-manipulators {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  font: 600 14px Inter, system-ui, sans-serif;
+}

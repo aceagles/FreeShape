@@ -503,6 +503,16 @@ class Engine(abc.ABC):
              "ref": the reference the entity stores as `src` so it follows the part, or None}.
         EngineError for an edge that is neither straight nor circular on the plane; BadPick for a malformed pick."""
 
+    @abc.abstractmethod
+    def export(self, tab, fmt, parts, options) -> dict:
+        """The tab as it is now (unsaved edits included) written to STEP or STL in a temporary file that is read back
+        and removed (I11.3): {"data": bytes, "skipped": [names of the parts left out]}. `fmt` is "step" or "stl";
+        `parts` the ids of the parts to write (a Part Studio; None for all of them); `options` the STL options
+        {"defl", "angle", "ascii"} (ignored for STEP). The Part Studio's or Assembly's own `export` does the writing,
+        as the desktop's export commands call it: surface bodies are left out of an STL and named in "skipped"; an
+        Assembly writes its shown instances placed. A QUERY: nothing changes. EngineError for an unknown part id, a
+        `parts` given for an Assembly, nothing left to write, or a tab that is not a Part Studio or Assembly."""
+
     # ------------------------------------------------------------------ mate dialogs (I10.5, freeshape/mate_session.py)
     @abc.abstractmethod
     def mate_dialog_open(self, tab, dialog, spec) -> dict:

@@ -6,10 +6,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QHBoxLayout, QLabel, QLineEdit, QListWidget, QPushButton, QVBoxLayout, QWidget)
 
 from .. import dxfexport as DX
+from ..export_options import CUSTOM, PRESETS      # Qt-free, shared with `freeshape serve` (I11.3)
 
-# name -> (linear deflection in mm, angular deflection in rad)
-PRESETS = {"Coarse": (0.2, 0.5), "Medium": (0.1, 0.4), "Fine": (0.05, 0.3)}
-CUSTOM = "Custom"
 _KEY = "export_stl"
 
 

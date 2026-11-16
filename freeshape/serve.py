@@ -43,6 +43,8 @@ Routes (an exact table; no part of a request is ever joined to a file path):
                                 "File roots" below)
     GET  /files/<root>[?dir=<folder>&q=<words>&offset=&limit=]  one folder of the root, or the search results
     POST /files/<root>/rescan                  rebuild the root's index; reply {"root", "files"}
+    GET  /documents/<id>/tabs/<tab>/export?format=step|stl[&parts=<ids>&preset=&defl=&angle=&ascii=]  the tab as a
+                                STEP or STL download (I11.3; see "Export" below)
     POST /documents/<id>/tabs/<tab>/features/<fid>/dialog        open a feature dialog (I5.3; see "Dialogs" below)
     POST /documents/<id>/tabs/<tab>/features/dialog              open a dialog for a NEW feature (I6.1; "Dialogs")
     GET  /documents/<id>/tabs/<tab>/features/types[?picks=<JSON>]  feature types, label, standard, can_start (I6.1)
@@ -59,6 +61,17 @@ Routes (an exact table; no part of a request is ever joined to a file path):
   An edit or save on a Document this server does not hold the lock of answers 423 {"error", "document", "holder"}.
   A Document id is a key into the open table and the registry; it is never joined to a path. A new Document's
   folder name is made from its name by `folder_name_for`.
+
+Export (I11.3). GET .../export writes the tab as it is now (unsaved edits included) with the desktop's own
+`PartStudioDoc.export` / `AssemblyDoc.export` and streams the file: Content-Type model/step or model/stl,
+Content-Disposition attachment with the file name `<tab name>.step` or `.stl` (ASCII `filename` and an RFC 5987
+`filename*`; `freeshape.export_options.export_file_name`), X-FreeShape-Skipped the percent-encoded names of surface bodies
+left out of an STL, comma-separated (empty when none). Query: `format` (required), `parts` (comma-separated part ids, a Part
+Studio only; absent is every part), and for an STL `preset` (Coarse, Medium, Fine or Custom; default Fine),
+`defl` / `angle` (a Custom resolution, see `freeshape.export_options`) and `ascii` (1 or 0). A Drawing or Variable
+Studio tab, a format that is not step or stl, an unknown or repeated parameter, an unknown part id and an option out of
+range are a 400. A read-only Document exports too (nothing in it changes). The making of an export is one method,
+`_Server._make_export`, which a route that saves the bytes elsewhere calls as well.
 
 Refs (I4.3, freeshape/picking.py). A pick in the Browser client's viewport is turned into the stored reference a
 feature's params hold (an Element name plus a geometric signature), by the same code the desktop uses. It is a
@@ -773,6 +786,8 @@ MAX_UPLOAD = 64 * 1024 * 1024   # the body limit of POST .../import alone (the c
 UPLOAD_DEADLINE = 120.0         # seconds for the whole body of that upload
 _IMPORT_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/import$")
 _FILES_PATH = re.compile(r"^/files(?:/([a-z0-9-]{1,32})(/rescan)?)?\Z")       # I11.2
+_EXPORT_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/export$")      # I11.3
+MAX_EXPORT_PARTS = 1000         # part ids one export may name
 
 
 class _Server:
@@ -1262,6 +1277,9 @@ class _Server:
         m = _IMPORT_PATH.match(path)
         if m is not None:
             return "import", m.group(1), m.group(2), "POST"  # the body is the file's bytes, not JSON
+        m = _EXPORT_PATH.match(path)
+        if m is not None:
+            return "export", m.group(1), m.group(2), "GET"
         m = _FILES_PATH.match(path)
         if m is not None:
             return "files." + ("rescan" if m.group(2) else "root" if m.group(1) else "list"), None, None, \
@@ -1429,6 +1447,8 @@ class _Server:
             return await self._refs(d, tab, body, request)
         if route == "import":
             return await self._import(d, tab, request)
+        if route == "export":
+            return await self._export(d, tab, request)
         if route.startswith("dialog."):
             return await self._dialog(d, tab, route[7:], body, request)
         if route.startswith("mates."):
@@ -1899,6 +1919,61 @@ class _Server:
         if reply is None:
             return self._fail(404, "not found")                  # `dir` is no folder of the index
         return self._json(200, {"root": root.name, "q": q, **reply, "offset": offset, "limit": limit})
+
+    # ------------------------------------------------------------------ export (I11.3)
+    _EXPORT_KEYS = ("format", "parts", "preset", "defl", "angle", "ascii")
+
+    async def _make_export(self, d, tab, spec):
+        """The one place an export is made: `(bytes, file name, skipped names)` of the tab `tab` of the open Document
+        `d` as it is now. `spec` is {"format": "step" | "stl", "parts": a list of part ids or None, and for an STL
+        "preset", "defl", "angle", "ascii" (the values of GET .../export, strings or JSON numbers; absent or None
+        leaves one out)}. Raises the session's error (a 400) for a format that is not step or stl, a tab that is not
+        a Part Studio or Assembly, `parts` on an Assembly, an unknown part id, an option out of range, or nothing
+        left to write. The file name is `<tab name>.step` / `.stl` made safe by `export_options.export_file_name`.
+        The engine call runs off the event loop under the Document's session lock; no Document state changes, so a
+        read-only Document can export."""
+        from . import export_options as EO
+        fmt = str(spec.get("format") or "").lower()
+        if fmt not in ("step", "stl"):
+            raise self.session_error("format must be step or stl")
+        parts = spec.get("parts")
+        if parts is not None:
+            if (not isinstance(parts, (list, tuple)) or not parts or len(parts) > MAX_EXPORT_PARTS
+                    or not all(isinstance(p, str) and 0 < len(p) <= 64 for p in parts)):
+                raise self.session_error(f"parts must be 1 to {MAX_EXPORT_PARTS} part ids")
+        try:
+            options = EO.stl_options(*(spec.get(k) for k in ("preset", "defl", "angle", "ascii")))
+        except ValueError as e:
+            raise self.session_error(str(e)) from e
+
+        def work():
+            row = next((t for t in d.session.tabs() if t["id"] == tab), None)
+            if row is None:
+                raise self.session_error(f"no tab {tab!r} in this Document")
+            if row["kind"] not in ("studio", "assembly"):
+                raise self.session_error(f"a {row['kind']} tab cannot be exported to STEP or STL")
+            if parts is not None and row["kind"] != "studio":
+                raise self.session_error("parts is for a Part Studio; an Assembly exports its shown instances")
+            got = d.session.export(tab, fmt, parts, options)
+            return got["data"], EO.export_file_name(row["name"], fmt), got["skipped"]
+        return await self._in_session(d, work)
+
+    async def _export(self, d, tab, request):
+        """GET /documents/<id>/tabs/<tab>/export (see "Export" in the module docstring): `_make_export`, then the
+        bytes as a download."""
+        from urllib.parse import quote
+        q = request.query
+        for k in q:
+            if k not in self._EXPORT_KEYS or len(q.getall(k)) != 1:
+                return self._fail(400, f"query {k!r}: not one of {', '.join(self._EXPORT_KEYS)}, or given twice")
+        spec = {k: q.get(k) for k in self._EXPORT_KEYS}
+        if spec["parts"] is not None:
+            spec["parts"] = spec["parts"].split(",")
+        data, name, skipped = await self._make_export(d, tab, spec)
+        ascii_name = "".join(c if c.isascii() and (c.isalnum() or c in " ._-") else "_" for c in name)
+        return self._send(200, data, "model/stl" if name.endswith(".stl") else "model/step", [
+            ("Content-Disposition", f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name, safe='')}"),
+            ("X-FreeShape-Skipped", ", ".join(quote(n, safe=" ") for n in skipped))])
 
     # ------------------------------------------------------------------ feature dialogs (I5.3)
     def _dialog_client(self, request):

@@ -618,6 +618,11 @@ class ProcessEngine(Engine):
         """One model edge as a sketch entity, from the tab's worker (contract.Engine.project_edge). A query."""
         return self._call(self._get(tab), "project_edge", {"plane": plane, "pick": pick})
 
+    def export(self, tab, fmt, parts, options):
+        """The tab as it is now, exported by its worker (contract.Engine.export). A query: no edit is logged."""
+        return self._call(self._get(tab), "export", {"format": fmt, "parts": None if parts is None else list(parts),
+                                                      "options": dict(options or {})})
+
     def _mate_dialog(self, tab, verb, dialog, arg=None):
         t = self._get(tab)
         if t.kind != "assembly":

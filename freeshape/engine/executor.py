@@ -211,6 +211,48 @@ class _Tab:
     def mate_dialog(self, verb, dialog, arg=None):
         raise EngineError(f"only an Assembly has mates (this tab is a {self.kind})")
 
+    def export(self, fmt, parts, options):
+        raise EngineError(f"a {self.kind} tab cannot be exported to STEP or STL")
+
+
+def export_document(doc, fmt, parts, options):
+    """`doc.export` (PartStudioDoc or AssemblyDoc, the call the desktop's export commands make) into a temporary
+    file, and the file's bytes back: {"data": bytes, "skipped": [part names left out]}. `fmt` is "step" or "stl";
+    `parts` the part ids to write (a Part Studio only; None for all), `options` the STL options {"defl", "angle",
+    "ascii"}. The file is removed again."""
+    import shutil
+    import tempfile
+    from .. import kernel as KN
+    if fmt not in ("step", "stl"):
+        raise EngineError(f"export format {fmt!r}: STEP or STL")
+    if parts is not None:
+        if isinstance(doc, A.AssemblyDoc):
+            raise EngineError("an Assembly exports all its shown instances; parts is for a Part Studio")
+        known = {k for k, p in doc.state.parts.items() if not p.reference}
+        bad = [str(x) for x in parts if x not in known]
+        if bad:
+            raise EngineError(f"no such part: {', '.join(bad[:5])}")
+        parts = set(parts)
+    if fmt == "stl":
+        # a shape keeps the finest triangulation made on it, and the display meshes are fine: clean them first, so a
+        # Coarse export is Coarse, and the same bytes come out whether or not the tab was drawn before
+        from OCP.BRepTools import BRepTools
+        held = doc.parts.values() if isinstance(doc, A.AssemblyDoc) else doc.state.parts.values()
+        for p in held:
+            BRepTools.Clean_s(p.shape)
+    work = tempfile.mkdtemp(prefix="freeshape-export-")
+    try:
+        path = os.path.join(work, "export." + fmt)
+        try:
+            doc.export(path, parts, options if fmt == "stl" else None)
+        except KN.KernelError as e:
+            raise EngineError(str(e)) from e
+        with open(path, "rb") as fh:
+            data = fh.read()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return {"data": data, "skipped": list(getattr(doc, "last_export_skipped", None) or [])}
+
 
 def apply_part_override(doc, edit):
     """The `set_part_override` edit on a Part Studio Document: a part's name / color (None puts it back) and
@@ -248,6 +290,10 @@ def apply_part_override(doc, edit):
 class StudioTab(_Tab):
     kind = "studio"
     OPS = STUDIO_OPS
+
+    def export(self, fmt, parts, options):
+        self.sync()
+        return export_document(self.doc, fmt, parts, options)
     previews = 0             # previews built on this tab (I5.4): a test counts the rebuilds a run of requests made
 
     def _refs(self):
@@ -821,6 +867,10 @@ class AssemblyTab(_ConsumerTab):
     kind = "assembly"
     OPS = ASSEMBLY_OPS
 
+    def export(self, fmt, parts, options):
+        self.sync()
+        return export_document(self.doc, fmt, parts, options)
+
     def _refresh(self):
         self.doc.refresh(solve=True, notify=False)
 
@@ -1239,6 +1289,9 @@ class InProcessEngine(Engine):
 
     def feature(self, tab, feature):
         return self._get(tab).feature_info(feature)
+
+    def export(self, tab, fmt, parts, options):
+        return self._get(tab).export(fmt, parts, options)
 
     def mate_dialog_open(self, tab, dialog, spec):
         return self._get(tab).mate_dialog("open", dialog, spec)

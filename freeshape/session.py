@@ -523,6 +523,16 @@ class DocumentSession:
         except EngineError as e:
             raise SessionError(f"tab {tab!r}: {e}") from e
 
+    def export(self, tab, fmt, parts=None, options=None):
+        """The tab as it is now (unsaved edits included) as STEP or STL: {"data": bytes, "skipped": [part names left
+        out]} (`engine.Engine.export`). A query: nothing changes. Raises SessionError for an unknown tab, an unknown part
+        id, nothing left to write, or a tab that is not a Part Studio or an Assembly."""
+        self._need_open(tab)
+        try:
+            return self._retry(tab, lambda: self._eng.export(tab, fmt, parts, options))
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
+
     def open_dialog(self, tab, fid):
         """A FeatureDialog on the stored feature `fid` of a Part Studio tab (the engine's `feature` query: nothing
         changes). Raises SessionError for an unknown tab or feature or a tab that is not a Part Studio."""

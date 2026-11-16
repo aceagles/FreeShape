@@ -359,6 +359,8 @@ class _Worker:
             return self.engine.project_edge(self.tab, arg["plane"], arg["pick"])
         if op == "mate_dialog":                   # an Assembly's mate dialog session (I10.5): a query, kept in this worker
             return self.engine._get(self.tab).mate_dialog(arg["verb"], arg["dialog"], arg.get("arg"))
+        if op == "export":                        # a query: the tab as it is now, written to a temporary file (I11.3)
+            return self.engine._get(self.tab).export(arg["format"], arg["parts"], arg["options"])
         if op == "data":
             return self.data()
         raise EngineError(f"unknown worker call {op!r}")

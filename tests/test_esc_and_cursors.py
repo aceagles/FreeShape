@@ -44,6 +44,9 @@ def sk(monkeypatch, tmp_path):
     w.sk_ctx["feature"]["params"]["plane"] = TOP
     w._enter_sketcher(animate=False)
     yield w, w.sketcher, w.viewport
+    if w.sketcher is not None:
+        w.sketcher._close_editor()
+    w.hide()
     w.deleteLater()
 
 
@@ -55,6 +58,7 @@ def part(monkeypatch, tmp_path):
     yield w
     if w.dialog is not None:
         w.cancel_dialog()
+    w.hide()
     w.deleteLater()
 
 

@@ -4,7 +4,9 @@ import { closeAll, discardAutosaveOf, holdLockClosed, idOf, releaseLock } from '
 import { longPressTab } from './support/tabs.ts'
 import { dragRollbackTo, featureMenu, featureRow, longPressFeature } from './support/features.ts'
 import { partEye, partMenu, partRow, longPressPart } from './support/parts.ts'
-import { canvasCentre, fingerDrag, twoFingers } from './support/pointer.ts'
+import { edgeSpot, faceSpots, planeSpot, vertexSpot } from './support/pick.ts'
+import type { Spot } from './support/pick.ts'
+import { canvasCentre, fingerDrag, sendPointer, twoFingers } from './support/pointer.ts'
 import { settled } from './support/viewport.ts'
 
 /**
@@ -404,6 +406,105 @@ export const shots: ShotState[] = [
     after: async () => releaseLock('bracket'),
   },
   {
+    name: 'selection-none',
+    mock: 'browsing', // the layout's chip reads "1 face"; this is its resting state, nothing selected
+    steps: async (page) => {
+      await openApp(page)
+    },
+  },
+  {
+    name: 'selection-face-aimed',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      const [a] = await faceSpots(page, page.request, 'pen')
+      await penDown(page, a!) // the pen is down and has not lifted: the face is only Aimed
+      await settled(page)
+    },
+  },
+  {
+    name: 'selection-face',
+    mock: 'browsing', // the chip reads "1 face" in the layout too
+    steps: async (page) => {
+      await openApp(page)
+      const [a] = await faceSpots(page, page.request, 'pen')
+      await penPick(page, a!)
+      await settled(page)
+    },
+  },
+  {
+    name: 'selection-edge-aimed',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await penDown(page, await edgeSpot(page, page.request, 'pen'))
+      await settled(page)
+    },
+  },
+  {
+    name: 'selection-edge',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await penPick(page, await edgeSpot(page, page.request, 'pen'))
+      await settled(page)
+    },
+  },
+  {
+    name: 'selection-vertex-aimed',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await penDown(page, await vertexSpot(page, page.request, 'pen'))
+      await settled(page)
+    },
+  },
+  {
+    name: 'selection-vertex',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await penPick(page, await vertexSpot(page, page.request, 'pen'))
+      await settled(page)
+    },
+  },
+  {
+    name: 'selection-plane',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await penPick(page, await planeSpot(page, 'pen'))
+      await settled(page)
+    },
+  },
+  {
+    name: 'selection-multi',
+    mock: 'browsing', // Multi on, as the layout's dialog state draws it, with a face, an edge and a vertex
+    steps: async (page) => {
+      await openApp(page)
+      const [a, b] = await faceSpots(page, page.request, 'pen')
+      const e = await edgeSpot(page, page.request, 'pen')
+      await page.getByTestId('selection-multi').click()
+      await penPick(page, a!)
+      await penPick(page, b!)
+      await penPick(page, e)
+      await settled(page)
+    },
+  },
+  {
+    name: 'selection-read-only',
+    mock: 'browsing', // the chip beside the read-only banner: selecting is allowed
+    steps: async (page) => {
+      await holdLockClosed(page.request, 'bracket', 'desktop')
+      await openApp(page)
+      await page.getByTestId('read-only-banner').waitFor()
+      const [a] = await faceSpots(page, page.request, 'pen')
+      await penPick(page, a!)
+      await settled(page)
+    },
+    after: async () => releaseLock('bracket'),
+  },
+  {
     name: 'home',
     mock: null, // the layout has no home screen
     steps: async (page) => {
@@ -452,6 +553,12 @@ export const shots: ShotState[] = [
     after: async (page) => discardAutosaveOf(page.request, 'Bracket'),
   },
 ]
+
+const penDown = (page: Page, at: Spot) => sendPointer(page, [{ phase: 'down', kind: 'pen', id: 10, ...at }])
+const penPick = async (page: Page, at: Spot) => {
+  await penDown(page, at)
+  await sendPointer(page, [{ phase: 'up', kind: 'pen', id: 10, ...at, pressure: 0 }])
+}
 
 /** Close every Document and throw away what the state edited, so the next state starts from the served files. */
 async function closeAllDiscard(page: Page): Promise<void> {

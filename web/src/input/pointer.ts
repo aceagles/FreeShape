@@ -31,10 +31,20 @@ export interface PenHandler {
   cancel(): void
 }
 
+/**
+ * What the pointer module tells the selection about a finger tap. `tap` is a Commit on the item under the tap, at
+ * once. `undoTap` takes the last tap back: it is called when the next tap turns out to be the second of a double tap
+ * (which fits the view and selects nothing).
+ */
+export interface TapHandler {
+  tap(x: number, y: number): void
+  undoTap(): void
+}
+
 /** A two-finger twist smaller than this (radians, 4.5 degrees) rolls nothing, so a pinch does not turn the view. */
 export const TWIST_DEAD_ZONE = (4.5 * Math.PI) / 180
-/** A tap is a touch that lasts less than this (ms) and moves less than TAP_SLOP pixels. */
-const TAP_TIME = 300
+/** A tap is a touch that lasts less than this (ms) and moves no more than TAP_SLOP pixels: the one finger gesture that selects. */
+const TAP_TIME = 250
 const TAP_SLOP = 10
 /** Two taps within this time (ms) and distance (px) make a double tap. */
 const DOUBLE_TAP_TIME = 400
@@ -70,8 +80,12 @@ export class PointerModule {
   private readonly touches = new Map<number, Touch>()
   private mode: Mode = { kind: 'idle' }
   private pen: PenHandler | null = null
+  private mousePick: PenHandler | null = null
+  private tapHandler: TapHandler | null = null
   private penId: number | null = null
   private mouseId: number | null = null
+  /** The mouse's left button, held: it Aims and Commits as the pen does. */
+  private mouseSelectId: number | null = null
   private last: Touch = { x: 0, y: 0 }
   /** The single touch being watched for a tap, and the last completed tap. */
   private tapping: { id: number; x: number; y: number; t: number } | null = null
@@ -86,6 +100,7 @@ export class PointerModule {
     el.addEventListener('pointermove', this.onMove)
     el.addEventListener('pointerup', this.onUp)
     el.addEventListener('pointercancel', this.onCancel)
+    el.addEventListener('pointerleave', this.onLeave)
     el.addEventListener('wheel', this.onWheel, { passive: false })
     el.addEventListener('contextmenu', this.onContextMenu)
   }
@@ -94,12 +109,23 @@ export class PointerModule {
     this.pen = handler
   }
 
+  /** The mouse Aims by hovering (and while the left button is down), and Commits when the left button is released. */
+  setMouseHandler(handler: PenHandler | null): void {
+    this.mousePick = handler
+  }
+
+  /** A finger tap Commits through this handler. */
+  setTapHandler(handler: TapHandler | null): void {
+    this.tapHandler = handler
+  }
+
   dispose(): void {
     const el = this.el
     el.removeEventListener('pointerdown', this.onDown)
     el.removeEventListener('pointermove', this.onMove)
     el.removeEventListener('pointerup', this.onUp)
     el.removeEventListener('pointercancel', this.onCancel)
+    el.removeEventListener('pointerleave', this.onLeave)
     el.removeEventListener('wheel', this.onWheel)
     el.removeEventListener('contextmenu', this.onContextMenu)
   }
@@ -134,7 +160,12 @@ export class PointerModule {
       return
     }
     if (e.pointerType === 'mouse') {
-      if (this.mouseId !== null) return
+      if (this.mouseId !== null || this.mouseSelectId !== null) return
+      if (e.button === 0) {
+        this.mouseSelectId = e.pointerId
+        this.mousePick?.aim(this.penPoint(e))
+        return
+      }
       if (e.button === 2) this.mode = { kind: 'orbit', id: e.pointerId, pivot: this.pivotAt(p) }
       else if (e.button === 1) this.mode = { kind: 'pan', id: e.pointerId }
       else return
@@ -182,8 +213,9 @@ export class PointerModule {
     const p = this.local(e)
     const m = this.mode
     if (e.pointerType === 'mouse') {
-      if (this.mouseId !== e.pointerId) return
-      this.drag(m, p)
+      if (this.mouseSelectId === e.pointerId) this.mousePick?.aim(this.penPoint(e))
+      else if (this.mouseId === null && this.mouseSelectId === null) this.mousePick?.aim(this.penPoint(e)) // hover
+      else if (this.mouseId === e.pointerId) this.drag(m, p)
       return
     }
     if (!this.touches.has(e.pointerId)) return
@@ -230,6 +262,11 @@ export class PointerModule {
       return
     }
     if (e.pointerType === 'mouse') {
+      if (this.mouseSelectId === e.pointerId) {
+        this.mouseSelectId = null
+        this.mousePick?.commit(this.penPoint(e))
+        return
+      }
       if (this.mouseId !== e.pointerId) return
       this.mouseId = null
       this.mode = { kind: 'idle' }
@@ -245,9 +282,14 @@ export class PointerModule {
   private tapped(x: number, y: number, t: number): void {
     const prev = this.lastTap
     if (prev && t - prev.t < DOUBLE_TAP_TIME && Math.hypot(x - prev.x, y - prev.y) < DOUBLE_TAP_DISTANCE) {
+      // The first tap already selected (a tap acts at once, never after a wait). A double tap is a view gesture: take that back.
       this.lastTap = null
+      this.tapHandler?.undoTap()
       this.host.fit()
-    } else this.lastTap = { x, y, t }
+    } else {
+      this.lastTap = { x, y, t }
+      this.tapHandler?.tap(x, y)
+    }
   }
 
   private afterTouchLeft(): void {
@@ -263,6 +305,10 @@ export class PointerModule {
       return
     }
     if (e.pointerType === 'mouse') {
+      if (this.mouseSelectId === e.pointerId) {
+        this.mouseSelectId = null
+        this.mousePick?.cancel()
+      }
       if (this.mouseId === e.pointerId) {
         this.mouseId = null
         this.mode = { kind: 'idle' }
@@ -273,6 +319,11 @@ export class PointerModule {
     this.cancelled = true
     this.tapping = null
     this.afterTouchLeft()
+  }
+
+  /** The mouse leaves the view: nothing is under it any more. */
+  private readonly onLeave = (e: PointerEvent): void => {
+    if (e.pointerType === 'mouse' && this.mouseSelectId === null && this.mouseId === null) this.mousePick?.cancel()
   }
 
   private readonly onWheel = (e: WheelEvent): void => {

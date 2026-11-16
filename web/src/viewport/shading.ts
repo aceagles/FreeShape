@@ -1,6 +1,6 @@
 import { DoubleSide, ShaderMaterial, Vector3 } from 'three'
 import type { Color } from 'three'
-import { color } from '../theme/tokens'
+import { color, sceneColor } from '../theme/tokens'
 import { rgb } from './colors'
 
 // The desktop's per-pixel shader (viewport.py _FRAG) in view space: key light near the viewer from the right, a soft
@@ -43,9 +43,26 @@ const selection = rgb(color.selection)
 /** How far a highlighted surface goes toward the selection colour: enough to read at once, with the shading still showing the form. */
 export const HIGHLIGHT_AMOUNT = 0.7
 
-/** Tint (or stop tinting) a shaded material with the selection colour. Slice 4 uses this for a selected face's colour group. */
+/** The Aim colour (theme.py HOVER): what the item under the pen is tinted with before the pen lifts. */
+const hover = rgb(sceneColor.hover)
+
+/** How far an Aimed surface goes toward the Aim colour: a little less than a selected one, so the orange stays orange (the outline and the casing do the rest). */
+export const HOVER_AMOUNT = 0.65
+
+/** Which look a surface has: selected (amber), Aimed (orange), or none. */
+export type Look = 'select' | 'hover' | null
+
+/** Tint a shaded material for a look, or stop tinting it. */
+export function setLook(m: ShaderMaterial, look: Look): void {
+  const tint = (m.uniforms['tint'] as { value: Vector3 }).value
+  const c = look === 'hover' ? hover : selection
+  tint.set(c.r, c.g, c.b)
+  ;(m.uniforms['tintAmount'] as { value: number }).value = look === 'select' ? HIGHLIGHT_AMOUNT : look === 'hover' ? HOVER_AMOUNT : 0
+}
+
+/** Tint (or stop tinting) a shaded material with the selection colour: the look of a selected part. */
 export function setHighlight(m: ShaderMaterial, on: boolean): void {
-  ;(m.uniforms['tintAmount'] as { value: number }).value = on ? HIGHLIGHT_AMOUNT : 0
+  setLook(m, on ? 'select' : null)
 }
 
 export interface ShadedOptions {

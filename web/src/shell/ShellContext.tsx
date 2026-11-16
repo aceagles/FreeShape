@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { ReactNode } from 'react'
+import type { SelectionStore } from '../selection/store'
 
 /** What later cards use to reach the shell: the dialog area over the feature panel, and the panel's collapsed state. */
 export interface ShellApi {
@@ -17,11 +18,15 @@ export interface ShellApi {
   selectFeature(id: string | null): void
   /**
    * The part selected in the Parts list (a part id such as "F2/1") in the current Part Studio, or null; the viewport
-   * draws it highlighted. One thing is selected at a time for now: selecting a part clears the selected feature, and
-   * selecting a feature clears the selected part. Slice 4 (card I4.2) replaces both with real selection.
+   * draws it highlighted. It reads and writes the shared selection (`selection`): a part is one kind of item in it, and
+   * `selectedPart` is the part when it is the one thing selected. `selectPart(id)` replaces the selection with that
+   * part; `selectPart(null)` clears it when it holds only parts. A selected feature and the selection clear each
+   * other: selecting a feature empties the selection, and any change of the selection deselects the feature.
    */
   selectedPart: string | null
   selectPart(id: string | null): void
+  /** The selection of the view: what the pen and finger picked, the Multi mode and the Aim. Read it with `useSelection`. */
+  selection: SelectionStore
 }
 
 export const ShellContext = createContext<ShellApi | null>(null)

@@ -24,7 +24,9 @@ import type { Part, PartMesh, StudioOutputs, Vec3 } from '../wire'
 import { edgeColor, rgb } from './colors'
 import type { Bounds, Triple } from './camera'
 import { MIN_HALF } from './camera'
-import { setHighlight, shadedMaterial } from './shading'
+import { LookOverlay } from './looks'
+import type { LookItem, LookSources } from './looks'
+import { setLook, shadedMaterial } from './shading'
 
 export interface SceneStats {
   /** Meshes drawn for the studio's own parts (hidden parts are not drawn). */
@@ -77,8 +79,14 @@ export interface SceneOptions {
 export interface BuiltScene {
   root: Group
   stats: SceneStats
-  /** Draw this part highlighted (null: none). Returns whether it is drawn. Slice 4 picks faces with the same tint. */
+  /** Draw this part highlighted (null: none). Returns whether it is drawn. A shorthand for `setLook` with one part. */
   select(partId: string | null): boolean
+  /**
+   * Draw the selected items and the Aimed one (see looks.ts): parts as a tint of the whole part, faces, edges, vertices,
+   * planes and axes as overlays. Items whose part is hidden or gone are not drawn. Returns the id of the first part drawn
+   * with the selected look, or null.
+   */
+  setLook(selected: readonly LookItem[], aimed: LookItem | null): string | null
   /** Something is drawn: the camera and the planes have a model to follow. */
   hasModel: boolean
   /** Box round the drawn parts, never tighter than MIN_HALF; a default box when nothing is drawn. */
@@ -216,6 +224,7 @@ function planeObjects(o: Vec3, x: Vec3, n: Vec3, half: number, materials: Materi
   const l = new LineLoop(outline, om)
   f.renderOrder = l.renderOrder = 3
   g.add(f, l)
+  g.userData['corners'] = corners
   return g
 }
 
@@ -344,6 +353,11 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   const stats: SceneStats = { ...EMPTY_STATS, visiblePartIds: [], partColors: {} }
   /** Per drawn part: what the highlight changes. */
   const looks = new Map<string, { shaders: ShaderMaterial[]; line: LineMaterial | null; edge: Color }>()
+  const sources: { parts: Map<string, { part: Part; geometry: BufferGeometry }>; planes: Map<string, readonly Vector3[]>; axes: Map<string, readonly [Vector3, Vector3]> } = {
+    parts: new Map(),
+    planes: new Map(),
+    axes: new Map(),
+  }
 
   const drawn = outputs.parts.filter((p) => !p.hidden && p.mesh)
   for (const [list, translucent] of [
@@ -364,6 +378,7 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
       else {
         const list = Array.isArray(m.material) ? m.material : [m.material]
         const line = lines ? (lines.material as LineMaterial) : null
+        sources.parts.set(part.id, { part, geometry: m.geometry })
         looks.set(part.id, { shaders: list as ShaderMaterial[], line, edge: line ? line.color.clone() : new Color() })
         stats.parts++
         stats.visibleParts++
@@ -385,11 +400,17 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   stats.planeHalf = half
   const planes = new Group()
   planes.name = 'planes'
-  for (const p of DEFAULT_PLANES) planes.add(planeObjects(p.o, p.x, p.n, half, materials))
-  for (const p of Object.values(outputs.planes)) planes.add(planeObjects(p.o, p.x, p.n, half, materials))
+  const addPlane = (key: string, p: { o: Vec3; x: Vec3; n: Vec3 }) => {
+    const g = planeObjects(p.o, p.x, p.n, half, materials)
+    sources.planes.set(key, g.userData['corners'] as Vector3[])
+    planes.add(g)
+  }
+  for (const p of DEFAULT_PLANES) addPlane(p.name, p)
+  for (const [key, p] of Object.entries(outputs.planes)) addPlane(key, p)
   stats.planes = planes.children.length
   root.add(planes)
-  for (const a of Object.values(outputs.axes)) {
+  for (const [key, a] of Object.entries(outputs.axes)) {
+    sources.axes.set(key, axisEnds(a.o, a.d, a.span))
     const l = axisLine(a.o, a.d, a.span, materials)
     geometries.push(l.geometry)
     root.add(l)
@@ -398,33 +419,46 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   const triad = triadObject(materials)
   root.add(triad)
 
-  const select = (partId: string | null): boolean => {
-    let found = false
+  const overlay = new LookOverlay(sources as LookSources)
+  root.add(overlay.root)
+  let size: [number, number] = [1, 1]
+
+  const setLookOf = (selected: readonly LookItem[], aimed: LookItem | null): string | null => {
+    const on = overlay.set(selected, aimed)
+    let first: string | null = null
     for (const [id, look] of looks) {
-      const on = id === partId
-      found ||= on
-      for (const m of look.shaders) setHighlight(m, on)
+      const state = id === on.hover ? 'hover' : on.select.has(id) ? 'select' : null
+      if (state === 'select' && first === null) first = id
+      for (const m of look.shaders) setLook(m, state)
       if (look.line) {
-        look.line.color.copy(on ? rgb(HIGHLIGHT_EDGE) : look.edge)
-        look.line.linewidth = on ? HIGHLIGHT_EDGE_WIDTH : sceneDraw.edgeWidth
+        look.line.color.copy(state ? rgb(HIGHLIGHT_EDGE) : look.edge)
+        look.line.linewidth = state ? HIGHLIGHT_EDGE_WIDTH : sceneDraw.edgeWidth
       }
     }
-    return found
+    return first
   }
+  const select = (partId: string | null): boolean =>
+    setLookOf(partId === null ? [] : [{ kind: 'part', part: partId, index: -1 }], null) !== null
   select(opts.selectedPart ?? null)
 
   return {
     root,
     stats,
     select,
+    setLook: setLookOf,
     hasModel,
     bounds,
     fitBounds: hasModel ? fitBoundsFor(bounds, half) : bounds,
     update(width, height, scale) {
       for (const m of lineMats) m.resolution.set(width, height)
+      if (width !== size[0] || height !== size[1]) {
+        size = [width, height]
+        overlay.update(width, height)
+      }
       triad.scale.setScalar(scale * sceneDraw.triad)
     },
     dispose() {
+      overlay.dispose()
       for (const g of geometries) g.dispose()
       root.traverse((o) => {
         if (o instanceof Mesh || o instanceof Line || o instanceof Points) o.geometry.dispose()

@@ -1,6 +1,8 @@
 import { Scene, Vector3, WebGLRenderer } from 'three'
 import { PointerModule } from '../input/pointer'
 import type { NavHost } from '../input/pointer'
+import { wireSelection } from '../selection/aimCommit'
+import type { SelectionItem, SelectionStore } from '../selection/store'
 import type { StudioOutputs } from '../wire'
 import { viewportBackground } from './colors'
 import { ViewCamera } from './camera'
@@ -22,9 +24,34 @@ export interface ViewportReport extends SceneStats {
   highlightedPart: string | null
   /** Why nothing is drawn when the tab on screen is not a Part Studio (its kind: assembly, drawing, variables); null otherwise. */
   emptyKind: string | null
+  /** Test hook: the selection store, as a reader sees it (card I4.2). */
+  selection: SelectionReport
   /** Test hook: what a pointer of this kind would pick at a view position (CSS pixels from the top left), null for nothing. */
   pickAt(x: number, y: number, pointer: PickPointer, filter?: readonly PickKind[]): PickHit | null
 }
+
+/** An item of the selection as the test hook reports it. */
+export interface SelectionItemReport {
+  kind: PickKind
+  part: string | null
+  index: number
+  name: string | null
+  key: string | null
+}
+
+/** The selection as the test hook reports it. */
+export interface SelectionReport {
+  count: number
+  items: SelectionItemReport[]
+  /** Multi mode is on (the toggle, or a dialog field that takes several items). */
+  multi: boolean
+  /** The item under the pen or mouse, or null. */
+  aimed: SelectionItemReport | null
+  /** Times the selection or the Aim changed what the view draws: an Aim move that changes nothing does not count. */
+  looks: number
+}
+
+const reportItem = (i: SelectionItem): SelectionItemReport => ({ kind: i.kind, part: i.part, index: i.index, name: i.name, key: i.key })
 
 declare global {
   interface Window {
@@ -47,19 +74,37 @@ export class ViewportController implements NavHost {
   private pending = 0
   private fitted = false
   private disposed = false
-  private selectedPart: string | null = null
   private highlighted: string | null = null
   private emptyKind: string | null = null
   /** Half-size of the default planes of the last scene that had a model: an emptied studio keeps it. */
   private planeHalf: number | null = null
   readonly pointer: PointerModule
+  private looks = 0
+  private readonly unsubscribe: () => void
 
-  /** Throws when the browser cannot create a WebGL context. */
-  constructor(readonly canvas: HTMLCanvasElement) {
+  /** Throws when the browser cannot create a WebGL context. The viewport draws and picks for `selection`. */
+  constructor(
+    readonly canvas: HTMLCanvasElement,
+    private readonly selection: SelectionStore,
+  ) {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' })
     this.renderer.setClearColor(viewportBackground(), 1)
     this.pointer = new PointerModule(canvas, this)
+    wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
+    // the store tells us once per real change: an Aim move that lands on the same item never gets here
+    this.unsubscribe = selection.subscribe(() => this.drawLook())
     this.report()
+  }
+
+  /** Draw the selection and the Aim: once per change, and the view is drawn again once. */
+  private drawLook(): void {
+    if (this.disposed) return
+    const state = this.selection.getState()
+    const first = this.built?.setLook(state.items, this.selection.getAimed()) ?? null
+    this.highlighted = first
+    this.looks++
+    this.report()
+    this.requestRender()
   }
 
   /** Match the canvas to its box (CSS pixels). */
@@ -75,14 +120,16 @@ export class ViewportController implements NavHost {
   /** Replace the drawn model with this studio. The first model is fitted; later ones keep the camera. */
   setOutputs(outputs: StudioOutputs): void {
     if (this.disposed) return
+    // what is selected survives the rebuild when its part and Element name are still there (see SelectionStore.reconcile)
+    this.selection.reconcile(outputs)
     if (this.built) {
       this.scene.remove(this.built.root)
       this.built.dispose()
     }
-    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, selectedPart: this.selectedPart })
+    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf })
     this.scene.add(this.built.root)
     this.picker = new PickIndex(outputs, this.built)
-    this.highlighted = this.built.stats.visiblePartIds.includes(this.selectedPart ?? '') ? this.selectedPart : null
+    this.highlighted = this.built.setLook(this.selection.getState().items, this.selection.getAimed())
     if (this.built.hasModel) this.planeHalf = this.built.stats.planeHalf
     this.revision = outputs.revision
     this.emptyKind = null
@@ -107,14 +154,6 @@ export class ViewportController implements NavHost {
     this.revision = null
     this.fitted = false
     this.emptyKind = kind
-    this.requestRender()
-  }
-
-  /** Draw this part highlighted (the Parts list's selection), or none. */
-  setSelectedPart(id: string | null): void {
-    if (this.disposed || id === this.selectedPart) return
-    this.selectedPart = id
-    this.highlighted = this.built?.select(id) ? id : null
     this.requestRender()
   }
 
@@ -181,12 +220,20 @@ export class ViewportController implements NavHost {
       frames: this.frames,
       highlightedPart: this.highlighted,
       emptyKind: this.emptyKind,
+      selection: {
+        count: this.selection.getState().items.length,
+        items: this.selection.getState().items.map(reportItem),
+        multi: this.selection.getState().multi,
+        aimed: this.selection.getAimed() ? reportItem(this.selection.getAimed()!) : null,
+        looks: this.looks,
+      },
       pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
     }
   }
 
   dispose(): void {
     this.disposed = true
+    this.unsubscribe()
     this.pointer.dispose()
     if (this.pending) cancelAnimationFrame(this.pending)
     if (this.built) {

@@ -1,0 +1,65 @@
+/* The selection chip, as drawn in web/design/layout.html (selection-chip): 52 px high, 44 px buttons. */
+.selection-chip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  height: 52px;
+  box-sizing: border-box;
+  padding: 0 var(--sp-4) 0 var(--sp-14);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  background: var(--c-white);
+}
+.selection-chip-count {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin-right: var(--sp-6);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.selection-chip-swatch {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border-radius: 3px;
+  background: var(--c-selection);
+  border: 1px solid var(--c-ink);
+}
+/* nothing selected: the square is an empty outline and the text is muted */
+.selection-chip[data-empty] .selection-chip-swatch {
+  background: transparent;
+  border-color: var(--c-muted);
+}
+.selection-chip[data-empty] .selection-chip-count {
+  color: var(--c-muted);
+}
+.selection-chip-multi {
+  height: var(--touch);
+  padding: 0 var(--sp-14);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+.selection-chip-multi[aria-pressed='true'] {
+  border-color: var(--c-accentDark);
+  background: var(--c-accent);
+  color: var(--c-white);
+}
+.selection-chip-clear {
+  height: var(--touch);
+  padding: 0 var(--sp-12);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-accentDark);
+  font-weight: 600;
+  cursor: pointer;
+}
+.selection-chip-clear:disabled {
+  color: var(--c-muted);
+  opacity: 0.55;
+}

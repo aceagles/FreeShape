@@ -7,6 +7,9 @@ import { useConnection } from '../net/react'
 import { FeaturePanel } from '../features/FeaturePanel'
 import { useFeatureEdits } from '../features/useFeatureEdits'
 import { useStudioOutputs } from '../features/studioOutputs'
+import { SelectionChip } from '../selection/SelectionChip'
+import { partItem, SelectionStore } from '../selection/store'
+import { useSelection } from '../selection/useSelection'
 import { StudioViewport } from '../viewport/StudioViewport'
 import { DialogArea } from './DialogArea'
 import { explainError } from './errors'
@@ -61,8 +64,10 @@ declare global {
 export function Shell({ store, documentId, version, onLeave }: { store: ConnectionStore; documentId: string; version?: string; onLeave: () => void }) {
   const { tabs, document: doc, readOnly, holder, client } = useConnection(store)
   const [selected, setSelected] = useState<string | null>(null)
-  const [pickedFeature, setPickedFeature] = useState<{ tab: string; id: string } | null>(null)
-  const [pickedPart, setPickedPart] = useState<{ tab: string; id: string } | null>(null)
+  // One selection for the view, the chip and the Parts list; a part is one kind of item in it (see ShellApi.selection)
+  const [selection] = useState(() => new SelectionStore())
+  const picked = useSelection(selection)
+  const [pickedFeature, setPickedFeature] = useState<{ tab: string; id: string; revision: number } | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const debug = useDebugPanel()
@@ -76,9 +81,20 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const outputs = useStudioOutputs(store, currentTab)
   // the outputs of the tab on screen (the loader keeps the last Part Studio's while an Assembly is open)
   const studio = outputs !== null && outputs.tab === currentTab && tabKind === 'studio' ? outputs : null
-  const selectedFeature = studio !== null && pickedFeature?.tab === currentTab && studio.features.some((f) => f.id === pickedFeature.id) ? pickedFeature.id : null
+  // a feature stays selected until the selection of the view changes (the stamp), and the other way round: picking clears it
+  const selectedFeature =
+    studio !== null && pickedFeature?.tab === currentTab && pickedFeature.revision === picked.revision && studio.features.some((f) => f.id === pickedFeature.id)
+      ? pickedFeature.id
+      : null
 
-  const selectedPart = studio !== null && pickedPart?.tab === currentTab && studio.parts.some((p) => p.id === pickedPart.id) ? pickedPart.id : null
+  // the Parts list shows a part as selected when it is the one thing selected
+  const only = picked.items.length === 1 ? picked.items[0]! : null
+  const selectedPart = studio !== null && only?.kind === 'part' && studio.parts.some((p) => p.id === only.part) ? only.part : null
+
+  // what is selected belongs to the tab on screen: a tab change empties it
+  useEffect(() => {
+    selection.clear()
+  }, [currentTab, selection])
 
   const api = useMemo<ShellApi>(
     () => ({
@@ -92,16 +108,17 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
       setPanelCollapsed: setCollapsed,
       selectedFeature,
       selectFeature: (id) => {
-        setPickedFeature(id === null || currentTab === null ? null : { tab: currentTab, id })
-        if (id !== null) setPickedPart(null)
+        if (id !== null) selection.clear()
+        setPickedFeature(id === null || currentTab === null ? null : { tab: currentTab, id, revision: selection.getState().revision })
       },
       selectedPart,
       selectPart: (id) => {
-        setPickedPart(id === null || currentTab === null ? null : { tab: currentTab, id })
-        if (id !== null) setPickedFeature(null)
+        if (id !== null) selection.set([partItem(id)])
+        else if (selection.getState().items.every((i) => i.kind === 'part')) selection.clear()
       },
+      selection,
     }),
-    [dialog, collapsed, selectedFeature, selectedPart, currentTab],
+    [dialog, collapsed, selectedFeature, selectedPart, currentTab, selection],
   )
   useEffect(() => {
     window.__freeshape = { shell: api }
@@ -225,9 +242,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             )}
           </div>
           <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport">
-            <StudioViewport outputs={studio} selectedPart={selectedPart} tabKind={tabKind} />
-            {/* The selection chip (S4) is placed here, top left. */}
-            <div className="chip-slot" data-testid="chip-slot" />
+            <StudioViewport outputs={studio} selection={selection} tabKind={tabKind} />
+            <div className="chip-slot" data-testid="chip-slot" data-region="selection-chip">
+              <SelectionChip store={selection} />
+            </div>
           </div>
         </div>
         {debug.open && <DebugPopover store={store} version={version} />}

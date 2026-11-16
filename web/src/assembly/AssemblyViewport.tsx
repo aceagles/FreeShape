@@ -3,6 +3,7 @@ import { useShell } from '../shell/ShellContext'
 import type { SelectionStore } from '../selection/store'
 import type { AssemblyOutputs } from '../wire'
 import { ViewCube } from '../viewport/ViewCube'
+import { registerView } from '../viewport/viewCommands'
 import '../viewport/viewport.css'
 import { AssemblyController } from './controller'
 import { GizmoOverlay, GizmoPad } from './GizmoOverlay'
@@ -35,11 +36,13 @@ export function AssemblyViewport({ outputs, selection, drag }: { outputs: Assemb
       return
     }
     controller.current = c
+    const unregister = registerView(c)
     const size = () => c.resize(el.clientWidth, el.clientHeight)
     size()
     const ro = new ResizeObserver(size)
     ro.observe(el)
     return () => {
+      unregister()
       ro.disconnect()
       c.dispose()
       controller.current = null

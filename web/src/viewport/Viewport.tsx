@@ -5,6 +5,7 @@ import type { StudioOutputs } from '../wire'
 import { ViewportController } from './controller'
 import type { PreviewLook } from './controller'
 import { ViewCube } from './ViewCube'
+import { registerView } from './viewCommands'
 import { notDrawnText } from './notDrawn'
 import './viewport.css'
 
@@ -52,11 +53,13 @@ export function Viewport({
       return
     }
     controller.current = c
+    const unregister = registerView(c)
     const size = () => c.resize(el.clientWidth, el.clientHeight)
     size()
     const ro = new ResizeObserver(size)
     ro.observe(el)
     return () => {
+      unregister()
       ro.disconnect()
       c.dispose()
       controller.current = null

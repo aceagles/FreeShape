@@ -41,7 +41,7 @@ import { runSketchTool, SKETCH_STRIP, sketchToolState, stripActive } from '../sk
 import { StudioViewport } from '../viewport/StudioViewport'
 import type { PreviewLook } from '../viewport/controller'
 import type { StudioOutputs } from '../wire'
-import { DialogArea } from './DialogArea'
+import { DialogArea, DialogHost } from './DialogArea'
 import { explainError } from './errors'
 import { DebugPopover, useDebugPanel } from './LinkStatus'
 import { ConfirmDialog } from './Modal'
@@ -50,11 +50,19 @@ import { holderPlace } from './holder'
 import { TextPrompt } from './TextPrompt'
 import { ShellContext } from './ShellContext'
 import type { ShellApi } from './ShellContext'
+import { TabBar } from './TabBar'
 import { TopBar } from './TopBar'
 import { ModeProvider, useMode } from './mode'
-import { columnWidth } from './layout'
+import { clampLeftWidth, columnWidth, desktopColumnWidth, readLeftWidth, storeLeftWidth } from './layout'
+import { Splitter } from './Splitter'
+import { STANDARD_VIEW_ITEMS } from './menus'
+import type { Commands, MenuState } from './menus'
+import { runViewCommand } from '../viewport/viewCommands'
 import { tokenVars } from './vars'
 import './shell.css'
+
+/** Below this window width the desktop's Home and Search tools show their icons only. */
+const NARROW_BELOW = 1180
 
 function useWindowWidth(): number {
   const [width, setWidth] = useState(() => window.innerWidth)
@@ -128,6 +136,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const picked = useSelection(selection)
   const [pickedFeature, setPickedFeature] = useState<{ tab: string; id: string; revision: number } | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  // Desktop mode: the width the left column was dragged to (kept per device), and the viewport a dialog floats over
+  const [leftWidth, setLeftWidth] = useState(readLeftWidth)
+  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null)
   const [dialog, setDialog] = useState<DialogState | null>(null)
   // the feature dialog open over the panel (the dialog area is its own: it carries Cancel and Accept), and the preview it drew
   const [editing, setEditing] = useState<{ tab: string; id: string; name: string; create?: { type: string; picks: Pick[] } } | null>(null)
@@ -188,7 +199,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   })
   // a sketch is open here when it is open at all and belongs to the tab on screen
   const sketchHere = sketch.open && sketch.view !== null && sketch.view.tab === currentTab
-  const column = columnWidth(width, collapsed)
+  const desktop = mode === 'desktop'
+  const column = desktop ? desktopColumnWidth(width, collapsed, leftWidth) : columnWidth(width, collapsed)
   const tabKind = tabs.find((t) => t.id === currentTab)?.kind ?? null
   const outputs = useStudioOutputs(store, currentTab)
   // the outputs of the tab on screen (the loader keeps the last Part Studio's while an Assembly is open)
@@ -404,8 +416,27 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     }
   }
 
+  const resizeLeft = useCallback((w: number) => {
+    const next = clampLeftWidth(w, window.innerWidth)
+    setLeftWidth(next)
+    storeLeftWidth(next)
+  }, [])
+  // what the Desktop menus can run now; an item with no command here is shown disabled ("Desktop only for now")
+  const currentInfo = tabs.find((t) => t.id === currentTab) ?? null
+  const menuState: MenuState = { readOnly, tabKind }
+  const commands: Commands = {
+    'document.newStudio': () => void add('studio'),
+    'document.newAssembly': () => void add('assembly'),
+    // the client has no open and closed tabs: closing a tab takes it out of the Document, so it asks as Delete does
+    'document.closeTab': () => currentInfo !== null && setModal({ kind: 'delete', tab: currentInfo }),
+    'document.save': () => void save(),
+    ...Object.fromEntries(STANDARD_VIEW_ITEMS.map(([v]) => [`view.${v}`, () => void runViewCommand(v)])),
+    'view.fit': () => void runViewCommand('fit'),
+  }
+
   return (
     <ShellContext.Provider value={api}>
+      <DialogHost value={viewportEl}>
       <div className="shell" style={tokenVars()} data-testid="shell" data-mode={mode}>
         <TopBar
           store={store}
@@ -424,6 +455,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           onBack={back}
           onSave={() => void save()}
           onToggleDebug={debug.toggle}
+          menu={{ commands, state: menuState }}
+          narrow={width < NARROW_BELOW}
         />
         {readOnly && <ReadOnlyBanner name={name} holder={holder} onTakeOver={() => setModal({ kind: 'takeover' })} />}
         {sketchHere ? (
@@ -514,8 +547,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
               </DialogArea>
             )}
           </div>
+          {desktop && !collapsed && <Splitter width={column} onResize={resizeLeft} />}
           {/* data-dialog-base: the view draws an open dialog's base model, the one its picks resolve against (a test hook) */}
-          <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport" data-dialog-base={base !== null ? '' : undefined}>
+          <div className="shell-viewport" ref={setViewportEl} data-region="viewport" data-testid="shell-viewport" data-dialog-base={base !== null ? '' : undefined}>
             {tabKind === 'assembly' ? (
               <AssemblyViewport outputs={assembly.outputs} selection={selection} drag={assembly.edits.drag} />
             ) : (
@@ -536,6 +570,18 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
             </div>
           </div>
         </div>
+        {desktop && (
+          <TabBar
+            tabs={tabs}
+            currentTab={currentTab}
+            readOnly={readOnly}
+            onSelect={setSelected}
+            onAdd={(kind) => void add(kind)}
+            onRename={(tab) => setModal({ kind: 'rename', tab })}
+            onDelete={(tab) => setModal({ kind: 'delete', tab })}
+            strip={{ documentName: name, commands, state: menuState }}
+          />
+        )}
         {debug.open && <DebugPopover store={store} version={version} />}
         {modal?.kind === 'rename' && (
           <TextPrompt
@@ -603,6 +649,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           <ConfirmDialog title={modal.title} message={modal.text} confirm={{ label: 'OK' }} cancelLabel={null} onConfirm={closeModal} onCancel={closeModal} />
         )}
       </div>
+      </DialogHost>
     </ShellContext.Provider>
   )
 }

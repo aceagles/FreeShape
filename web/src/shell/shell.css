@@ -449,3 +449,329 @@
   font-weight: 600;
   box-shadow: 0 0 0 1px var(--c-line);
 }
+
+/* ------------------------------------------------------------------------------------------------------------------
+   Desktop mode (card I9.2): the desktop program's chrome (freeshape/ui/mainwindow.py _build_ui). Everything here is
+   scoped to data-mode='desktop'; Tablet mode is not touched. A mouse and keyboard, so the 44 px touch size gives way
+   to the desktop's 32 px buttons in the bar and the strip.
+   ------------------------------------------------------------------------------------------------------------------ */
+.shell[data-mode='desktop'] .top-bar {
+  height: 44px;
+  gap: 2px;
+  padding: 0 12px 0 8px;
+  background: var(--c-surface);
+}
+.shell[data-mode='desktop'] .top-bar .icon-button,
+.shell[data-mode='desktop'] .top-bar .link-status,
+.shell[data-mode='desktop'] .top-bar .mode-toggle {
+  height: 32px;
+}
+.shell[data-mode='desktop'] .top-bar .icon-button {
+  width: 32px;
+}
+.shell[data-mode='desktop'] .top-bar-name {
+  margin: 0;
+  padding: 0 18px;
+  line-height: 28px;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: var(--c-white);
+}
+.home-button {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  height: 36px;
+  margin-right: var(--sp-8);
+  padding: 0 var(--sp-12) 0 var(--sp-8);
+  border: none;
+  border-radius: var(--r-sm);
+  background: var(--c-accentSoft);
+  color: var(--c-ink);
+  cursor: pointer;
+}
+.home-text {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+.top-bar-rule {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 var(--sp-8);
+  background: var(--c-line);
+}
+.search-button {
+  flex: none;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  width: 230px;
+  height: 30px;
+  padding: 0 var(--sp-8);
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: var(--c-white);
+  color: var(--c-muted);
+  font-size: var(--fs-tab);
+}
+.search-text {
+  flex: 1;
+  text-align: left;
+}
+.search-kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--c-line);
+  border-radius: 4px;
+  background: var(--c-surface);
+  font-size: 11px;
+}
+.search-button:disabled,
+.help-button:disabled {
+  opacity: 0.6;
+}
+.help-button {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-ink);
+  font-size: var(--fs-tab);
+}
+/* under 1180 px Home and Search tools keep only their icons */
+.top-bar[data-narrow] .home-text,
+.top-bar[data-narrow] .search-text,
+.top-bar[data-narrow] .search-kbd {
+  display: none;
+}
+.top-bar[data-narrow] .search-button {
+  width: 34px;
+  justify-content: center;
+  padding: 0;
+}
+.top-bar[data-narrow] .home-button {
+  padding: 0 var(--sp-6);
+}
+
+/* Menus: a button and its drop-down list (Menu.tsx) */
+.menu {
+  position: relative;
+  flex: none;
+}
+.menu-button {
+  height: 32px;
+  padding: 0 14px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-ink);
+  font-size: var(--fs-tab);
+  cursor: pointer;
+}
+.menu-button:hover:not(:disabled),
+.menu-button[aria-expanded='true'] {
+  background: var(--c-accentSoft);
+}
+.menu-list {
+  position: fixed;
+  z-index: 40;
+  box-sizing: border-box;
+  min-width: 230px;
+  max-width: 400px;
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
+  padding: var(--sp-4);
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: var(--c-white);
+  box-shadow: 0 8px 24px var(--c-shadow);
+  outline: none;
+}
+.menu-item {
+  width: 100%;
+  height: 24px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-10) 0 var(--sp-2);
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--c-ink);
+  font-size: var(--fs-tab);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  outline: none;
+}
+.menu-item:hover:not(:disabled),
+.menu-list[data-kbd] .menu-item:focus {
+  background: var(--c-accentSoft);
+}
+.menu-item:disabled {
+  color: var(--c-muted);
+  opacity: 0.55;
+}
+.menu-mark {
+  flex: none;
+  width: 22px;
+  display: flex;
+  justify-content: center;
+  color: var(--c-accentDark);
+}
+.menu-label {
+  flex: 1;
+}
+.menu-chord {
+  margin-left: var(--sp-20);
+  color: var(--c-muted);
+  font-size: var(--fs-small);
+}
+.menu-separator {
+  height: 1px;
+  margin: var(--sp-3) var(--sp-6);
+  background: var(--c-lineSoft);
+}
+
+/* The bar between the left column and the viewport: a zero-width item on the column's edge with a wider grip */
+.splitter {
+  position: relative;
+  flex: none;
+  width: 0;
+  z-index: 6;
+  outline: none;
+}
+.splitter::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.splitter:hover::before,
+.splitter:focus-visible::before {
+  background: var(--c-accentLine);
+  opacity: 0.7;
+}
+
+/* A feature dialog floats over the viewport at (12, 12), 300 px wide; the left column stays beside it */
+.dialog-floating {
+  inset: auto;
+  z-index: 6;
+  box-sizing: border-box;
+  max-height: calc(100% - 24px);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  box-shadow: 0 8px 24px var(--c-shadow);
+  overflow: hidden;
+}
+.dialog-floating .dialog-body {
+  flex: 0 1 auto;
+  overflow-y: auto;
+}
+
+/* The strip at the foot of the window: +, the Document, the tabs, the units */
+.tab-strip {
+  flex: none;
+  height: 32px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding-right: var(--sp-8);
+  background: var(--c-viewport);
+  border-top: 1px solid var(--c-line);
+}
+.tab-strip .menu {
+  align-self: stretch;
+}
+.strip-plus {
+  width: 40px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-right: 1px solid var(--c-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--c-inkSoft);
+  cursor: pointer;
+}
+.strip-plus:hover:not(:disabled),
+.strip-plus[aria-expanded='true'] {
+  background: var(--c-lineSoft);
+}
+.strip-plus:disabled {
+  opacity: 0.35;
+}
+.strip-document {
+  flex: none;
+  max-width: 240px;
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-12);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--c-lineSoft);
+  border-right: 1px solid var(--c-line);
+  font-size: var(--fs-tab);
+  font-weight: 600;
+}
+.strip-tabs {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tab-strip .tab-button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0 var(--sp-20) 0 var(--sp-16);
+  border: none;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  color: var(--c-ink);
+  font-size: var(--fs-tab);
+  font-weight: 400;
+}
+.tab-strip .tab-button:hover {
+  background: var(--c-lineSoft);
+}
+.tab-strip .tab-button[aria-current='page'] {
+  border-color: transparent;
+  border-bottom-color: var(--c-accent);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font-weight: 400;
+}
+.strip-gap {
+  flex: 1;
+}
+.strip-units {
+  flex: none;
+  color: var(--c-muted);
+  font-size: var(--fs-tab);
+}
+/* the selection chip sits at the same corner: while a dialog floats there it stays out from behind it */
+.shell-viewport:has(.dialog-floating) .chip-slot {
+  visibility: hidden;
+}

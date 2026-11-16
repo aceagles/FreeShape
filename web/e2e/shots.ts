@@ -124,12 +124,35 @@ async function turnRing(page: Page, radians: number, release: boolean): Promise<
 
 export const shots: ShotState[] = [
   {
-    // I9.1: the Desktop-mode shell (it still looks like Tablet mode until I9.2 onwards); 1440 x 900 and 1920 x 1080, beside the desktop program (I9.13)
-    name: 'desktop-browsing',
+    // I9.2: the Desktop-mode chrome (menus, bottom tab strip, resizable left column, floating dialog); 1440 x 900 and 1920 x 1080, beside the desktop program (I9.13)
+    name: 'desktop-studio',
     mode: 'desktop',
     desktop: 'desktop-studio',
     steps: async (page) => {
       await openApp(page)
+    },
+  },
+  ...(['document', 'view', 'select'] as const).map(
+    (menu): ShotState => ({
+      name: `desktop-menu-${menu}`,
+      mode: 'desktop',
+      desktop: `desktop-menu-${menu}`,
+      steps: async (page) => {
+        await openApp(page)
+        await page.locator('[data-region="top-bar"]').getByRole('button', { name: menu[0]!.toUpperCase() + menu.slice(1), exact: true }).click()
+        await page.getByRole('menu').waitFor()
+      },
+    }),
+  ),
+  {
+    name: 'desktop-dialog',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await featureRow(page, 'Extrude 1').dblclick()
+      await page.getByRole('dialog').waitFor()
+      await page.getByTestId('pad').waitFor({ state: 'attached' }).catch(() => {})
     },
   },
   {

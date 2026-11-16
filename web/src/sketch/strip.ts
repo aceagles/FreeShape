@@ -38,7 +38,7 @@ export const SKETCH_STRIP: readonly StripDef[] = [
   { kind: 'tool', tool: t('delete', 'Delete') },
 ]
 
-/** The tools whose cards are done: Select picks and selects in the view (I7.7). Every other button waits for its card (I7.8 on) and stays dimmed. */
-const WIRED: ReadonlySet<string> = new Set(['select'])
+/** The tools whose cards are done: Select picks and selects in the view (I7.7); Dimension (I7.11). Every other button waits for its card (I7.8 on) and stays dimmed. */
+const WIRED: ReadonlySet<string> = new Set(['select', 'dimension'])
 
 export const sketchToolState = (id: string): ToolState => (WIRED.has(id) ? 'ok' : 'dimmed')

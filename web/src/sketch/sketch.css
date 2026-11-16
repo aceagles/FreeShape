@@ -128,3 +128,36 @@
   min-height: 44px;
   padding-block: var(--sp-8);
 }
+
+/* What the Dimension tool wants next, under the chips at the view's top left. */
+.sketch-hint {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + var(--sp-8));
+  left: 0;
+  width: max-content;
+  max-width: min(420px, 60vw);
+  box-sizing: border-box;
+  padding: var(--sp-8) var(--sp-14);
+  border: 1px solid var(--c-accentLine);
+  border-radius: var(--r-lg);
+  background: var(--c-accentSoft);
+  color: var(--c-accentDark);
+  font-size: var(--fs-small);
+  pointer-events: none;
+}
+/* a refused-constraint note is on the row the hint wants: the hint goes under it */
+.constraint-note ~ .sketch-hint {
+  top: calc(100% + var(--sp-8) + 60px);
+}
+/* The server's refusal of a dimension's value, in the dialog area above the pad. */
+.dimension-refusal {
+  margin-top: var(--sp-8);
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--c-danger);
+  border-radius: var(--r-sm);
+  background: var(--c-dangerSoft);
+  color: var(--c-danger);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}

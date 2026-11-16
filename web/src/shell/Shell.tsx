@@ -25,6 +25,8 @@ import { ToolStrip } from '../tools/ToolStrip'
 import { stateOf, useToolTypes } from '../tools/useToolTypes'
 import { SketchBar } from '../sketch/SketchBar'
 import { SketchChip } from '../sketch/SketchChip'
+import { DimensionDock, DimensionHint } from '../sketch/DimensionPad'
+import { DimensionTool } from '../sketch/dimension'
 import { SketchStore } from '../sketch/store'
 import { ConstraintNote } from '../sketch/ConstraintNote'
 import { ConstraintStore, attachDeleteKey, isConstrainTool } from '../sketch/constraints'
@@ -128,6 +130,14 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
     }
   }, [constraints])
   const constraintState = useSyncExternalStore(constraints.subscribe, constraints.getState)
+  // the Dimension tool of that sketch (I7.11): its pad opens in the dialog area, through refs to what is built further down
+  const [dock] = useState(() => new DimensionDock())
+  const [dimension] = useState(() => new DimensionTool({ sketch: sketchStore, transport: store, openPad: dock.open, closePad: dock.close }))
+  useEffect(() => {
+    dimension.attach()
+    return () => dimension.detach()
+  }, [dimension])
+  const dimensionOn = useSyncExternalStore(dimension.subscribe, dimension.getState).active
   const [modal, setModal] = useState<Modal | null>(null)
   const [saving, setSaving] = useState(false)
   const width = useWindowWidth()
@@ -188,6 +198,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
     }),
     [dialog, editing, collapsed, selectedFeature, selectedPart, currentTab, selection],
   )
+  // the dialog area closed under the Dimension pad (its close button): the dimension is given up
+  useEffect(() => {
+    if (!api.dialogOpen) dimension.padGone()
+  }, [api, dimension])
   useEffect(() => {
     window.__freeshape = {
       shell: api,
@@ -252,6 +266,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const drawn = base ?? (showPreview ? preview.outputs : studio)
   const look: PreviewLook | null = showPreview ? { number: preview.number, feature: preview.feature, ghost: base === null ? null : preview.outputs } : null
   const variables = useMemo(() => Object.keys(studio?.variables ?? {}).map((n) => n.replace(/^#/, '')), [studio])
+  useEffect(() => dock.bind(api, variables))
   const assembly = useAssembly({ store, tab: currentTab, tabKind, readOnly, documentName: name, onError: failText })
 
   const add = async (kind: 'studio' | 'assembly') => {
@@ -346,8 +361,11 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             defs={SKETCH_STRIP}
             stateOf={(id) => (isConstrainTool(id) ? (constraintState.enabled.has(id) ? 'ok' : 'dimmed') : sketchToolState(id))}
             width={width}
-            active="select"
-            onStart={(id) => constraints.apply(id)}
+            active={dimensionOn ? 'dimension' : 'select'}
+            onStart={(id) => {
+              dimension.setActive(id === 'dimension')
+              constraints.apply(id)
+            }}
             trailing={
               <SketchBar
                 nav={sketch.nav}
@@ -436,6 +454,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             <div className="chip-slot" data-testid="chip-slot" data-region="selection-chip">
               {sketchHere ? <SketchChip store={sketchStore} /> : <SelectionChip store={selection} />}
               {sketchHere && <ConstraintNote store={constraints} />}
+              {sketchHere && <DimensionHint tool={dimension} />}
             </div>
           </div>
         </div>

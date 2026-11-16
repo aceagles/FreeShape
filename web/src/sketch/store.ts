@@ -1,6 +1,7 @@
 import type { SketchHit } from './pick'
+import type { PickPointer } from '../viewport/pick'
 import { parseSketchView } from './wire'
-import type { Frame, FrameEdge, SketchView } from './wire'
+import type { Frame, FrameEdge, SketchView, Uv } from './wire'
 
 /** 2D keeps the view square to the sketch plane (one finger pans, two pan, zoom and twist); 3D orbits as the Part Studio does. */
 export type SketchNav = '2d' | '3d'
@@ -16,6 +17,14 @@ export interface SketchTransport {
 
 /** What to open: an existing sketch feature, or a new sketch on a plane reference (as a sketch's `plane` param stores it). */
 export type SketchTarget = { document: string; tab: string } & ({ feature: string } | { plane: Record<string, unknown> })
+
+/** A tool that takes the pointer's Commit before the selection does (the Dimension tool, I7.11). */
+export interface SketchPointerTool {
+  /** A Commit on `hit` (or on nothing) at sketch point `uv`; true when the tool took it, so nothing is selected. */
+  commit(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer): boolean
+  /** A double tap or double click on `hit`; true when the tool took it (the view then does not fit). */
+  doubleTap(hit: SketchHit): boolean
+}
 
 export interface SketchState {
   /** No sketch is open. */
@@ -73,6 +82,8 @@ export class SketchStore {
   private readonly listeners = new Set<() => void>()
   private off: (() => void)[] = []
   private frame: { frame: Frame; edges: FrameEdge[] } | null = null
+  /** The tool that takes Commits first, if one is on (set by the tool itself). */
+  pointerTool: SketchPointerTool | null = null
 
   constructor(private readonly transport: SketchTransport) {
     this.attach()
@@ -118,6 +129,10 @@ export class SketchStore {
   }
   redo(): void {
     if (this.state.open && this.state.view?.canRedo) this.transport.send({ type: 'sketch.redo' })
+  }
+  /** Drop the refusal on show (a tool that shows it itself, as the Dimension pad does). */
+  clearError(): void {
+    if (this.state.error !== null) this.set({ error: null })
   }
   /** Ask for the whole sketch again. */
   refresh(): void {

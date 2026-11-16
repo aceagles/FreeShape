@@ -1035,6 +1035,57 @@ export const shots: ShotState[] = [
     after: closeAllDiscard,
   },
   {
+    name: 'sketch-dimension-placing',
+    mock: 'sketch', // Dimension on, two points of the Slot picked: the chip says "2 points" and the hint asks where the dimension goes
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, /Slot(?! cut)/)
+      await page.locator('[data-strip="sketch"] [data-tool="dimension"]').click()
+      await settledSketch(page)
+      await fingerTap(page, await screenOf(page, 'point', 'p1'))
+      await fingerTap(page, await screenOf(page, 'point', 'p3'))
+      await page.getByTestId('selection-count').filter({ hasText: '2 points' }).waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-dimension-pad',
+    mock: 'dialog', // a line of the Slot picked and a label placed: the dialog area holds the length on the pad, as a feature's number does
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, /Slot(?! cut)/)
+      await page.locator('[data-strip="sketch"] [data-tool="dimension"]').click()
+      await settledSketch(page)
+      const a = await screenOf(page, 'point', 'p1')
+      const b = await screenOf(page, 'point', 'p2')
+      await fingerTap(page, { x: a.x + (b.x - a.x) / 4, y: a.y + (b.y - a.y) / 4 })
+      await fingerTap(page, { x: (a.x + b.x) / 2, y: a.y + 70 })
+      await page.getByTestId('pad').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-dimension-refused',
+    mock: 'dialog', // a double tap on the 60 mm label, 0 on the pad and Enter: the server's refusal above the pad, the label unchanged
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await settledSketch(page)
+      const at = await screenOf(page, 'dimension', 'k19')
+      await sendPointer(page, [
+        { phase: 'down', kind: 'touch', id: 1, ...at },
+        { phase: 'up', kind: 'touch', id: 1, ...at },
+        { phase: 'down', kind: 'touch', id: 1, ...at },
+        { phase: 'up', kind: 'touch', id: 1, ...at },
+      ])
+      await page.getByTestId('pad').waitFor()
+      await page.keyboard.type('0')
+      await page.keyboard.press('Enter')
+      await page.getByTestId('dimension-refusal').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
     name: 'sketch-new',
     mock: 'sketch', // a new sketch on the Top plane: nothing drawn yet but the axes, "Empty"
     steps: async (page) => {

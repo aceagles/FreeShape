@@ -99,7 +99,7 @@ export class SketchMode {
       commit: (pt: PenPoint) => {
         if (kind === 'mouse') this.store.aim(itemAt(pt.x, pt.y, kind))
         const hit = this.store.getState().aimed
-        this.store.select(hit)
+        if (!this.store.pointerTool?.commit(hit, this.uvAt(pt.x, pt.y), kind)) this.store.select(hit)
         if (kind === 'pen') this.store.aim(null)
       },
       cancel: () => this.store.aim(null),
@@ -108,14 +108,29 @@ export class SketchMode {
     p.setMouseHandler(picking('mouse'))
     p.setTapHandler({
       tap: (x, y) => {
+        const hit = itemAt(x, y, 'touch')
+        if (this.store.pointerTool?.commit(hit, this.uvAt(x, y), 'touch')) {
+          this.before = null
+          return
+        }
         this.before = this.store.getState().selected
-        this.store.select(itemAt(x, y, 'touch'))
+        this.store.select(hit)
+      },
+      doubleTap: (x, y) => {
+        const hit = itemAt(x, y, 'touch')
+        return hit !== null && this.store.pointerTool?.doubleTap(hit) === true
       },
       undoTap: () => {
         if (this.before) this.store.setSelection(this.before)
         this.before = null
       },
     })
+  }
+
+  /** The sketch point under a view position, or null. */
+  private uvAt(x: number, y: number): Uv | null {
+    const f = this.store.getState().view?.frame
+    return f ? viewToUv(this.host.view, f, x, y) : null
   }
 
   private onStore(): void {

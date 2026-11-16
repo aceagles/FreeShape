@@ -39,6 +39,8 @@ export interface PenHandler {
 export interface TapHandler {
   tap(x: number, y: number): void
   undoTap(): void
+  /** Called after `undoTap` for a double tap; return true when the handler used it, and the view does not fit. */
+  doubleTap?(x: number, y: number): boolean
 }
 
 /**
@@ -334,7 +336,7 @@ export class PointerModule {
       // The first tap already selected (a tap acts at once, never after a wait). A double tap is a view gesture: take that back.
       this.lastTap = null
       this.tapHandler?.undoTap()
-      this.host.fit()
+      if (!this.tapHandler?.doubleTap?.(x, y)) this.host.fit()
     } else {
       this.lastTap = { x, y, t }
       this.tapHandler?.tap(x, y)

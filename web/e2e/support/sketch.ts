@@ -31,7 +31,7 @@ export const pickSketchAt = (page: Page, x: number, y: number, pointer: 'pen' | 
 export const uvAt = (page: Page, x: number, y: number): Promise<Uv | null> => page.evaluate(([px, py]) => window.__freeshapeViewport?.sketch?.uvAt(px, py) ?? null, [x, y] as const)
 
 /** Opens the Part Studio's sketch feature `name` through the test hook (the way in from the screen is card I7.13) and waits for the sketch strip and the drawn sketch. */
-export async function openSketchFeature(page: Page, name: string): Promise<void> {
+export async function openSketchFeature(page: Page, name: string | RegExp): Promise<void> {
   const id = await featureRow(page, name).getAttribute('data-feature')
   if (id === null) throw new Error(`no feature row ${name}`)
   await page.evaluate((feature) => window.__freeshape!.openSketch({ feature }), id)

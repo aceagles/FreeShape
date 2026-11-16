@@ -13,9 +13,17 @@ type FsElement = HTMLElement & { webkitRequestFullscreen?: () => Promise<void> |
 
 const EVENTS = ['fullscreenchange', 'webkitfullscreenchange'] as const
 
-/** True when this browser can put the page in full screen. */
+/** True when the page runs as an installed app (home screen, card F21): it already has no browser chrome. */
+export function runsAsApp(): boolean {
+  if (typeof window === 'undefined') return false
+  if ((navigator as Navigator & { standalone?: boolean }).standalone === true) return true // iOS
+  if (typeof window.matchMedia !== 'function') return false
+  return window.matchMedia('(display-mode: standalone)').matches || window.matchMedia('(display-mode: fullscreen)').matches
+}
+
+/** True when this browser can put the page in full screen, and the page is not already an installed app. */
 export function fullscreenSupported(): boolean {
-  if (typeof document === 'undefined') return false
+  if (typeof document === 'undefined' || runsAsApp()) return false
   const doc = document as FsDocument
   const el = document.documentElement as FsElement
   const request = typeof el.requestFullscreen === 'function' || typeof el.webkitRequestFullscreen === 'function'

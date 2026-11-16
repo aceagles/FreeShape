@@ -456,13 +456,14 @@ _FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
 _EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST", "rename": "POST", "refs": "POST"}
 MAX_TABS = 200                  # tabs one Document may hold through POST /documents/<id>/tabs
 _CLIENT_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
-               "img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; base-uri 'none'; "
-               "form-action 'none'; frame-ancestors 'none'")
+               "manifest-src 'self'; img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; "
+               "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 _CLIENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
                  ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
                  ".json": "application/json; charset=utf-8", ".map": "application/json; charset=utf-8",
                  ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".webp": "image/webp",
                  ".woff2": "font/woff2", ".woff": "font/woff", ".wasm": "application/wasm",
+                 ".webmanifest": "application/manifest+json",
                  ".txt": "text/plain; charset=utf-8"}
 _CLIENT_DIR = Path(__file__).resolve().parent / "static" / "app"     # `npm --prefix web run build` writes here
 _CLIENT_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")

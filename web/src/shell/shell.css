@@ -828,3 +828,10 @@
   --d-hover: var(--c-accentSoft);
   --d-selected: var(--c-selected);
 }
+
+/* F21: installed to the home screen (viewport-fit=cover). Keeps the bars clear of the status bar, the home indicator and
+   a notch; every inset is 0 in a browser tab and with the `default` status bar, so nothing moves there. */
+.shell {
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}

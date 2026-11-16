@@ -69,6 +69,22 @@ it('is not shown where the browser has no Fullscreen API', () => {
   expect(screen.queryByRole('button', { name: /full screen/i })).toBeNull()
 })
 
+it('is not shown when the page runs as an installed app (display-mode standalone, or iOS navigator.standalone)', () => {
+  mockApi('')
+  const mm = (q: string) => ({ matches: q === '(display-mode: standalone)' }) as MediaQueryList
+  define(window, 'matchMedia', mm)
+  bar()
+  expect(screen.queryByRole('button', { name: /full screen/i })).toBeNull()
+  cleanup()
+  define(window, 'matchMedia', () => ({ matches: false }) as MediaQueryList)
+  bar()
+  expect(screen.getByRole('button', { name: 'Full screen' })).toBeTruthy()
+  cleanup()
+  define(navigator, 'standalone', true)
+  bar()
+  expect(screen.queryByRole('button', { name: /full screen/i })).toBeNull()
+})
+
 it('is not shown where the page may not go full screen (fullscreenEnabled false)', () => {
   mockApi('')
   define(document, 'fullscreenEnabled', false)

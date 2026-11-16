@@ -90,3 +90,23 @@ def test_the_client_listing_is_a_table_of_plain_names(client_dir):
     _build(client_dir)
     assert sorted(SV._client_files()) == ["/", "/assets/app-1a2b.css", "/assets/app-1a2b.js"]
     assert os.path.basename(str(SV._CLIENT_DIR)) == "app"
+
+
+def test_manifest_and_icons_are_served_with_their_types_and_the_csp_allows_them(client_dir, tmp_path, monkeypatch):
+    _build(client_dir)
+    (client_dir / "manifest.webmanifest").write_bytes(b'{"name": "FreeShape"}')
+    (client_dir / "icon-192.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    s = _served(tmp_path, monkeypatch)
+    try:
+        status, h, body = s.request("GET", "/manifest.webmanifest")
+        assert status == 200 and body == b'{"name": "FreeShape"}'
+        assert h["Content-Type"] == "application/manifest+json"
+        status, h, _body = s.request("GET", "/icon-192.png")
+        assert status == 200 and h["Content-Type"] == "image/png"
+        csp = s.request("GET", "/")[1]["Content-Security-Policy"]
+        assert "manifest-src 'self'" in csp and "img-src 'self'" in csp
+        assert "default-src 'none'" in csp and "connect-src 'self'" in csp and "frame-ancestors 'none'" in csp
+        assert s.request("GET", "/manifest.json")[0] == 404         # a path not in the table is still 404
+        assert s.request("GET", "/icon-512.png")[0] == 404
+    finally:
+        s.close()

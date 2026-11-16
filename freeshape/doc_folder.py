@@ -35,6 +35,7 @@ import tempfile
 import uuid
 import weakref
 
+from . import doc_lock
 from . import doc_registry as R
 from . import docstore as DS
 from . import gitstore as G
@@ -432,6 +433,7 @@ class FolderDocument:
             try:
                 G.init_repo(path)
                 G.ensure_attributes(path, _attribute_lines())
+                doc_lock.ensure_excluded(path)
                 doc.trusted = True
             except G.GitUnavailable as e:
                 doc.git_error = str(e)
@@ -653,6 +655,7 @@ class FolderDocument:
             folder = DS.git_folder(self.store)
             G.init_repo(folder)
             G.ensure_attributes(folder, _attribute_lines())
+            doc_lock.ensure_excluded(folder)
 
     def create_version(self, name, note=""):
         """Save, then commit everything and tag the commit (annotated, carrying `note`). Saving alone never commits."""

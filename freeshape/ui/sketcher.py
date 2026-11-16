@@ -833,6 +833,9 @@ class Sketcher:
         sk = self.sk
         kind, i = d["kind"], d["id"]
         delta = uv - d["start"]
+        if kind == "constraint" and sk.points.get(self._resolve_pick(i)) is not None \
+                and (self._constraint(i) or {}).get("type") not in DIMENSIONS:
+            kind, i = "point", self._resolve_pick(i)   # a point's badge (e.g. the "M" of a midpoint) drags the point
         if kind == "constraint":
             for c in sk.constraints:
                 if c["id"] == i:
@@ -1194,6 +1197,8 @@ class Sketcher:
                         d = np.linalg.norm(sk.P(sk.entities[a]["c"]) - sk.P(sk.entities[b]["c"]))
                         internal = d < max(sk.radius(a), sk.radius(b))
                         val = -1.0 if internal else 1.0
+                    if tb == "line":
+                        a, b = b, a                 # stored line first, so the solver always takes it
                     made.append(("tangent", [a, b], val))
         if tool == "normal" and len(picks) == 2:
             a, b = picks
@@ -1233,6 +1238,14 @@ class Sketcher:
                 self._flashing = True
                 self._prompt_label = "⚠ " + CONSTRAINT_TOOLS.get(tool, "Selection does not fit this constraint")
             return False
+        # a pair holds at most one relation of each kind: asking again for what is already there adds nothing
+        made = [m for m in made if sk.find_constraint(m[0], m[1]) is None]
+        if not made:
+            self._flashing = True
+            self._prompt_label = "⚠ Already " + CONSTRAINT_LABELS.get(tool, tool).lower()
+            return True
+        saved = sk.to_dict()
+        n_before = len(sk.constraints)
         self.push_undo()
         for t, refs, val in made:
             if t in ("horizontal", "vertical"):
@@ -1248,7 +1261,21 @@ class Sketcher:
             c = sk.add_constraint(t, *refs, value=val)
             if tool == "normal":
                 c["normal"] = True
-        self.changed(True)
+        new_ids = {c["id"] for c in sk.constraints[n_before:]}
+        sk.solve()
+        failed = new_ids & (set(sk.status.get("bad", ())) | set(sk.status.get("skipped", ())))
+        if failed:
+            # the solver can't meet it (it fights what is there, or the pair isn't supported): put the sketch back
+            # and say so, rather than leave a badge that does nothing
+            self.undo_stack.pop()
+            self.sk = Sketch.from_dict(saved)
+            self.sk.solve()
+            self.on_change(True)
+            self._flashing = True
+            self._prompt_label = "⚠ Can't add " + CONSTRAINT_LABELS.get(tool, tool).lower() + \
+                " — it conflicts with the existing constraints"
+            return True
+        self.on_change(True)
         return True
 
     def toggle_radius_diameter(self, cid) -> bool:

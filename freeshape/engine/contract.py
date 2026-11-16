@@ -390,6 +390,22 @@ class Engine(abc.ABC):
         its type starts with (a dialog fills in the ones an older feature lacks)}. EngineError for an unknown feature or
         a tab that is not a Part Studio."""
 
+    @abc.abstractmethod
+    def start_feature(self, tab, type, picks) -> dict:
+        """A new feature of `type` as a dialog starts it (I6.1). A QUERY: nothing changes, no id is taken. `picks` is
+        a list of the refs route's picks (1-based indices; `want` may be left out), possibly empty: they seed the
+        feature's selection fields with dialog_schema.apply_preselection, run on this tab's built state. Returns
+        {"feature": {"type", "name" (the next free one), "suppressed": False, "params": the defaults, no "id"},
+         "variables": {name: number} before the insert position, "defaults": the same params,
+         "fields": {key: [[kind, ref], ...]} the selection rows after preselection, "params": params the picks set
+         besides the fields ("sketch", a Mate connector's stamp)}. BadPick for a pick the tab cannot read;
+        EngineError for a type with no dialog or a tab that is not a Part Studio."""
+
+    @abc.abstractmethod
+    def startable(self, tab, picks) -> dict:
+        """{feature type: bool} for every type with a dialog: whether a tool of that type can start with `picks`
+        (some pick fills one of its fields; with no picks every type can). A QUERY."""
+
     def preview(self, tab, feature, type, params) -> dict:
         """What a Part Studio would look like with a feature's proposed parameters (I5.4), for an open dialog. A
         QUERY, like `refs`: the committed model, the revision, the undo stack and the saved data are untouched, and

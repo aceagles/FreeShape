@@ -1002,6 +1002,12 @@ def custom_feature_types():
                   if any(r["t"] not in STANDARD_KINDS and r["t"] not in SIMPLE_KINDS for r in rows))
 
 
+def startable_feature_types():
+    """The feature types a client can start a dialog for (I6.1): those with a schema that also make default
+    parameters and have a label (SCHEMAS holds a stub or two that are not features yet), sorted."""
+    return sorted(t for t in SCHEMAS if t in F.FEATURE_LABELS)
+
+
 # ---------------------------------------------------------------------- behaviour (I5.2)
 # What a dialog does with the picks it was started with and when a field changes. FeatureDialog calls these and
 # keeps only its widgets; the Browser client's server session calls the same functions.

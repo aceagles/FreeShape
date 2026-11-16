@@ -137,9 +137,13 @@ class FeatureDialog:
     rejected input, else absent) and {key: {"value"}} for the other single-value rows. `fields()` is {key: [item]}
     for the selection rows; an item is {"ok": true, "kind", "ref", "name"}, as the refs route answers."""
 
-    def __init__(self, tab, feature, variables, defaults):
+    def __init__(self, tab, feature, variables, defaults, fields=None, extra=None):
+        """`feature` without an "id" is a NEW feature (I6.1, create mode): `fid` is None, the engine gives it its id
+        when it is added, and a preview asks for a new feature. `fields` ({key: [(kind, ref)]}) and `extra` (params)
+        are what the picks it was started with chose (apply_preselection)."""
         self.tab = tab
-        self.fid = feature["id"]
+        self.fid = feature.get("id")
+        self.is_new = self.fid is None
         self.feature = feature
         self.type = feature["type"]
         self.variables = dict(variables)
@@ -152,6 +156,12 @@ class FeatureDialog:
                 p["guides_on"] = True
         self.params = p
         self.fields_ = DSC.params_to_fields(self.type, p)
+        if fields or extra:
+            p.update(extra or {})
+            for key, items in (fields or {}).items():
+                if key in self.fields_:
+                    self.fields_[key] = [(k, r) for k, r in items]
+            DSC.fields_to_params(self.type, self._field_dict(), p)
         self.texts = {}                                    # key -> text of a number field, as typed
         self.errors = {}                                   # key -> why the last input to it was refused
         self.specs = {s["key"]: s for s in DSC._schema_for(self.type, p) if s.get("key")}
@@ -503,6 +513,30 @@ class DocumentSession:
         except EngineError as e:
             raise SessionError(f"tab {tab!r}: {e}") from e
         return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"))
+
+    def start_dialog(self, tab, ftype, picks=()):
+        """A FeatureDialog in create mode for a new feature of `ftype` at the rollback position, its selection
+        fields seeded from `picks` (the refs route's picks, 1-based; see contract.Engine.start_feature). A query:
+        nothing changes. Raises SessionError for a bad pick, an unknown type or a tab that is not a Part Studio."""
+        self._need_open(tab)
+        try:
+            got = self._retry(tab, lambda: self._eng.start_feature(tab, ftype, list(picks)))
+        except BadPick as e:
+            raise SessionError(str(e)) from e
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
+        return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"),
+                             {k: [tuple(i) for i in v] for k, v in got["fields"].items()}, got["params"])
+
+    def startable_types(self, tab, picks=()):
+        """{feature type: bool}: which tools can start on `tab` with `picks` (contract.Engine.startable)."""
+        self._need_open(tab)
+        try:
+            return self._retry(tab, lambda: self._eng.startable(tab, list(picks)))
+        except BadPick as e:
+            raise SessionError(str(e)) from e
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
 
     def preview_dialog(self, dialog):
         """Ask the engine for a preview of `dialog`'s feature as it would be accepted now (I5.4): (n, Future of the

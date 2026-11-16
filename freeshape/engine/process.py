@@ -612,6 +612,14 @@ class ProcessEngine(Engine):
         """One model edge as a sketch entity, from the tab's worker (contract.Engine.project_edge). A query."""
         return self._call(self._get(tab), "project_edge", {"plane": plane, "pick": pick})
 
+    def start_feature(self, tab, type, picks):
+        """A new feature seeded from picks (contract.Engine.start_feature). A query."""
+        return self._call(self._get(tab), "start_feature", {"type": type, "picks": picks})
+
+    def startable(self, tab, picks):
+        """Which feature types can start with `picks` (contract.Engine.startable). A query."""
+        return self._call(self._get(tab), "startable", picks)
+
     def submit_preview(self, tab, feature, type, params):
         """The model with a feature's proposed params, built by the tab's worker (contract.Engine.preview). A query:
         no edit is logged, no revision moves and nothing is rebuilt. Returns (n, Future); see `_queue_preview` for

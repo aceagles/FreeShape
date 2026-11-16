@@ -35,6 +35,8 @@ Routes (an exact table; no part of a request is ever joined to a file path):
     POST /documents/<id>/tabs/<tab>/refs       body: {"picks": [pick, ...]}; reply {"document", "tab", "revision",
                                 "items": [item, ...]}, one item per pick, in order (I4.3; see "Refs" below)
     POST /documents/<id>/tabs/<tab>/features/<fid>/dialog        open a feature dialog (I5.3; see "Dialogs" below)
+    POST /documents/<id>/tabs/<tab>/features/dialog              open a dialog for a NEW feature (I6.1; "Dialogs")
+    GET  /documents/<id>/tabs/<tab>/features/types[?picks=<JSON>]  feature types, label, standard, can_start (I6.1)
     POST /documents/<id>/tabs/<tab>/dialog/<did>/update|accept|cancel
     GET  /documents/<id>/tabs/<tab>/dialog/<did>/preview         the dialog's newest preview (I5.4), wire format
     POST /documents/<id>/save                  body: {} ; reply {"saved": [ids]}
@@ -93,6 +95,19 @@ At most MAX_DIALOGS (8) per client and MAX_DIALOGS_TOTAL (256) in all (409). Bod
           fields       {key: [item]} for the selection rows; item = {"ok": true, "kind", "ref", "name"}, the refs
                        route's item (name is the Element name the stored reference holds, null for a legacy one).
           active       null on open.
+  create  (I6.1) POST .../tabs/<tab>/features/dialog  body {"type": a feature type with a dialog, "picks": [pick,...]
+          (optional)}. A pick is the refs route's (1-based indices) with `want` optional. The type's default
+          parameters are made as the desktop makes them, the picks seed its selection fields with
+          dialog_schema.apply_preselection (run in the engine worker, where the shapes are), and a dialog in create
+          mode opens at the rollback position. 201, the same reply as above with "feature": null (the engine gives
+          the id at accept) and "type"; the fields hold what the picks chose, a pick no field takes is dropped.
+          Updates, previews (the engine is asked for a NEW feature) and cancel are the same routes. Accept sends
+          add_feature with no index (the rollback bar, else the end), 200 {"rebuilt", "revision"}, the usual
+          `changed` push; 423 read-only. A pick the tab cannot read, an unknown type or a bad body is a 400.
+  types   (I6.1) GET .../tabs/<tab>/features/types[?picks=<URL-encoded JSON list of picks>]  200 {"document", "tab",
+          "revision", "types": [{"type", "label", "standard", "can_start"}]}, sorted by type. `standard` is false
+          for the types with a hand-built row (dialog_schema.custom_feature_types()); `can_start` is true when no
+          picks are given, else when a pick would fill one of the type's selection fields. No X-Client-Id.
   update  POST .../dialog/<did>/update  body {"values": {key: value}} (1..64 keys). A number takes text or a number
           and is evaluated by freeshape.expr (units, #variables, 1/2 in), the desktop's rule: an expression that names
           a #variable is stored as text, else as the number; below `min`, or zero where `signed`, is refused. A choice
@@ -196,7 +211,9 @@ _DOC_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})"
 _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POST", "tabs": "GET", "recover": "POST",
               "discard-autosave": "POST"}
 _DIALOG_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})"
-                          r"(?:/features/([A-Za-z0-9_.-]{1,64})/(dialog)|/dialog/([0-9a-f]{16})/(update|accept|cancel|preview))$")
+                          r"(?:/features/(?:([A-Za-z0-9_.-]{1,64})/(dialog)|(dialog|types))"
+                          r"|/dialog/([0-9a-f]{16})/(update|accept|cancel|preview))$")
+MAX_PICKS_QUERY = 8000          # longest query string of GET .../features/types
 MAX_DIALOGS = 8                 # open dialogs one client may hold
 MAX_DIALOGS_TOTAL = 256         # and all clients together
 _FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
@@ -1019,8 +1036,8 @@ class _Server:
             return "documents", None, None, None             # GET lists, POST creates
         m = _DIALOG_PATH.match(path)
         if m is not None:
-            verb = "open" if m.group(4) else m.group(6)
-            return "dialog." + verb, m.group(1), m.group(2), "GET" if verb == "preview" else "POST"
+            verb = "open" if m.group(4) else ("new" if m.group(5) == "dialog" else m.group(5) or m.group(7))
+            return "dialog." + verb, m.group(1), m.group(2), "GET" if verb in ("preview", "types") else "POST"
         m = _DOC_PATH.match(path)
         if m is not None:
             doc_id, verb, tab, edge = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -1513,18 +1530,23 @@ class _Server:
 
     async def _dialog(self, d, tab, verb, body, request):
         """The dialog routes; see "Dialogs" in the module docstring."""
+        if verb == "types":
+            return await self._feature_types(d, tab, request)
         client = self._dialog_client(request)
         match = _DIALOG_PATH.match(request.raw_path.split("?", 1)[0])
-        extra = sorted(str(k) for k in (body or {}) if not (verb == "update" and k == "values"))
+        allowed = {"update": ("values",), "new": ("type", "picks")}.get(verb, ())
+        extra = sorted(str(k) for k in (body or {}) if k not in allowed)
         if extra:
             return self._fail(400, f"{extra[0][:40]}: unknown field")
         if verb == "open":
             return await self._dialog_open(d, tab, match.group(3), client)
+        if verb == "new":
+            return await self._dialog_open(d, tab, None, client, body)
         table = self._client_dialogs(client)
-        hit = None if table is None else table.get(match.group(5))
+        hit = None if table is None else table.get(match.group(6))
         if hit is None or hit[0] != d.id or hit[1].tab != tab:
             return self._fail(404, "not found")                  # another client's dialog is not found either
-        dialog, did = hit[1], match.group(5)
+        dialog, did = hit[1], match.group(6)
         if verb == "preview":
             got = dialog.preview
             if got is None or got["data"] is None:
@@ -1547,7 +1569,8 @@ class _Server:
             self._spawn(self._deliver_preview(d, tab, did, dialog, client, n, fut))
             return self._json(200, {**view, "active": active, "errors": errors, "preview": n})
         feature = await self._in_session(d, dialog.result)       # accept
-        rebuilt = await self._edit(d, tab, {"op": "replace_feature", "feature": feature}, client, None)
+        edit = {"op": "add_feature" if dialog.is_new else "replace_feature", "feature": feature}   # no index: at the bar
+        rebuilt = await self._edit(d, tab, edit, client, None)
         table.pop(did, None)
         dialog.preview = None
         return self._json(200, {"rebuilt": rebuilt, "revision": d.revisions.get(tab)})
@@ -1597,21 +1620,61 @@ class _Server:
     def _dialog_view(dialog):
         return {"description": dialog.description(), "values": dialog.values(), "fields": dialog.fields()}
 
-    async def _dialog_open(self, d, tab, fid, client):
+    async def _dialog_open(self, d, tab, fid, client, body=None):
         import secrets
+        if fid is None:                                          # create mode (I6.1): validate before taking a slot
+            ftype, picks = body.get("type"), body.get("picks", [])
+            if not isinstance(ftype, str) or not 1 <= len(ftype) <= 64:
+                return self._fail(400, "type: must be a feature type (a string)")
+            if not isinstance(picks, list):
+                return self._fail(400, "picks: must be a list")
+            if picks:
+                from . import picking
+                try:
+                    picking.parse_picks([dict(p, want=p.get("want", ["element"])) if isinstance(p, dict) else p
+                                         for p in picks])
+                except ValueError as e:
+                    return self._fail(400, str(e))
         table = self._client_dialogs(client, make=True)
         if len(table) >= MAX_DIALOGS:
             return self._fail(409, f"a client may hold at most {MAX_DIALOGS} open dialogs")
         if sum(len((self.clients.get(c).data.get("dialogs") or {})) for c in self.clients.ids()) >= MAX_DIALOGS_TOTAL:
             return self._fail(409, "too many open dialogs")
         def work():
-            dialog = d.session.open_dialog(tab, fid)
+            dialog = d.session.open_dialog(tab, fid) if fid is not None else d.session.start_dialog(tab, ftype, picks)
             return dialog, self._dialog_view(dialog), d.revisions.get(tab)
         dialog, view, revision = await self._in_session(d, work)
         did = secrets.token_hex(8)
         table[did] = (d.id, dialog)
-        return self._json(201, {"dialog": did, "document": d.id, "tab": tab, "feature": fid,
+        return self._json(201, {"dialog": did, "document": d.id, "tab": tab, "feature": fid, "type": dialog.type,
                                 "name": dialog.feature.get("name"), "revision": revision, **view, "active": None})
+
+    async def _feature_types(self, d, tab, request):
+        """GET .../tabs/<tab>/features/types[?picks=<JSON list of picks>]: 200 {"document", "tab", "revision",
+        "types": [{"type", "label", "standard", "can_start"}]}. A query: no X-Client-Id, allowed read-only."""
+        from . import picking
+        query = request.raw_path.split("?", 1)[1] if "?" in request.raw_path else ""
+        args = request.query
+        if set(args) - {"picks"} or len(query) > MAX_PICKS_QUERY:
+            return self._fail(400, "only ?picks=<JSON>, at most %d characters, is accepted" % MAX_PICKS_QUERY)
+        picks = []
+        if "picks" in args:
+            try:
+                picks = json.loads(args["picks"])
+                if picks != []:                                  # [] is no selection
+                    picking.parse_picks([dict(p, want=p.get("want", ["element"])) if isinstance(p, dict) else p
+                                         for p in picks] if isinstance(picks, list) else picks)
+            except (ValueError, RecursionError) as e:
+                return self._fail(400, f"picks: {e}"[:200])
+        def work():
+            return d.session.startable_types(tab, picks), d.revisions.get(tab)
+        can, revision = await self._in_session(d, work)
+        from . import dialog_schema as DSC
+        from .features import FEATURE_LABELS
+        custom = set(DSC.custom_feature_types())
+        types = [{"type": t, "label": FEATURE_LABELS.get(t) or t.replace("_", " ").capitalize(), "standard": t not in custom,
+                  "can_start": bool(can.get(t))} for t in DSC.startable_feature_types()]
+        return self._json(200, {"document": d.id, "tab": tab, "revision": revision, "types": types})
 
     async def _rename_tab(self, d, tab, body):
         """POST /documents/<id>/tabs/<tab>/rename {"name": ...}: 200 {"tab": <tab>, "tabs": [...]}."""

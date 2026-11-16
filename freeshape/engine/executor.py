@@ -31,6 +31,7 @@ from .encode import Encoder, connector_out, element_names, feature_list, sketch_
 from .inputs import CrossTabInputs
 from .linkgraph import live_package, package_digest, propagate
 from .. import blobstore
+from .. import dialog_schema as DSC
 from .. import kernel as K
 from .. import picking as PK
 from .. import sketch_ops as OPS
@@ -186,6 +187,12 @@ class _Tab:
         raise EngineError(f"only a Part Studio has elements to pick (this tab is a {self.kind})")
 
     def feature_info(self, fid):
+        raise EngineError(f"only a Part Studio has features (this tab is a {self.kind})")
+
+    def start_feature(self, ftype, picks):
+        raise EngineError(f"only a Part Studio has features (this tab is a {self.kind})")
+
+    def startable(self, picks):
         raise EngineError(f"only a Part Studio has features (this tab is a {self.kind})")
 
     def preview(self, fid, ftype, params):
@@ -394,6 +401,51 @@ class StudioTab(_Tab):
             defaults = {}
         return {"feature": copy.deepcopy(f), "variables": plain(dict(base.vars)), "defaults": defaults}
 
+    def start_feature(self, ftype, picks):
+        """`Engine.start_feature`: a new feature of `ftype` as a dialog starts it, its fields seeded from `picks` by
+        dialog_schema.apply_preselection on this tab's built state. A query: nothing is changed, no id is taken."""
+        if not isinstance(ftype, str) or ftype not in DSC.startable_feature_types():
+            raise EngineError(f"no feature type {ftype!r} can be started here")
+        self.sync()
+        doc = self.doc
+        base = doc.state_before(doc.insert_index())
+        try:
+            params = plain(F.default_params(ftype, base))
+        except Exception as e:                                # noqa: BLE001
+            raise EngineError(f"{ftype}: cannot make its default parameters: {e}") from e
+        fields = DSC.params_to_fields(ftype, params)
+        got = DSC.Preselected(fields, {})
+        if picks:
+            state, keys = _StudioStart(doc).state(picks)
+            got = DSC.apply_preselection(ftype, fields, keys, state, params)
+        return {"feature": {"type": ftype, "name": doc.next_name(ftype), "suppressed": False,
+                            "params": params},
+                "variables": plain(dict(base.vars)),
+                "defaults": plain(params),
+                "fields": {k: [[kind, plain(PK.jsonable(ref))] for kind, ref in v] for k, v in got.fields.items()
+                           if not k.endswith("_numbers")},
+                "params": plain(PK.jsonable(got.params))}
+
+    def startable(self, picks):
+        """`Engine.startable`: {feature type: bool}, whether a tool of that type can start with `picks`."""
+        self.sync()
+        doc = self.doc
+        base = doc.state_before(doc.insert_index())
+        out = {}
+        read = _StudioStart(doc).state(picks) if picks else None
+        for ftype in DSC.startable_feature_types():
+            if read is None:
+                out[ftype] = True
+                continue
+            try:
+                params = plain(F.default_params(ftype, base))
+                fields = DSC.params_to_fields(ftype, params)
+                got = DSC.apply_preselection(ftype, fields, read[1], read[0], params)
+                out[ftype] = any(got.fields.get(k) != fields.get(k) for k in got.fields)
+            except Exception:                                 # noqa: BLE001  (a type that cannot start says no)
+                out[ftype] = False
+        return out
+
     def refs(self, picks):
         try:
             picks = PK.parse_picks(picks)
@@ -590,6 +642,60 @@ class _StudioRefs:
             return PK.result_of(item)
         code, reason = PK.refusal(kind, want, shape=part.shape if kind == "face" and part else None)
         return {"ok": False, "code": code, "reason": reason}
+
+
+class _StudioStart(_StudioRefs):
+    """The picks of a new feature's start (`StudioTab.start_feature`), read against the model as last built: the
+    refs route's pick format (1-based indices), turned into the viewport's keys (0-based) with the state
+    dialog_schema.apply_preselection reads. A pick may leave `want` out. Reads only."""
+
+    def state(self, raw):
+        """(state, [(kind, key)]) for `raw` picks; BadPick for a pick the tab has no such element for."""
+        raw = [dict(p, want=p.get("want", ["element"])) if isinstance(p, dict) else p for p in raw]
+        try:
+            picks = PK.parse_picks(raw)
+        except ValueError as e:
+            raise BadPick(str(e)) from None
+        st = self.st
+        keys, names = [], {}
+        for i, pick in enumerate(picks):
+            kind, pid, at = pick["kind"], pick["part"], f"picks[{i}]"
+            if kind in ("region", "sketch_line", "sketch_point"):
+                sr = st.sketches.get(pid)
+                if sr is None:
+                    raise BadPick(f"{at}.part: no sketch {pid!r} in this tab")
+                if kind == "region":
+                    _need_index(at, "the sketch has regions: it", len(sr.regions), pick["index"])
+                    key = (pid, pick["index"] - 1)
+                else:
+                    if pick["entity"] not in sr.sketch.entities:
+                        raise BadPick(f"{at}.entity: no entity {pick['entity']!r} in sketch {pid!r}")
+                    key = (pid, pick["entity"])
+            elif pid not in st.parts:
+                raise BadPick(f"{at}.part: no part {pid!r} in this tab")
+            elif kind == "part":
+                key = (pid,)
+            else:
+                _need_index(at, f"part {pid!r} has {kind}s: it", self.counts_of(pid, kind), pick["index"])
+                key = (pid, pick["index"] - 1)
+            if pid in st.parts and pid not in names:
+                names[pid] = element_names(SimpleNamespace(shape=st.parts[pid].shape, named=st.named(pid)))
+            keys.append((kind, key))
+        return _StartState(st, names), keys
+
+
+class _StartState:
+    """What apply_preselection reads on the worker: the built parts' shapes and sketches, with the rest of the
+    model state (`named`, `parts`, `vars` ...) as it is."""
+
+    def __init__(self, st, engine_names):
+        self._st = st
+        self.part_shapes = {p: q.shape for p, q in st.parts.items()}
+        self.sketches = st.sketches
+        self.engine_names = engine_names
+
+    def __getattr__(self, name):
+        return getattr(self._st, name)
 
 
 class VariablesTab(_Tab):
@@ -975,6 +1081,12 @@ class InProcessEngine(Engine):
 
     def feature(self, tab, feature):
         return self._get(tab).feature_info(feature)
+
+    def start_feature(self, tab, type, picks):
+        return self._get(tab).start_feature(type, picks)
+
+    def startable(self, tab, picks):
+        return self._get(tab).startable(picks)
 
     def submit_preview(self, tab, feature, type, params):
         """Built here and now (the in-process executor has no queue to supersede in)."""

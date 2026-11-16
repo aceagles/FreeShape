@@ -87,6 +87,15 @@ export const acceptFeatureDialog = (doc: string, tab: string, dialog: string, cl
 export const cancelFeatureDialog = (doc: string, tab: string, dialog: string, client: string) =>
   json<{ cancelled: boolean }>('POST', at(doc, tab, dialog, 'cancel'), { body: {}, headers: as(client) })
 
+/**
+ * The model the dialog picks against (card F3), in the engine wire format, with the committed revision it was built from
+ * (X-Revision): the Part Studio before the edited feature, or at the rollback bar for a new one.
+ */
+export async function fetchBaseBytes(doc: string, tab: string, dialog: string, client: string): Promise<{ bytes: ArrayBuffer; revision: number }> {
+  const res = await request('GET', at(doc, tab, dialog, 'base'), { headers: as(client) })
+  return { bytes: await res.arrayBuffer(), revision: Number(res.headers.get('X-Revision')) }
+}
+
 /** The dialog's newest preview in the engine wire format, with its number (X-Preview); null when there is none (404). */
 export async function fetchPreviewBytes(doc: string, tab: string, dialog: string, client: string): Promise<{ bytes: ArrayBuffer; number: number } | null> {
   try {

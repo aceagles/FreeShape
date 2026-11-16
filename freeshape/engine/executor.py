@@ -183,8 +183,11 @@ class _Tab:
     def outputs(self):
         raise NotImplementedError
 
-    def refs(self, picks):
+    def refs(self, picks, base=None):
         raise EngineError(f"only a Part Studio has elements to pick (this tab is a {self.kind})")
+
+    def base_outputs(self, fid):
+        raise EngineError(f"only a Part Studio has a feature dialog (this tab is a {self.kind})")
 
     def feature_info(self, fid):
         raise EngineError(f"only a Part Studio has features (this tab is a {self.kind})")
@@ -446,13 +449,31 @@ class StudioTab(_Tab):
                 out[ftype] = False
         return out
 
-    def refs(self, picks):
+    def refs(self, picks, base=None):
         try:
             picks = PK.parse_picks(picks)
         except ValueError as e:
             raise BadPick(str(e)) from None
-        reader = _StudioRefs(self.doc)
+        if base is None:
+            st = self.doc.state
+        else:
+            if not isinstance(base, dict) or set(base) != {"feature"} \
+                    or not (base["feature"] is None or isinstance(base["feature"], str)):
+                raise EngineError("base: must be {\"feature\": a feature id or None}")
+            st = self._base_state(base["feature"])
+        reader = _StudioRefs(self.doc, st)
         return [reader.one(i, p) for i, p in enumerate(picks)]
+
+    def _base_state(self, fid):
+        """The model a dialog on feature `fid` picks against (F3): the state before it, or for None (a new feature)
+        the state at the rollback bar, where a new feature goes. Reads only (compute adds to the rebuild cache)."""
+        self.sync()
+        doc = self.doc
+        index = doc.insert_index() if fid is None else doc.features.index(self._feature(fid))
+        return doc.state_before(index)
+
+    def base_outputs(self, fid):
+        return self._outputs_of(self._base_state(fid), {}, {})
 
     def outputs(self):
         self.sync()
@@ -608,11 +629,11 @@ def _need_index(at, what, n, index):
 
 
 class _StudioRefs:
-    """`StudioTab.refs`: the picks read against the model as last built. Reads, never writes: the tab's Document
-    is not touched, nothing is rebuilt and no revision moves."""
+    """`StudioTab.refs`: the picks read against the model as last built, or against `st` (a dialog's base, F3).
+    Reads, never writes: the tab's Document is not touched, nothing is rebuilt and no revision moves."""
 
-    def __init__(self, doc):
-        self.st = doc.state
+    def __init__(self, doc, st=None):
+        self.st = doc.state if st is None else st
         self.counts = {}
 
     def counts_of(self, pid, kind):
@@ -1113,8 +1134,11 @@ class InProcessEngine(Engine):
     def outputs(self, tab):
         return self._get(tab).outputs()
 
-    def refs(self, tab, picks):
-        return self._get(tab).refs(picks)
+    def refs(self, tab, picks, base=None):
+        return self._get(tab).refs(picks, base)
+
+    def base_outputs(self, tab, feature):
+        return self._get(tab).base_outputs(feature)
 
     def sketch_frame(self, tab, plane):
         return self._get(tab).sketch_frame(plane)

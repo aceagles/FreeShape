@@ -4,7 +4,7 @@ import type { ConnectionStore, PreviewMessage } from '../net/connection'
 import { explainError } from '../shell/errors'
 import { decodeOutputs, isStudio } from '../wire'
 import type { StudioOutputs } from '../wire'
-import { acceptFeatureDialog, cancelFeatureDialog, fetchPreviewBytes, openCreateDialog, openFeatureDialog, updateFeatureDialog } from './dialogApi'
+import { acceptFeatureDialog, cancelFeatureDialog, fetchBaseBytes, fetchPreviewBytes, openCreateDialog, openFeatureDialog, updateFeatureDialog } from './dialogApi'
 import type { DialogView, OpenReply } from './dialogApi'
 
 /** The feature types whose preview carries drag arrows (dialog_schema.manipulators). */
@@ -48,6 +48,13 @@ interface Options {
   create?: { type: string; picks: readonly unknown[] }
   /** The preview to draw, or null for the committed model again. */
   onPreview: (p: PreviewState | null) => void
+  /**
+   * The committed revision on screen (card F3): the dialog's base model is fetched again when it moves, since the base is
+   * built from the committed model.
+   */
+  revision?: number | null
+  /** The model the dialog picks against (card F3), to draw while it is open; null when the dialog is over. */
+  onBase?: (base: StudioOutputs | null) => void
   /** The dialog is over. `revision` is the revision an accept made (null for Cancel). */
   onDone: (result: { accepted: boolean; revision: number | null }) => void
 }
@@ -57,7 +64,7 @@ interface Options {
  * follows the previews the server pushes for it, and ends it with Accept or Cancel. Leaving the screen with the dialog
  * still open cancels it on the server.
  */
-export function useFeatureDialog({ store, documentId, documentName, tab, feature, create, onPreview, onDone }: Options): FeatureDialogState {
+export function useFeatureDialog({ store, documentId, documentName, tab, feature, create, onPreview, onDone, revision = null, onBase }: Options): FeatureDialogState {
   const [phase, setPhase] = useState<FeatureDialogState['phase']>('opening')
   const [failure, setFailure] = useState<string | null>(null)
   const [opened, setOpened] = useState<OpenReply | null>(null)
@@ -68,9 +75,9 @@ export function useFeatureDialog({ store, documentId, documentName, tab, feature
   const [problem, setProblem] = useState<string | null>(null)
   const [accepting, setAccepting] = useState(false)
 
-  const latest = useRef({ onPreview, onDone, documentName })
+  const latest = useRef({ onPreview, onDone, onBase, documentName })
   useEffect(() => {
-    latest.current = { onPreview, onDone, documentName }
+    latest.current = { onPreview, onDone, onBase, documentName }
   })
   const dialog = useRef<string | null>(null)
   const over = useRef(false)
@@ -134,8 +141,30 @@ export function useFeatureDialog({ store, documentId, documentName, tab, feature
         latest.current.onPreview(null)
         void cancelFeatureDialog(documentId, tab, did, client).catch(() => {})
       }
+      latest.current.onBase?.(null)
     }
   }, [store, documentId, tab, feature, client, onPreviewMessage])
+
+  // the model picks resolve against (card F3): once the dialog is open, and again after each committed change
+  const openedId = opened?.dialog ?? null
+  useEffect(() => {
+    if (openedId === null) return
+    let stale = false
+    fetchBaseBytes(documentId, tab, openedId, client).then(
+      (got) => {
+        if (stale || over.current) return
+        const out = decodeOutputs(got.bytes)
+        if (isStudio(out)) latest.current.onBase?.(out)
+      },
+      () => {
+        // no base: the view keeps drawing the committed model (or the preview) and a pick says the base is not there yet;
+        // the next committed change asks again. The dialog's own banner stays for what the person did.
+      },
+    )
+    return () => {
+      stale = true
+    }
+  }, [openedId, revision, documentId, tab, client])
 
   const flush = useCallback(async () => {
     const values = pending.current

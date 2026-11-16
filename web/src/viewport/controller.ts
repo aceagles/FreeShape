@@ -28,7 +28,7 @@ export interface ViewportReport extends SceneStats {
   emptyKind: string | null
   /** Test hook: the number of the dialog preview drawn in place of the committed model, or null. */
   preview: number | null
-  /** Test hook: the feature whose result is drawn tinted (a dialog's edited feature), or null; `tintedParts` is how many parts. */
+  /** Test hook: the feature whose result is drawn tinted (a dialog's edited feature), or null; `tintedParts` is how many parts (the ghost's parts while a dialog is open). */
   tintedFeature: string | null
   tintedParts: number
   /** Test hook: the selection store, as a reader sees it (card I4.2). */
@@ -38,10 +38,16 @@ export interface ViewportReport extends SceneStats {
 }
 
 /** An item of the selection as the test hook reports it. */
-/** A dialog's preview drawn in place of the committed outputs: its number, and the feature whose result is tinted. */
+/**
+ * A dialog's preview: its number, and the feature whose result is tinted. Without `ghost` the drawn outputs are the
+ * preview itself, tinted (after Accept, until the revision it made arrives). With `ghost` (card F3, while the dialog is
+ * open) the drawn outputs are the model the dialog picks against, and `ghost` is the preview, drawn over it translucent
+ * and never picked: what the pen hits is what the feature can use.
+ */
 export interface PreviewLook {
   number: number
   feature: string
+  ghost?: StudioOutputs | null
 }
 
 export interface SelectionItemReport {
@@ -141,19 +147,22 @@ export class ViewportController implements NavHost {
     let outputs = shown
     this.previewNumber = preview?.number ?? null
     this.tinted = null
-    if (preview) {
+    const ghost = preview?.ghost ?? null
+    if (preview && !ghost) {
       const t = tintFeature(shown, preview.feature)
       outputs = t.outputs
       this.tinted = { feature: preview.feature, parts: t.tinted }
     }
     // what is selected survives the rebuild when its part and Element name are still there (see SelectionStore.reconcile)
     this.selection.reconcile(outputs)
-    this.manipulators.set(shown.manipulators)
+    // the drag arrows belong to the preview: while a dialog is open that is the ghost over the base (card F3)
+    this.manipulators.set((ghost ?? shown).manipulators)
     if (this.built) {
       this.scene.remove(this.built.root)
       this.built.dispose()
     }
-    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf })
+    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, ghost })
+    if (preview && ghost) this.tinted = { feature: preview.feature, parts: this.built.stats.ghostParts }
     this.scene.add(this.built.root)
     this.picker = new PickIndex(outputs, this.built)
     this.highlighted = this.built.setLook(this.selection.getState().items, this.selection.getAimed())

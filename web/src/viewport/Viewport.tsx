@@ -23,6 +23,7 @@ export function Viewport({ outputs, selection, tabKind = 'studio', preview = nul
   const [failed, setFailed] = useState<string | null>(null)
   const previewNumber = preview?.number ?? null
   const previewFeature = preview?.feature ?? null
+  const previewGhost = preview?.ghost ?? null
 
   useEffect(() => {
     const el = host.current
@@ -49,9 +50,9 @@ export function Viewport({ outputs, selection, tabKind = 'studio', preview = nul
   }, [store])
 
   useEffect(() => {
-    if (outputs) controller.current?.setOutputs(outputs, previewNumber === null ? null : { number: previewNumber, feature: previewFeature! })
+    if (outputs) controller.current?.setOutputs(outputs, previewNumber === null ? null : { number: previewNumber, feature: previewFeature!, ghost: previewGhost })
     else controller.current?.clear(message === null ? null : tabKind)
-  }, [outputs, previewNumber, previewFeature, message, tabKind, failed])
+  }, [outputs, previewNumber, previewFeature, previewGhost, message, tabKind, failed])
 
   return (
     <div ref={host} className="viewport" data-testid="viewport">

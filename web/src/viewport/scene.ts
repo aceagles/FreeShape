@@ -19,7 +19,7 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
 import { MeshBVH } from 'three-mesh-bvh'
-import { sceneColor, sceneDraw } from '../theme/tokens'
+import { color, sceneColor, sceneDraw } from '../theme/tokens'
 import type { Part, PartMesh, StudioOutputs, Vec3 } from '../wire'
 import { edgeColor, rgb } from './colors'
 import type { Bounds, Triple } from './camera'
@@ -51,6 +51,8 @@ export interface SceneStats {
   /** Planes drawn: the three default ones plus the studio's own. */
   planes: number
   axes: number
+  /** Parts of a dialog's preview drawn as the translucent ghost over the model (see SceneOptions.ghost). */
+  ghostParts: number
 }
 
 /** What the hook says before any scene: nothing drawn. */
@@ -67,6 +69,7 @@ export const EMPTY_STATS: SceneStats = {
   triangles: 0,
   planes: 0,
   axes: 0,
+  ghostParts: 0,
 }
 
 export interface SceneOptions {
@@ -74,6 +77,44 @@ export interface SceneOptions {
   keepPlaneHalf?: number | null
   /** Part to draw highlighted. */
   selectedPart?: string | null
+  /**
+   * A feature dialog's preview (card F3), drawn over the model translucent in the accent colour: each of its parts the
+   * drawn outputs do not have as they are (`ghostParts`). It is never picked and never highlighted: while a dialog is
+   * open the drawn outputs are the model the dialog picks against, and the ghost only shows what the feature would make.
+   */
+  ghost?: StudioOutputs | null
+}
+
+/** How opaque the preview ghost is: the model under it still reads, and so does the shape of the result. */
+export const GHOST_ALPHA = 0.45
+/** How far a ghost part's colour goes from its own toward the accent colour. */
+const GHOST_TINT = 0.6
+
+/** Parts of the preview `ghost` that `base` does not have as they are: a new part, or one whose BREP hash differs. */
+export function ghostParts(ghost: StudioOutputs, base: StudioOutputs): Part[] {
+  const had = new Map(base.parts.filter((p) => !p.hidden).map((p) => [p.id, p.hash]))
+  return ghost.parts.filter((p) => !p.hidden && p.mesh !== null && had.get(p.id) !== p.hash)
+}
+
+/** The ghost of one preview part: shaded faces only, translucent, drawn over coincident faces of the model. No BVH, so nothing picks it. */
+function ghostMesh(part: Part, mesh: PartMesh, materials: Material[]): Mesh {
+  const g = new BufferGeometry()
+  g.setAttribute('position', new BufferAttribute(mesh.positions, 3))
+  g.setAttribute('normal', new BufferAttribute(mesh.normals, 3))
+  g.setIndex(new BufferAttribute(mesh.indices, 1))
+  const own = colorOf(part)
+  // the accent as plain 0..1 numbers, like the part colours (as previewTint does), not through three's colour management
+  const accent = [1, 3, 5].map((i) => parseInt(color.accent.slice(i, i + 2), 16) / 255)
+  const c: Rgb = [0, 1, 2].map((i) => own[i]! * (1 - GHOST_TINT) + accent[i]! * GHOST_TINT) as unknown as Rgb
+  const m = shadedMaterial(rgb(c), { alpha: GHOST_ALPHA })
+  // the model's faces are pushed back (shadedMaterial); the ghost is pulled forward so a face both have shows the ghost
+  m.polygonOffsetFactor = -1
+  m.polygonOffsetUnits = -1
+  materials.push(m)
+  const out = new Mesh(g, m)
+  out.name = `ghost:${part.id}`
+  out.renderOrder = 5
+  return out
 }
 
 export interface BuiltScene {
@@ -418,6 +459,17 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   }
   const triad = triadObject(materials)
   root.add(triad)
+  if (opts.ghost) {
+    const ghost = new Group()
+    ghost.name = 'preview-ghost'
+    for (const part of ghostParts(opts.ghost, outputs)) {
+      const m = ghostMesh(part, part.mesh as PartMesh, materials)
+      geometries.push(m.geometry)
+      ghost.add(m)
+    }
+    stats.ghostParts = ghost.children.length
+    root.add(ghost)
+  }
 
   const overlay = new LookOverlay(sources as LookSources)
   root.add(overlay.root)

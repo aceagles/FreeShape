@@ -84,14 +84,14 @@ const grid = (cam: Camera, step: number, margin = 8): Spot[] => {
  * A spot where this kind of pointer picks an edge (and nothing nearer wins): on the edge that the most positions of a
  * coarse scan reach, so a long one in view, at the screen position of the nearest point of the edge.
  */
-export async function edgeSpot(page: Page, _request: APIRequestContext, pointer: PickPointer): Promise<Spot & { edge: number; name: string }> {
+export async function edgeSpot(page: Page, _request: APIRequestContext, pointer: PickPointer, avoid: readonly number[] = []): Promise<Spot & { edge: number; name: string }> {
   const cam = (await settled(page)).camera
   const scan = grid(cam, 14)
   const near = await pickAll(page, scan, pointer, ['edge'])
   const onLine = near.flatMap((h) => (h?.kind === 'edge' ? [{ h, at: project(cam, h.point as P3) }] : []))
   const confirmed = await pickAll(page, onLine.map((c) => c.at), pointer)
   const votes = new Map<number, number>()
-  const good = onLine.filter((c, i) => confirmed[i]?.kind === 'edge' && confirmed[i]?.index === c.h.index && c.at.x > 20 && c.at.y > 20 && c.at.x < cam.width - 20 && c.at.y < cam.height - 20)
+  const good = onLine.filter((c, i) => !avoid.includes(c.h.index) && confirmed[i]?.kind === 'edge' && confirmed[i]?.index === c.h.index && c.at.x > 20 && c.at.y > 20 && c.at.x < cam.width - 20 && c.at.y < cam.height - 20)
   for (const c of good) votes.set(c.h.index, (votes.get(c.h.index) ?? 0) + 1)
   const best = [...votes.entries()].sort((a, b) => b[1] - a[1])[0]
   if (!best) throw new Error('no edge is picked in the view')

@@ -339,7 +339,11 @@ class _Worker:
         if op == "meta":
             return self.meta()
         if op == "refs":                          # a query: reads the tab as last built, changes nothing
+            if isinstance(arg, dict):             # F3: {"picks", "base"}, picks against a dialog's base model
+                return self.engine.refs(self.tab, arg["picks"], arg["base"])
             return self.engine.refs(self.tab, arg)
+        if op == "base":                          # a query: the model a feature dialog picks against (F3)
+            return self.engine.base_outputs(self.tab, arg)
         if op == "feature":                       # a query: one stored feature and the variables, changes nothing
             return self.engine.feature(self.tab, arg)
         if op == "start_feature":                 # a query: a new feature seeded from picks (I6.1)

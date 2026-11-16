@@ -1,13 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { Shell } from '../shell/Shell'
-import { fixture } from '../test/fixtures'
+import { bracketWithPart, fixture } from '../test/fixtures'
 import { makeStore, stubFetch, tab } from '../test/fakes'
 import type { Call } from '../test/fakes'
 import { idOfItem } from '../selection/store'
 import type { SelectionItem, SelectionStore } from '../selection/store'
 import type { Description, FieldSpec, OpenReply, SelItem } from './dialogApi'
-import { afterPick, committedIndex, highlightItems, itemLabel, pickKinds } from './selectionFields'
+import { afterPick, BASE_LOADING, baseIndex, highlightItems, itemLabel, pickKinds, readableError } from './selectionFields'
 
 // Selection fields of the feature dialog (card I5.7) in the whole Shell, against a scripted server: the dialog's edge
 // field is active, a Commit in the view goes to the refs route, and the answer joins the field through a dialog update.
@@ -57,6 +57,8 @@ const open = (fields: FieldSpec[], items: Record<string, SelItem[]> = {}, active
 interface Script {
   open: OpenReply
   refs?: (pick: Record<string, unknown>) => object
+  /** The dialog's base model (card F3) the server sends; the committed bracket when left out, none for null. */
+  base?: ArrayBuffer | null
 }
 
 async function setup(script: Script) {
@@ -70,6 +72,7 @@ async function setup(script: Script) {
     }
     if (c.url.endsWith('/refs')) return { json: { document: 'd', tab: 'T1', revision: 1, items: [script.refs?.((c.body as { picks: Record<string, unknown>[] }).picks[0]!)] } }
     if (c.url.endsWith('/cancel')) return { json: { cancelled: true } }
+    if (c.method === 'GET' && c.url.endsWith('/dialog/did1/base')) return script.base === null ? undefined : { bytes: script.base ?? bytes, headers: { 'X-Revision': String(bracket.revision) } }
     return undefined
   })
   const { store, sock } = makeStore()
@@ -87,6 +90,8 @@ async function setup(script: Script) {
   // the dialog has taken the view over and chosen its field
   await waitFor(() => expect(selection().pickFilter).toBeDefined())
   if (script.open.active !== null || Object.values(script.open.fields).every((l) => l.length === 0)) await waitFor(() => expect(selection().getState().field).toBe(true))
+  // the view draws the dialog's base once it has arrived: picks resolve against it
+  if (script.base !== null) await waitFor(() => expect(screen.getByTestId('shell-viewport').hasAttribute('data-dialog-base')).toBe(true))
   return { calls, calling, selection }
 }
 
@@ -117,7 +122,9 @@ it('a Commit on an edge goes to the refs route, adds a chip with the returned na
   commit(selection, itemAt(1))
   await waitFor(() => expect(calling('/update').length).toBe(1))
   const picked = itemAt(1)
-  expect(calling('/refs')[0]!.body).toEqual({ picks: [{ part: part.id, kind: 'edge', index: picked.index + 1, want: ['edge'] }] })
+  // the pick carries the dialog (card F3): the server resolves it against the model before the feature, which the view draws
+  expect(calling('/refs')[0]!.body).toEqual({ picks: [{ part: part.id, kind: 'edge', index: picked.index + 1, want: ['edge'] }], dialog: 'did1' })
+  expect(calling('/refs')[0]!.headers['X-Client-Id']).toBe('abcdefgh')
   expect(calling('/update')[0]!.body).toEqual({ values: { edges: [stored(0), stored(1)] } })
   await waitFor(() => expect(chips('Edges to fillet')).toEqual([lab(0), lab(1)]))
   // the picks went to the field: the view highlights the field's two edges
@@ -199,16 +206,46 @@ it('maps a field want to view kinds, names a region from its sketch, and highlig
   expect(hit.map((h) => [h.part, h.index, h.name])).toEqual([[part.id, edgeNames[0]![0], edgeNames[0]![1]]])
 })
 
-it('a pick made on a preview is found in the committed model by its Element name, and refused when it is not there', () => {
+it('a pick on the base keeps its index; one made on another model is found in the base by Element name, or refused', () => {
   const drawn = fixture('bracket').outputs // a different object from `bracket`: the view draws another model
   const [index, name] = edgeNames[0]!
-  const here = { ...itemAt(0), index: index + 7 } // the preview counts it differently
-  expect(committedIndex(here, drawn, bracket)).toBe(index)
-  expect(committedIndex({ ...here, name: 'NoSuchName' }, drawn, bracket)).toBeNull()
-  // the same model, no name, or no committed model: the index stands
-  expect(committedIndex(here, bracket, bracket)).toBe(index + 7)
-  expect(committedIndex({ ...here, name: null }, drawn, bracket)).toBe(index + 7)
+  const here = { ...itemAt(0), index: index + 7 } // the other model counts it differently
+  expect(baseIndex(here, drawn, bracket)).toBe(index)
+  expect(baseIndex({ ...here, name: 'NoSuchName' }, drawn, bracket)).toBeNull()
+  // drawn on the base itself: the index stands, with or without a name
+  expect(baseIndex(here, bracket, bracket)).toBe(index + 7)
+  expect(baseIndex({ ...here, name: null }, bracket, bracket)).toBe(index + 7)
+  // off the base and without a name there is nothing to go by; with no base yet there is nothing to resolve against
+  expect(baseIndex({ ...here, name: null }, drawn, bracket)).toBeNull()
+  expect(baseIndex(here, drawn, null)).toBeUndefined()
   expect(name).not.toBe('')
+})
+
+it('in dialog mode the view draws the base model and the chips number its edges; a pick before it arrives is refused', async () => {
+  // a base the server sends that differs from the committed model: its part is named "Base model"
+  const based = await setup({ open: open([sel('edges', 'Edges to fillet')], { edges: [stored(0)] }, null), refs: () => ok(1), base: bracketWithPart({ name: 'Base model' }) })
+  await waitFor(() => expect(chips('Edges to fillet')).toEqual([`Edge ${edgeNames[0]![0] + 1} of Base model`]))
+  // the selection the view draws is matched against the base (the drawn model): the field's edge is highlighted there
+  fireEvent.click(within(group('Edges to fillet')).getByRole('button', { name: /Tap, then pick/ }))
+  await waitFor(() => expect(based.selection().getState().items.map((i) => i.name)).toEqual([edgeNames[0]![1]]))
+  commit(based.selection, itemAt(1))
+  await waitFor(() => expect(based.calling('/refs').length).toBe(1))
+  expect((based.calling('/refs')[0]!.body as { dialog: string }).dialog).toBe('did1')
+  cleanup()
+  vi.unstubAllGlobals()
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  // no base (the server could not send it): nothing goes to the refs route, and the field says why
+  const none = await setup({ open: open([sel('edges', 'Edges to fillet')], {}, 'edges'), refs: () => ok(1), base: null })
+  commit(none.selection, itemAt(1))
+  expect((await screen.findAllByRole('alert')).map((a) => a.textContent)).toContain(BASE_LOADING)
+  expect(none.calling('/refs').length).toBe(0)
+})
+
+it('the banner drops the Element name line of an engine message and keeps the rest', () => {
+  const engine = 'Fillet 1: The edge this feature uses on Part 1 is gone: a change earlier in the model removed or replaced it. Edit this feature and pick the edge again.\nElement: l12;SKT;:HF1:4,E;F2'
+  expect(readableError(engine)).toBe('Fillet 1: The edge this feature uses on Part 1 is gone: a change earlier in the model removed or replaced it. Edit this feature and pick the edge again.')
+  expect(readableError('Extrude 1: the profile is open')).toBe('Extrude 1: the profile is open')
+  expect(readableError(null)).toBeNull()
 })
 
 it('a field item with an encoded Element name shows kind, number and part, never the raw name', async () => {

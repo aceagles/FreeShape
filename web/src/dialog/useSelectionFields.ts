@@ -3,14 +3,19 @@ import type { SelectionItem, SelectionStore } from '../selection/store'
 import { explainError } from '../shell/errors'
 import type { StudioOutputs } from '../wire'
 import type { FieldSpec, SelItem } from './dialogApi'
-import { afterPick, asSent, committedIndex, NOT_IN_MODEL, fetchRefs, highlightItems, itemsOfAnswer, pickKinds, refPick } from './selectionFields'
+import { afterPick, asSent, BASE_LOADING, baseIndex, NOT_IN_MODEL, fetchRefs, highlightItems, itemsOfAnswer, pickKinds, refPick } from './selectionFields'
 
 interface Options {
   selection: SelectionStore
-  /** The committed model: Element names are matched against it to highlight a field's items. */
+  /** The model the view draws (the dialog's base once it has arrived): Element names are matched against it to highlight a field's items. */
   outputs: StudioOutputs | null
-  /** The committed model: a pick made on a preview is found in it by Element name before it goes to the refs route. */
-  committed: StudioOutputs | null
+  /**
+   * The dialog's base (card F3): the model before the edited feature, which the refs route resolves the dialog's picks
+   * against. A pick made on another drawn model is found in it by Element name first. Null until it has arrived.
+   */
+  base: StudioOutputs | null
+  /** The open dialog and the client it belongs to, sent with each pick so the server reads the base; null until it opens. */
+  dialog: { id: string; client: string } | null
   documentId: string
   documentName: string
   tab: string
@@ -44,7 +49,7 @@ export const isReadOnlyField = (spec: FieldSpec): boolean => spec.number === tru
  * filter, a field that takes several items turns Multi on, and each Commit goes to the refs route and then to the field.
  * Leaving the dialog puts the general selection back.
  */
-export function useSelectionFields({ selection, outputs, committed, documentId, documentName, tab, specs, fields, sent, serverActive, set }: Options): SelectionFields {
+export function useSelectionFields({ selection, outputs, base, dialog, documentId, documentName, tab, specs, fields, sent, serverActive, set }: Options): SelectionFields {
   const [activeKey, setActive] = useState<string | null>(null)
   const activeKeyRef = useRef<string | null>(null)
   useEffect(() => {
@@ -54,9 +59,9 @@ export function useSelectionFields({ selection, outputs, committed, documentId, 
   // items this hook sent that the dialog has not answered: a second pick must start from them, not from the server's older list
   const mine = useRef<Record<string, SelItem[]>>({})
   const queue = useRef<Promise<void>>(Promise.resolve())
-  const latest = useRef({ fields, sent, specs, set, outputs, committed, documentName })
+  const latest = useRef({ fields, sent, specs, set, outputs, base, dialog, documentName })
   useEffect(() => {
-    latest.current = { fields, sent, specs, set, outputs, committed, documentName }
+    latest.current = { fields, sent, specs, set, outputs, base, dialog, documentName }
   })
 
   const specOf = useCallback((key: string | null): FieldSpec | null => (key === null ? null : (latest.current.specs?.find((s) => s.kind === 'sel' && s.key === key && s.visible) ?? null)), [])
@@ -107,7 +112,12 @@ export function useSelectionFields({ selection, outputs, committed, documentId, 
       const spec = specOf(key)
       // a release over empty space changes nothing
       if (item === null || key === null || spec === null || isReadOnlyField(spec)) return
-      const index = committedIndex(item, latest.current.outputs, latest.current.committed)
+      const index = baseIndex(item, latest.current.outputs, latest.current.base)
+      const owner = latest.current.dialog
+      if (index === undefined || owner === null) {
+        setRefusal({ key, text: BASE_LOADING })
+        return
+      }
       if (index === null) {
         setRefusal({ key, text: NOT_IN_MODEL })
         return
@@ -116,7 +126,7 @@ export function useSelectionFields({ selection, outputs, committed, documentId, 
       if (body === null) return
       queue.current = queue.current.then(async () => {
         try {
-          const reply = await fetchRefs(documentId, tab, [body])
+          const reply = await fetchRefs(documentId, tab, [body], owner)
           const got = reply.items[0]
           if (got === undefined) return
           if (!got.ok) {

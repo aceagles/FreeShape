@@ -373,10 +373,15 @@ class Engine(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def refs(self, tab, picks) -> list:
+    def refs(self, tab, picks, base=None) -> list:
         """Turn picks into stored references (I4.3). A QUERY: it reads the tab as last built and changes nothing --
         no edit, no revision, no undo step, no rebuild of this tab or of any tab that consumes it. A Part Studio
         only (EngineError for another kind).
+
+        `base` (F3) picks against the model a feature dialog edits on instead of the last build: None (the last
+        build), or {"feature": the id of the stored feature being edited (the model before it, as the desktop's
+        dialog picks against), or None (a new feature: the model at the rollback bar, where it is added)}. The model
+        is `base_outputs(tab, base["feature"])`; EngineError for an unknown feature or a malformed `base`.
 
         `picks` is a list of dicts, each {"part": part id (a sketch feature id for kinds "region", "sketch_line"
         and "sketch_point"), "kind": "face" | "edge" | "vertex" | "part" | "region" | "sketch_line" |
@@ -429,6 +434,14 @@ class Engine(abc.ABC):
         A preview that cannot build is an answer with "ok": False, not an exception. EngineError for an unknown
         feature, a type that does not match, or a tab that is not a Part Studio."""
         return self.submit_preview(tab, feature, type, params)[1].result()
+
+    @abc.abstractmethod
+    def base_outputs(self, tab, feature) -> "StudioOutputs":
+        """The model an open feature dialog picks against (F3), as a StudioOutputs: the Part Studio built up to just
+        before the stored feature `feature` (an id), or, for None (a new feature), up to the rollback bar. A QUERY,
+        like `refs`: nothing changes. Its revision, features, can_undo and can_redo are the committed tab's; `errors`
+        and `error_refs` are empty. `refs(tab, picks, {"feature": feature})` reads this model, with the same
+        element indices. EngineError for an unknown feature or a tab that is not a Part Studio."""
 
     @abc.abstractmethod
     def submit_preview(self, tab, feature, type, params) -> tuple:

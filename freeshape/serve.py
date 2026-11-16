@@ -39,6 +39,7 @@ Routes (an exact table; no part of a request is ever joined to a file path):
     GET  /documents/<id>/tabs/<tab>/features/types[?picks=<JSON>]  feature types, label, standard, can_start (I6.1)
     POST /documents/<id>/tabs/<tab>/dialog/<did>/update|accept|cancel
     GET  /documents/<id>/tabs/<tab>/dialog/<did>/preview         the dialog's newest preview (I5.4), wire format
+    GET  /documents/<id>/tabs/<tab>/dialog/<did>/base            the model the dialog picks against (F3), wire format
     POST /documents/<id>/save                  body: {} ; reply {"saved": [ids]}
     GET  /ws?client=<id>[&document=<id>]       the live channel (WebSocket, JSON text messages; `_Server._socket`)
   On a server over one Document folder the old un-prefixed routes stay as aliases for that Document:
@@ -66,6 +67,12 @@ kind of tab is a 400. A pick is
          part, path, region, element, sketch_line, sketch_point, axis_feature, axis_connector, connector, feature),
          as a dialog field's own `want`. The answer depends on it exactly as on the desktop: a face is a "face"
          reference for a face field, its edges ("edges", a list) for an edge field, a "plane" for a plane field.
+  The body may also carry "dialog": did (F3), the id of a feature dialog open on this tab, with X-Client-Id naming
+  the client that owns it (a 400 without the header; a 404 for a dialog that is not that client's, not on this tab
+  or gone, as the dialog routes answer). The picks then read the model that dialog edits on, the one GET
+  .../dialog/<did>/base sends (the Part Studio before the edited feature; for a new feature, at the rollback bar),
+  instead of the last build: the desktop's dialog picks against that model too, and an element the feature itself
+  made (a fillet's own edges) is not there to pick. Indices, items and codes are as below.
   Up to 200 picks; unknown fields are refused. A malformed body, an unknown part or sketch, or an index out of range
   is a 400 {"error": "picks[2].index: ..."} naming the field. Nothing is partly answered.
 Each item is either
@@ -137,6 +144,13 @@ At most MAX_DIALOGS (8) per client and MAX_DIALOGS_TOTAL (256) in all (409). Bod
           preview still waiting to start (the engine's queue rule), so a fast run of updates sends a `preview` for
           the first and the last, not for each. Accept and cancel discard the preview, and one that finishes after
           them is dropped.
+  base    (F3) GET .../dialog/<did>/base  (X-Client-Id as for every dialog route) 200 the StudioOutputs of the model
+          the dialog picks against, in the engine wire format (the GET .../outputs decoder reads it), with header
+          X-Revision: the committed revision it was built from. It is the Part Studio built up to just before the
+          edited feature (for a new feature: up to the rollback bar), contract.Engine.base_outputs; its `errors` are
+          empty and its feature list is the committed one. A client draws it under the preview while the dialog is
+          open and resolves picks on it (refs with "dialog": did), so what the pen hits is what the feature can use.
+          It is built on each request, from the committed model; fetch it again after a `changed` push.
 
 The live channel (I1.5). `GET /ws?client=<id>` (the id is 8..64 of letters, digits, `_`, `-`; the server makes one
 when it is missing) upgrades after the same Host and Origin checks as every route. `&document=<id>` subscribes to
@@ -292,7 +306,7 @@ _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POS
               "discard-autosave": "POST"}
 _DIALOG_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})"
                           r"(?:/features/(?:([A-Za-z0-9_.-]{1,64})/(dialog)|(dialog|types))"
-                          r"|/dialog/([0-9a-f]{16})/(update|accept|cancel|preview))$")
+                          r"|/dialog/([0-9a-f]{16})/(update|accept|cancel|preview|base))$")
 MAX_PICKS_QUERY = 8000          # longest query string of GET .../features/types
 MAX_DIALOGS = 8                 # open dialogs one client may hold
 MAX_DIALOGS_TOTAL = 256         # and all clients together
@@ -1119,7 +1133,7 @@ class _Server:
         m = _DIALOG_PATH.match(path)
         if m is not None:
             verb = "open" if m.group(4) else ("new" if m.group(5) == "dialog" else m.group(5) or m.group(7))
-            return "dialog." + verb, m.group(1), m.group(2), "GET" if verb in ("preview", "types") else "POST"
+            return "dialog." + verb, m.group(1), m.group(2), "GET" if verb in ("preview", "types", "base") else "POST"
         m = _DOC_PATH.match(path)
         if m is not None:
             doc_id, verb, tab, edge = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -1274,7 +1288,7 @@ class _Server:
         if route == "rename":
             return await self._rename_tab(d, tab, body)
         if route == "refs":
-            return await self._refs(d, tab, body)
+            return await self._refs(d, tab, body, request)
         if route.startswith("dialog."):
             return await self._dialog(d, tab, route[7:], body, request)
         if route == "tab":
@@ -1572,19 +1586,32 @@ class _Server:
         tid, tabs = await self._tabs_changed(d, lambda: d.session.add_tab(kind, name))
         return self._json(201, {"document": d.id, "tab": next(t for t in tabs if t["id"] == tid), "tabs": tabs})
 
-    async def _refs(self, d, tab, body):
-        """POST /documents/<id>/tabs/<tab>/refs {"picks": [...]}: 200 {"document", "tab", "revision", "items": [...]}.
-        See "Refs" in the module docstring. A query, so it is allowed on a read-only Document and never touches
-        the lock, the revision or the dirty flag."""
+    async def _refs(self, d, tab, body, request=None):
+        """POST /documents/<id>/tabs/<tab>/refs {"picks": [...], "dialog"?: did}: 200 {"document", "tab", "revision",
+        "items": [...]}. See "Refs" in the module docstring. A query, so it is allowed on a read-only Document and
+        never touches the lock, the revision or the dirty flag. With "dialog" the picks read that dialog's base
+        model (F3)."""
         from . import picking
-        extra = sorted(str(k) for k in body if k != "picks")
+        extra = sorted(str(k) for k in body if k not in ("picks", "dialog"))
         if extra:
             return self._fail(400, f"{extra[0][:40]}: unknown field")
         try:
             picks = picking.parse_picks(body.get("picks"))
         except ValueError as e:
             return self._fail(400, str(e))
-        items, revision = await self._in_session(d, lambda: (d.session.refs(tab, picks), d.revisions.get(tab)))
+        dialog = None
+        if "dialog" in body:
+            did = body["dialog"]
+            if not isinstance(did, str) or not re.fullmatch(r"[0-9a-f]{16}", did):
+                return self._fail(400, "dialog: must be a dialog id")
+            client = self._dialog_client(request)
+            table = self._client_dialogs(client)
+            hit = None if table is None else table.get(did)
+            if hit is None or hit[0] != d.id or hit[1].tab != tab:
+                return self._fail(404, "not found")                  # another client's dialog is not found either
+            dialog = hit[1]
+        items, revision = await self._in_session(d, lambda: (d.session.refs(tab, picks, dialog),
+                                                            d.revisions.get(tab)))
         return self._json(200, {"document": d.id, "tab": tab, "revision": revision, "items": items})
 
     # ------------------------------------------------------------------ feature dialogs (I5.3)
@@ -1635,6 +1662,9 @@ class _Server:
             if got is None or got["data"] is None:
                 return self._fail(404, "no preview")
             return self._send(200, got["data"], "application/octet-stream", [("X-Preview", str(got["n"]))])
+        if verb == "base":                                       # F3: the model the dialog picks against
+            data, revision = await self._in_session(d, lambda: (d.session.dialog_base(dialog), d.revisions.get(tab)))
+            return self._send(200, data, "application/octet-stream", [("X-Revision", str(revision))])
         if verb == "cancel":
             table.pop(did, None)
             dialog.preview = None                                # the preview goes with the dialog

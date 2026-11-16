@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ConnectionStore } from '../net/connection'
 import type { SelectionStore } from '../selection/store'
 import type { StudioOutputs } from '../wire'
@@ -7,7 +7,7 @@ import { Icon, paths } from '../shell/icons'
 import { CheckRow, ChoiceRow, FlipButton, InfoRow, NumberRow, SelectionRow, TextRow } from './fields'
 import { setManipulatorSink } from './manipulator'
 import { visibleRows } from './schema'
-import { itemLabel } from './selectionFields'
+import { itemLabel, readableError } from './selectionFields'
 import { isReadOnlyField, useSelectionFields } from './useSelectionFields'
 import { useFeatureDialog } from './useFeatureDialog'
 import type { PreviewState } from './useFeatureDialog'
@@ -27,11 +27,15 @@ export interface FeatureDialogProps {
   variables: readonly string[]
   /** The view's selection: while the dialog is open its picks go to the active selection field (see useSelectionFields). */
   selection: SelectionStore
-  /** The model the view draws (the preview while there is one): the names of a field's items are matched against it to highlight them, and a sketch region is named from it. */
+  /** The model the view draws (the dialog's base once it has arrived): the names of a field's items are matched against it to highlight them, and a sketch region is named from it. */
   outputs: StudioOutputs | null
-  /** The committed model, which is what the refs route resolves a pick against. */
-  committed: StudioOutputs | null
+  /** The dialog's base (card F3), the model the refs route resolves the dialog's picks against; null until it has arrived. */
+  base: StudioOutputs | null
+  /** The committed revision on screen: the base is fetched again when it moves. */
+  revision: number | null
   onPreview: (p: PreviewState | null) => void
+  /** The base model to draw while the dialog is open, or null when it is over. */
+  onBase: (base: StudioOutputs | null) => void
   onDone: (result: { accepted: boolean; revision: number | null }) => void
 }
 
@@ -41,12 +45,16 @@ export interface FeatureDialogProps {
  * and, once tapped, takes the picks of the view. Cancel and Accept are in the header. A change is sent as one dialog update and the view draws the preview
  * the server pushes back (see useFeatureDialog and the Shell).
  */
-export function FeatureDialog({ store, documentId, documentName, tab, feature, create, variables, selection, outputs, committed, onPreview, onDone }: FeatureDialogProps) {
-  const dlg = useFeatureDialog({ store, documentId, documentName, tab, feature: feature.id, create, onPreview, onDone })
+export function FeatureDialog({ store, documentId, documentName, tab, feature, create, variables, selection, outputs, base, revision, onPreview, onBase, onDone }: FeatureDialogProps) {
+  const dlg = useFeatureDialog({ store, documentId, documentName, tab, feature: feature.id, create, onPreview, onDone, revision, onBase })
+  const client = store.getState().client
+  const dialogId = dlg.opened?.dialog ?? null
+  const owner = useMemo(() => (dialogId === null ? null : { id: dialogId, client }), [dialogId, client])
   const sel = useSelectionFields({
     selection,
     outputs,
-    committed,
+    base,
+    dialog: owner,
     documentId,
     documentName,
     tab,
@@ -104,12 +112,12 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
         )}
         {dlg.previewError && (
           <div className="dlg-banner" role="alert" data-testid="preview-error">
-            {dlg.previewError}
+            {readableError(dlg.previewError)}
           </div>
         )}
         {dlg.problem && (
           <div className="dlg-banner" role="alert" data-testid="dialog-problem">
-            {dlg.problem}
+            {readableError(dlg.problem)}
           </div>
         )}
       </div>
@@ -154,7 +162,7 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
                     key={`${key}:${i}`}
                     spec={spec}
                     items={sel.items(key)}
-                    label={(item) => itemLabel(item, outputs, committed)}
+                    label={(item) => itemLabel(item, outputs, base)}
                     active={sel.activeKey === key}
                     readOnly={isReadOnlyField(spec)}
                     message={sel.refusal?.key === key ? sel.refusal.text : null}

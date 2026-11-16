@@ -48,10 +48,15 @@ async function openFilletField(page: Page): Promise<void> {
   await field.getByTestId('sel-chip').first().waitFor()
   await field.getByRole('button', { name: /Tap, then pick/ }).click()
   await page.locator('[data-testid^="sel-"][data-active]').first().waitFor()
+  // the view draws the model before Fillet 1 (card F3): picks resolve against it
+  await page.locator('[data-dialog-base]').waitFor()
   await settled(page)
 }
+/** Pick an edge the field does not hold yet (a pick of one it holds would take it out). */
 async function penPickEdge(page: Page): Promise<void> {
-  const spot = await edgeSpot(page, page.request, 'pen')
+  const chips = await page.locator('[data-testid^="sel-"]').first().getByTestId('sel-chip').allTextContents()
+  const held = chips.flatMap((t) => /^Edge (\d+) of /.exec(t)?.slice(1).map((n) => Number(n) - 1) ?? [])
+  const spot = await edgeSpot(page, page.request, 'pen', held)
   await sendPointer(page, [{ phase: 'down', kind: 'pen', id: 7, x: spot.x, y: spot.y }])
   await sendPointer(page, [{ phase: 'up', kind: 'pen', id: 7, x: spot.x, y: spot.y, pressure: 0 }])
 }

@@ -41,27 +41,53 @@ export function refPick(item: SelectionItem, want: readonly string[]): Record<st
   return { part: item.part, kind: item.kind, index: item.index + 1, want }
 }
 
-export const NOT_IN_MODEL = 'That element is not in the model as it stands, so it cannot be picked here.'
+export const NOT_IN_MODEL = 'That element is not in the model this feature is built on, so it cannot be picked here.'
+export const BASE_LOADING = 'The model this feature is built on has not arrived yet, so nothing can be picked for it. Pick again in a moment.'
 
 /**
- * The 0-based index of the picked element in the committed model, which is what the refs route counts in. The view draws
- * a preview while a dialog is open, and its indexes can differ from the committed model's: the element is found there by
- * its Element name. Null when the committed model has no such element (the feature itself made or consumed it). An element
- * without a name keeps its index: there is nothing else to go by.
+ * The 0-based index of the picked element in the dialog's base model (card F3: the model before the edited feature, or
+ * at the rollback bar for a new one), which is what the refs route counts in when it is sent the dialog id. The view
+ * draws the base while it has it, so a pick there keeps its index. A pick made on anything else (the committed model,
+ * before the base has arrived) is found in the base by its Element name: null when the base has no such element (the
+ * feature itself made it), and `undefined` when there is no base yet. An element without a name keeps its index only on
+ * the base itself: elsewhere there is nothing to go by.
  */
-export function committedIndex(item: SelectionItem, drawn: StudioOutputs | null, committed: StudioOutputs | null): number | null {
-  if (drawn === committed || committed === null || item.name === null || item.part === null || (item.kind !== 'face' && item.kind !== 'edge' && item.kind !== 'vertex')) return item.index
-  const part = committed.parts.find((p) => p.id === item.part)
+export function baseIndex(item: SelectionItem, drawn: StudioOutputs | null, base: StudioOutputs | null): number | null | undefined {
+  if (base === null) return undefined
+  if (drawn === base || item.kind === 'part') return item.index
+  if (item.name === null || item.part === null || (item.kind !== 'face' && item.kind !== 'edge' && item.kind !== 'vertex')) return null
+  const part = base.parts.find((p) => p.id === item.part)
   if (!part) return null
   for (const [i, n] of part.names[item.kind]) if (n === item.name) return i
   return null
+}
+
+/**
+ * An engine message as the dialog's banner shows it. The engine puts the lost element's Element name on a line of its own
+ * ("\nElement: l12;SKT;..."): an encoded id for bug reports, which the desktop shows and a person cannot read. The banner
+ * drops that line (the first line already says which kind of element on which part); the engine's text is unchanged.
+ */
+export function readableError(text: string): string
+export function readableError(text: string | null): string | null
+export function readableError(text: string | null): string | null {
+  if (text === null) return null
+  return text
+    .split('\n')
+    .filter((line) => !/^\s*Element:/.test(line))
+    .join('\n')
+    .trim()
 }
 
 export interface RefsReply {
   items: Array<{ ok: true; kind: string; ref: unknown; name: string | null } | { ok: false; code: string; reason: string }>
 }
 
-export const fetchRefs = (doc: string, tab: string, picks: Record<string, unknown>[]) => json<RefsReply>('POST', `${tabPath(doc, tab)}/refs`, { body: { picks } })
+/**
+ * Picks to stored references. With `dialog` (card F3) the server resolves them against that dialog's base model, which
+ * is what the view draws while the dialog is open; the dialog belongs to `client`, sent as X-Client-Id.
+ */
+export const fetchRefs = (doc: string, tab: string, picks: Record<string, unknown>[], dialog: { id: string; client: string } | null = null) =>
+  json<RefsReply>('POST', `${tabPath(doc, tab)}/refs`, dialog === null ? { body: { picks } } : { body: { picks, dialog: dialog.id }, headers: { 'X-Client-Id': dialog.client } })
 
 /**
  * A refs answer as the items a field holds. A face picked for an edge field comes back as kind "edges" with a list of
@@ -151,7 +177,7 @@ export function itemLabel(item: SelItem, outputs: StudioOutputs | null, fallback
   const word = KIND_WORD[item.kind ?? ''] ?? item.kind ?? 'Item'
   // an element reads "Edge 7 of Part 1": its 1-based index in the drawn part and the part's name. The Element name is an
   // encoded id for matching and is never shown; an item the drawn model has no such name for is just its kind
-  // (the committed model is tried when the drawn one, a preview, lacks the element)
+  // (the fallback model is tried when the drawn one lacks the element)
   for (const model of [outputs, fallback]) {
     if (!item.name || !model || (item.kind !== 'face' && item.kind !== 'edge' && item.kind !== 'vertex')) continue
     const owner = ref?.['part']

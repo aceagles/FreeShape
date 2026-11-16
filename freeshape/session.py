@@ -491,14 +491,19 @@ class DocumentSession:
         self._note(tab, out)
         return out
 
-    def refs(self, tab, picks):
+    def refs(self, tab, picks, dialog=None):
         """Picks turned into stored references by the tab's Part Studio (`engine.Engine.refs`): one answer per pick,
         in order. A query: it changes nothing (no edit, no revision, no undo step, not dirty). Raises SessionError
         for an unknown tab, a tab that is not a Part Studio, or a pick that is malformed or names a part, sketch
-        or element the tab does not have (the message names the field, "picks[2].index: ...")."""
+        or element the tab does not have (the message names the field, "picks[2].index: ...").
+        With `dialog` (a FeatureDialog on `tab`, F3) the picks read the model the dialog edits on (`dialog_base`),
+        not the last build."""
         self._need_open(tab)
+        base = None if dialog is None else {"feature": dialog.fid}
         try:
-            return self._retry(tab, lambda: self._eng.refs(tab, picks))
+            if base is None:
+                return self._retry(tab, lambda: self._eng.refs(tab, picks))
+            return self._retry(tab, lambda: self._eng.refs(tab, picks, base))
         except BadPick as e:
             raise SessionError(str(e)) from e
         except EngineError as e:
@@ -549,6 +554,17 @@ class DocumentSession:
                                                                              feature["params"]))
         except EngineError as e:
             raise SessionError(f"tab {dialog.tab!r}: {e}") from e
+
+    def dialog_base(self, dialog):
+        """The model `dialog` picks against (F3, `engine.Engine.base_outputs`): the Part Studio before the feature it
+        edits, or at the rollback bar for a new feature, as engine wire bytes. A query: nothing changes. Raises
+        SessionError for a tab that cannot answer or a feature that is gone."""
+        self._need_open(dialog.tab)
+        try:
+            out = self._retry(dialog.tab, lambda: self._eng.base_outputs(dialog.tab, dialog.fid))
+        except EngineError as e:
+            raise SessionError(f"tab {dialog.tab!r}: {e}") from e
+        return wire.to_wire(out)
 
     def outputs_wire(self, tab):
         """`outputs(tab)` as engine wire bytes (freeshape.engine.wire), what a browser client decodes."""

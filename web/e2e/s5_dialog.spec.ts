@@ -90,29 +90,30 @@ test('Fillet 1: tap the edge field, pick another edge with the pen, see its chip
   const chips = field.getByTestId('sel-chip')
   await expect(chips.first()).toBeVisible()
   const rev = (await readViewport(page)).revision!
-  const had = await chips.allTextContents()
   // tapping the field makes it the active one: the view now picks edges for it
   await field.getByRole('button', { name: /Tap, then pick/ }).click()
   await expect(field).toHaveAttribute('data-active', '')
   expect((await readViewport(page)).selection.multi).toBe(true)
-  const spot = await edgeSpot(page, request, 'pen')
+  // the view draws the model before Fillet 1 (card F3), and picks resolve against it: the field's own edge is there
+  await page.locator('[data-dialog-base]').waitFor()
+  const had = await chips.allTextContents()
+  // a stored reference without an Element name (the bracket's own, an older file's) reads just "Edge"
+  for (const t of had) expect(t).toMatch(/^(Edge \d+ of .+|Edge)$/)
+  const held = had.flatMap((t) => /^Edge (\d+) of /.exec(t)?.slice(1).map((n) => Number(n) - 1) ?? [])
+  // an edge the field does not hold (a pick of one it holds would take it out)
+  const spot = await edgeSpot(page, request, 'pen', held)
   const before = (await readViewport(page)).preview ?? 0
-  const penPick = async () => {
-    await sendPointer(page, [{ phase: 'down', kind: 'pen', id: 7, x: spot.x, y: spot.y }])
-    await sendPointer(page, [{ phase: 'up', kind: 'pen', id: 7, x: spot.x, y: spot.y, pressure: 0 }])
-  }
-  await penPick()
-  // a pick of an edge the field already holds takes it out: pick again and it is back
-  if (had.includes(spot.name)) {
-    await expect(chips).toHaveCount(had.length - 1)
-    await penPick()
-  }
-  await expect(chips).toHaveCount(had.includes(spot.name) ? had.length : had.length + 1)
-  // chips read "Edge 7 of Part 1", never the encoded Element name
+  await sendPointer(page, [{ phase: 'down', kind: 'pen', id: 7, x: spot.x, y: spot.y }])
+  await sendPointer(page, [{ phase: 'up', kind: 'pen', id: 7, x: spot.x, y: spot.y, pressure: 0 }])
+  await expect(chips).toHaveCount(had.length + 1)
+  // chips read "Edge 7 of Part 1", never the encoded Element name; the new one numbers the edge as the view drew it
   for (const t of await chips.allTextContents()) expect(t).toMatch(/^(Edge \d+ of .+|Edge)$/)
+  expect((await chips.allTextContents()).some((t) => t.startsWith(`Edge ${spot.edge + 1} of `))).toBe(true)
   // the pick went to the field, not to the general selection: the chip of the view counts the field's items
   await page.waitForFunction((n) => (window.__freeshapeViewport?.preview ?? 0) > n, before)
   expect((await readViewport(page)).tintedFeature).not.toBeNull()
+  // the edge exists in the model the feature is rebuilt on: the preview builds, and no Element name is shown
+  await expect(page.getByTestId('preview-error')).toHaveCount(0)
   expect(await revisionOnServer(page)).toBe(rev)
   await header(page, 'Accept').click()
   await expect(page.getByRole('dialog')).toHaveCount(0)

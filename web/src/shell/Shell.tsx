@@ -24,6 +24,8 @@ import type { Pick } from '../tools/picks'
 import { ToolStrip } from '../tools/ToolStrip'
 import { stateOf, useToolTypes } from '../tools/useToolTypes'
 import { StudioViewport } from '../viewport/StudioViewport'
+import type { PreviewLook } from '../viewport/controller'
+import type { StudioOutputs } from '../wire'
 import { DialogArea } from './DialogArea'
 import { explainError } from './errors'
 import { DebugPopover, useDebugPanel } from './LinkStatus'
@@ -91,6 +93,8 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   // the feature dialog open over the panel (the dialog area is its own: it carries Cancel and Accept), and the preview it drew
   const [editing, setEditing] = useState<{ tab: string; id: string; name: string; create?: { type: string; picks: Pick[] } } | null>(null)
   const [preview, setPreview] = useState<(PreviewState & { feature: string }) | null>(null)
+  // the model the open dialog picks against (card F3): drawn while the dialog is open, with its preview as a ghost over it
+  const [dialogBase, setDialogBase] = useState<StudioOutputs | null>(null)
   // after Accept the preview stays drawn until the revision it made arrives, so the view does not flash the old model
   const [holdUntil, setHoldUntil] = useState<number | null>(null)
   const debug = useDebugPanel()
@@ -172,6 +176,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
       if (currentTab === null || dialog !== null) return
       setCollapsed(false)
       setPreview(null)
+      setDialogBase(null)
       setHoldUntil(null)
       setEditing({ tab: currentTab, id: feature.id, name: feature.name })
     },
@@ -179,6 +184,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   )
   const endEdit = useCallback((r: { accepted: boolean; revision: number | null }) => {
     setEditing(null)
+    setDialogBase(null)
     if (r.accepted && r.revision !== null) setHoldUntil(r.revision)
     else setPreview(null)
   }, [])
@@ -198,6 +204,11 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
     [currentTab, tabKind, editing, dialog, toolTypes, picks, selection],
   )
   const showPreview = preview !== null && (editingHere !== null || (holdUntil !== null && (studio?.revision ?? 0) < holdUntil))
+  // while a dialog is open the view draws its base (what picks resolve against) and the preview as a ghost over it;
+  // until the base has arrived, and after Accept, the preview itself is drawn as before
+  const base = editingHere !== null && dialogBase !== null && dialogBase.tab === editingHere.tab ? dialogBase : null
+  const drawn = base ?? (showPreview ? preview.outputs : studio)
+  const look: PreviewLook | null = showPreview ? { number: preview.number, feature: preview.feature, ghost: base === null ? null : preview.outputs } : null
   const variables = useMemo(() => Object.keys(studio?.variables ?? {}).map((n) => n.replace(/^#/, '')), [studio])
   const assembly = useAssembly({ store, tab: currentTab, tabKind, readOnly, documentName: name, onError: failText })
 
@@ -333,9 +344,11 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
                 create={editingHere.create}
                 variables={variables}
                 selection={selection}
-                outputs={showPreview ? preview.outputs : studio}
-                committed={studio}
+                outputs={drawn}
+                base={base}
+                revision={studio?.revision ?? null}
                 onPreview={(p) => setPreview(p === null ? null : { ...p, feature: editingHere.id })}
+                onBase={setDialogBase}
                 onDone={endEdit}
               />
             )}
@@ -345,13 +358,14 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
               </DialogArea>
             )}
           </div>
-          <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport">
+          {/* data-dialog-base: the view draws an open dialog's base model, the one its picks resolve against (a test hook) */}
+          <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport" data-dialog-base={base !== null ? '' : undefined}>
             {tabKind === 'assembly' ? (
               <AssemblyViewport outputs={assembly.outputs} selection={selection} drag={assembly.edits.drag} />
             ) : (
               <StudioViewport
-                outputs={showPreview ? preview.outputs : studio}
-                preview={showPreview ? { number: preview.number, feature: preview.feature } : null}
+                outputs={drawn}
+                preview={look}
                 selection={selection}
                 tabKind={tabKind}
               />

@@ -595,10 +595,16 @@ class ProcessEngine(Engine):
     def outputs(self, tab):
         return self._call(self._get(tab), "outputs")
 
-    def refs(self, tab, picks):
+    def refs(self, tab, picks, base=None):
         """Picks turned into stored references by the tab's worker (contract.Engine.refs). A query: no edit is
         logged, no revision moves and nothing is rebuilt."""
-        return self._call(self._get(tab), "refs", picks)
+        if base is None:
+            return self._call(self._get(tab), "refs", picks)
+        return self._call(self._get(tab), "refs", {"picks": picks, "base": base})
+
+    def base_outputs(self, tab, feature):
+        """The model a feature dialog picks against, from the tab's worker (contract.Engine.base_outputs). A query."""
+        return self._call(self._get(tab), "base", feature)
 
     def feature(self, tab, feature):
         """One stored feature and the studio's variables (contract.Engine.feature). A query."""

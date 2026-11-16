@@ -7,7 +7,8 @@ const t = (id: string, label: string): ToolDef => ({ id, label, icon: id })
 /**
  * The sketch strip, in the layout's order (plans/browser-client/layout-mock/Main.dc.html, sketch and constrain states):
  * Select, a Draw group, Dimension, a Constrain group, Construct and Delete, then the user's pins. Each tool's icon is its
- * stroke path in tools/inlinePaths.ts. The Constrain list is two columns because it has more than seven rows.
+ * stroke path in tools/inlinePaths.ts. The Constrain list is two columns because it has more than seven rows. It has the
+ * twelve tools the server has: the mock's 13th, Point on, is Coincident on a point and a curve there.
  */
 export const SKETCH_STRIP: readonly StripDef[] = [
   { kind: 'tool', tool: t('select', 'Select') },
@@ -31,7 +32,6 @@ export const SKETCH_STRIP: readonly StripDef[] = [
       t('symmetric', 'Symmetric'),
       t('fix', 'Fix'),
       t('normal', 'Normal'),
-      t('point_on', 'Point on'),
     ],
   },
   { kind: 'tool', tool: t('construct', 'Construct'), gap: space.s10 },

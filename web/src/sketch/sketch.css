@@ -116,3 +116,15 @@
   text-align: center;
   line-height: 1.1;
 }
+
+/* The refused-constraint note sits on its own row under the chips, so it never squeezes them or runs under the view cube. */
+.constraint-note {
+  position: absolute;
+  top: calc(100% + var(--sp-8));
+  left: 0;
+  width: max-content;
+  max-width: min(420px, 60vw);
+  height: auto;
+  min-height: 44px;
+  padding-block: var(--sp-8);
+}

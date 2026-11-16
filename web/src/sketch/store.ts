@@ -173,7 +173,10 @@ export class SketchStore {
         })
         return
       }
+      case 'sketch.constrained':
       case 'sketch.changed': {
+        // a refused constraint changes nothing; an accepted one is a whole sketch like any step's answer
+        if (m['type'] === 'sketch.constrained' && m['accepted'] === false) return
         const view = parseSketchView(m, this.frame ?? undefined)
         if (!view || !this.state.open) return
         // an item the step removed is no longer selected

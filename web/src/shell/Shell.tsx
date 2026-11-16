@@ -26,6 +26,8 @@ import { stateOf, useToolTypes } from '../tools/useToolTypes'
 import { SketchBar } from '../sketch/SketchBar'
 import { SketchChip } from '../sketch/SketchChip'
 import { SketchStore } from '../sketch/store'
+import { ConstraintNote } from '../sketch/ConstraintNote'
+import { ConstraintStore, attachDeleteKey, isConstrainTool } from '../sketch/constraints'
 import type { SketchTarget } from '../sketch/store'
 import { SKETCH_STRIP, sketchToolState } from '../sketch/strip'
 import { StudioViewport } from '../viewport/StudioViewport'
@@ -115,6 +117,17 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
     return () => sketchStore.detach()
   }, [sketchStore])
   const sketch = useSyncExternalStore(sketchStore.subscribe, sketchStore.getState)
+  // the Constrain group: which tools fit the selection (the server says), and Delete on a selected constraint
+  const [constraints] = useState(() => new ConstraintStore(sketchStore, store))
+  useEffect(() => {
+    constraints.attach()
+    const off = attachDeleteKey(constraints)
+    return () => {
+      off()
+      constraints.detach()
+    }
+  }, [constraints])
+  const constraintState = useSyncExternalStore(constraints.subscribe, constraints.getState)
   const [modal, setModal] = useState<Modal | null>(null)
   const [saving, setSaving] = useState(false)
   const width = useWindowWidth()
@@ -331,10 +344,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           <ToolStrip
             strip="sketch"
             defs={SKETCH_STRIP}
-            stateOf={sketchToolState}
+            stateOf={(id) => (isConstrainTool(id) ? (constraintState.enabled.has(id) ? 'ok' : 'dimmed') : sketchToolState(id))}
             width={width}
             active="select"
-            onStart={() => {}}
+            onStart={(id) => constraints.apply(id)}
             trailing={
               <SketchBar
                 nav={sketch.nav}
@@ -422,6 +435,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             )}
             <div className="chip-slot" data-testid="chip-slot" data-region="selection-chip">
               {sketchHere ? <SketchChip store={sketchStore} /> : <SelectionChip store={selection} />}
+              {sketchHere && <ConstraintNote store={constraints} />}
             </div>
           </div>
         </div>

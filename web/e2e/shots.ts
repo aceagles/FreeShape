@@ -979,6 +979,35 @@ export const shots: ShotState[] = [
     after: closeAllDiscard,
   },
   {
+    name: 'sketch-constrain-fits',
+    mock: 'constrain', // a line selected: the Constrain group open, the tools the server says fit are on and the rest dimmed
+    steps: async (page) => {
+      const data = sketchData(page)
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await tapSketchLine(page, data, data.line(0))
+      await page.locator('.tool-strip').getByRole('button', { name: /^Constrain/ }).click()
+      await page.getByRole('menu', { name: 'Constrain' }).waitFor()
+      await page.locator('.group-row[data-state="ok"]').first().waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-constrain-conflict',
+    mock: 'sketch', // Vertical on a line held horizontal: refused, the message beside the status, the sketch as it was
+    steps: async (page) => {
+      const data = sketchData(page)
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await tapSketchLine(page, data, data.lineWith('horizontal'))
+      await page.locator('.tool-strip').getByRole('button', { name: /^Constrain/ }).click()
+      await page.locator('.group-row[data-tool="vertical"][data-state="ok"]').waitFor()
+      await page.locator('.group-row[data-tool="vertical"] .group-tool').click()
+      await page.getByTestId('constraint-note').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
     name: 'sketch-twisted',
     mock: 'sketch', // 2D after a two-finger twist of 30 degrees: the sketch turned on screen, the camera still square to the plane
     steps: async (page) => {
@@ -1015,6 +1044,28 @@ export const shots: ShotState[] = [
     after: closeAllDiscard,
   },
 ]
+
+/** Listen for the open sketch's data (call before it opens); `lineWith(type)` is the first line a constraint of that type holds. */
+function sketchData(page: Page) {
+  let opened: { entities: Record<string, { p1?: string; p2?: string }>; constraints: { type: string; refs: string[] }[] } | null = null
+  page.on('websocket', (ws) =>
+    ws.on('framereceived', (f) => {
+      if (typeof f.payload !== 'string' || !f.payload.includes('"sketch.opened"')) return
+      opened = (JSON.parse(f.payload) as { sketch: NonNullable<typeof opened> }).sketch
+    }),
+  )
+  return { lineWith: (type: string): string | undefined => opened?.constraints.find((c) => c.type === type)?.refs[0], line: (i: number): string | undefined => Object.keys(opened?.entities ?? {})[i], ends: (id: string) => [opened!.entities[id]!.p1!, opened!.entities[id]!.p2!] as const }
+}
+
+/** Tap the sketch's line `id` a quarter along it (the middle is where a constraint's glyph sits) and wait for it to be selected. */
+async function tapSketchLine(page: Page, data: ReturnType<typeof sketchData>, id: string | undefined): Promise<void> {
+  if (id === undefined) throw new Error('no such line in the sketch')
+  const [p1, p2] = data.ends(id)
+  const a = await screenOf(page, 'point', p1)
+  const b = await screenOf(page, 'point', p2)
+  await fingerTap(page, { x: a.x + (b.x - a.x) * 0.25, y: a.y + (b.y - a.y) * 0.25 })
+  await page.getByTestId('selection-count').filter({ hasText: '1 item' }).waitFor()
+}
 
 /** Pin tools through their rows' pin buttons: [group name, tool label] each; the strip is left with no list open. */
 async function pinTools(page: Page, tools: Array<[string, string]>): Promise<void> {

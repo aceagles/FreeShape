@@ -94,6 +94,7 @@ QFrame#sep {{ background: {g['BORDER']}; max-width: 1px; min-width: 1px; margin:
 
 QWidget#leftpanel {{ background: {g['PANEL']}; border-right: 1px solid {g['BORDER']}; }}
 QLabel#sectionHeader {{ font-weight: 700; padding: 8px 10px 4px 10px; color: {g['TEXT']}; }}
+QToolButton#sectionHeader {{ font-weight: 700; padding: 6px 10px 4px 4px; color: {g['TEXT']}; border: none; }}
 QLineEdit#filter {{ border: 1px solid {g['BORDER']}; border-radius: 4px; padding: 4px 6px; margin: 0 8px 4px 8px; background: {g['PANEL_ALT']}; }}
 QListWidget {{ border: none; background: {g['PANEL']}; outline: 0; }}
 QListWidget::item {{ padding: 3px 6px; border-radius: 3px; }}

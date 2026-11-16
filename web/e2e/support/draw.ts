@@ -49,12 +49,12 @@ export async function chooseWithRing(page: Page, id: string): Promise<void> {
 
 /**
  * A spot in the view where the pen picks a sketch region (no edge or vertex of the part wins there), found over the
- * rectangle u -28 to -12, v -8 to 8 of a sketch on the Top plane, in whatever view the page shows now.
+ * rectangle `u0`..`u1` by `v0`..`v1` (default u -28 to -12, v -8 to 8) of a sketch on the Top plane, in whatever view the page shows now.
  */
-export async function regionSpot(page: Page): Promise<Spot> {
+export async function regionSpot(page: Page, over: { u0: number; u1: number; v0: number; v1: number } = { u0: -28, u1: -12, v0: -8, v1: 8 }): Promise<Spot> {
   const cam = (await settled(page)).camera
   const spots: Spot[] = []
-  for (let u = -28; u <= -12; u += 4) for (let v = -8; v <= 8; v += 4) spots.push(project(cam, [u, v, 0]))
+  for (let i = 0; i <= 4; i++) for (let j = 0; j <= 4; j++) spots.push(project(cam, [over.u0 + ((over.u1 - over.u0) * i) / 4, over.v0 + ((over.v1 - over.v0) * j) / 4, 0]))
   const hits = await page.evaluate((g) => g.map((s) => window.__freeshapeViewport!.pickAt(s.x, s.y, 'pen')), spots)
   const i = hits.findIndex((h) => h?.kind === 'region')
   if (i < 0) throw new Error('no spot of the view picks the sketch region')

@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { openApp } from './support/app.ts'
+import { dropFixture, FIXTURE, makeFixture } from './support/create.ts'
 import { closeAll, discardAutosaveOf, holdLockClosed, idOf, releaseLock } from './support/docs.ts'
 import { longPressTab } from './support/tabs.ts'
 import { dragRollbackTo, featureMenu, featureRow, longPressFeature } from './support/features.ts'
@@ -1429,6 +1430,32 @@ export const shots: ShotState[] = [
       await page.getByTestId('pad').waitFor()
     },
     after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-3d-line',
+    mock: 'sketch', // the 3D toggle on and the view tipped: a line drawn with the pen lies in the sketch plane, the grid and axes tipped with it
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      await page.getByTestId('nav-3d').click()
+      const c = await canvasCentre(page)
+      await fingerDrag(page, c, { x: c.x + 80, y: c.y - 40 })
+      await chooseWithRing(page, 'line')
+      await place(page, { x: c.x - 120, y: c.y + 60 })
+      await place(page, { x: c.x + 20, y: c.y + 110 })
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 1)
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'part-from-nothing',
+    mock: 'browsing', // a Document made from nothing: its sketch and the extrusion of its region in the panel, the solid in the view
+    steps: async (page) => {
+      await makeFixture(page.request, { solid: true })
+      await openApp(page, { document: FIXTURE })
+    },
+    after: async (page) => dropFixture(page.request),
   },
 ]
 

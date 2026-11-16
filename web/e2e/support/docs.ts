@@ -59,3 +59,23 @@ export async function discardAutosaveOf(request: APIRequestContext, name: string
   await request.post(`/documents/${id}/discard-autosave`, { data: {} })
   await request.post(`/documents/${id}/close`, { data: { discard: true } })
 }
+
+export interface Measured {
+  id: string
+  volume: number
+  faces: number
+  /** The straight edges, by their 1-based index among the part's edges. */
+  edges: { index: number; centre: [number, number, number]; length: number; direction: [number, number, number] }[]
+}
+/**
+ * The parts of a tab as the kernel measures them (the volume route of the specs: the server has no such route, and
+ * the client never decodes a model). The tab's /outputs body goes to scripts/web/doc_tools.py measure.
+ */
+export async function measureTab(request: APIRequestContext, name: string, tab = 'T1'): Promise<Measured[]> {
+  const py = process.env.FS_PY
+  if (!py) throw new Error('FS_PY is not set: run this through scripts/web/e2e.sh or shots.sh')
+  const res = await request.get(`/documents/${await idOf(request, name)}/tabs/${tab}/outputs`)
+  if (!res.ok()) throw new Error(`outputs failed: ${res.status()}`)
+  const got = execFileSync(py, ['scripts/web/doc_tools.py', 'measure'], { cwd: repo, input: await res.body(), timeout: 120_000, maxBuffer: 64 << 20, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } })
+  return (JSON.parse(got.toString()) as { parts: Measured[] }).parts
+}

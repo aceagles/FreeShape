@@ -46,10 +46,15 @@ test('the pen drags a point directly: it follows the pointer, the solve decides,
   const p2 = await screenOf(page, 'point', 'p2')
   const origin = await screenOf(page, 'point', 'origin')
   await penStroke(page, p2, { x: p2.x + 60, y: p2.y + 40 }, { moves: 10 })
-  // p2 keeps its y (the bottom edge is horizontal) and ends up farther right
-  await expect.poll(async () => (await screenOf(page, 'point', 'p2')).x).toBeGreaterThan(p2.x + 30)
-  const after = await screenOf(page, 'point', 'p2')
-  expect(Math.abs(after.y - p2.y)).toBeLessThan(1)
+  // p2 keeps its y (the bottom edge is horizontal) and ends up farther right. While the pen is down the point is drawn
+  // where the pointer is (60 px right, 40 px down), and only the server's answer puts it where the solve decides, so the
+  // test waits for the settled place: farther right AND back on its y. Reading y as soon as x had moved raced that answer.
+  await expect
+    .poll(async () => {
+      const at = await screenOf(page, 'point', 'p2')
+      return at.x > p2.x + 30 && Math.abs(at.y - p2.y) < 1
+    })
+    .toBe(true)
   expect(await screenOf(page, 'point', 'origin')).toEqual(origin)
   expect((await readSketch(page)).selected).toEqual([])
   await page.getByTestId('link-status').click()

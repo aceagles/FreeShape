@@ -32,8 +32,11 @@ import { EditDock, EditHint } from '../sketch/EditPad'
 import { EditTools } from '../sketch/tools/edit'
 import { SketchStore } from '../sketch/store'
 import { ConstraintHint, ConstraintNote } from '../sketch/ConstraintNote'
-import { attachKeys } from '../input/keys'
+import { attachKeys, keymapFor } from '../input/keys'
+import type { KeyCommand } from '../input/keys'
 import { sketchKeys } from '../sketch/keys'
+import { featureDialogKeys } from '../dialog/FeatureDialog'
+import { desktopCommands } from './desktopKeys'
 import { ConstraintStore, isConstrainTool } from '../sketch/constraints'
 import type { SketchTarget } from '../sketch/store'
 import { DiscardSketch, PlaneChooser } from '../sketch/StartDialogs'
@@ -56,9 +59,9 @@ import { TopBar } from './TopBar'
 import { ModeProvider, useMode } from './mode'
 import { clampLeftWidth, columnWidth, desktopColumnWidth, readLeftWidth, storeLeftWidth } from './layout'
 import { Splitter } from './Splitter'
-import { STANDARD_VIEW_ITEMS } from './menus'
-import type { Commands, MenuState } from './menus'
-import { runViewCommand } from '../viewport/viewCommands'
+import { isRunnable, MENU_BAR, STANDARD_VIEW_ITEMS } from './menus'
+import type { Commands, MenuItem, MenuState } from './menus'
+import { runViewCommand, viewOnScreen } from '../viewport/viewCommands'
 import { tokenVars } from './vars'
 import './shell.css'
 
@@ -89,6 +92,7 @@ type Modal =
   | { kind: 'plane' }
   | { kind: 'discard' }
   | { kind: 'message'; title: string; text: string }
+  | { kind: 'confirm'; title: string; text: string; label: string; run: () => void }
 
 declare global {
   interface Window {
@@ -158,10 +162,17 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const sketch = useSyncExternalStore(sketchStore.subscribe, sketchStore.getState)
   // the Constrain group: which tools fit the selection (the server says), and Delete on a selected constraint
   const [constraints] = useState(() => new ConstraintStore(sketchStore, store))
+  // the keyboard's commands now: Desktop mode's are built on every render (desktopKeys.ts); the keymap is the mode's
+  const keys = useRef<{ mode: string; desktop: Record<string, KeyCommand> }>({ mode, desktop: {} })
   useEffect(() => {
     constraints.attach()
-    // the keyboard: Esc leaves constraint pick mode first, then steps back in the sketch, Delete removes a selected constraint (one keymap, input/keys.ts)
-    const off = attachKeys(sketchKeys(sketchStore, constraints))
+    // the keyboard: one listener, one keymap (input/keys.ts). Tablet: Esc leaves constraint pick mode first, then steps back in
+    // the sketch, Delete removes a selected constraint. Desktop: the desktop's keys (input/bindings.ts)
+    const tablet = sketchKeys(sketchStore, constraints)
+    const off = attachKeys(
+      () => (keys.current.mode === 'desktop' ? keys.current.desktop : tablet),
+      () => keymapFor(keys.current.mode === 'desktop' ? 'desktop' : 'tablet'),
+    )
     return () => {
       off()
       constraints.detach()
@@ -306,12 +317,12 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const picks = useMemo(() => picksOf(picked.items), [picked.items])
   const toolTypes = useToolTypes(doc?.id ?? null, tabKind === 'studio' ? currentTab : null, studio?.revision ?? 0, picks, editing !== null || dialog !== null)
   const startTool = useCallback(
-    (type: string) => {
+    (type: string, withPicks?: Pick[]) => {
       if (currentTab === null || tabKind !== 'studio' || editing !== null || dialog !== null) return
       setCollapsed(false)
       setPreview(null)
       setHoldUntil(null)
-      setEditing({ tab: currentTab, id: '', name: toolTypes?.get(type)?.label ?? type, create: { type, picks } })
+      setEditing({ tab: currentTab, id: '', name: toolTypes?.get(type)?.label ?? type, create: { type, picks: withPicks ?? picks } })
       // the tool took the selection; the dialog's active field takes the next picks
       selection.clear()
     },
@@ -342,6 +353,16 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
       }),
     [sketchStore, failText],
   )
+  // Shift+E / Shift+W in a sketch (the desktop's _feature_from_sketch): the sketch is finished, and once the revision it made
+  // has arrived the feature opens with the sketch's regions picked. A new sketch is the one the Part Studio did not have before.
+  const afterSketch = useRef<{ type: string; feature: string | null; known: ReadonlySet<string> } | null>(null)
+  useEffect(() => {
+    const p = afterSketch.current
+    if (p === null || sketch.open || sketch.committed === null || studio === null || studio.revision < sketch.committed) return
+    afterSketch.current = null
+    const made = studio.sketches.find((k) => (p.feature !== null ? k.id === p.feature : !p.known.has(k.id)))
+    startTool(p.type, made ? made.regions.map((_, i): Pick => ({ part: made.id, kind: 'region', index: i + 1 })) : undefined)
+  }, [sketch.open, sketch.committed, studio, startTool])
   const showPreview = preview !== null && (editingHere !== null || (holdUntil !== null && (studio?.revision ?? 0) < holdUntil))
   // while a dialog is open the view draws its base (what picks resolve against) and the preview as a ghost over it;
   // until the base has arrived, and after Accept, the preview itself is drawn as before
@@ -427,10 +448,13 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const menuState: MenuState = { readOnly, tabKind }
   const canUndo = studio?.canUndo === true && !edits.busy && !editingHere && !sketch.open
   const canRedo = studio?.canRedo === true && !edits.busy && !editingHere && !sketch.open
+  // Undo and Redo, one each for the top bar, the Desktop toolbar and Ctrl+Z / Ctrl+Y: the open sketch's, else the Part Studio's
+  const undoCmd = sketchHere ? { enabled: sketch.view?.canUndo === true, run: () => sketchStore.undo() } : { enabled: canUndo, run: edits.undo }
+  const redoCmd = sketchHere ? { enabled: sketch.view?.canRedo === true, run: () => sketchStore.redo() } : { enabled: canRedo, run: edits.redo }
   // the Desktop feature toolbar's buttons that are not features: the ones the client has; the rest are disabled there
   const toolbarCommands = {
-    undo: { run: edits.undo, enabled: !readOnly && canUndo },
-    redo: { run: edits.redo, enabled: !readOnly && canRedo },
+    undo: { run: undoCmd.run, enabled: !readOnly && undoCmd.enabled },
+    redo: { run: redoCmd.run, enabled: !readOnly && redoCmd.enabled },
     fit: { run: () => void runViewCommand('fit') },
     iso: { run: () => void runViewCommand('iso') },
   }
@@ -440,9 +464,54 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     // the client has no open and closed tabs: closing a tab takes it out of the Document, so it asks as Delete does
     'document.closeTab': () => currentInfo !== null && setModal({ kind: 'delete', tab: currentInfo }),
     'document.save': () => void save(),
+    'document.open': back,
     ...Object.fromEntries(STANDARD_VIEW_ITEMS.map(([v]) => [`view.${v}`, () => void runViewCommand(v)])),
     'view.fit': () => void runViewCommand('fit'),
   }
+
+  // Desktop mode's keys, routed as the desktop routes them (desktopKeys.ts), from what is on screen now
+  const runMenu = (command: string): boolean => {
+    const item = MENU_BAR.flatMap((m) => m.entries).find((e): e is MenuItem => e.kind !== 'separator' && e.command === command)
+    if (item === undefined || !isRunnable(item, commands, menuState)) return false
+    commands[command]!()
+    return true
+  }
+  const featureNow = selectedFeature === null ? null : (studio?.features.find((f) => f.id === selectedFeature) ?? null)
+  useEffect(() => {
+    keys.current = {
+      mode,
+      desktop: desktopCommands({
+        readOnly,
+        tabKind,
+        sketch: sketchHere ? sketchStore : null,
+        constraints,
+        dialog: () => (editingHere !== null ? featureDialogKeys() : null),
+        closeArea: dialog !== null ? () => setDialog(null) : null,
+        modalOpen: modal !== null,
+        selection,
+        selectedFeature: featureNow && { id: featureNow.id, name: featureNow.name },
+        selectedInstance: tabKind === 'assembly' ? selectedInstance(picked.items) : null,
+        runMenu,
+        undo: undoCmd,
+        redo: redoCmd,
+        beginSketch: () => beginSketch(),
+        startTool: (type) => startTool(type),
+        featureFromSketch: (type) => {
+          afterSketch.current = { type, feature: sketch.view?.feature ?? null, known: new Set(studio?.sketches.map((k) => k.id) ?? []) }
+          sketchStore.commit()
+        },
+        leaveSketch: () => (sketch.view?.canUndo ? setModal({ kind: 'discard' }) : sketchStore.cancel()),
+        deleteFeature: (f) =>
+          setModal({ kind: 'confirm', title: `Delete "${f.name}"?`, text: 'The feature is removed from the Part Studio.', label: 'Delete', run: () => void edits.deleteFeature(f.id) }),
+        deleteInstance: (id) => {
+          const name = assembly.outputs?.instances.find((i) => i.id === id)?.name ?? 'the instance'
+          setModal({ kind: 'confirm', title: `Delete "${name}"?`, text: 'The instance and its mates are removed from the Assembly.', label: 'Delete', run: () => void assembly.edits.deleteInstance(id) })
+        },
+        clearFeature: () => setPickedFeature(null),
+        view: viewOnScreen,
+      }),
+    }
+  })
 
   return (
     <ShellContext.Provider value={api}>
@@ -453,10 +522,10 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           currentTab={currentTab}
           readOnly={readOnly}
           saving={saving}
-          canUndo={canUndo}
-          canRedo={canRedo}
-          onUndo={edits.undo}
-          onRedo={edits.redo}
+          canUndo={undoCmd.enabled}
+          canRedo={redoCmd.enabled}
+          onUndo={undoCmd.run}
+          onRedo={redoCmd.run}
           debugOpen={debug.open}
           onSelectTab={setSelected}
           onAddTab={(kind) => void add(kind)}
@@ -660,6 +729,18 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
             message={`${holderPlace(holder)[0]!.toUpperCase()}${holderPlace(holder).slice(1)} will lose the right to edit it, and what it has not saved is not kept here.`}
             confirm={{ label: 'Take over', danger: true }}
             onConfirm={() => void doTakeOver()}
+            onCancel={closeModal}
+          />
+        )}
+        {modal?.kind === 'confirm' && (
+          <ConfirmDialog
+            title={modal.title}
+            message={modal.text}
+            confirm={{ label: modal.label, danger: true }}
+            onConfirm={() => {
+              setModal(null)
+              modal.run()
+            }}
             onCancel={closeModal}
           />
         )}

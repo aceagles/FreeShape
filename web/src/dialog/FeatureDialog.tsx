@@ -45,6 +45,18 @@ export interface FeatureDialogProps {
  * and, once tapped, takes the picks of the view. Cancel and Accept are in the header. A change is sent as one dialog update and the view draws the preview
  * the server pushes back (see useFeatureDialog and the Shell).
  */
+/** What the desktop's Enter and Esc do to a feature dialog (card I9.6). */
+export interface DialogKeys {
+  /** Accept, when Accept is on now; false when it is not. */
+  accept(): boolean
+  cancel(): void
+}
+
+let openKeys: DialogKeys | null = null
+
+/** The open feature dialog's Enter and Esc, or null when none is open. */
+export const featureDialogKeys = (): DialogKeys | null => openKeys
+
 export function FeatureDialog({ store, documentId, documentName, tab, feature, create, variables, selection, outputs, base, revision, onPreview, onBase, onDone }: FeatureDialogProps) {
   const dlg = useFeatureDialog({ store, documentId, documentName, tab, feature: feature.id, create, onPreview, onDone, revision, onBase })
   const client = store.getState().client
@@ -84,6 +96,15 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
   const desktopOnly = description !== null && description.custom.length > 0
   const editing = desktopOnly || padKey === null ? null : (padKey ?? rows.find((r) => r.spec.kind === 'num')?.spec.key ?? null)
   const title = dlg.opened?.name ?? feature.name
+  // Enter and Esc of Desktop mode reach this dialog through `featureDialogKeys` (the shell's one key listener)
+  const canAccept = !desktopOnly && dlg.phase === 'open' && !dlg.accepting
+  useEffect(() => {
+    const keys: DialogKeys = { accept: () => canAccept && (void dlg.accept(), true), cancel: dlg.cancel }
+    openKeys = keys
+    return () => {
+      if (openKeys === keys) openKeys = null
+    }
+  })
 
   const actions = (
     <>

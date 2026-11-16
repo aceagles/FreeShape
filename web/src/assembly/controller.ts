@@ -8,6 +8,7 @@ import { ViewCamera, STANDARD_VIEWS } from '../viewport/camera'
 import type { CameraState, StandardView } from '../viewport/camera'
 import { viewportBackground } from '../viewport/colors'
 import { rayPoint, viewRay } from '../viewport/pick'
+import { panView, turnView } from '../viewport/controller'
 import type { PickFilter, PickPointer } from '../viewport/pick'
 import type { ElementPick } from '../viewport/pick'
 import { AssemblyPickIndex } from './pick'
@@ -254,6 +255,22 @@ export class AssemblyController implements NavHost {
   normalTo(normal?: readonly [number, number, number]): void {
     this.view.normalTo(normal)
     this.fit()
+  }
+
+  /** An arrow key: turn the view one step about the model's centre (as in a Part Studio). */
+  turnStep(h: number, v: number): boolean {
+    if (!this.built) return false
+    turnView(this.view, this.modelCentre(), h, v)
+    this.requestRender()
+    return true
+  }
+
+  /** Ctrl+Shift+arrow: pan a tenth of the view. */
+  panStep(sx: number, sy: number): boolean {
+    if (!this.built) return false
+    panView(this.view, sx, sy)
+    this.requestRender()
+    return true
   }
 
   modelCentre(): Vector3 {

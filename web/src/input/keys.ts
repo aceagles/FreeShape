@@ -1,8 +1,11 @@
+import { BINDINGS, desktopKeymap, TABLET_CHORDS } from './bindings'
+import type { Mode } from '../shell/mode'
+
 /**
  * The keyboard of the page: one listener, one keymap. A key is a chord string ("Escape", "Delete", "Ctrl+Z"; modifiers
  * in the order Ctrl, Alt, Shift, Meta, then the `KeyboardEvent.key`, a letter in upper case). The keymap names a command;
- * the owner of that command supplies it to `attachKeys`. Desktop mode (slice S9) brings the desktop's bindings by adding
- * entries to `keymap` and commands to the owners, not by adding listeners.
+ * the owner of that command supplies it to `attachKeys`. Desktop mode (slice S9, card I9.6) binds the desktop's keys, read
+ * from the table in input/bindings.ts (`keymapFor`), through the same listener.
  */
 export type KeyCommand = () => boolean | void
 
@@ -13,16 +16,28 @@ export const keymap: Record<string, string> = {
   Backspace: 'delete',
 }
 
-/** The chord a key event makes: "Escape", "Ctrl+Z", "Shift+Delete". */
-export function chordOf(e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>): string {
-  const key = e.key.length === 1 ? e.key.toUpperCase() : e.key
+/** The keymap of a mode: Desktop binds every key of input/bindings.ts; Tablet the chords `TABLET_CHORDS` names. */
+export function keymapFor(mode: Mode): Readonly<Record<string, string>> {
+  if (mode === 'desktop' || TABLET_CHORDS === 'all') return desktopKeymap
+  return Object.fromEntries(BINDINGS.filter((b) => !b.shownOnly && TABLET_CHORDS.includes(b.chord)).map((b) => [b.chord, b.command]))
+}
+
+/**
+ * The chord a key event makes: "Escape", "Ctrl+Z", "Shift+Delete", "Space". A digit is named by its key position, so Shift+1
+ * is "Shift+1" whatever the layout types ("!" on most); so is a letter with Alt, which a Mac turns into another character.
+ */
+export function chordOf(e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'> & { code?: string }): string {
+  const digit = /^Digit(\d)$/.exec(e.code ?? '')
+  const letter = /^Key([A-Z])$/.exec(e.code ?? '')
+  const typed = e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key
+  const key = digit ? digit[1]! : letter && e.altKey && !/^[A-Z]$/.test(typed) ? letter[1]! : typed
   const isShiftKey = key === 'Shift' || key === 'Control' || key === 'Alt' || key === 'Meta'
   return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && !isShiftKey && 'Shift', e.metaKey && 'Meta', key].filter(Boolean).join('+')
 }
 
-/** Something typed into (a field, an editable element) takes its own keys. */
+/** Something typed into (a field, an editable element) takes its own keys; so does an open menu (it moves and runs its items). */
 export function isTyping(t: EventTarget | null): boolean {
-  return t instanceof HTMLElement && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')
+  return t instanceof HTMLElement && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.closest('[role="menu"]') !== null)
 }
 
 let held = 0
@@ -48,11 +63,15 @@ export const keysSuspended = (): boolean => held > 0
  * key, so the browser's own action stays. Nothing runs while a field has the key, the number pad is editing (`suspendKeys`),
  * or an earlier listener already took the event. Returns the way to stop listening.
  */
-export function attachKeys(commands: Record<string, KeyCommand>, map: Record<string, string> = keymap): () => void {
+export function attachKeys(
+  commands: Record<string, KeyCommand> | (() => Record<string, KeyCommand>),
+  map: Readonly<Record<string, string>> | (() => Readonly<Record<string, string>>) = keymap,
+): () => void {
+  // a function is read at each key, so one listener follows a keymap and commands that change (the mode, what is open)
   const onKey = (e: KeyboardEvent): void => {
     if (e.defaultPrevented || e.isComposing || keysSuspended() || isTyping(e.target)) return
-    const name = map[chordOf(e)]
-    const run = name === undefined ? undefined : commands[name]
+    const name = (typeof map === 'function' ? map() : map)[chordOf(e)]
+    const run = name === undefined ? undefined : (typeof commands === 'function' ? commands() : commands)[name]
     if (run && run() !== false) e.preventDefault()
   }
   window.addEventListener('keydown', onKey)

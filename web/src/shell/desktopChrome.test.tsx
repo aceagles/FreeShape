@@ -46,7 +46,7 @@ function mount() {
   act(() => sock.onmessage?.({ data: JSON.stringify(hello) }))
   return store
 }
-const menuNames = () => within(screen.getByRole('menu')).getAllByRole('menuitem').map((b) => b.textContent!.replace(/Ctrl\+.*|Shift\+\d|^F$|^P$/, ''))
+const menuNames = () => within(screen.getByRole('menu')).getAllByRole('menuitem').map((b) => b.textContent!.replace(/(Ctrl|Alt)\+.*|Shift\+\d|^F$|^P$/, ''))
 
 it('Desktop mode: the top bar has the three menu buttons and no tab bar; the tabs are in the bottom strip', () => {
   mount()

@@ -1,4 +1,4 @@
-import { Scene, Vector3, WebGLRenderer } from 'three'
+import { MathUtils, Quaternion, Scene, Vector3, WebGLRenderer } from 'three'
 import type { Object3D } from 'three'
 import { ManipulatorLayer } from '../dialog/manipulator'
 import { PointerModule } from '../input/pointer'
@@ -16,7 +16,7 @@ import { STANDARD_VIEWS } from './camera'
 import { PickIndex, rayPoint, viewRay } from './pick'
 import type { PickFilter, PickHit, PickKind, PickPointer } from './pick'
 import { tintFeature } from './previewTint'
-import { buildScene, EMPTY_STATS } from './scene'
+import { buildScene, DEFAULT_PLANES, EMPTY_STATS } from './scene'
 import type { BuiltScene, SceneStats } from './scene'
 import { setSeeThrough } from './seeThrough'
 
@@ -77,6 +77,62 @@ export interface SelectionReport {
   looks: number
 }
 
+/** The arrow keys turn the view this many degrees (freeshape/ui/viewport.py ARROW_STEP_DEG). */
+export const ARROW_STEP_DEG = 15
+
+const tri3 = (v: Vector3): [number, number, number] => [v.x, v.y, v.z]
+
+/**
+ * An arrow key (the desktop's `rotate_step`): turn the view `deg` about its own up axis (`h`, the Right arrow is -1) or its
+ * right axis (`v`, the Up arrow is +1), about `pivot`, which keeps its place in the model. From the Right view six Right
+ * arrows reach the Front view.
+ */
+export function turnView(view: ViewCamera, pivot: Vector3, h: number, v: number, deg = ARROW_STEP_DEG): void {
+  const { right, up, back } = view.axes()
+  const q = new Quaternion().setFromAxisAngle(h !== 0 ? up : right, MathUtils.degToRad(deg) * (h !== 0 ? h : v))
+  view.target.sub(pivot).applyQuaternion(q).add(pivot)
+  view.lookAtPlane(tri3(back.applyQuaternion(q)), tri3(up.applyQuaternion(q)))
+}
+
+/** Ctrl+Shift+arrow: the model moves the way the arrow points (`sx` right, `sy` down), a tenth of the view's width or height. */
+export function panView(view: ViewCamera, sx: number, sy: number): void {
+  view.pan((sx * view.width) / 10, (sy * view.height) / 10)
+}
+
+/**
+ * N in the 3D view (the desktop's `look_along`): look straight at a flat thing with this normal from the nearer side, or from
+ * the other side when the view already is square to it; with no normal, look from the opposite side. The zoom stays; up snaps
+ * to the nearest direction along or across `axes` (else X, Y, Z) as it lies on screen; `anchor` comes to the middle of the view.
+ */
+export function lookAlong(view: ViewCamera, normal: Vector3 | null, anchor: Vector3 | null = null, axes: readonly Vector3[] = []): void {
+  const { up, back } = view.axes()
+  let nb: Vector3
+  if (normal === null) nb = back.clone().negate()
+  else {
+    nb = normal.clone().normalize()
+    if (nb.dot(back) < 0) nb.negate()
+    if (nb.dot(back) > 1 - 1e-6) nb.negate()
+  }
+  let u = up.clone().addScaledVector(nb, -up.dot(nb))
+  if (u.length() < 1e-6) u = back.clone().addScaledVector(nb, -back.dot(nb))
+  u.normalize()
+  let best: { score: number; dir: Vector3 } | null = null
+  const world = [new Vector3(1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 0, 1)]
+  for (const axis of axes.length > 0 ? axes : world) {
+    const a = axis.clone().addScaledVector(nb, -axis.dot(nb))
+    if (a.length() < 1e-6) continue
+    a.normalize()
+    const across = new Vector3().crossVectors(nb, a)
+    for (const cand of [a, a.clone().negate(), across, across.clone().negate()]) {
+      const score = cand.dot(u)
+      if (best === null || score > best.score + 1e-9) best = { score, dir: cand }
+    }
+  }
+  if (best !== null) u = best.dir
+  if (anchor !== null) view.target.copy(anchor).addScaledVector(nb, view.target.clone().sub(anchor).dot(nb))
+  view.lookAtPlane(tri3(nb), tri3(u))
+}
+
 const reportItem = (i: SelectionItem): SelectionItemReport => ({ kind: i.kind, part: i.part, index: i.index, name: i.name, key: i.key })
 
 declare global {
@@ -113,6 +169,8 @@ export class ViewportController implements NavHost {
   /** The view as it was when the sketch opened: put back when it closes (the sketch squares and fits the view to itself). */
   private beforeSketch: CameraState | null = null
   private sketchStore: SketchStore | null = null
+  /** The outputs drawn now (what N reads a face's or plane's normal from). */
+  private outputs: StudioOutputs | null = null
   private readonly unsubscribe: () => void
 
   /** Throws when the browser cannot create a WebGL context. The viewport draws and picks for `selection`. */
@@ -225,6 +283,7 @@ export class ViewportController implements NavHost {
     this.highlighted = this.built.setLook(this.selection.getState().items, this.selection.getAimed())
     if (this.built.hasModel) this.planeHalf = this.built.stats.planeHalf
     this.revision = outputs.revision
+    this.outputs = outputs
     this.emptyKind = null
     if (!this.fitted) this.fit()
     this.requestRender()
@@ -245,6 +304,7 @@ export class ViewportController implements NavHost {
     this.highlighted = null
     this.planeHalf = null
     this.revision = null
+    this.outputs = null
     this.fitted = false
     this.emptyKind = kind
     this.previewNumber = null
@@ -278,6 +338,74 @@ export class ViewportController implements NavHost {
     }
     this.view.normalTo(normal)
     this.fit()
+  }
+
+  /** An arrow key: turn the view one step about the model's centre. Not in a sketch, where the arrows are the sketch's. */
+  turnStep(h: number, v: number): boolean {
+    if (this.sketchMode || !this.built) return false
+    turnView(this.view, this.modelCentre(), h, v)
+    this.requestRender()
+    return true
+  }
+
+  /** Ctrl+Shift+arrow: pan a tenth of the view. Not in a sketch. */
+  panStep(sx: number, sy: number): boolean {
+    if (this.sketchMode || !this.built) return false
+    panView(this.view, sx, sy)
+    this.requestRender()
+    return true
+  }
+
+  /**
+   * N (the desktop's `_normal_key`): in a sketch, square the view to its plane. Otherwise look straight at `item` (the face,
+   * plane or region under the mouse, or else the selected one) from the nearer side, the other side when pressed again;
+   * with nothing, look from the opposite side. A curved face: nothing.
+   */
+  normalKey(item: SelectionItem | null): boolean {
+    if (this.sketchMode) {
+      this.sketchMode.normalTo()
+      return true
+    }
+    const flat = item === null ? undefined : this.flatOf(item)
+    if (flat === null) return true
+    lookAlong(this.view, flat?.normal ?? null, flat?.anchor ?? null, flat?.axes ?? [])
+    this.requestRender()
+    return true
+  }
+
+  /** The normal, a point and the in-plane axes of a flat face, plane or region; null for a curved face; undefined for anything else. */
+  private flatOf(item: SelectionItem): { normal: Vector3; anchor: Vector3; axes: Vector3[] } | null | undefined {
+    const o = this.outputs
+    if (o === null) return undefined
+    const v = (t: readonly number[]) => new Vector3(t[0], t[1], t[2])
+    if (item.kind === 'plane' && item.key !== null) {
+      const p = DEFAULT_PLANES.find((d) => d.name === item.key) ?? o.planes[item.key]
+      return p ? { normal: v(p.n), anchor: v(p.o), axes: [v(p.x)] } : undefined
+    }
+    if (item.kind === 'region') {
+      const s = o.sketches.find((k) => k.id === item.part)
+      const r = s?.regions[item.index]
+      return s && r ? { normal: v(s.plane.normal), anchor: v(r.c), axes: [v(s.plane.xdir)] } : undefined
+    }
+    if (item.kind !== 'face') return undefined
+    const mesh = (o.parts.find((p) => p.id === item.part) ?? o.context.find((p) => p.id === item.part))?.mesh
+    const range = mesh?.faceRanges[item.index]
+    if (!mesh || !range) return undefined
+    const corner = (k: number) => new Vector3(mesh.positions[3 * k], mesh.positions[3 * k + 1], mesh.positions[3 * k + 2])
+    let normal: Vector3 | null = null
+    const sum = new Vector3()
+    let n = 0
+    for (let t = range[0]; t < range[1]; t++) {
+      const [a, b, c] = [corner(mesh.indices[3 * t]!), corner(mesh.indices[3 * t + 1]!), corner(mesh.indices[3 * t + 2]!)]
+      sum.add(a).add(b).add(c)
+      n += 3
+      const tn = new Vector3().crossVectors(b.clone().sub(a), c.clone().sub(a))
+      if (tn.length() < 1e-12) continue
+      tn.normalize()
+      if (normal === null) normal = tn
+      else if (Math.abs(normal.dot(tn)) < 1 - 1e-4) return null
+    }
+    return normal === null ? null : { normal, anchor: sum.divideScalar(n), axes: [] }
   }
 
   modelCentre(): Vector3 {

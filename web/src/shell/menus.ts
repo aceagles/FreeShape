@@ -1,3 +1,5 @@
+import { chordFor } from '../input/bindings'
+
 /**
  * The Desktop-mode menus, as data: the desktop's Document, View and Select menus (freeshape/ui/mainwindow.py,
  * `_build_topbar`) in its order and with its separators, plus the bottom strip's + menu. One Menu component draws them.
@@ -20,7 +22,7 @@ export interface MenuItem {
   /** The command that runs it, "<menu>.<name>". */
   command: string
   label: string
-  /** The desktop's shortcut, shown at the right. */
+  /** The key that runs it, shown at the right: read from input/bindings.ts. */
   chord?: string
   /** A check item: shown with a mark when `checked`. */
   check?: boolean
@@ -49,22 +51,22 @@ const hasView = (s: MenuState): boolean => s.tabKind === 'studio' || s.tabKind =
 
 /** Document (mainwindow.py `_build_topbar`, the Document menu). */
 export const documentMenu: readonly MenuEntry[] = [
-  { command: 'document.newStudio', label: 'New Part Studio', chord: 'Ctrl+N', enabled: editable },
-  { command: 'document.newAssembly', label: 'New Assembly', chord: 'Ctrl+Shift+N', enabled: editable },
+  { command: 'document.newStudio', label: 'New Part Studio', chord: chordFor('document.newStudio'), enabled: editable },
+  { command: 'document.newAssembly', label: 'New Assembly', chord: chordFor('document.newAssembly'), enabled: editable },
   { command: 'document.newDrawing', label: 'New Drawing…' },
-  { command: 'document.open', label: 'Open…', chord: 'Ctrl+O' },
+  { command: 'document.open', label: 'Open…', chord: chordFor('document.open') },
   { command: 'document.newFolder', label: 'New Document folder…' },
   { command: 'document.openFolder', label: 'Open Document folder…' },
   { command: 'document.addFiles', label: 'Add files to Document…' },
   { command: 'document.recent', label: 'Open recent', submenu: true },
-  { command: 'document.closeTab', label: 'Close tab', chord: 'Ctrl+W', enabled: (s) => !s.readOnly && s.tabKind !== null },
+  { command: 'document.closeTab', label: 'Close tab', chord: chordFor('document.closeTab'), enabled: (s) => !s.readOnly && s.tabKind !== null },
   SEP,
-  { command: 'document.save', label: 'Save', chord: 'Ctrl+S', enabled: editable },
-  { command: 'document.saveAs', label: 'Save as…', chord: 'Ctrl+Shift+S' },
+  { command: 'document.save', label: 'Save', chord: chordFor('document.save'), enabled: editable },
+  { command: 'document.saveAs', label: 'Save as…', chord: chordFor('document.saveAs') },
   SEP,
   { command: 'document.importNew', label: 'Import STEP / BREP (new tab)…' },
   { command: 'document.importInto', label: 'Import STEP / BREP into this tab…' },
-  { command: 'document.library', label: 'Component library…', chord: 'Ctrl+Shift+L' },
+  { command: 'document.library', label: 'Component library…', chord: chordFor('document.library') },
   { command: 'document.exportStep', label: 'Export STEP…' },
   { command: 'document.exportStl', label: 'Export STL…' },
   { command: 'document.exportBrep', label: 'Export BREP…' },
@@ -77,7 +79,7 @@ export const documentMenu: readonly MenuEntry[] = [
   SEP,
   { command: 'document.shortcuts', label: 'Keyboard shortcuts' },
   { command: 'document.about', label: 'About FreeShape' },
-  { command: 'document.quit', label: 'Quit', chord: 'Ctrl+Q' },
+  { command: 'document.quit', label: 'Quit', chord: chordFor('document.quit') },
 ]
 
 /** The standard views, in the desktop's order (View menu, Shift+1 to Shift+7). */
@@ -93,11 +95,11 @@ export const STANDARD_VIEW_ITEMS = [
 
 /** View (mainwindow.py, the View menu). */
 export const viewMenu: readonly MenuEntry[] = [
-  ...STANDARD_VIEW_ITEMS.map(([name, label], i): MenuItem => ({ command: `view.${name}`, label, chord: `Shift+${i + 1}`, enabled: hasView })),
+  ...STANDARD_VIEW_ITEMS.map(([name, label]): MenuItem => ({ command: `view.${name}`, label, chord: chordFor(`view.${name}`), enabled: hasView })),
   SEP,
-  { command: 'view.section', label: 'Section view', chord: 'Ctrl+Shift+X', check: true, checked: false },
-  { command: 'view.fit', label: 'Zoom to fit', chord: 'F', enabled: hasView },
-  { command: 'view.planes', label: 'Show planes', chord: 'P', check: true, checked: true },
+  { command: 'view.section', label: 'Section view', chord: chordFor('view.section'), check: true, checked: false },
+  { command: 'view.fit', label: 'Zoom to fit', chord: chordFor('view.fit'), enabled: hasView },
+  { command: 'view.planes', label: 'Show planes', chord: chordFor('view.planes'), check: true, checked: true },
   { command: 'view.showAll', label: 'Show all parts' },
   { command: 'view.shiny', label: 'Shiny surfaces', check: true, checked: false },
   { command: 'view.through', label: 'Select through context', check: true, checked: false },

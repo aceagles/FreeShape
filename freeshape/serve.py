@@ -170,6 +170,58 @@ Every call into the session holds one lock (the session has none) and runs on a 
 loop; /health and the other routes that need no session never wait for it. Errors are JSON {"error": message}: 400 a bad edit or body, 403/421 a wrong Host
 or Origin, 404 an unknown route or tab, 405 a wrong method, 411 no Content-Length on a POST, 413 a body over
 1 MB, 415 a POST that is not application/json, 500 anything unexpected (generic body; detail on stderr).
+
+Sketch sessions (I7.3, freeshape/sketch_session.py, ADR 0015). A sketch is edited on the server, over the live channel,
+one sketch per client id, kept in that client's registry entry: it survives a reconnect with the same id. Every message
+is JSON text on /ws with "type", an optional "id" (a string of at most 64 characters or an integer, echoed in the
+answer) and "document" (needed by sketch.open on a Documents root, as for an edit; on the others it may be left out).
+The answer goes to the sending socket only. A message with an unknown field, a value of the wrong type or anything the
+sketch cannot take is answered with
+    {"type": "error", "id", "for": <the message type>, "message": a sentence naming the field}
+and changes nothing; the socket stays open. A step that is refused leaves the sketch and its undo stack as they were.
+  sketch.open   {"type": "sketch.open", "document", "tab", "feature": id}  an existing sketch feature of a Part Studio, or
+                {"type": "sketch.open", "document", "tab", "plane": ref}   a new sketch on a plane reference, as a sketch's
+                "plane" param stores it: {"kind": "std", "name": "Top" | "Front" | "Right"}, {"kind": "plane", "fid"}
+                or {"kind": "face", "face": a face reference (the refs route's "plane" item)}; a face that is not
+                planar is an error naming it. Refused while this client has a sketch open, and past MAX_SKETCHES.
+                Answer {"type": "sketch.opened", "document", "tab", "feature": id or null, "name", "plane", "sketch",
+                "status", "can_undo", "can_redo", "frame", "edges", "revision"}:
+                  sketch   {"points": {id: [u, v]}, "entities": {id: entity}, "constraints": [constraint]}, the
+                           freeshape.sketch format (an existing sketch exactly as its params store it);
+                  status   {"ok", "dof", "entities": {id: "free" | "defined" | "conflicting"}, "points": {id: same},
+                           "constraints": {id: "ok" | "conflicting"}} (sketch_session.status_of);
+                  frame    {"origin", "xdir", "ydir", "normal"} and edges [{"pick", "points", "height"}]: the engine's
+                           sketch_frame (contract.Engine.sketch_frame, I7.1);
+                  revision the tab's revision when it opened; name "Sketch <n>" for a new sketch.
+  sketch.add    {"type": "sketch.add", "shape", "picks", "construction"?, "radius"?, "sweep"?, "constraints"?}
+                shape "point" (1 pick), "line" (start, end), "rect" (corner, opposite corner), "center_rect" (centre,
+                corner), "circle" (centre, and "radius"), "arc3" (start, end, a point it passes through: a clockwise
+                pick swaps the ends), "arc_center" (centre, start, end direction, and "sweep": below 0 the pen went
+                clockwise), each built by freeshape.sketch_ops. A pick is [u, v] (a new point, sketch coordinates)
+                or {"at": [u, v], "point": id} (that existing point). constraints [{"type", "refs", "value"?}] (at
+                most 64) are attached in the same step: a ref is an id in the sketch, "$p<i>" (the point of pick i)
+                or "$e<i>" (entity i of "made"); a coincident between a new point and an old one merges them.
+  sketch.delete {"type": "sketch.delete", "ids": [entity, point or constraint id]}  (and what depends on them)
+  sketch.construction {"type": "sketch.construction", "ids": [entity id], "value"?: bool}  (no value: turn over)
+  sketch.undo, sketch.redo  {"type": ...}  inside the session; nothing to undo or redo is an error
+                Each of these four answers {"type": "sketch.changed", "document", "tab", "feature", "name", "plane",
+                "sketch", "status", "can_undo", "can_redo"}, the whole sketch after the step's solve; sketch.add adds
+                "made": {"points": [point id per pick], "entities": [ids the builder returned]}.
+  sketch.state  {"type": "sketch.state"}  answers {"type": "sketch.state"} with the fields of sketch.opened but
+                "revision" (a client that reconnected asks for it).
+  sketch.commit {"type": "sketch.commit"}  writes the sketch through the normal edit path: replace_feature (an
+                existing sketch) or add_feature (a new one, at the rollback bar), so the `changed` push and the revision
+                are an edit's; the regions and names come from the rebuild. Answer {"type": "sketch.committed",
+                "document", "tab", "feature": the feature id, "rebuilt", "revision"}; the session ends. On a read-only
+                Document the answer is the error with "locked": true and "holder", and the session stays open; so does
+                it when the engine refuses the feature.
+  sketch.cancel {"type": "sketch.cancel"}  ends the session, changes nothing: {"type": "sketch.cancelled", "document",
+                "tab", "feature"}.
+When the client's registry entry expires, or the Document closes or the server stops gracefully, an unfinished sketch is
+written into the Document's autosave (I2.6) before the session is dropped: the tab's autosaved data holds the sketch
+feature (an existing one with the session's params, a new one added at the rollback bar), the open session is not
+changed, and recover brings it back as an unsaved edit. It stays in every later autosave of that Document while it is
+open on this server.
 """
 from __future__ import annotations
 
@@ -611,6 +663,7 @@ class _Server:
             self.origins |= o
             self.hosts |= h
         self.clients = ClientRegistry(client_ttl, client_expired)
+        self.clients.on_expire = self._sketch_expiry(client_expired)      # I7.3: keep an unfinished sketch first
         self._sockets = {}                                       # live WebSocketResponse -> client id
         self._subs = {}                                          # live WebSocketResponse -> set of Document ids
         self._loop = None
@@ -726,6 +779,7 @@ class _Server:
             got = d.lock.acquire(timeout=wait)
             try:
                 if got and d.file_lock is not None:
+                    self._add_kept(d, self._take_sketches(d))    # I7.3: and the unfinished sketches
                     self._final_autosave(d)                      # a graceful stop keeps what was not saved
                 if d.file_lock is not None:
                     try:
@@ -803,7 +857,7 @@ class _Server:
         lock = d.file_lock
         if self.data_dir is None or lock is None or (d.is_read_only() and not final) or d.seq == d.written:
             return False
-        state = d.session.autosave_state()
+        state = d.session.autosave_state_with(getattr(d, "kept_sketches", None))     # I7.3: with kept sketches
         if state is None:
             AS.remove(self.data_dir, lock.instance)
             d.written = d.seq
@@ -1347,6 +1401,7 @@ class _Server:
         self._disarm_idle(d)
         self.docs.pop(d.id, None)
         self.drop_dialogs(d.id)
+        await self._keep_sketches(d)                             # I7.3: unfinished sketches go to the autosave
         self._closing.add(d.id)
         message = {"type": "closed", "document": d.id}
         if reason is not None:
@@ -1826,7 +1881,7 @@ class _Server:
     async def _message(self, ws, client, text):
         try:
             msg = json.loads(text)
-        except ValueError:
+        except (ValueError, RecursionError):                     # a message nested past the parser's depth
             msg = None
         kind = msg.get("type") if isinstance(msg, dict) else None
         doc_id = msg.get("document") if isinstance(msg, dict) else None
@@ -1863,8 +1918,264 @@ class _Server:
                 await self._push(ws, {"type": "error", "id": ident, "message": str(e)})
             else:
                 await self._push(ws, {"type": "edited", "id": ident, "document": d.id, "rebuilt": rebuilt})
+        elif isinstance(kind, str) and kind.startswith("sketch."):
+            await self._sketch_message(ws, client, msg, doc_id)          # I7.3, see "Sketch sessions"
         else:
             await self._push(ws, {"type": "error", "message": "unknown message"})
+
+    # ------------------------------------------------------------------ sketch sessions (I7.3)
+    def _sketch_expiry(self, then):
+        """The registry's on_expire: an expired client's unfinished sketch is kept for the autosave (on the event
+        loop, then off it), then `then(entry)` (the caller's own callback) runs."""
+        def expired(entry):
+            sk = (entry.data or {}).pop("sketch", None)
+            if sk is not None:
+                self._spawn(self._keep_expired(sk))
+            if then is not None:
+                then(entry)
+        return expired
+
+    async def _keep_expired(self, sk):
+        d = self.docs.get(sk.document)
+        if d is None:
+            return                                               # its Document closed, and kept it then
+        kept = [self._kept_of(sk)]
+        await self._in_session(d, lambda: self._add_kept(d, kept))
+        await self._autosave_one(d)
+
+    @staticmethod
+    def _kept_of(sk):
+        """What the autosave keeps of an unfinished sketch: its feature dict with the session's params."""
+        with sk.lock:
+            stored = sk.stored
+            if stored is not None:
+                f = json.loads(json.dumps(stored))
+                f["params"] = {**(f.get("params") or {}), **sk.params()}
+            else:
+                f = {"id": None, "type": "sketch", "name": sk.name, "suppressed": False, "params": sk.params()}
+        return {"tab": sk.tab, "feature": f}
+
+    def _take_sketches(self, d):
+        """Take every client's sketch on Document `d` out of the registry; what the autosave keeps of them. Event
+        loop thread (or after the loop stopped)."""
+        kept = []
+        for client in self.clients.ids():
+            data = self.clients.get(client).data
+            sk = data.get("sketch")
+            if sk is not None and sk.document == d.id:
+                del data["sketch"]
+                kept.append(self._kept_of(sk))
+        return kept
+
+    @staticmethod
+    def _add_kept(d, kept):
+        """Session lock held. Add `kept` to the sketches every later autosave of `d` writes into its tabs."""
+        if kept:
+            d.kept_sketches = list(getattr(d, "kept_sketches", None) or ()) + kept
+            d.seq += 1
+
+    async def _keep_sketches(self, d):
+        """`d` is closing: its unfinished sketches go to the autosave its close writes."""
+        kept = self._take_sketches(d)
+        if kept:
+            await self._in_session(d, lambda: self._add_kept(d, kept))
+
+    async def _sketch_message(self, ws, client, msg, doc_id):
+        """One `sketch.*` message; the answer goes to `ws` only. Every failure is an `error` message naming the
+        request (`for`), never a closed socket."""
+        from .sketch_session import SketchError
+        kind = msg["type"]
+        ident = msg.get("id")
+        if not (ident is None or (isinstance(ident, int) and not isinstance(ident, bool) and abs(ident) < 2 ** 53)
+                or (isinstance(ident, str) and len(ident) <= 64)):
+            await self._push(ws, {"type": "error", "id": None, "for": kind[:40],
+                                  "message": "id: must be a string of at most 64 characters or an integer"})
+            return
+        try:
+            out = await self._sketch_do(client, kind, msg, doc_id)
+        except DocumentLocked as e:
+            await self._push(ws, {"type": "error", "id": ident, "for": kind, "document": e.document,
+                                  "message": str(e), "locked": True, "holder": e.holder})
+        except (self.session_error, SketchError) as e:
+            await self._push(ws, {"type": "error", "id": ident, "for": kind[:40], "message": str(e)})
+        except Exception as e:                                   # noqa: BLE001
+            _log(f"sketch message {_clean(kind, 40)}: {type(e).__name__}: {_clean(str(e), 300)}")
+            await self._push(ws, {"type": "error", "id": ident, "for": kind[:40], "message": "internal error"})
+        else:
+            await self._push(ws, {**out, "id": ident})
+
+    MAX_SKETCHES = 64                                            # sketch sessions open on this server at once
+
+    _SKETCH_FIELDS = {"sketch.open": {"tab", "feature", "plane"},
+                      "sketch.add": {"shape", "picks", "construction", "radius", "sweep", "constraints"},
+                      "sketch.delete": {"ids"}, "sketch.construction": {"ids", "value"},
+                      "sketch.undo": set(), "sketch.redo": set(), "sketch.state": set(), "sketch.commit": set(),
+                      "sketch.cancel": set()}
+
+    async def _sketch_do(self, client, kind, msg, doc_id):
+        from .sketch_session import SketchError
+        fields = self._SKETCH_FIELDS.get(kind)
+        if fields is None:
+            raise SketchError(f"type: unknown sketch message (one of {', '.join(self._SKETCH_FIELDS)})")
+        extra = sorted(str(k) for k in msg if k not in fields | {"type", "id", "document"})
+        if extra:
+            raise SketchError(f"{extra[0][:40]}: unknown field")
+        entry = self.clients.get(client)
+        if entry is None:                                        # the socket attached it; gone only after it closed
+            raise SketchError("this client has no registry entry")
+        if kind == "sketch.open":
+            return await self._sketch_open(entry, msg, doc_id)
+        sk = entry.data.get("sketch")
+        if sk is None:
+            raise SketchError("no sketch is open for this client")
+        if "document" in msg and msg["document"] != sk.document:
+            raise SketchError("document: the open sketch is on another Document")
+        body = {k: v for k, v in msg.items() if k in fields}
+        if kind == "sketch.state":
+            return {"type": "sketch.state", **await self._off_loop(self._sketch_full, sk)}
+        if kind == "sketch.cancel":
+            if entry.data.get("sketch") is sk:
+                del entry.data["sketch"]
+            return {"type": "sketch.cancelled", "document": sk.document, "tab": sk.tab, "feature": sk.feature}
+        if kind == "sketch.commit":
+            return await self._sketch_commit(entry, sk, client)
+
+        def step():
+            with sk.lock:
+                if sk.committing:
+                    raise SketchError("the sketch is being committed")
+                made = None
+                if kind == "sketch.add":
+                    made = sk.add(body)
+                elif kind == "sketch.delete":
+                    sk.delete(body)
+                elif kind == "sketch.construction":
+                    sk.construction(body)
+                elif kind == "sketch.undo":
+                    sk.undo()
+                else:
+                    sk.redo()
+                out = {"type": "sketch.changed", **sk.view()}
+                if made is not None:
+                    out["made"] = made
+                return out
+        return await self._off_loop(step)
+
+    @staticmethod
+    def _sketch_full(sk):
+        with sk.lock:
+            return {**sk.view(), "frame": sk.frame, "edges": sk.edges}
+
+    @classmethod
+    def _json_plain(cls, x):
+        """`x` with numpy arrays and numbers turned into lists and Python numbers, for a JSON message."""
+        if isinstance(x, dict):
+            return {str(k): cls._json_plain(v) for k, v in x.items()}
+        if isinstance(x, (list, tuple)):
+            return [cls._json_plain(v) for v in x]
+        if hasattr(x, "tolist"):
+            return cls._json_plain(x.tolist())
+        return x
+
+    @staticmethod
+    def _plane_ref(value):
+        """A plane reference from a message, checked for shape (the engine checks that it finds a plane)."""
+        from .sketch_session import SketchError
+        if not isinstance(value, dict) or len(json.dumps(value)) > 65536:
+            raise SketchError("plane: must be a plane reference (an object)")
+        kind = value.get("kind")
+        if kind == "std":
+            if set(value) != {"kind", "name"} or value["name"] not in ("Top", "Front", "Right"):
+                raise SketchError("plane: a standard plane is {\"kind\": \"std\", \"name\": Top, Front or Right}")
+        elif kind == "plane":
+            if set(value) != {"kind", "fid"} or not isinstance(value["fid"], str) or not 1 <= len(value["fid"]) <= 64:
+                raise SketchError("plane: a plane feature is {\"kind\": \"plane\", \"fid\": id}")
+        elif kind == "face":
+            if not isinstance(value.get("face"), dict) or set(value) - {"kind", "face", "origin", "xdir"}:
+                raise SketchError("plane: a face is {\"kind\": \"face\", \"face\": a face reference}")
+        else:
+            raise SketchError("plane.kind: must be std, plane or face")
+        return value
+
+    async def _sketch_open(self, entry, msg, doc_id):
+        from .sketch_session import SketchError, SketchSession
+        if entry.data.get("sketch") is not None:
+            raise SketchError("a sketch is already open for this client; commit or cancel it first")
+        if sum(1 for c in self.clients.ids() if self.clients.get(c).data.get("sketch") is not None) \
+                >= self.MAX_SKETCHES:
+            raise SketchError("too many sketches are open")
+        d = self.docs.get(doc_id) if isinstance(doc_id, str) else None
+        if d is None:
+            raise SketchError("document: the message must name an open Document")
+        tab = msg.get("tab")
+        if not isinstance(tab, str) or tab not in d.tab_ids:
+            raise SketchError("tab: unknown tab")
+        fid, plane = msg.get("feature"), msg.get("plane")
+        if (fid is None) == (plane is None):
+            raise SketchError("sketch.open takes either feature (an existing sketch) or plane (a new one)")
+        if fid is not None and (not isinstance(fid, str) or re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", fid) is None):
+            raise SketchError("feature: must be a feature id")
+        if plane is not None:
+            plane = self._plane_ref(plane)
+
+        def work():
+            if fid is not None:
+                stored = d.session.sketch_feature(tab, fid)
+                frame = d.session.sketch_frame(tab, fid)
+                params = stored.get("params") or {}
+                sk = SketchSession(d.id, tab, fid, params.get("plane"), params.get("sketch"), name=stored.get("name"))
+                sk.stored = stored
+            else:
+                names = set(d.session.feature_names(tab).values())
+                frame = d.session.sketch_frame(tab, plane)
+                n = 1
+                while f"Sketch {n}" in names:
+                    n += 1
+                sk = SketchSession(d.id, tab, None, plane, None, name=f"Sketch {n}")
+            sk.frame = {k: [float(x) for x in frame[k]] for k in ("origin", "xdir", "ydir", "normal")}
+            sk.edges = self._json_plain(frame["edges"])
+            return sk, d.revisions.get(tab)
+        sk, revision = await self._in_session(d, work)
+        if entry.data.get("sketch") is not None:                 # another socket of this client opened one meanwhile
+            raise SketchError("a sketch is already open for this client; commit or cancel it first")
+        entry.data["sketch"] = sk
+        return {"type": "sketch.opened", **await self._off_loop(self._sketch_full, sk), "revision": revision}
+
+    async def _sketch_commit(self, entry, sk, client):
+        from .sketch_session import SketchError
+        d = self.docs.get(sk.document)
+        if d is None:
+            raise SketchError("the sketch's Document is not open")
+        with sk.lock:
+            if sk.committing:
+                raise SketchError("the sketch is being committed")
+            sk.committing = True
+        try:
+            feature = self._kept_of(sk)["feature"]
+            if sk.feature is None:
+                def names():
+                    have = d.session.feature_names(sk.tab)
+                    if feature["name"] in have.values():          # a sketch made since took the name
+                        n = 1
+                        while f"Sketch {n}" in have.values():
+                            n += 1
+                        feature["name"] = f"Sketch {n}"
+                    return have
+                before = await self._in_session(d, names)
+                feature.pop("id", None)
+                rebuilt = await self._edit(d, sk.tab, {"op": "add_feature", "feature": feature}, client, None)
+                after = await self._in_session(d, lambda: d.session.feature_names(sk.tab))
+                made = [k for k in after if k not in before]
+                fid = next((k for k in made if after[k] == feature["name"]), made[0] if made else None)
+            else:
+                rebuilt = await self._edit(d, sk.tab, {"op": "replace_feature", "feature": feature}, client, None)
+                fid = sk.feature
+        finally:
+            sk.committing = False
+        if entry.data.get("sketch") is sk:
+            del entry.data["sketch"]
+        return {"type": "sketch.committed", "document": d.id, "tab": sk.tab, "feature": fid, "rebuilt": rebuilt,
+                "revision": d.revisions.get(sk.tab)}
 
 
 def make_server(session=None, port=0, allow_origins=(), client_ttl=CLIENT_TTL, client_expired=None, *,

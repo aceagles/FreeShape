@@ -948,3 +948,82 @@ class DocumentSession:
             self._state[tid] = ("crashed", str(e))
         except EngineError as e:
             self._state[tid] = ("error", str(e))
+
+    # ------------------------------------------------------------------ sketch sessions (I7.3)
+    def sketch_feature(self, tab, fid):
+        """The stored sketch feature `fid` of a Part Studio tab (the engine's `feature` query, a deep copy: nothing
+        changes) and the tab's feature names. SessionError for an unknown tab or feature, a tab that is not a Part
+        Studio, or a feature that is not a sketch."""
+        self._need_open(tab)
+        try:
+            got = self._retry(tab, lambda: self._eng.feature(tab, fid))
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
+        f = got["feature"]
+        if f.get("type") != "sketch":
+            raise SessionError(f"feature {fid!r} is a {f.get('type')}, not a sketch")
+        return f
+
+    def sketch_frame(self, tab, plane):
+        """The engine's `sketch_frame` (I7.1) for a plane reference or a sketch feature id: the frame and the model
+        edges. A query. SessionError for a tab that cannot answer, a face that is not planar (the message names it)
+        or a reference that is not a plane."""
+        self._need_open(tab)
+        try:
+            return self._retry(tab, lambda: self._eng.sketch_frame(tab, plane))
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
+        except (TypeError, ValueError, KeyError, IndexError, AttributeError) as e:      # a malformed reference
+            raise SessionError(f"plane: not a plane reference ({type(e).__name__})") from e
+
+    def feature_names(self, tab):
+        """{feature id: name} of a Part Studio tab, in file order. SessionError for any other kind of tab."""
+        out = self.outputs(tab)
+        if out.kind != "studio":
+            raise SessionError(f"tab {tab!r} is not a Part Studio")
+        return {f.id: f.name for f in out.features}
+
+    def autosave_state_with(self, kept):
+        """`autosave_state()` with unfinished sketches written into their tabs' data, for the server's autosave.
+        `kept` is [{"tab", "feature": the sketch feature dict ("id" None for a new sketch)}]: an existing feature
+        has its params replaced, a new one (or one deleted since) is added where `add_feature` puts it (at the
+        rollback bar) under a free id. The session itself is not changed: these tabs are dirty only in the autosave,
+        and `restore_autosave` brings them back as unsaved edits. A tab that is gone or did not open is skipped.
+        None when there is nothing to write."""
+        state = self.autosave_state()
+        live = [k for k in kept or () if k["tab"] in {e["id"] for e in self._entries} and k["tab"] not in self._failed]
+        if not live:
+            return state
+        if state is None:
+            state = {"document": self.id, "name": self.name, "entries": [dict(e) for e in self._entries],
+                     "added": sorted(self._added), "renamed": sorted(self._renamed & {e["id"] for e in self._entries}),
+                     "deleted": [{"id": tid, "file": file} for tid, file in self._deleted], "tabs": {},
+                     "blobs": {}, "manifest_base": self._manifest_base}
+        for k in live:
+            tid = k["tab"]
+            if tid in state["tabs"]:
+                raw, base = state["tabs"][tid]
+            else:
+                held = {}
+                raw, base = self._tab_bytes(tid, HeldBlobs(held)), self._base.get(tid)
+                state["blobs"].update(held)
+            data = json.loads(bytes(raw).decode("utf-8"))
+            features = data.setdefault("features", [])
+            feat = json.loads(json.dumps(k["feature"]))
+            at = next((i for i, f in enumerate(features) if f.get("id") == feat.get("id")), None)
+            if at is not None:
+                features[at] = feat
+            else:
+                used = {f.get("id") for f in features}
+                n = 1 + max([int("".join(c for c in str(x) if c.isdigit()) or 0) for x in used] + [0])
+                while f"F{n}" in used:
+                    n += 1
+                feat["id"] = f"F{n}"
+                rb = data.get("rollback")
+                if rb is None:
+                    features.append(feat)
+                else:
+                    features.insert(rb, feat)
+                    data["rollback"] = None if rb + 1 >= len(features) else rb + 1
+            state["tabs"][tid] = (json.dumps(data, indent=1).encode("utf-8"), base)
+        return state

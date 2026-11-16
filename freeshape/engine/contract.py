@@ -259,6 +259,9 @@ class StudioOutputs(TabOutputs):
     #                          back. len(features) when nothing is rolled back. set_rollback's `index` takes it.
     can_undo: bool = False
     can_redo: bool = False
+    # The drag arrows of the dialog being previewed (I6.3), dialog_schema.manipulators' dicts: field, flip, origin,
+    # dir, value, symmetric, snap, min, label. Only a preview carries them; the committed outputs have none.
+    manipulators: list = field(default_factory=list)
 
 
 @dataclass
@@ -416,7 +419,8 @@ class Engine(abc.ABC):
             {"preview": n, the tab's preview number (1, 2, ... per tab, in the order the requests were made),
              "feature": the feature id (None for a new one), "ok": bool,
              "outputs": a StudioOutputs of the previewed model (its revision, features, can_undo and can_redo are
-                        the committed tab's; `errors` holds the previewed feature's error, if any), or None,
+                        the committed tab's; `errors` holds the previewed feature's error, if any; `manipulators`
+                        holds the dialog's drag arrows, dialog_schema.manipulators, empty for most types), or None,
              "error": None, or a message naming the feature when it cannot build ("Extrude 1: ..."),
              "superseded": True only on a request a newer one replaced before it started (no outputs then)}.
         A preview that cannot build is an answer with "ok": False, not an exception. EngineError for an unknown

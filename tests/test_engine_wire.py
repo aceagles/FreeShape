@@ -90,6 +90,20 @@ def test_real_outputs_round_trip_exactly(outputs, kind):
     assert type(back) is type(out)
 
 
+def test_a_preview_with_manipulators_round_trips_exactly():
+    """I6.3: StudioOutputs.manipulators, the last field, travels in a preview and comes back equal."""
+    bracket = os.path.join(EXAMPLES_DIR, "documents", "bracket", "bracket.fshape")
+    with InProcessEngine() as e:
+        tab = e.open_tab(bracket)
+        params = dict(e.feature(tab, "F2")["feature"]["params"], depth=12.0, end="blind", flip=False)
+        got = e.preview(tab, "F2", "extrude", params)
+    out = got["outputs"]
+    assert got["ok"] and [m["field"] for m in out.manipulators] == ["depth"]
+    back = round_trip(out)
+    assert back.manipulators == out.manipulators and type(back.manipulators[0]["origin"][0]) is float
+    assert [f.name for f in dataclasses.fields(out)][-1] == "manipulators"      # appended, nothing renumbered
+
+
 def test_the_outputs_are_not_trivial(outputs):
     st, asm = outputs["studio"], outputs["assembly"]
     assert st.parts and st.parts[0].mesh is not None and isinstance(st.parts[0].brep, bytes)

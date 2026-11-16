@@ -564,9 +564,18 @@ class StudioTab(_Tab):
             refs = {feat["id"]: doc._error_refs[feat["id"]]} if err and feat["id"] in getattr(doc, "_error_refs", {}) \
                 else {}
             out = self._outputs_of(st, errors, refs)
+            if not err:                              # I6.3: the dialog's drag arrows, read on the state before it
+                out.manipulators = self._manipulators(feat, index)
         except Exception as e:                       # noqa: BLE001  (a preview never takes the worker down)
             return {"feature": fid, "ok": False, "outputs": None, "error": f"{name}: {type(e).__name__}: {e}"}
         return {"feature": fid, "ok": not err, "outputs": out, "error": f"{name}: {err}" if err else None}
+
+    def _manipulators(self, feat, index):
+        """The drag arrows of a previewed feature, read on the model before it. They are a hint: any failure is []."""
+        try:
+            return plain(DSC.manipulators(feat["type"], feat["params"], self.doc.state_before(index)))
+        except Exception:                            # noqa: BLE001
+            return []
 
     def _outputs_of(self, st, errors, error_refs):
         doc, enc = self.doc, self.engine.encoder

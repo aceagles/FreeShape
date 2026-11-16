@@ -189,6 +189,31 @@ export interface StudioOutputs {
   readonly rollback: number
   readonly canUndo: boolean
   readonly canRedo: boolean
+  /** The drag arrows of the dialog being previewed. Only a preview has any; committed outputs give []. */
+  readonly manipulators: readonly Manipulator[]
+}
+
+/**
+ * A drag arrow (dialog_schema.manipulators). The value is signed: along `dir` from `origin`. A drag to value v sets
+ * the `field` param to |v| (twice that when `symmetric`) and the `flip` param to v < 0.
+ */
+export interface Manipulator {
+  /** The param the arrow drives: "depth" (Extrude) or "offset" (Plane). */
+  readonly field: string
+  /** The param that takes the sign of a drag past the origin, or null. */
+  readonly flip: string | null
+  readonly origin: Vec3
+  /** Unit vector. */
+  readonly dir: Vec3
+  /** The current signed distance along `dir`; half of the field when `symmetric`. */
+  readonly value: number
+  readonly symmetric: boolean
+  /** "view": snap to a step the viewer picks from its zoom. */
+  readonly snap: string
+  /** The smallest absolute value a drag may give, or null. */
+  readonly min: number | null
+  /** The value as the desktop prints it, with its unit. */
+  readonly label: string
 }
 
 /** Any other tab kind: the common fields only. */

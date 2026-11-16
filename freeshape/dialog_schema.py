@@ -1189,3 +1189,66 @@ def on_field_set(ftype, key, value, fields, params=None):
     if key == "fillet_type" and value == "variable" and "vertices" in out:
         active = "vertices"
     return FieldSet(out, active, p)
+
+
+# =========================================================================== drag arrows (I6.3)
+
+def _vec(v):
+    return [float(x) for x in np.asarray(v, float).reshape(-1)]
+
+
+def manipulators(ftype, params, base_state):
+    """The drag arrows of a feature dialog as plain data, one dict each (the desktop's `FeatureDialog.manipulators`
+    wraps this and adds its closures; the engine preview sends it to the Browser client):
+        field      the param the arrow drives ("depth", "offset")
+        flip       the param that carries the sign of a drag past the origin, or None ("flip")
+        origin     [x, y, z] where the arrow starts
+        dir        [x, y, z] unit vector the value is measured along
+        value      the current signed distance along `dir`
+        symmetric  True when `value` is half of the field (Extrude's Symmetric end)
+        snap       "view": snap to a step the viewer picks from its zoom
+        min        the smallest absolute value a drag may give, or None
+        label      the value as the desktop prints it, with its unit
+    `params` may hold expressions; they are evaluated against `base_state` (the model before the feature).
+    Extrude and an offset Plane have an arrow, every other type has none (Split's keep-side arrows stay
+    desktop-only). Never raises for a feature that cannot be drawn: it gives []. Qt-free."""
+    if ftype not in ("extrude", "plane"):
+        return []
+    fid = getattr(base_state, "current_fid", None)       # prepare() records the feature it is about to run
+    try:
+        p = F.prepare({"id": fid, "type": ftype, "params": dict(params or {})}, base_state)["params"]
+    except K.KernelError:
+        return []
+    try:
+        if ftype == "extrude":
+            if p.get("end") == "through":
+                return []
+            profs = F._profiles(base_state, p)
+            if not profs:
+                return []
+            n = np.asarray(F._profile_normal(base_state, p, profs), float)
+            if p.get("op") in ("remove", "intersect") and not p.get("regions"):
+                n = -n                   # cuts from a face go into the part
+            infos = [K.face_info(f) for f in profs]
+            area = sum(i["area"] for i in infos) or 1.0
+            origin = sum(np.array(i["c"]) * i["area"] for i in infos) / area
+            symmetric = p.get("end") == "symmetric"
+            depth, flip = F.signed_extent(p.get("depth", 10), p.get("flip"))
+            value = depth / 2 if symmetric else (-depth if flip else depth)
+            return [{"field": "depth", "flip": "flip", "origin": _vec(origin), "dir": _vec(n), "value": float(value),
+                     "symmetric": symmetric, "snap": "view", "min": 1e-3 if symmetric else None,
+                     "label": fmt(depth) + " mm"}]
+        if F.plane_type(p) != "offset":
+            return []
+        planes_ = [(k, r) for k, r in F.plane_items(p) if F.plane_role(k, r) == "plane"]
+        if planes_:
+            k_, r_ = planes_[0]
+            base = F.resolve_plane(base_state, r_ if k_ == "plane" else {"kind": "face", "face": r_})
+        else:
+            base = K.std_plane("Top")
+        off = float(p.get("offset", 0))
+        return [{"field": "offset", "flip": "flip", "origin": _vec(base.origin), "dir": _vec(base.normal),
+                 "value": -off if p.get("flip") else off, "symmetric": False, "snap": "view", "min": None,
+                 "label": fmt(off) + " mm"}]
+    except (K.KernelError, KeyError, IndexError, ValueError):
+        return []

@@ -22,6 +22,7 @@ from . import theme
 from .numparse import parse_number, fmt, has_vars
 from .viewport import Pick
 from ..picking import make_item, region_touching  # noqa: F401 -- region_touching: re-exported, tests import it here
+from .. import dialog_schema as SCHEMA
 from ..dialog_schema import (  # noqa: F401 -- moved to a Qt-free module (I5.1); tests and plugins import them here
     apply_preselection,
     on_field_set,
@@ -2047,52 +2048,24 @@ class FeatureDialog(_ResizableFrame):
         try:
             if self.ftype == "split":
                 return self._split_arrows(p)
-            if self.ftype == "extrude":
-                if p.get("end") == "through":
-                    return []
-                profs = F._profiles(self.base_state, p)
-                if not profs:
-                    return []
-                n = np.asarray(F._profile_normal(self.base_state, p, profs), float)
-                if p.get("op") in ("remove", "intersect") and not p.get("regions"):
-                    n = -n                   # cuts from a face go into the part
-                infos = [K.face_info(f) for f in profs]
-                area = sum(i["area"] for i in infos) or 1.0
-                origin = sum(np.array(i["c"]) * i["area"] for i in infos) / area
-                symmetric = p.get("end") == "symmetric"
-                depth, flip = F.signed_extent(p.get("depth", 10), p.get("flip"))
-                value = depth / 2 if symmetric else (-depth if flip else depth)
+            if self.ftype in ("extrude", "plane"):
+                out = []
+                for m in SCHEMA.manipulators(self.ftype, self.feature["params"], self.base_state):
+                    symmetric, fld = m["symmetric"], m["field"]
 
-                def on_drag(v, symmetric=symmetric):
-                    if symmetric:
-                        self._set_quiet("depth", round(abs(v) * 2, 6))
-                    else:
-                        self._set_quiet("depth", round(abs(v), 6))
-                        self._set_quiet("flip", v < 0)
-                    self.main.viewport.manipulators[0]["label"] = fmt(self.feature["params"]["depth"]) + " mm"
-                    self.schedule_preview()
-                return [{"origin": origin, "dir": n, "value": value, "on_drag": on_drag,
-                         "on_done": self.schedule_preview, "snap": self._snap_step(),
-                         "min": 1e-3 if symmetric else None, "label": fmt(depth) + " mm"}]
-            if self.ftype == "plane":
-                if F.plane_type(p) != "offset":
-                    return []
-                planes_ = [(k, r) for k, r in F.plane_items(p) if F.plane_role(k, r) == "plane"]
-                if planes_:
-                    k_, r_ = planes_[0]
-                    base = F.resolve_plane(self.base_state, r_ if k_ == "plane" else {"kind": "face", "face": r_})
-                else:
-                    base = K.std_plane("Top")
-                off = float(p.get("offset", 0))
-                value = -off if p.get("flip") else off
-
-                def on_drag(v):
-                    self._set_quiet("offset", round(abs(v), 6))
-                    self._set_quiet("flip", v < 0)
-                    self.main.viewport.manipulators[0]["label"] = fmt(abs(v)) + " mm"
-                    self.schedule_preview()
-                return [{"origin": base.origin, "dir": base.normal, "value": value, "on_drag": on_drag,
-                         "on_done": self.schedule_preview, "snap": self._snap_step(), "label": fmt(off) + " mm"}]
+                    def on_drag(v, symmetric=symmetric, fld=fld):
+                        if symmetric:
+                            self._set_quiet(fld, round(abs(v) * 2, 6))
+                        else:
+                            self._set_quiet(fld, round(abs(v), 6))
+                            self._set_quiet("flip", v < 0)
+                        lab = self.feature["params"][fld] if fld == "depth" else abs(v)
+                        self.main.viewport.manipulators[0]["label"] = fmt(lab) + " mm"
+                        self.schedule_preview()
+                    out.append({"origin": np.asarray(m["origin"]), "dir": np.asarray(m["dir"]), "value": m["value"],
+                                "on_drag": on_drag, "on_done": self.schedule_preview, "snap": self._snap_step(),
+                                "min": m["min"], "label": m["label"]})
+                return out
         except (K.KernelError, KeyError, IndexError, ValueError):
             return []
         return []

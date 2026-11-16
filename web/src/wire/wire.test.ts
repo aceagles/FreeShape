@@ -138,6 +138,24 @@ function treeFixture(): { out: StudioOutputs; want: TreeExpected } {
   return { out, want }
 }
 
+describe('the manipulators of a preview', () => {
+  it('decodes the depth arrow of an extrude preview', () => {
+    const b = readFileSync(new URL('preview.outputs.fsw', dir))
+    const out = decodeOutputs(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer)
+    if (!isStudio(out)) throw new Error('fixture is not a studio')
+    const want = JSON.parse(readFileSync(new URL('preview.expected.json', dir), 'utf8')) as {
+      manipulators: { field: string; flip: string; origin: number[]; dir: number[]; value: number; symmetric: boolean; snap: string; min: number | null; label: string }[]
+    }
+    expect(out.manipulators).toEqual(want.manipulators)
+    expect(out.manipulators).toHaveLength(1)
+    expect(out.manipulators[0]).toMatchObject({ field: 'depth', flip: 'flip', value: 12, symmetric: false, min: null, snap: 'view', label: '12 mm' })
+  })
+
+  it('gives none for committed outputs and for a payload that predates the field', () => {
+    expect(studio().manipulators).toEqual([])
+  })
+})
+
 describe('the feature tree', () => {
   it('lists the bracket features in file order with their types, labels and names', () => {
     const out = studio()

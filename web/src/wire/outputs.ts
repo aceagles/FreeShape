@@ -9,6 +9,7 @@ import type {
   FeatureEntry,
   FolderEntry,
   InstanceEntry,
+  Manipulator,
   MateConnector,
   MateEntry,
   Part,
@@ -239,6 +240,25 @@ function studio(f: Fields, common: Common): StudioOutputs {
     rollback: f['rollback'] === undefined ? 0 : num(f['rollback'], `${w}.rollback`),
     canUndo: f['can_undo'] === undefined ? false : bool(f['can_undo'], `${w}.can_undo`),
     canRedo: f['can_redo'] === undefined ? false : bool(f['can_redo'], `${w}.can_redo`),
+    // an older payload, and every committed one, has none
+    manipulators: f['manipulators'] === undefined ? [] : list(f['manipulators'], `${w}.manipulators`).map((m, i) => manipulator(m, `${w}.manipulators[${i}]`)),
+  }
+}
+
+function manipulator(x: unknown, where: string): Manipulator {
+  const m = record(x, where)
+  const flip = m['flip']
+  const min = m['min']
+  return {
+    field: str(m['field'], `${where}.field`),
+    flip: flip === null || flip === undefined ? null : str(flip, `${where}.flip`),
+    origin: vec3(m['origin'], `${where}.origin`),
+    dir: vec3(m['dir'], `${where}.dir`),
+    value: num(m['value'], `${where}.value`),
+    symmetric: bool(m['symmetric'], `${where}.symmetric`),
+    snap: str(m['snap'], `${where}.snap`),
+    min: min === null || min === undefined ? null : num(min, `${where}.min`),
+    label: str(m['label'], `${where}.label`),
   }
 }
 

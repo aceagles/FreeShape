@@ -270,3 +270,174 @@
   color: var(--c-muted);
   opacity: 0.5;
 }
+
+/* ------------------------------------------------------------------------------------------------------------------
+   Desktop mode (card I9.15): the desktop's density. Every size is a --d-* token from shell.css; nothing here applies to
+   Tablet mode.
+   ------------------------------------------------------------------------------------------------------------------ */
+.shell[data-mode='desktop'] .panel-header {
+  height: var(--d-head-height);
+  padding: 0 4px 0 0;
+  border-bottom: none;
+}
+.shell[data-mode='desktop'] .panel-title,
+.shell[data-mode='desktop'] .parts-heading {
+  padding: var(--d-head-pad);
+  font-size: var(--d-font);
+  font-weight: 700;
+  line-height: var(--d-line);
+  color: var(--c-ink);
+}
+.shell[data-mode='desktop'] .panel-header .icon-button {
+  width: 22px;
+  height: 22px;
+}
+.shell[data-mode='desktop'] .panel-header .icon-button svg {
+  width: 16px;
+  height: 16px;
+}
+.shell[data-mode='desktop'] .parts-heading {
+  height: var(--d-head-height);
+  box-sizing: border-box;
+  border-top: 1px solid var(--c-line);
+  margin-top: 4px;
+}
+.shell[data-mode='desktop'] .panel-row {
+  min-height: var(--d-row-feature);
+  gap: var(--d-row-gap);
+  padding: var(--d-row-pad-y) var(--d-row-pad-x);
+  border-radius: var(--d-row-radius);
+  font-size: var(--d-font);
+  line-height: var(--d-line);
+}
+.shell[data-mode='desktop'] .panel-row[data-indent] {
+  padding-left: calc(var(--d-row-pad-x) + var(--d-indent));
+}
+.shell[data-mode='desktop'] .panel-row > svg {
+  width: var(--d-icon-feature);
+  height: var(--d-icon-feature);
+}
+/* a folder row: the arrow in the desktop's 16 px column, then the folder */
+.shell[data-mode='desktop'] .panel-row[data-folder] > svg:first-child {
+  width: var(--d-icon-chevron);
+  height: var(--d-icon-chevron);
+  margin-right: -2px;
+}
+.shell[data-mode='desktop'] .panel-row[data-state='failed'] {
+  align-items: center;
+}
+.shell[data-mode='desktop'] .row-message {
+  font-size: var(--fs-small);
+  line-height: 14px;
+}
+.shell[data-mode='desktop'] .row-text {
+  gap: 0;
+}
+/* hover and selection paint the whole row, eye included */
+.shell[data-mode='desktop'] li[data-row] {
+  border-radius: var(--d-row-radius);
+}
+.shell[data-mode='desktop'] li[data-row]:hover,
+.shell[data-mode='desktop'] .part-row:hover {
+  background: var(--d-hover);
+}
+.shell[data-mode='desktop'] .panel-row[aria-current='true'],
+.shell[data-mode='desktop'] li[data-row]:has(.panel-row[aria-current='true']),
+.shell[data-mode='desktop'] .part-row[data-selected] {
+  background: var(--d-selected);
+}
+.shell[data-mode='desktop'] .panel-row[aria-current='true'] {
+  border-radius: var(--d-row-radius) 0 0 var(--d-row-radius);
+}
+
+/* The eye: 18 px at the right end of the row under the mouse, and faint and crossed out on a hidden row. */
+.shell[data-mode='desktop'] .feature-eye,
+.shell[data-mode='desktop'] .part-eye {
+  width: var(--d-eye-column);
+  min-height: 0;
+  height: auto;
+  border-radius: var(--d-row-radius);
+  color: var(--d-eye-ink);
+}
+.shell[data-mode='desktop'] .feature-eye svg,
+.shell[data-mode='desktop'] .part-eye svg {
+  width: var(--d-eye-size);
+  height: var(--d-eye-size);
+}
+.shell[data-mode='desktop'] [data-eye='off']:not(:focus-visible) {
+  opacity: 0;
+}
+.shell[data-mode='desktop'] .feature-eye:not(:disabled):hover,
+.shell[data-mode='desktop'] .part-eye:not(:disabled):hover {
+  color: var(--c-accent);
+  background: transparent;
+}
+.shell[data-mode='desktop'] .feature-eyed[data-hidden] .feature-eye,
+.shell[data-mode='desktop'] .part-row[data-hidden] .part-eye {
+  color: var(--d-eye-ink-hidden);
+}
+.shell[data-mode='desktop'] .feature-eyed[data-hidden] .feature-eye:not(:disabled):hover,
+.shell[data-mode='desktop'] .part-row[data-hidden] .part-eye:not(:disabled):hover {
+  color: var(--c-accent);
+}
+.shell[data-mode='desktop'] .feature-eyed[data-hidden] .feature-eye svg,
+.shell[data-mode='desktop'] .part-row[data-hidden] .part-eye svg {
+  opacity: 1;
+}
+
+/* Parts: 14 px icon and swatch, a 24 px row. */
+.shell[data-mode='desktop'] .part-row {
+  min-height: var(--d-row-part);
+}
+.shell[data-mode='desktop'] .part-select {
+  min-height: var(--d-row-part);
+}
+.shell[data-mode='desktop'] .part-select > svg {
+  width: var(--d-icon-part);
+  height: var(--d-icon-part);
+}
+.shell[data-mode='desktop'] .part-swatch {
+  width: var(--d-icon-part);
+  height: var(--d-icon-part);
+  border-radius: 3px;
+}
+
+/* The rollback bar: the desktop's 8 px bar (2 px above and below) in a 12 px row; the Drag handle is a small grip at its end. */
+.shell[data-mode='desktop'] .rollback-bar {
+  box-sizing: border-box;
+  height: var(--d-rollback-row);
+  gap: 4px;
+  padding: 0 4px;
+}
+.shell[data-mode='desktop'] .rollback-line {
+  height: var(--d-rollback-bar);
+  border-radius: 2px;
+}
+.shell[data-mode='desktop'] .rollback-handle {
+  width: 18px;
+  height: var(--d-rollback-row);
+  border-radius: 2px;
+}
+.shell[data-mode='desktop'] .rollback-handle svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* The rail: the desktop's 1 px separator, compact buttons. */
+.shell[data-mode='desktop'] .panel-rail {
+  gap: 2px;
+  padding-top: 4px;
+}
+.shell[data-mode='desktop'] .panel-rail .icon-button {
+  width: var(--d-rail-button);
+  height: var(--d-rail-button);
+}
+.shell[data-mode='desktop'] .panel-rail .icon-button svg {
+  width: var(--d-icon-feature);
+  height: var(--d-icon-feature);
+}
+.shell[data-mode='desktop'] .rail-divider {
+  width: 100%;
+  margin: 2px 0;
+  background: var(--c-line);
+}

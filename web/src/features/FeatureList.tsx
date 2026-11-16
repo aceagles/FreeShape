@@ -9,6 +9,7 @@ import { TextPrompt } from '../shell/TextPrompt'
 import { size } from '../theme/tokens'
 import type { FeatureEntry, StudioOutputs } from '../wire'
 import { featureIcon } from './featureIcons'
+import { useRowEye } from './useRowEye'
 import { barPosition, buildRows, nearestSlot, slotBefore } from './tree'
 import type { Row } from './tree'
 import type { FeatureEdits } from './useFeatureEdits'
@@ -56,8 +57,9 @@ function FeatureButton({ feature, index, indent, selected, rolledBack, slot, can
   const press = useLongPress((el) => canMenu && onMenu(el))
   const lastTap = useRef<number | null>(null)
   const state = stateOf(feature, rolledBack)
+  const { eye, bind } = useRowEye(feature.hidden)
   return (
-    <li data-row="" data-slot={slot ?? undefined} className={hasEye(feature) ? 'feature-eyed' : undefined} data-hidden={hasEye(feature) && feature.hidden ? '' : undefined}>
+    <li data-row="" data-slot={slot ?? undefined} {...bind} className={hasEye(feature) ? 'feature-eyed' : undefined} data-hidden={hasEye(feature) && feature.hidden ? '' : undefined}>
       <button
         type="button"
         className="panel-row"
@@ -93,6 +95,7 @@ function FeatureButton({ feature, index, indent, selected, rolledBack, slot, can
           aria-label={`${feature.hidden ? 'Show' : 'Hide'} ${feature.type}`}
           title={`${feature.hidden ? 'Show' : 'Hide'} ${feature.name}`}
           data-feature-eye={feature.id}
+          data-eye={eye}
           disabled={eyeLocked}
           onClick={onEye}
         >

@@ -775,3 +775,39 @@
 .shell-viewport:has(.dialog-floating) .chip-slot {
   visibility: hidden;
 }
+
+/* ------------------------------------------------------------------------------------------------------------------
+   Desktop density of the left column (card I9.15). One token set, switched by the shell's data-mode; features.css and
+   assembly.css read these names only under data-mode='desktop', so Tablet mode keeps its 44 px touch rows.
+   Source: freeshape/ui/theme.py (font 13 px, items padding 3px 6px with a 3 px radius, section headers 8px 10px 4px),
+   panels.py (icons 18 px features and 14 px parts, 8 px rollback bar in a 12 px row, eye 18 px at the right, folder
+   indent 16 + 20) and assembly_ui.py (instance icons 14 px, mate icons 18 px). The row heights are what the desktop's
+   visualItemRect gave on MainWindow(engine=True) at 1440 x 900: features and mates 26, parts and instances 24, the
+   rollback row 12, a section header 28.
+   ------------------------------------------------------------------------------------------------------------------ */
+.shell[data-mode='desktop'] {
+  --d-font: 13px;
+  --d-line: 16px;
+  --d-row-feature: 26px;
+  --d-row-part: 24px;
+  --d-row-mate: 26px;
+  --d-row-pad-y: 3px;
+  --d-row-pad-x: 6px;
+  --d-row-gap: 6px;
+  --d-row-radius: 3px;
+  --d-icon-feature: 18px;
+  --d-icon-part: 14px;
+  --d-icon-chevron: 12px;
+  --d-indent: 36px;
+  --d-head-height: 28px;
+  --d-head-pad: 8px 10px 4px 10px;
+  --d-eye-size: 18px;
+  --d-eye-column: 28px;
+  --d-eye-ink: #5f6b7a;
+  --d-eye-ink-hidden: #a3acb8;
+  --d-rollback-row: 12px;
+  --d-rollback-bar: 8px;
+  --d-rail-button: 28px;
+  --d-hover: var(--c-accentSoft);
+  --d-selected: var(--c-selected);
+}

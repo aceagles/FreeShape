@@ -9,6 +9,7 @@ import { size } from '../theme/tokens'
 import type { Part, StudioOutputs } from '../wire'
 import { cssColor, PART_PALETTE, sameColor } from './partPalette'
 import type { FeatureEdits } from './useFeatureEdits'
+import { useRowEye } from './useRowEye'
 
 interface Props {
   outputs: StudioOutputs
@@ -38,6 +39,26 @@ function PartButton({ part, selected, canMenu, onSelect, onMenu }: { part: Part;
       </span>
       <span className="part-swatch" data-testid="part-swatch" style={{ background: cssColor(part.color) }} />
     </button>
+  )
+}
+
+function PartRow({ part, selected, edits, onSelect, onMenu }: { part: Part; selected: boolean; edits: FeatureEdits; onSelect: () => void; onMenu: (el: HTMLElement) => void }) {
+  const { eye, bind } = useRowEye(part.hidden)
+  return (
+    <li className="part-row" data-part-row={part.id} data-hidden={part.hidden ? '' : undefined} data-selected={selected ? '' : undefined} {...bind}>
+      <PartButton part={part} selected={selected} canMenu={!edits.disabled} onSelect={onSelect} onMenu={onMenu} />
+      <button
+        type="button"
+        className="icon-button part-eye"
+        aria-label={part.hidden ? `Show ${part.name}` : `Hide ${part.name}`}
+        data-part-eye={part.id}
+        data-eye={eye}
+        disabled={edits.disabled || edits.busy}
+        onClick={() => edits.setPartHidden(part.id, !part.hidden)}
+      >
+        <Icon d={part.hidden ? paths.eyeOff : paths.eye} px={size.iconSmall} />
+      </button>
+    </li>
   )
 }
 
@@ -87,19 +108,7 @@ export function PartsList({ outputs, selected, edits, onSelect }: Props) {
       </div>
       <ul className="parts-list" aria-labelledby="parts-heading" data-testid="parts-list">
         {parts.map((p) => (
-          <li key={p.id} className="part-row" data-part-row={p.id} data-hidden={p.hidden ? '' : undefined} data-selected={p.id === selected ? '' : undefined}>
-            <PartButton part={p} selected={p.id === selected} canMenu={!edits.disabled} onSelect={() => onSelect(p.id)} onMenu={(el) => setMenu({ part: p, anchor: anchorOf(el) })} />
-            <button
-              type="button"
-              className="icon-button part-eye"
-              aria-label={p.hidden ? `Show ${p.name}` : `Hide ${p.name}`}
-              data-part-eye={p.id}
-              disabled={edits.disabled || edits.busy}
-              onClick={() => edits.setPartHidden(p.id, !p.hidden)}
-            >
-              <Icon d={p.hidden ? paths.eyeOff : paths.eye} px={size.iconSmall} />
-            </button>
-          </li>
+          <PartRow key={p.id} part={p} selected={p.id === selected} edits={edits} onSelect={() => onSelect(p.id)} onMenu={(el) => setMenu({ part: p, anchor: anchorOf(el) })} />
         ))}
       </ul>
       {menu && (

@@ -5,6 +5,7 @@ import { size } from '../theme/tokens'
 import { cssColor } from '../features/partPalette'
 import type { AssemblyOutputs, InstanceEntry, MateEntry } from '../wire'
 import type { AssemblyEdits } from './useAssembly'
+import { useRowEye } from '../features/useRowEye'
 import '../features/features.css'
 import './assembly.css'
 
@@ -27,8 +28,9 @@ const typeLabel = (t: string): string => (t.length === 0 ? t : t[0]!.toUpperCase
 function InstanceRow({ inst, error, selected, edits, onSelect }: { inst: InstanceEntry; error: string | undefined; selected: boolean; edits: AssemblyEdits; onSelect: () => void }) {
   const state = error !== undefined ? 'failed' : undefined
   const off = edits.disabled || edits.busy
+  const eyeOf = useRowEye(inst.hidden)
   return (
-    <li className="part-row instance-row" data-instance-row={inst.id} data-hidden={inst.hidden ? '' : undefined} data-fixed={inst.fixed ? '' : undefined} data-selected={selected ? '' : undefined}>
+    <li {...eyeOf.bind} className="part-row instance-row" data-instance-row={inst.id} data-hidden={inst.hidden ? '' : undefined} data-fixed={inst.fixed ? '' : undefined} data-selected={selected ? '' : undefined}>
       <button type="button" className="panel-row part-select" data-instance={inst.id} data-state={state} aria-current={selected ? 'true' : undefined} onClick={onSelect}>
         <Icon d={paths.cube} px={size.iconSmall} stroke="var(--c-inkSoft)" />
         <span className="row-text">
@@ -43,6 +45,7 @@ function InstanceRow({ inst, error, selected, edits, onSelect }: { inst: Instanc
         aria-label={inst.fixed ? `Unfix ${inst.name}` : `Fix ${inst.name}`}
         aria-pressed={inst.fixed}
         data-instance-fixed={inst.id}
+        data-eye={eyeOf.eyeFor(inst.fixed)}
         disabled={off}
         onClick={() => edits.setFixed(inst.id, !inst.fixed)}
       >
@@ -53,6 +56,7 @@ function InstanceRow({ inst, error, selected, edits, onSelect }: { inst: Instanc
         className="icon-button part-eye"
         aria-label={inst.hidden ? `Show ${inst.name}` : `Hide ${inst.name}`}
         data-instance-eye={inst.id}
+        data-eye={eyeOf.eye}
         disabled={off}
         onClick={() => edits.setHidden(inst.id, !inst.hidden)}
       >

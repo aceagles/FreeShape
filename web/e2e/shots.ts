@@ -1571,6 +1571,27 @@ export const shots: ShotState[] = [
     },
     after: async (page) => dropFixture(page.request),
   },
+  {
+    // I9.15: the Assembly panel at the desktop's density, beside the desktop program (I9.13)
+    name: 'desktop-assembly',
+    mode: 'desktop',
+    desktop: 'desktop-assembly',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await settledAssembly(page)
+    },
+  },
+  {
+    // I9.15: a feature row and a part row under the mouse in the Part Studio (hover tint, the eye of the row)
+    name: 'desktop-studio-hover',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      await featureRow(page, 'Extrude 1').hover()
+    },
+  },
 ]
 
 /** Listen for the open sketch's data (call before it opens); `lineWith(type)` is the first line a constraint of that type holds. */

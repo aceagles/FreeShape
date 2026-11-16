@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { SelectionStore } from '../selection/store'
+import type { SketchStore } from '../sketch/store'
 import type { StudioOutputs } from '../wire'
 import { ViewportController } from './controller'
 import type { PreviewLook } from './controller'
@@ -11,7 +12,20 @@ import './viewport.css'
  * The 3D view of a Part Studio. Fills its parent; draws `outputs` and redraws when they change (a new revision
  * arrives as new outputs), with `selection` drawn on it. The controller's pointer module (src/input) navigates; the view cube is the control for standard views.
  */
-export function Viewport({ outputs, selection, tabKind = 'studio', preview = null }: { outputs: StudioOutputs | null; selection?: SelectionStore; tabKind?: string | null; preview?: PreviewLook | null }) {
+export function Viewport({
+  outputs,
+  selection,
+  tabKind = 'studio',
+  preview = null,
+  sketch = null,
+}: {
+  outputs: StudioOutputs | null
+  selection?: SelectionStore
+  tabKind?: string | null
+  preview?: PreviewLook | null
+  /** The open sketch (I7.7), drawn over the model while it is open in this view. */
+  sketch?: SketchStore | null
+}) {
   // a viewport mounted on its own keeps its own selection; the shell passes the one it shares with the chip and the Parts list
   const [own] = useState(() => new SelectionStore())
   const store = selection ?? own
@@ -53,6 +67,12 @@ export function Viewport({ outputs, selection, tabKind = 'studio', preview = nul
     if (outputs) controller.current?.setOutputs(outputs, previewNumber === null ? null : { number: previewNumber, feature: previewFeature!, ghost: previewGhost })
     else controller.current?.clear(message === null ? null : tabKind)
   }, [outputs, previewNumber, previewFeature, previewGhost, message, tabKind, failed])
+
+  // sketch mode follows the store that has the sketch open (after the controller exists: the effect above runs first)
+  useEffect(() => {
+    controller.current?.setSketch(sketch)
+    return () => controller.current?.setSketch(null)
+  }, [sketch, store, failed])
 
   return (
     <div ref={host} className="viewport" data-testid="viewport">

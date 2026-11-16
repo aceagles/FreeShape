@@ -180,6 +180,26 @@ export class ViewCamera {
     this.setBack(STANDARD_VIEWS[names[k]![normal[k]! < 0 ? 0 : 1]])
   }
 
+  /** The roll that puts the direction `up` upright on screen for the present view direction (the turntable's up when it is not). */
+  rollFor(up: Triple): number {
+    const saved = this.roll
+    this.roll = 0
+    const { right, up: base } = this.axes()
+    this.roll = saved
+    const u = new Vector3(up[0], up[1], up[2])
+    return Math.atan2(-u.dot(right), u.dot(base))
+  }
+
+  /**
+   * Look straight at a plane with this normal (towards the eye), its `up` direction upright on screen and then turned by
+   * `twist` radians (the sketch's 2D view turns the sketch on screen). The target stays; no fit.
+   */
+  lookAtPlane(normal: Triple, up: Triple, twist = 0): void {
+    this.back.set(normal[0], normal[1], normal[2]).normalize()
+    this.roll = this.rollFor(up) + twist
+    this.apply()
+  }
+
   /** Frame the box in the current view direction, leaving FIT_MARGIN pixels on each side (FIT_MARGIN_TOP at the top, clear of the view cube). */
   fit(bounds: Bounds): void {
     const { lo, hi } = bounds

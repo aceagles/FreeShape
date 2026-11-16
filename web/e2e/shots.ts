@@ -8,6 +8,7 @@ import { edgeSpot, faceSpots, planeSpot, vertexSpot } from './support/pick.ts'
 import type { Spot } from './support/pick.ts'
 import { canvasCentre, fingerDrag, fingerTap, sendPointer, twoFingers } from './support/pointer.ts'
 import type { PointerStep } from './support/pointer.ts'
+import { openNewSketch, openSketchFeature, screenOf, settledSketch } from './support/sketch.ts'
 import { settled } from './support/viewport.ts'
 import { openAssemblyTab, readAssembly, settledAssembly } from './support/assembly.ts'
 
@@ -945,6 +946,73 @@ export const shots: ShotState[] = [
       await page.locator('.tool-strip').getByRole('button', { name: /^Copy/ }).click()
       await page.locator('.group-row[data-tool="mirror"]').waitFor()
     },
+  },
+  {
+    name: 'sketch',
+    mock: 'sketch', // the bracket's Bracket profile open: the view square to its plane, the solid see-through, the sketch drawn, the sketch strip
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-selected',
+    mock: 'sketch', // a point selected: the chip says "1 point"
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await fingerTap(page, await screenOf(page, 'point', 'origin'))
+      await page.getByTestId('selection-count').filter({ hasText: '1 point' }).waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-constrain-list',
+    mock: 'constrain', // the Constrain group open, two columns, every tool dimmed until its card
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await page.locator('.tool-strip').getByRole('button', { name: /^Constrain/ }).click()
+      await page.getByRole('menu', { name: 'Constrain' }).waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-twisted',
+    mock: 'sketch', // 2D after a two-finger twist of 30 degrees: the sketch turned on screen, the camera still square to the plane
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      const c = await canvasCentre(page)
+      const r = 100
+      const fingers = (a: number) => ({ a: { x: c.x - r * Math.cos(a), y: c.y - r * Math.sin(a) }, b: { x: c.x + r * Math.cos(a), y: c.y + r * Math.sin(a) } })
+      await twoFingers(page, fingers(0).a, fingers(0).b, fingers(Math.PI / 6).a, fingers(Math.PI / 6).b, 15)
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-3d',
+    mock: 'sketch', // the 3D toggle on and the view orbited: the sketch seen against the see-through model
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await page.getByTestId('nav-3d').click()
+      const c = await canvasCentre(page)
+      await fingerDrag(page, c, { x: c.x + 150, y: c.y - 110 })
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-new',
+    mock: 'sketch', // a new sketch on the Top plane: nothing drawn yet but the axes, "Empty"
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+    },
+    after: closeAllDiscard,
   },
 ]
 

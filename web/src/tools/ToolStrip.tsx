@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import type { ReactNode } from 'react'
 import type { MouseEvent, PointerEvent } from 'react'
 import { Icon, paths } from '../shell/icons'
 import { StripButton } from '../shell/StripButton'
@@ -30,6 +31,8 @@ export interface ToolStripProps {
   /** A tool starts: a tap on it, or a release on its row. */
   onStart: (id: string) => void
   pins?: PinStore
+  /** What goes at the right end of the strip (the sketch strip's 2D / 3D toggle, Normal to, Cancel and Done). */
+  trailing?: ReactNode
 }
 
 interface Open {
@@ -44,7 +47,7 @@ interface Open {
  * else closes it. Each row has a pin button: a pinned tool is also a button on the strip after the groups, up to a cap
  * that keeps the strip from overflowing. One component for the feature strip and, later, the sketch strip.
  */
-export function ToolStrip({ strip, defs, stateOf, disabled, width, active, onStart, pins = userPins() }: ToolStripProps) {
+export function ToolStrip({ strip, defs, stateOf, disabled, width, active, onStart, pins = userPins(), trailing }: ToolStripProps) {
   const pinned = useSyncExternalStore(pins.subscribe, pins.getSnapshot)[strip]
   const [openRaw, setOpen] = useState<Open | null>(null)
   // a strip that is switched off (a dialog opened) shows no list
@@ -240,6 +243,7 @@ export function ToolStrip({ strip, defs, stateOf, disabled, width, active, onSta
     >
       {defs.map((d) => (d.kind === 'tool' ? toolButton(d.tool, { gap: d.gap }) : groupButton(d)))}
       {pinnedButtons.map((t) => toolButton(t, { pinned: true }))}
+      {trailing}
       {openDef && open !== null && list(openDef, open.left)}
       {open !== null && <div className="strip-scrim" data-testid="strip-scrim" onPointerDown={close} />}
     </div>

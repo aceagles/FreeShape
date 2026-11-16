@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type { ConnectionStore } from '../net/connection'
 import { addTab, ApiError, closeDocument, deleteTab, fetchDocumentTabs, renameTab, saveDocument, takeOver } from '../net/api'
@@ -23,6 +23,11 @@ import { picksOf } from '../tools/picks'
 import type { Pick } from '../tools/picks'
 import { ToolStrip } from '../tools/ToolStrip'
 import { stateOf, useToolTypes } from '../tools/useToolTypes'
+import { SketchBar } from '../sketch/SketchBar'
+import { SketchChip } from '../sketch/SketchChip'
+import { SketchStore } from '../sketch/store'
+import type { SketchTarget } from '../sketch/store'
+import { SKETCH_STRIP, sketchToolState } from '../sketch/strip'
 import { StudioViewport } from '../viewport/StudioViewport'
 import type { PreviewLook } from '../viewport/controller'
 import type { StudioOutputs } from '../wire'
@@ -72,6 +77,11 @@ declare global {
       openPadDemo: (opts?: PadDemoOptions) => void
       /** Test hook: how the last demo pad ended, or null. */
       padResult: () => PadResult | null
+      /**
+       * Test hook: open a sketch session on the tab on screen (I7.7; the way into a sketch from the screen is card I7.13): an
+       * existing sketch feature `{ feature }`, or a new sketch on `{ plane }` (a plane reference as a sketch's plane param stores it).
+       */
+      openSketch: (target: { feature: string } | { plane: Record<string, unknown> }) => void
     }
   }
 }
@@ -98,11 +108,26 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   // after Accept the preview stays drawn until the revision it made arrives, so the view does not flash the old model
   const [holdUntil, setHoldUntil] = useState<number | null>(null)
   const debug = useDebugPanel()
+  // the sketch this client has open (one at a time, kept on the server); the sketch strip and view show it on its tab
+  const [sketchStore] = useState(() => new SketchStore(store))
+  useEffect(() => {
+    sketchStore.attach()
+    return () => sketchStore.detach()
+  }, [sketchStore])
+  const sketch = useSyncExternalStore(sketchStore.subscribe, sketchStore.getState)
   const [modal, setModal] = useState<Modal | null>(null)
   const [saving, setSaving] = useState(false)
   const width = useWindowWidth()
 
   const currentTab = tabs.some((t) => t.id === selected) ? selected : (tabs[0]?.id ?? null)
+  const currentTabRef = useRef(currentTab)
+  const docId = useRef(doc?.id ?? null)
+  useEffect(() => {
+    currentTabRef.current = currentTab
+    docId.current = doc?.id ?? null
+  })
+  // a sketch is open here when it is open at all and belongs to the tab on screen
+  const sketchHere = sketch.open && sketch.view !== null && sketch.view.tab === currentTab
   const column = columnWidth(width, collapsed)
   const tabKind = tabs.find((t) => t.id === currentTab)?.kind ?? null
   const outputs = useStudioOutputs(store, currentTab)
@@ -156,11 +181,15 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
       openPadDemo: (o = {}) =>
         api.openDialog(o.title ?? 'Extrude 1', <PadDemo label={o.label ?? 'Depth'} value={o.value ?? '25 mm'} variables={o.variables ?? ['depth', 'width', 'wall']} />),
       padResult,
+      openSketch: (target) => {
+        const tab = currentTabRef.current
+        if (tab !== null && docId.current !== null) sketchStore.open({ document: docId.current, tab, ...target } as SketchTarget)
+      },
     }
     return () => {
       delete window.__freeshape
     }
-  }, [api])
+  }, [api, sketchStore])
 
   const name = doc?.name ?? 'This Document'
   const dirty = !readOnly && tabs.some((t) => t.dirty)
@@ -284,8 +313,8 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           currentTab={currentTab}
           readOnly={readOnly}
           saving={saving}
-          canUndo={studio?.canUndo === true && !edits.busy && !editingHere}
-          canRedo={studio?.canRedo === true && !edits.busy && !editingHere}
+          canUndo={studio?.canUndo === true && !edits.busy && !editingHere && !sketch.open}
+          canRedo={studio?.canRedo === true && !edits.busy && !editingHere && !sketch.open}
           onUndo={edits.undo}
           onRedo={edits.redo}
           debugOpen={debug.open}
@@ -298,14 +327,34 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           onToggleDebug={debug.toggle}
         />
         {readOnly && <ReadOnlyBanner name={name} holder={holder} onTakeOver={() => setModal({ kind: 'takeover' })} />}
-        <ToolStrip
-          strip="feature"
-          defs={FEATURE_STRIP}
-          stateOf={(id) => stateOf(toolTypes, id)}
-          disabled={tabKind !== 'studio' || editing !== null || dialog !== null}
-          width={width}
-          onStart={startTool}
-        />
+        {sketchHere ? (
+          <ToolStrip
+            strip="sketch"
+            defs={SKETCH_STRIP}
+            stateOf={sketchToolState}
+            width={width}
+            active="select"
+            onStart={() => {}}
+            trailing={
+              <SketchBar
+                nav={sketch.nav}
+                onNav={(n) => sketchStore.setNav(n)}
+                onNormalTo={() => sketchStore.normalTo()}
+                onCancel={() => sketchStore.cancel()}
+                onDone={() => sketchStore.commit()}
+              />
+            }
+          />
+        ) : (
+          <ToolStrip
+            strip="feature"
+            defs={FEATURE_STRIP}
+            stateOf={(id) => stateOf(toolTypes, id)}
+            disabled={tabKind !== 'studio' || editing !== null || dialog !== null || sketch.open || sketch.opening}
+            width={width}
+            onStart={startTool}
+          />
+        )}
         <div className="shell-main">
           <div className="left-column" data-region="left-column" data-testid="left-column" style={{ width: column }}>
             {tabKind === 'assembly' ? (
@@ -321,7 +370,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             ) : (
             <FeaturePanel
               collapsed={collapsed}
-              locked={dialog !== null || editingHere !== null}
+              locked={dialog !== null || editingHere !== null || sketchHere}
               tabKind={tabKind}
               outputs={studio}
               selected={selectedFeature}
@@ -368,10 +417,11 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
                 preview={look}
                 selection={selection}
                 tabKind={tabKind}
+                sketch={sketchHere ? sketchStore : null}
               />
             )}
             <div className="chip-slot" data-testid="chip-slot" data-region="selection-chip">
-              <SelectionChip store={selection} />
+              {sketchHere ? <SketchChip store={sketchStore} /> : <SelectionChip store={selection} />}
             </div>
           </div>
         </div>

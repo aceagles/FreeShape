@@ -5,6 +5,9 @@ import type { NavHost } from '../input/pointer'
 import { wireSelection } from '../selection/aimCommit'
 import type { SelectionItem, SelectionStore } from '../selection/store'
 import type { StudioOutputs } from '../wire'
+import { SketchMode } from '../sketch/mode'
+import type { SketchReport } from '../sketch/mode'
+import type { SketchStore } from '../sketch/store'
 import { viewportBackground } from './colors'
 import { ViewCamera } from './camera'
 import type { CameraState, StandardView } from './camera'
@@ -14,6 +17,7 @@ import type { PickFilter, PickHit, PickKind, PickPointer } from './pick'
 import { tintFeature } from './previewTint'
 import { buildScene, EMPTY_STATS } from './scene'
 import type { BuiltScene, SceneStats } from './scene'
+import { setSeeThrough } from './seeThrough'
 
 /** What `window.__freeshapeViewport` reports, for tests that look at the page from outside. */
 export interface ViewportReport extends SceneStats {
@@ -33,6 +37,8 @@ export interface ViewportReport extends SceneStats {
   tintedParts: number
   /** Test hook: the selection store, as a reader sees it (card I4.2). */
   selection: SelectionReport
+  /** Test hook: the open sketch (I7.7) as a reader sees it, or null when no sketch is open in this view. */
+  sketch: SketchReport | null
   /** Test hook: what a pointer of this kind would pick at a view position (CSS pixels from the top left), null for nothing. */
   pickAt(x: number, y: number, pointer: PickPointer, filter?: readonly PickKind[]): PickHit | null
 }
@@ -102,6 +108,7 @@ export class ViewportController implements NavHost {
   readonly pointer: PointerModule
   private readonly manipulators: ManipulatorLayer
   private looks = 0
+  private sketchMode: SketchMode | null = null
   private readonly unsubscribe: () => void
 
   /** Throws when the browser cannot create a WebGL context. The viewport draws and picks for `selection`. */
@@ -118,6 +125,34 @@ export class ViewportController implements NavHost {
     // the store tells us once per real change: an Aim move that lands on the same item never gets here
     this.unsubscribe = selection.subscribe(() => this.drawLook())
     this.report()
+  }
+
+  /**
+   * Enter sketch mode for the sketch `store` has open (I7.7), or leave it with null. In sketch mode the view faces the
+   * sketch plane, the solids are see-through, the sketch is drawn over them, and the pointer picks sketch items instead
+   * of parts. Leaving puts the solids and the part selection's pointer wiring back.
+   */
+  setSketch(store: SketchStore | null): void {
+    if (this.disposed) return
+    this.sketchMode?.dispose()
+    this.sketchMode = null
+    if (store) {
+      this.sketchMode = new SketchMode(
+        {
+          view: this.view,
+          pointer: this.pointer,
+          overlayParent: this.canvas.parentElement ?? document.body,
+          requestRender: () => this.requestRender(),
+          modelBounds: () => (this.built?.hasModel ? this.built.bounds : null),
+        },
+        store,
+      )
+    } else {
+      wireSelection(this.pointer, this.selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
+    }
+    if (this.built) setSeeThrough(this.built.root, store !== null)
+    this.report()
+    this.requestRender()
   }
 
   /** Draw the selection and the Aim: once per change, and the view is drawn again once. */
@@ -164,6 +199,7 @@ export class ViewportController implements NavHost {
     this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, ghost })
     if (preview && ghost) this.tinted = { feature: preview.feature, parts: this.built.stats.ghostParts }
     this.scene.add(this.built.root)
+    if (this.sketchMode) setSeeThrough(this.built.root, true)
     this.picker = new PickIndex(outputs, this.built)
     this.highlighted = this.built.setLook(this.selection.getState().items, this.selection.getAimed())
     if (this.built.hasModel) this.planeHalf = this.built.stats.planeHalf
@@ -206,12 +242,19 @@ export class ViewportController implements NavHost {
 
   /** Look along a standard view and fit the model. */
   setStandardView(name: StandardView): void {
+    // a standard view cannot keep a sketch square to its plane: the sketch goes to its 3D mode
+    this.sketchMode?.leavePlanar()
     this.view.setBack(STANDARD_VIEWS[name])
     this.fit()
   }
 
   /** Look straight at the nearest face direction, or at the given outward normal, and fit the model. */
   normalTo(normal?: readonly [number, number, number]): void {
+    if (this.sketchMode) {
+      // in a sketch the cube's Normal to squares the view to the sketch plane
+      this.sketchMode.normalTo()
+      return
+    }
     this.view.normalTo(normal)
     this.fit()
   }
@@ -245,6 +288,7 @@ export class ViewportController implements NavHost {
   render(): void {
     if (this.disposed) return
     this.view.apply()
+    this.sketchMode?.update()
     this.built?.update(this.view.width, this.view.height, this.view.scale)
     this.manipulators.update()
     this.renderer.render(this.scene, this.view.camera)
@@ -270,12 +314,15 @@ export class ViewportController implements NavHost {
         aimed: this.selection.getAimed() ? reportItem(this.selection.getAimed()!) : null,
         looks: this.looks,
       },
+      sketch: this.sketchMode?.report() ?? null,
       pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
     }
   }
 
   dispose(): void {
     this.disposed = true
+    this.sketchMode?.dispose()
+    this.sketchMode = null
     this.unsubscribe()
     this.pointer.dispose()
     this.manipulators.dispose()

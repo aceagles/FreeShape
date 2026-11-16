@@ -79,7 +79,7 @@ type Mode =
   /** After a two-finger gesture, the finger left down does nothing until every finger is up. */
   | { kind: 'settling' }
 
-const twistRoll = (twist: number): number => Math.sign(twist) * Math.max(0, Math.abs(twist) - TWIST_DEAD_ZONE)
+const twistRoll = (twist: number, dead: number): number => Math.sign(twist) * Math.max(0, Math.abs(twist) - dead)
 const wrap = (a: number): number => (a > Math.PI ? a - 2 * Math.PI : a < -Math.PI ? a + 2 * Math.PI : a)
 
 /**
@@ -107,6 +107,8 @@ export class PointerModule {
   private tapping: { id: number; x: number; y: number; t: number } | null = null
   private lastTap: { x: number; y: number; t: number } | null = null
   private cancelled = false
+  /** A planar view (a sketch in 2D): one finger and the right mouse button pan instead of orbit, and a twist turns the view at once. */
+  private planar = false
 
   constructor(
     private readonly el: HTMLElement,
@@ -133,6 +135,14 @@ export class PointerModule {
   /** A Drag handle takes a press (pen, finger or mouse left button) before selection and navigation. */
   setHandleHandler(handler: HandleHandler | null): void {
     this.handle = handler
+  }
+
+  /**
+   * Planar navigation, for a view that must stay square to a plane (a sketch in its 2D mode): one finger (or the right
+   * mouse button) pans instead of orbiting, and a two-finger twist turns the view from the first degree, with no dead zone.
+   */
+  setPlanar(on: boolean): void {
+    this.planar = on
   }
 
   /** A finger tap Commits through this handler. */
@@ -262,7 +272,10 @@ export class PointerModule {
     const dy = p.y - this.last.y
     this.last = p
     if (dx === 0 && dy === 0) return
-    if (m.kind === 'orbit') this.host.view.orbit(dx, dy, m.pivot)
+    if (m.kind === 'orbit') {
+      if (this.planar) this.host.view.pan(dx, dy)
+      else this.host.view.orbit(dx, dy, m.pivot)
+    }
     else if (m.kind === 'pan') this.host.view.pan(dx, dy)
     else return
     this.host.requestRender()
@@ -276,7 +289,7 @@ export class PointerModule {
     const spacing = Math.max(Math.hypot(b.x - a.x, b.y - a.y), 1)
     const angle = Math.atan2(b.y - a.y, b.x - a.x)
     m.twist += wrap(angle - m.angle)
-    const rolled = twistRoll(m.twist)
+    const rolled = twistRoll(m.twist, this.planar ? 0 : TWIST_DEAD_ZONE)
     this.host.view.gesture(m.mid.x, m.mid.y, mid.x, mid.y, spacing / m.spacing, rolled - m.rolled)
     m.mid = mid
     m.spacing = spacing

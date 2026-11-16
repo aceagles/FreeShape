@@ -99,6 +99,8 @@ export class ConnectionStore {
   private listeners = new Set<Listener>()
   private tabListeners = new Map<string, Set<RevisionListener>>()
   private previewListeners = new Set<(m: PreviewMessage) => void>()
+  private sketchListeners = new Set<(m: Record<string, unknown>) => void>()
+  private helloListeners = new Set<() => void>()
   private retry: ReturnType<typeof setTimeout> | null = null
   private pinger: ReturnType<typeof setInterval> | null = null
   private attempts = 0
@@ -169,6 +171,29 @@ export class ConnectionStore {
     return () => {
       this.previewListeners.delete(listener)
     }
+  }
+
+  /** Call `listener` with every `sketch.*` message, and every error for one, that the server sends this client (a sketch session, I7.3); returns the unsubscribe function. */
+  onSketch(listener: (m: Record<string, unknown>) => void): () => void {
+    this.sketchListeners.add(listener)
+    return () => {
+      this.sketchListeners.delete(listener)
+    }
+  }
+
+  /** Call `listener` each time the server greets the socket (the first connection and every reconnect); returns the unsubscribe function. */
+  onHello(listener: () => void): () => void {
+    this.helloListeners.add(listener)
+    return () => {
+      this.helloListeners.delete(listener)
+    }
+  }
+
+  /** Send one JSON message on the socket. False when the socket is not open (nothing is queued). */
+  send(msg: Record<string, unknown>): boolean {
+    if (!this.socket || this.socket.readyState !== OPEN) return false
+    this.socket.send(JSON.stringify(msg))
+    return true
   }
 
   /**
@@ -301,6 +326,11 @@ export class ConnectionStore {
     const m = msg as Record<string, unknown>
     const about = typeof m.document === 'string' ? m.document : null
     if (m.type !== 'hello' && about !== null && this.wanted !== null && about !== this.wanted) return
+    if (typeof m.type === 'string' && (m.type.startsWith('sketch.') || (m.type === 'error' && typeof m.for === 'string' && m.for.startsWith('sketch.')))) {
+      this.sketchListeners.forEach((l) => l(m))
+      // the drag round trip is the connection's own (the debug panel), so that answer goes on to the switch below
+      if (m.type !== 'sketch.drag.moved') return
+    }
     switch (m.type) {
       case 'hello': {
         const doc = parseDocument(m.document)
@@ -310,6 +340,7 @@ export class ConnectionStore {
           this.apply(m as unknown as DocumentReply, true)
           this.update({ connected: true })
         }
+        this.helloListeners.forEach((l) => l())
         break
       }
       case 'tabs':

@@ -1,0 +1,118 @@
+/* The sketch strip's right end and the sketch chip, as drawn in the layout mock's sketch state. */
+.sketch-bar {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: var(--sp-2);
+}
+.nav-toggle {
+  display: flex;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+}
+.nav-toggle button {
+  width: 52px;
+  height: var(--touch);
+  border: none;
+  background: var(--c-white);
+  color: var(--c-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.nav-toggle button[aria-pressed='true'] {
+  background: var(--c-accent);
+  color: var(--c-white);
+}
+.sketch-bar .strip-button[data-narrow] {
+  width: 64px;
+}
+.sketch-cancel,
+.sketch-done {
+  height: var(--touch);
+  flex: none;
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sketch-cancel {
+  margin-left: var(--sp-6);
+  padding: 0 var(--sp-16);
+  border: 1px solid var(--c-line);
+  background: var(--c-white);
+  color: var(--c-ink);
+}
+.sketch-done {
+  margin-left: var(--sp-4);
+  padding: 0 var(--sp-20);
+  border: 1px solid var(--c-accentDark);
+  background: var(--c-accent);
+  color: var(--c-white);
+}
+.sketch-cancel:disabled,
+.sketch-done:disabled {
+  opacity: 0.55;
+}
+
+.sketch-status {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  box-sizing: border-box;
+  padding: 0 var(--sp-14);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  background: var(--c-white);
+  white-space: nowrap;
+}
+.sketch-name {
+  font-weight: 600;
+}
+.sketch-solve {
+  margin-left: var(--sp-8);
+  color: var(--c-accentDark);
+}
+.sketch-status[data-tone='defined'] .sketch-solve {
+  color: var(--c-okDark);
+}
+.sketch-status[data-tone='conflicting'] .sketch-solve {
+  color: var(--c-danger);
+}
+.sketch-error {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  box-sizing: border-box;
+  max-width: 320px;
+  padding: 0 var(--sp-14);
+  border: 1px solid var(--c-danger);
+  border-radius: var(--r-lg);
+  background: var(--c-dangerSoft);
+  color: var(--c-danger);
+  font-size: var(--fs-small);
+}
+
+/* The sketch drawn over the canvas: it takes no pointer, the pointer module on the canvas does. */
+.sketch-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  font-family: var(--font, system-ui, sans-serif);
+}
+.sketch-layer svg {
+  display: block;
+  font-family: inherit;
+}
+/* "Normal to" is two lines in the layout: let the label wrap */
+.sketch-bar .strip-button[data-narrow] .strip-label {
+  white-space: normal;
+  text-align: center;
+  line-height: 1.1;
+}

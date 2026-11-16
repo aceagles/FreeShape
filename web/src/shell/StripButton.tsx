@@ -10,6 +10,8 @@ interface Props extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'
   gap?: boolean
   /** The first pinned tool: 18 px before it, as in the layout. */
   pinned?: boolean
+  /** The sketch strip's Normal to: 64 px wide instead of 72, as in the layout. */
+  narrow?: boolean
 }
 
 /**
@@ -17,7 +19,7 @@ interface Props extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'
  * line and beside the icon, so a long label ("Constrain") cannot touch it; the label is clipped to the button's width.
  * Any other button attribute (disabled, handlers, data-*) goes to the button.
  */
-export function StripButton({ label, icon, group, active, gap, pinned, ...rest }: Props) {
+export function StripButton({ label, icon, group, active, gap, pinned, narrow, ...rest }: Props) {
   return (
     <button
       type="button"
@@ -25,6 +27,7 @@ export function StripButton({ label, icon, group, active, gap, pinned, ...rest }
       data-active={active ? '' : undefined}
       data-gap={gap ? '' : undefined}
       data-pinned={pinned ? '' : undefined}
+      data-narrow={narrow ? '' : undefined}
       aria-haspopup={group ? 'true' : undefined}
       {...rest}
     >

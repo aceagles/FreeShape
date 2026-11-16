@@ -98,9 +98,9 @@ it('an accepted constraint replaces the sketch like any step', () => {
 })
 
 it('Delete on a selected glyph sends sketch.unconstrain with the constraint id', async () => {
-  const { attachDeleteKey } = await import('./constraints')
+  const { attachKeys } = await import('../input/keys')
   const r = rig()
-  const off = attachDeleteKey(r.constraints)
+  const off = attachKeys({ delete: () => r.constraints.removeSelected() })
   r.sketch.select({ kind: 'constraint', id: 'k1' })
   // a constraint is not a pick: no fits question
   expect(r.sent.some((m) => m['type'] === 'sketch.fits')).toBe(false)

@@ -179,7 +179,7 @@ export class SketchMode {
     p.setHandleHandler(this.handles)
     p.setTapHandler({
       tap: (x, y) => {
-        if (this.draw.active) return // a finger places nothing with a drawing tool
+        if (this.draw.active) return this.draw.tap(x, y) // a finger places nothing with a drawing tool; a tap on the last point ends the shape
         const hit = itemAt(x, y, 'touch')
         if (this.store.commitTools(hit, this.uvAt(x, y), 'touch', this.mmPerPx())) {
           this.before = null

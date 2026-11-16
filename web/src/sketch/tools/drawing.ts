@@ -37,9 +37,12 @@ export interface DrawReport {
 const SNAP_TEXT: Record<string, string> = { point: 'Coincident', on: 'On curve', edge: 'On edge' }
 const INFER_TEXT = { H: 'Horizontal', V: 'Vertical' } as const
 
-/** What the active tool asks for, shown at the foot of the view. */
+/** How near (CSS px) a press must be to the last placed point to end the shape there: a mouse is exact, a pen less, a finger least. */
+export const LAST_POINT_REACH: Record<PickPointer, number> = { mouse: 6, pen: 12, touch: 24 }
+
+/** What the active tool asks for, shown at the foot of the view; a mouse has the keyboard and a right button, a pen or finger has neither. */
 const HINT: Record<DrawTool, string> = {
-  line: 'Line: press and lift to place each point. Tap Line again to stop.',
+  line: 'Line: press and lift to place each point. Tap the last point, or tap Line again, to stop.',
   rectangle: 'Rectangle: place two opposite corners. Tap Rectangle again for a centre rectangle.',
   center_rectangle: 'Centre rectangle: place the centre, then a corner. Tap Rectangle again for corners.',
   circle: 'Circle: place the centre, then a point on the circle.',
@@ -66,6 +69,8 @@ export class DrawTools {
   private lastOpen = -1
   private readonly layer: HTMLDivElement
   private lastMarkup = ''
+  /** The kind of pointer that last Aimed, for the hint's words. */
+  private lastKind: PickPointer = 'pen'
   private readonly off: () => void
 
   constructor(
@@ -122,7 +127,31 @@ export class DrawTools {
         if (this.active) this.dropAim()
         else other.cancel()
       },
+      // a right click (the mouse's, not an orbit drag) ends the shape in progress
+      secondary: (p) => {
+        if (this.active) this.endShape()
+        else other.secondary?.(p)
+      },
     }
+  }
+
+  /** End the shape in progress without adding it (the segment the band shows is never made). The tool stays on. */
+  private endShape(): void {
+    this.store.endShape()
+  }
+
+  /** Whether a pointer at (x, y) is on the last point placed, so it means "stop here" and not "place another". */
+  private onLastPoint(x: number, y: number, kind: PickPointer): boolean {
+    const last = this.picks[this.picks.length - 1]
+    const ctx = last ? this.host.context(kind) : null
+    if (!last || !ctx) return false
+    const at = ctx.toView(last.uv)
+    return Math.hypot(at.x - x, at.y - y) <= LAST_POINT_REACH[kind]
+  }
+
+  /** A finger taps: with a drawing tool on it places nothing, but a tap on the last point ends the shape there. */
+  tap(x: number, y: number): void {
+    if (this.active && this.onLastPoint(x, y, 'touch')) this.endShape()
   }
 
   private anchor(): Uv | null {
@@ -131,6 +160,7 @@ export class DrawTools {
 
   private aimAt(p: PenPoint, kind: PickPointer): Aim | null {
     const ctx = this.host.context(kind)
+    this.lastKind = kind
     this.aim = ctx ? snapAim(ctx, p.x, p.y, this.anchor()) : null
     this.host.requestRender()
     return this.aim
@@ -148,6 +178,8 @@ export class DrawTools {
   /** The pen lifts (or the mouse clicks): commit the point it was aiming. A mouse button release is at the aim of its last move. */
   private commitAt(p: PenPoint, kind: PickPointer): void {
     if (this.outside(p)) return this.dropAim()
+    // a click or lift on the last point placed stops the shape there, as a double click does; nothing is added
+    if (this.onLastPoint(p.x, p.y, kind)) return this.endShape()
     const aim = this.aimAt(p, kind)
     this.aim = null
     this.host.requestRender()
@@ -180,6 +212,11 @@ export class DrawTools {
     this.picks = next ? [next] : []
     this.store.setDrawing(this.picks.length)
     this.host.requestRender()
+  }
+
+  private hint(): string {
+    if (this.tool === 'line' && this.lastKind === 'mouse') return 'Line: click to place each point. Double-click, right-click or press Esc to stop.'
+    return HINT[this.tool]
   }
 
   report(): DrawReport {
@@ -224,7 +261,7 @@ export class DrawTools {
       }
     }
     const svg = out ? `<svg xmlns="http://www.w3.org/2000/svg" width="${this.host.width()}" height="${this.host.height()}" aria-hidden="true">${out}</svg>` : ''
-    const markup = ctx ? `${svg}<div class="aim-hint" data-testid="aim-hint">${HINT[this.tool]}</div>` : ''
+    const markup = ctx ? `${svg}<div class="aim-hint" data-testid="aim-hint">${this.hint()}</div>` : ''
     if (markup !== this.lastMarkup) {
       this.lastMarkup = markup
       this.layer.innerHTML = markup

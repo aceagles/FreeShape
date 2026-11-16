@@ -29,6 +29,8 @@ export interface PenHandler {
   aim(p: PenPoint): void
   commit(p: PenPoint): void
   cancel(): void
+  /** The mouse's right button was pressed and released without moving (a right click, not an orbit); only the mouse handler is asked. */
+  secondary?(p: PenPoint): void
 }
 
 /**
@@ -122,6 +124,8 @@ export class PointerModule {
   private mouseId: number | null = null
   /** The mouse's left button, held: it Aims and Commits as the pen does. */
   private mouseSelectId: number | null = null
+  /** Where the right button went down: a release this close to it is a right click. */
+  private rightDown: { x: number; y: number } | null = null
   private last: Touch = { x: 0, y: 0 }
   /** The single touch being watched for a tap, and the last completed tap. */
   private tapping: { id: number; x: number; y: number; t: number } | null = null
@@ -268,6 +272,7 @@ export class PointerModule {
         this.mousePick?.aim(this.penPoint(e))
         return
       }
+      this.rightDown = e.button === 2 ? { x: p.x, y: p.y } : null
       if (e.button === 2) this.mode = { kind: 'orbit', id: e.pointerId, pivot: this.pivotAt(p) }
       else if (e.button === 1) this.mode = { kind: 'pan', id: e.pointerId }
       else return
@@ -405,6 +410,12 @@ export class PointerModule {
       if (this.mouseId !== e.pointerId) return
       this.mouseId = null
       this.mode = { kind: 'idle' }
+      const down = this.rightDown
+      this.rightDown = null
+      if (down && e.button === 2) {
+        const q = this.local(e)
+        if (Math.hypot(q.x - down.x, q.y - down.y) <= TAP_SLOP) this.mousePick?.secondary?.(this.penPoint(e))
+      }
       return
     }
     if (!this.touches.delete(e.pointerId)) return

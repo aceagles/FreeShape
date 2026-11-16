@@ -188,3 +188,106 @@ test('the Draw group on the strip has its five drawing tools and Trim, Corner fi
   await tool(page).toBe('center_rectangle')
   await expect(page.getByTestId('aim-hint')).toContainText('Centre rectangle')
 })
+
+// F13: the Line tool chains until it is told to stop; a desktop browser with a mouse ends it the way the desktop sketcher does
+
+const MOUSE = 11
+const mouseAt = (p: Point) => ({ phase: 'move' as const, kind: 'mouse' as const, id: MOUSE, ...p })
+const mdown = (p: Point, button = 0) => ({ phase: 'down' as const, kind: 'mouse' as const, id: MOUSE, button, ...p })
+const mup = (p: Point, button = 0) => ({ phase: 'up' as const, kind: 'mouse' as const, id: MOUSE, button, ...p })
+/** A left click with the mouse: hover, press, release. */
+const click = (page: Page, p: Point) => sendPointer(page, [mouseAt(p), mdown(p), mup(p)])
+
+/** Line on, one segment made and the next one's band following the mouse: the state the screenshot showed. */
+async function chainedWithMouse(page: Page): Promise<{ a: Point; b: Point; far: Point }> {
+  await openApp(page)
+  await openNewSketch(page, 'Top')
+  await chooseWithRing(page, 'line')
+  const a = await screenFor(page, -30, 10)
+  const b = await screenFor(page, 20, 30)
+  const far = await screenFor(page, 40, -20)
+  await click(page, a)
+  await click(page, b)
+  await expect.poll(async () => (await stats(page)).lines).toBe(1)
+  await sendPointer(page, [mouseAt(far)])
+  await expect(page.locator('[data-kind="band"]')).toBeVisible()
+  await expect(page.getByTestId('aim-hint')).toContainText('Esc')
+  return { a, b, far }
+}
+
+test('Esc ends the line chain without making the band a line, a second Esc leaves the tool', async ({ page }) => {
+  await chainedWithMouse(page)
+  await page.keyboard.press('Escape')
+  await expect.poll(async () => (await settledSketch(page)).draw.picks).toHaveLength(0)
+  await expect(page.locator('[data-kind="band"]')).toHaveCount(0)
+  await tool(page).toBe('line')
+  expect((await stats(page)).lines).toBe(1)
+  await page.keyboard.press('Escape')
+  await tool(page).toBe('select')
+  expect((await stats(page)).lines).toBe(1)
+})
+
+test('a right click ends the line chain and the browser menu does not open; a right drag still pans', async ({ page }) => {
+  const { far } = await chainedWithMouse(page)
+  await page.evaluate(() => {
+    ;(window as unknown as { __menu: number }).__menu = 0
+    document.addEventListener('contextmenu', (e) => void ((window as unknown as { __menu: number }).__menu += e.defaultPrevented ? 0 : 1))
+  })
+  await sendPointer(page, [mdown(far, 2), { ...mouseAt({ x: far.x + 40, y: far.y }) }, mup({ x: far.x + 40, y: far.y }, 2)])
+  expect((await settledSketch(page)).draw.picks).toHaveLength(1)
+  await sendPointer(page, [mdown(far, 2), mup(far, 2)])
+  await expect.poll(async () => (await settledSketch(page)).draw.picks).toHaveLength(0)
+  await tool(page).toBe('line')
+  expect((await stats(page)).lines).toBe(1)
+  await page.locator('[data-region="viewport"] canvas').dispatchEvent('contextmenu', { cancelable: true })
+  expect(await page.evaluate(() => (window as unknown as { __menu: number }).__menu)).toBe(0)
+})
+
+test('a double click, or a click on the last point, ends the line chain', async ({ page }) => {
+  const { b, far } = await chainedWithMouse(page)
+  await click(page, far)
+  await expect.poll(async () => (await stats(page)).lines).toBe(2)
+  await click(page, far) // the second click of a double click
+  await expect.poll(async () => (await settledSketch(page)).draw.picks).toHaveLength(0)
+  expect((await stats(page)).lines).toBe(2)
+  // and a click on the last point of a chain that has one more segment
+  await click(page, b)
+  await click(page, await screenFor(page, 0, -25))
+  await expect.poll(async () => (await stats(page)).lines).toBe(3)
+  await click(page, await screenFor(page, 0, -25))
+  await expect.poll(async () => (await settledSketch(page)).draw.picks).toHaveLength(0)
+  expect((await stats(page)).lines).toBe(3)
+})
+
+test('closing on the first point ends the chain', async ({ page }) => {
+  await openApp(page)
+  await openNewSketch(page, 'Top')
+  await chooseWithRing(page, 'line')
+  const a = await screenFor(page, -30, 10)
+  const b = await screenFor(page, 20, 30)
+  const c = await screenFor(page, 40, -20)
+  await click(page, a)
+  await click(page, b)
+  await click(page, c)
+  await expect.poll(async () => (await stats(page)).lines).toBe(2)
+  await click(page, { x: a.x + 3, y: a.y - 2 })
+  await expect.poll(async () => (await stats(page)).lines).toBe(3)
+  await expect.poll(async () => (await settledSketch(page)).draw.picks).toHaveLength(0)
+  await expect(page.locator('.sketch-layer circle[data-kind="point"]')).toHaveCount(4)
+})
+
+test('a pen ends the chain by tapping the last point, and the hint says so', async ({ page }) => {
+  await openApp(page)
+  await openNewSketch(page, 'Top')
+  await chooseWithRing(page, 'line')
+  const a = await screenFor(page, -30, 10)
+  const b = await screenFor(page, 20, 30)
+  await place(page, a)
+  await place(page, b)
+  await expect.poll(async () => (await stats(page)).lines).toBe(1)
+  await expect(page.getByTestId('aim-hint')).toContainText('Tap the last point')
+  await place(page, b)
+  await expect.poll(async () => (await settledSketch(page)).draw.picks).toHaveLength(0)
+  expect((await stats(page)).lines).toBe(1)
+  await tool(page).toBe('line')
+})

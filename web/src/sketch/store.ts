@@ -251,6 +251,33 @@ export class SketchStore {
     if (this.state.drawing === 0 && id === 'rectangle') return this.set({ tool: now === 'rectangle' ? 'center_rectangle' : 'rectangle', toolSeq: this.state.toolSeq + 1 })
     this.set({ toolSeq: this.state.toolSeq + 1, drawing: 0 })
   }
+  /**
+   * End the shape in progress without adding anything: a chained line stops where it is, a rectangle half placed is dropped.
+   * The tool stays on. True when there was a shape to end.
+   */
+  endShape(): boolean {
+    if (!this.state.open || this.state.drawing === 0) return false
+    this.set({ toolSeq: this.state.toolSeq + 1, drawing: 0 })
+    return true
+  }
+  /**
+   * Esc, as the desktop sketcher takes it (freeshape/ui/sketcher.py `escape`): the first press ends the shape in progress, the
+   * next leaves the drawing tool for Select, and with Select on it clears the selection. True when it did something.
+   */
+  stepBack(): boolean {
+    const s = this.state
+    if (!s.open) return false
+    if (this.endShape()) return true
+    if (s.tool !== 'select') {
+      this.set({ tool: 'select', toolSeq: s.toolSeq + 1, drawing: 0 })
+      return true
+    }
+    if (s.selected.length > 0) {
+      this.clearSelection()
+      return true
+    }
+    return false
+  }
   setDrawing(n: number): void {
     if (n !== this.state.drawing) this.set({ drawing: n })
   }

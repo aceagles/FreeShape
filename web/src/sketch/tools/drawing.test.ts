@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { attachKeys, suspendKeys } from '../../input/keys'
+import { sketchKeys } from '../keys'
 import { OUTSIDE_MARGIN } from './drawing'
 import { rig } from './testRig'
 import type { Rig } from './testRig'
@@ -209,5 +211,153 @@ describe('the other drawing tools', () => {
     r.store.chooseTool('circle')
     expect(r.mode.report()!.draw.picks).toHaveLength(0)
     expect(r.store.getState().drawing).toBe(0)
+  })
+})
+
+// F13: a line chain ends the way the desktop sketcher ends it (freeshape/ui/sketcher.py: escape, double_click, _draw_click)
+describe('ending a shape without adding it', () => {
+  const mouse = (type: 'pointerdown' | 'pointermove' | 'pointerup', p: { x: number; y: number }, button = 0) =>
+    r.fire(type, { pointerId: 1, pointerType: 'mouse', clientX: p.x, clientY: p.y, button: type === 'pointermove' ? -1 : button, buttons: type === 'pointerup' ? 0 : button === 2 ? 2 : 1 })
+  /** A left click: hover to it, press, release. */
+  const click = (p: { x: number; y: number }) => {
+    mouse('pointermove', p)
+    mouse('pointerdown', p)
+    mouse('pointerup', p)
+    r.mode.update()
+  }
+  const key = (k: string, target: EventTarget = window) => target.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }))
+  const picks = () => r.mode.report()!.draw.picks.length
+  let off: () => void
+  beforeEach(() => {
+    r.store.chooseTool('line')
+    off = attachKeys(sketchKeys(r.store))
+  })
+  afterEach(() => off())
+
+  /** A chain with one segment made, so the band runs from its end to the pointer. */
+  async function chained() {
+    click(r.at(A))
+    click(r.at(B))
+    await r.flush()
+    expect(r.adds()).toHaveLength(1)
+    expect(picks()).toBe(1)
+    mouse('pointermove', r.at([45, 42]))
+    r.mode.update()
+    expect(r.parent.querySelector('[data-kind="band"]')).not.toBeNull()
+  }
+
+  it('Esc ends the chain and adds no segment; the tool stays; a second Esc leaves it for Select', async () => {
+    await chained()
+    key('Escape')
+    await r.flush()
+    expect(r.adds()).toHaveLength(1)
+    expect(picks()).toBe(0)
+    expect(r.store.getState().tool).toBe('line')
+    r.mode.update()
+    expect(r.parent.querySelector('[data-kind="band"]')).toBeNull()
+    key('Escape')
+    expect(r.store.getState().tool).toBe('select')
+    expect(r.adds()).toHaveLength(1)
+  })
+
+  it('Esc with a first point placed drops it', () => {
+    click(r.at(A))
+    expect(picks()).toBe(1)
+    key('Escape')
+    expect(picks()).toBe(0)
+    expect(r.adds()).toHaveLength(0)
+  })
+
+  it('a right click ends the chain and adds no segment, a right drag does not, and the context menu stays shut', async () => {
+    await chained()
+    const at = r.at([45, 42])
+    mouse('pointerdown', at, 2)
+    mouse('pointermove', { x: at.x + 40, y: at.y })
+    mouse('pointerup', { x: at.x + 40, y: at.y }, 2)
+    expect(picks()).toBe(1) // that was an orbit or pan
+    mouse('pointerdown', at, 2)
+    mouse('pointerup', at, 2)
+    await r.flush()
+    expect(picks()).toBe(0)
+    expect(r.adds()).toHaveLength(1)
+    expect(r.store.getState().tool).toBe('line')
+    const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    r.canvas.dispatchEvent(menu)
+    expect(menu.defaultPrevented).toBe(true)
+  })
+
+  it('a double click ends the chain after the segment its first click made, and adds nothing more', async () => {
+    click(r.at(A))
+    click(r.at(B))
+    click(r.at(B)) // the second click of a double click lands on the point the first one placed
+    await r.flush()
+    expect(r.adds()).toHaveLength(1)
+    expect(picks()).toBe(0)
+  })
+
+  it('a click on the last point ends the chain', async () => {
+    await chained()
+    click(r.at(B))
+    await r.flush()
+    expect(r.adds()).toHaveLength(1)
+    expect(picks()).toBe(0)
+  })
+
+  it('a click on an existing point (the first corner of a loop, closing it) makes its segment and ends the chain, as the desktop does', async () => {
+    click(r.at(A))
+    click(r.at([0, 48]))
+    await r.flush()
+    expect(r.adds()).toHaveLength(1)
+    expect(picks()).toBe(0)
+  })
+
+  it('a pen tap on the last point ends the chain and adds no segment', async () => {
+    r.stroke(r.at(A))
+    r.stroke(r.at(B))
+    await r.flush()
+    expect(picks()).toBe(1)
+    r.stroke(r.at([B[0] + 0.3, B[1] - 0.2])) // a pen's tap is not exact
+    await r.flush()
+    expect(r.adds()).toHaveLength(1)
+    expect(picks()).toBe(0)
+  })
+
+  it('a finger tap on the last point ends the chain; a tap elsewhere does nothing', async () => {
+    r.stroke(r.at(A))
+    r.stroke(r.at(B))
+    await r.flush()
+    const tap = (p: { x: number; y: number }) => {
+      r.fire('pointerdown', { pointerId: 3, pointerType: 'touch', clientX: p.x, clientY: p.y })
+      r.fire('pointerup', { pointerId: 3, pointerType: 'touch', clientX: p.x, clientY: p.y })
+    }
+    tap(r.at([45, 42]))
+    expect(picks()).toBe(1)
+    tap(r.at(B))
+    expect(picks()).toBe(0)
+    expect(r.adds()).toHaveLength(1)
+  })
+
+  it('the foot hint names the endings for the pointer in use', () => {
+    r.pen('pointermove', r.at(A))
+    r.mode.update()
+    expect(r.parent.querySelector('[data-testid="aim-hint"]')!.textContent).toContain('Tap the last point')
+    mouse('pointermove', r.at(A))
+    r.mode.update()
+    expect(r.parent.querySelector('[data-testid="aim-hint"]')!.textContent).toMatch(/Double-click, right-click or press Esc/)
+  })
+
+  it('Esc is left alone while a field has the keys, and while the number pad is editing', async () => {
+    await chained()
+    const field = document.createElement('input')
+    document.body.append(field)
+    key('Escape', field)
+    expect(picks()).toBe(1)
+    field.remove()
+    const resume = suspendKeys()
+    key('Escape')
+    expect(picks()).toBe(1)
+    resume()
+    key('Escape')
+    expect(picks()).toBe(0)
   })
 })

@@ -100,10 +100,12 @@ export class ConstraintStore {
   }
 
   /** Delete: remove every constraint in the selection. */
-  removeSelected(): void {
+  removeSelected(): boolean {
     const s = this.sketch.getState()
-    if (!s.open) return
-    for (const c of s.selected) if (c.kind === 'constraint') this.transport.send({ type: 'sketch.unconstrain', constraint: c.id })
+    if (!s.open) return false
+    const picked = s.selected.filter((c) => c.kind === 'constraint')
+    for (const c of picked) this.transport.send({ type: 'sketch.unconstrain', constraint: c.id })
+    return picked.length > 0
   }
 
   private onMessage(m: Record<string, unknown>): void {
@@ -125,19 +127,4 @@ export class ConstraintStore {
         return
     }
   }
-}
-
-/**
- * Delete on the keyboard removes the selected constraints (a glyph is selected by tapping it). Returns the function that
- * stops listening. A key typed into a field is left alone.
- */
-export function attachDeleteKey(constraints: ConstraintStore): () => void {
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key !== 'Delete' && e.key !== 'Backspace') return
-    const t = e.target
-    if (t instanceof HTMLElement && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return
-    constraints.removeSelected()
-  }
-  window.addEventListener('keydown', onKey)
-  return () => window.removeEventListener('keydown', onKey)
 }

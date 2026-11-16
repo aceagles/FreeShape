@@ -31,7 +31,9 @@ import { EditDock, EditHint } from '../sketch/EditPad'
 import { EditTools } from '../sketch/tools/edit'
 import { SketchStore } from '../sketch/store'
 import { ConstraintNote } from '../sketch/ConstraintNote'
-import { ConstraintStore, attachDeleteKey, isConstrainTool } from '../sketch/constraints'
+import { attachKeys } from '../input/keys'
+import { sketchKeys } from '../sketch/keys'
+import { ConstraintStore, isConstrainTool } from '../sketch/constraints'
 import type { SketchTarget } from '../sketch/store'
 import { DiscardSketch, PlaneChooser } from '../sketch/StartDialogs'
 import { startSketch } from '../sketch/start'
@@ -129,12 +131,13 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const [constraints] = useState(() => new ConstraintStore(sketchStore, store))
   useEffect(() => {
     constraints.attach()
-    const off = attachDeleteKey(constraints)
+    // the keyboard: Esc steps back in the sketch, Delete removes a selected constraint (one keymap, input/keys.ts)
+    const off = attachKeys({ ...sketchKeys(sketchStore), delete: () => constraints.removeSelected() })
     return () => {
       off()
       constraints.detach()
     }
-  }, [constraints])
+  }, [constraints, sketchStore])
   const constraintState = useSyncExternalStore(constraints.subscribe, constraints.getState)
   // the Dimension tool of that sketch (I7.11): its pad opens in the dialog area, through refs to what is built further down
   const [dock] = useState(() => new DimensionDock())

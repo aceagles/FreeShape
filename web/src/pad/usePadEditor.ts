@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { suspendKeys } from '../input/keys'
 import { actionForKey, openText, reduce } from './editor'
 import type { PadAction, PadText } from './editor'
 
@@ -83,6 +84,7 @@ export function usePadEditor(opts: PadOptions): PadEditor {
   const active = opts.active ?? true
   useEffect(() => {
     if (!active) return
+    const resume = suspendKeys() // the pad reads the keys itself while it is on
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return
       if (e.key === 'Enter') commit()
@@ -95,7 +97,10 @@ export function usePadEditor(opts: PadOptions): PadEditor {
       e.preventDefault()
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      resume()
+    }
   }, [active, apply, commit, cancel])
 
   return { text: state.text, caret: state.caret, fresh: state.fresh, variables: opts.variables ?? [], variablesOpen, apply, toggleVariables, pickVariable, commit, cancel }

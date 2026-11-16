@@ -23,13 +23,17 @@ import math
 import threading
 import time
 
+import numpy as np
+
 from . import sketch_ops as OPS
-from .sketch import ORIGIN, Sketch
+from .expr import ExprError, has_vars, parse_number
+from .sketch import DIMENSIONS, ORIGIN, Sketch
 
 MAX_UNDO = 300                  # undo steps a session keeps (the desktop's limit)
 MAX_ITEMS = 5000                # points plus entities one sketch may hold through a session
 MAX_CONSTRAINTS = 5000          # constraints one sketch may hold through a session
 MAX_STEP_CONSTRAINTS = 64       # constraints one add message may attach
+MAX_EXPR = 200                  # characters of an expression a dimension or fillet may take
 MAX_IDS = 1000                  # ids one delete or construction message may name
 MAX_COORD = 1e9                 # largest absolute coordinate a pick may give (mm)
 
@@ -154,6 +158,7 @@ class SketchSession:
         self.lock = threading.Lock()
         self.stored = None                     # the stored feature dict of an existing sketch (the server sets it)
         self.committing = False                # a commit is on its way (the server sets it, under `lock`)
+        self.variables = {}                    # #name -> number, the Document's variables an expression may use
         self.drag = None                       # the drag in progress (drag_begin), or None
         self.drag_pending = None               # serve.py: the one move waiting for the solver (latest wins)
         self.drag_worker = None                # serve.py: the task that solves the waiting moves
@@ -457,6 +462,235 @@ class SketchSession:
             if x not in self.sk.points and x not in self.sk.entities:
                 raise SketchError(f"fits.selection[{i}]: no such point or entity in the sketch")
         return OPS.fits(self.sk, sel)
+
+    # ------------------------------------------------------------------ dimensions, fillet, trim, use edge (I7.6)
+    def _number(self, value, at, angle=False, positive=True):
+        """A number from a message value: a number, or the text of an expression (freeshape.expr, with this
+        session's variables; `angle` reads a bare number as degrees). SketchError naming `at` when it cannot be read."""
+        if isinstance(value, str):
+            if not 1 <= len(value) <= MAX_EXPR:
+                raise SketchError(f"{at}: an expression of 1 to {MAX_EXPR} characters")
+            try:
+                v = parse_number(value, angle=angle, variables=self.variables, strict=True)
+            except ExprError as e:
+                raise SketchError(f"{at}: {e}") from None
+            return _finite(v, at, positive=positive)
+        return _finite(value, at, positive=positive)
+
+    def _label(self, body, at):
+        return _uv(body["pos"], f"{at}.pos") if body.get("pos") is not None else None
+
+    def dimension(self, body):
+        """{"picks": [id] or [id, id], "pos"?: [u, v], "kind"?: name, "value"?: number or expression}: add a dimension
+        between the picked points / entities as the desktop's Dimension tool does (sketch_ops.dim_spec), as one step.
+        One line: its length; one circle: diameter; one arc: radius; two lines: the angle, or, parallel, their distance;
+        a point and a line or two points: a distance; two points far apart in both directions take a horizontal or
+        vertical distance when `pos` (where the number sits) lies beside their box. `kind` may name distance,
+        hdistance or vdistance for two points (a touch client chooses); for anything else it must be what the picks
+        give. (Not "type": that is the message's own field.) `value` (angle in degrees) defaults to the current
+        measure; given, the geometry follows. A dimension that
+        the other dimensions and constraints already fix, or that cannot be met, is a SketchError and nothing changes.
+        Returns {"constraint": id, "type", "value", "expr": the text when it names a #variable}."""
+        _only(body, {"picks", "pos", "kind", "value"}, "dimension")
+        picks = body.get("picks")
+        if not isinstance(picks, list) or not 1 <= len(picks) <= 2 or not all(isinstance(x, str) for x in picks):
+            raise SketchError("dimension.picks: must be a list of one or two ids")
+        for i, x in enumerate(picks):
+            if x not in self.sk.points and x not in self.sk.entities:
+                raise SketchError(f"dimension.picks[{i}]: no such point or entity in the sketch")
+        if len(picks) == 2 and picks[0] == picks[1]:
+            raise SketchError("dimension.picks: an item is named twice")
+        pos = self._label(body, "dimension")
+        want = body.get("kind")
+        if want is not None and want not in DIMENSIONS:
+            raise SketchError(f"dimension.kind: must be one of {', '.join(sorted(DIMENSIONS - {'offset'}))}")
+        if want == "offset":
+            raise SketchError("dimension.kind: an offset dimension is made by the offset, and set with dimension.set")
+        value = body.get("value")
+        spec = OPS.dim_spec(self.sk, picks[0], picks[1] if len(picks) == 2 else None, pos)
+        if spec is None:
+            raise SketchError("dimension.picks: these items take no dimension")
+        ctype, refs, measured = spec
+        if want is not None and want != ctype:
+            if not (ctype in ("distance", "hdistance", "vdistance") and want in ("distance", "hdistance", "vdistance")
+                    and len(refs) == 2 and all(r in self.sk.points for r in refs)):
+                raise SketchError(f"dimension.kind: these items take a {ctype} dimension")
+            a, b = self.sk.P(refs[0]), self.sk.P(refs[1])
+            ctype = want
+            measured = {"distance": float(math.dist(a, b)), "hdistance": abs(float(a[0] - b[0])),
+                        "vdistance": abs(float(a[1] - b[1]))}[want]
+        text = value if isinstance(value, str) and has_vars(value) else None
+        target = self._number(value, "dimension.value", angle=(ctype == "angle"), positive=(ctype != "angle")) \
+            if value is not None else None
+        if target is None and ctype != "angle" and float(measured) <= 0:
+            raise SketchError("dimension.picks: the items are in the same place, give a value")
+        made = {}
+
+        def change():
+            sk = self.sk
+            sk.solve()
+            dof_before = sk.status.get("dof", 0)
+            c = sk.add_constraint(ctype, *refs, value=float(measured))
+            if pos is not None:
+                sk.place_dim(c, pos)
+            sk.solve()
+            if not sk.status.get("ok", True) or sk.status.get("dof", 0) >= dof_before:
+                raise SketchError("dimension.picks: this is already set by other dimensions or constraints "
+                                  "(it would over-define the sketch)")
+            if target is not None:
+                self._set_value(c["id"], target, text)
+            made.update({"constraint": c["id"], "type": ctype, "value": float(target if target is not None else measured)})
+            if text:
+                made["expr"] = text
+        self._step(change)
+        return made
+
+    def _set_value(self, cid, v, text):
+        """Give constraint `cid` the value `v` (and the expression `text` when it names a variable), solve, and say
+        so when the sketch cannot be solved with it. Inside a step: the step puts everything back."""
+        cc = next(c for c in self.sk.constraints if c["id"] == cid)
+        cc["value"] = float(v)
+        if text and has_vars(text):
+            cc["expr"] = text
+        else:
+            cc.pop("expr", None)
+        self.sk.solve()
+        if not self.sk.status.get("ok", True):
+            raise SketchError(f"value: can't make that {v:g}, it doesn't fit with the other dimensions and "
+                              "constraints")
+
+    def dimension_set(self, body):
+        """{"constraint": a dimension's id, "value"?: number or expression, "pos"?: [u, v]}: change a dimension's value
+        (an expression that names a #variable is kept as its text and follows the variable) and / or move its label,
+        as one step. The geometry follows the value. A value the other dimensions and constraints do not allow is a
+        SketchError and the sketch is exactly as before. Returns {"constraint", "value", "expr"?}."""
+        _only(body, {"constraint", "value", "pos"}, "dimension.set")
+        cid = body.get("constraint")
+        c = next((c for c in self.sk.constraints if c["id"] == cid), None) if isinstance(cid, str) else None
+        if c is None or c["type"] not in DIMENSIONS:
+            raise SketchError("dimension.set.constraint: no such dimension in the sketch")
+        if "value" not in body and "pos" not in body:
+            raise SketchError("dimension.set: give a value or a pos")
+        pos = self._label(body, "dimension.set")
+        value = body.get("value")
+        text = value if isinstance(value, str) else None
+        v = self._number(value, "dimension.set.value", angle=(c["type"] == "angle"),
+                         positive=(c["type"] != "angle")) if value is not None else None
+        out = {}
+
+        def change():
+            cc = next(x for x in self.sk.constraints if x["id"] == cid)
+            if pos is not None:
+                self.sk.place_dim(cc, pos)
+            if v is not None:
+                self._set_value(cid, v, text)
+            out.update({"constraint": cid, "value": float(cc["value"])})
+            if cc.get("expr"):
+                out["expr"] = cc["expr"]
+        self._step(change)
+        return out
+
+    def fillet(self, body):
+        """{"point": a corner point's id, "radius": number or expression}: round the corner where exactly two lines meet
+        (sketch_ops.fillet_corner), as one step. The new arc is tangent to both lines and carries a radius dimension
+        (which keeps the expression when it names a #variable). Returns {"arc": id, "constraint": the radius
+        dimension's id}."""
+        _only(body, {"point", "radius"}, "fillet")
+        pid = body.get("point")
+        if isinstance(pid, str) and pid in self.sk.entities and self.sk.entities[pid]["type"] == "point":
+            pid = self.sk.entities[pid]["p"]                    # a point entity stands for its point
+        if not isinstance(pid, str) or pid not in self.sk.points:
+            raise SketchError("fillet.point: no such point in the sketch")
+        radius = body.get("radius")
+        r = self._number(radius, "fillet.radius")
+        text = radius if isinstance(radius, str) and has_vars(radius) else None
+        out = {}
+
+        def change():
+            aid = OPS.fillet_corner(self.sk, pid, r)
+            rc = next(c for c in reversed(self.sk.constraints) if c["type"] == "radius" and c["refs"] == [aid])
+            if text:
+                rc["expr"] = text
+            out.update({"arc": aid, "constraint": rc["id"]})
+        self._step(change)
+        return out
+
+    def trim(self, body):
+        """{"entity": an entity's id, "at": [u, v]}: remove the piece of the entity under `at` as the desktop's Trim tool
+        does (sketch_ops.trim): a line is cut back to its neighbouring crossings with other lines, circles and arcs
+        and the rest stays as up to two lines; a circle or arc goes whole. One step. Returns {"removed": id, "made":
+        [ids of the lines left]}."""
+        _only(body, {"entity", "at"}, "trim")
+        eid = body.get("entity")
+        e = self.sk.entities.get(eid) if isinstance(eid, str) else None
+        if e is None or e["type"] == "point":
+            raise SketchError("trim.entity: not a line or curve of the sketch")
+        uv = _uv(body.get("at"), "trim.at")
+        out = {}
+        self._step(lambda: out.update(OPS.trim(self.sk, eid, uv)))
+        return out
+
+    USE_EDGE_FIELDS = {"pick", "construction"}
+
+    def use_edge_pick(self, body):
+        """Check a sketch.use_edge body, as far as this session can, and give the edge pick to ask the engine's
+        project_edge about: {"pick": {"part": id, "index": 1-based, "kind"?: "edge", "want"?: ["edge"]} (an
+        `edges[].pick` of sketch.opened), "construction"?: bool (default true)}."""
+        _only(body, self.USE_EDGE_FIELDS, "use_edge")
+        pick = body.get("pick")
+        _only(pick, {"part", "index", "kind", "want"}, "use_edge.pick")
+        part, index = pick.get("part"), pick.get("index")
+        if not isinstance(part, str) or not 1 <= len(part) <= 64:
+            raise SketchError("use_edge.pick.part: must be a part id")
+        if isinstance(index, bool) or not isinstance(index, int) or not 1 <= index <= 10 ** 6:
+            raise SketchError("use_edge.pick.index: must be a whole number from 1")
+        if pick.get("kind", "edge") != "edge":
+            raise SketchError("use_edge.pick.kind: must be edge")
+        if "construction" in body and not isinstance(body["construction"], bool):
+            raise SketchError("use_edge.construction: must be true or false")
+        return {"part": part, "kind": "edge", "index": index, "want": ["edge"]}
+
+    def use_edge(self, body, got):
+        """Add the model edge the engine's project_edge answered (`got`: {"kind", "entity", "ref"}) as fixed geometry
+        with its reference stored as `src`, so it follows the part, as the desktop's Use tool does
+        (sketch_ops.add_projected_edge), as one step; `body` as use_edge_pick takes it. The copy is construction
+        unless "construction" is false. An edge already in the sketch is not added twice: its entity is returned, with
+        its construction flag set only if the message gave one; if that changes nothing there is no step.
+        Returns {"entity": the id, "points": [its point ids], "reused": bool}."""
+        self.use_edge_pick(body)
+        cons = body.get("construction", True)
+        kind, ent = got.get("kind"), got.get("entity") or {}
+        if kind == "line":
+            tup = ("line", np.array(ent["a"], float), np.array(ent["b"], float))
+        elif kind == "circle":
+            tup = ("circle", np.array(ent["c"], float), float(ent["r"]))
+        elif kind == "arc":
+            tup = ("arc", np.array(ent["c"], float), np.array(ent["p1"], float), np.array(ent["p2"], float))
+        elif kind == "point":
+            tup = ("point", np.array(ent["p"], float))
+        else:
+            raise SketchError("use_edge.pick: that edge cannot be used here")
+        self._not_dragging()
+        before, redo = self.sk.to_dict(), list(self.redo_stack)
+        out = {}
+
+        def change():
+            sk = self.sk
+            eid, reused = OPS.add_projected_edge(sk, tup, cons)
+            if reused is None and eid in sk.entities and got.get("ref") is not None:
+                sk.entities[eid]["src"] = got["ref"]
+            if reused is not None and "construction" in body:
+                e = sk.entities[reused]
+                e["construction"] = bool(cons)
+                e.pop("helper", None)
+            e = sk.entities.get(eid)
+            pts = [eid] if eid in sk.points else (sk.entity_points(eid) if e else [])
+            out.update({"entity": eid, "points": list(pts), "reused": reused is not None})
+        self._step(change)
+        if out["reused"] and self.sk.to_dict() == before:        # nothing changed: no step
+            self.undo_stack.pop()
+            self.redo_stack[:] = redo
+        return out
 
     # ------------------------------------------------------------------ undo
     def undo(self):

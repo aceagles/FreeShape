@@ -17,6 +17,7 @@ from . import boxsel
 from .icons import CONSTRAINT_GLYPHS
 from .numparse import parse_number, fmt, has_vars
 from .. import sketch_ops as OPS
+from ..sketch_ops import _cross2, _pt_line_dist
 
 DRAW_TOOLS = {"line", "rect", "center_rect", "circle", "polygon", "arc3", "arc_center", "point", "spline", "ellipse",
               "text"}
@@ -1563,71 +1564,7 @@ class Sketcher:
 
     def _dim_spec(self, a, b, pos):
         """(type, refs, current value) of the dimension between picks a and b, or None."""
-        sk = self.sk
-        ta = self._etype(a)
-        tb = self._etype(b) if b else None
-        ctype, refs, val = None, None, None
-        if b is None:
-            if ta == "line":
-                ctype, refs = "distance", [a]
-                e = sk.entities[a]
-                val = float(np.linalg.norm(sk.P(e["p2"]) - sk.P(e["p1"])))
-            elif ta == "circle":
-                ctype, refs, val = "diameter", [a], 2 * sk.radius(a)
-            elif ta == "arc":
-                ctype, refs, val = "radius", [a], sk.radius(a)
-            elif ta == "ellipse":           # half its width; the length is set with its dashed axis line
-                ctype, refs, val = "radius", [a], sk.radius(a)
-            else:
-                return None
-        else:
-            def ptof(i, t):
-                if t == "point":
-                    return self._as_point(i)
-                if t in ("circle", "arc", "ellipse"):
-                    return sk.entities[i]["c"]
-                if t == "text":
-                    return sk.entities[i]["p"]          # where the text starts
-                return None
-            if ta == "line" and tb == "line":
-                e1, e2 = sk.entities[a], sk.entities[b]
-                d1 = sk.P(e1["p2"]) - sk.P(e1["p1"])
-                d2 = sk.P(e2["p2"]) - sk.P(e2["p1"])
-                cr = abs(_cross2(d1 / np.linalg.norm(d1), d2 / np.linalg.norm(d2)))
-                if cr < 1e-3:
-                    ctype, refs = "distance", [e2["p1"], a]
-                    val = _pt_line_dist(sk.P(e2["p1"]), sk.P(e1["p1"]), sk.P(e1["p2"]))
-                else:
-                    ctype, refs = "angle", [a, b]
-                    cosv = abs(d1 @ d2) / (np.linalg.norm(d1) * np.linalg.norm(d2))
-                    dt = (d1 @ d2) / (np.linalg.norm(d1) * np.linalg.norm(d2))
-                    val = math.degrees(math.atan2(cr, dt))
-            elif "line" in (ta, tb):
-                line, other, to = (a, b, tb) if ta == "line" else (b, a, ta)
-                p = ptof(other, to)
-                if p is None:
-                    return None
-                e = sk.entities[line]
-                ctype, refs = "distance", [p, line]
-                val = _pt_line_dist(sk.P(p), sk.P(e["p1"]), sk.P(e["p2"]))
-            else:
-                pa, pb = ptof(a, ta), ptof(b, tb)
-                if pa is None or pb is None:
-                    return None
-                A, B = sk.P(pa), sk.P(pb)
-                lo, hi = np.minimum(A, B), np.maximum(A, B)
-                ctype = "distance"
-                if pos is not None and abs(A[0] - B[0]) > 1e-6 and abs(A[1] - B[1]) > 1e-6:
-                    if lo[0] <= pos[0] <= hi[0] and not (lo[1] <= pos[1] <= hi[1]):
-                        ctype = "hdistance"
-                    elif lo[1] <= pos[1] <= hi[1] and not (lo[0] <= pos[0] <= hi[0]):
-                        ctype = "vdistance"
-                refs = [pa, pb]
-                val = {"distance": np.linalg.norm(A - B), "hdistance": abs(A[0] - B[0]),
-                       "vdistance": abs(A[1] - B[1])}[ctype]
-        if ctype is None:
-            return None
-        return ctype, refs, val
+        return OPS.dim_spec(self.sk, a, b, pos)
 
     # ------------------------------------------------------------------ fillet / offset / slot / mirror / patterns
     def _nice(self, vp, px=40):
@@ -2106,40 +2043,8 @@ class Sketcher:
 
     def _trim(self, eid, uv):
         """Trim a line segment back to its neighbouring intersections with other curves."""
-        sk = self.sk
-        e = sk.entities[eid]
-        if e["type"] != "line":
-            # whole circle / arc: just delete it
-            self.push_undo()
-            sk.delete([eid])
-            self.changed(True)
-            return
-        a, b = sk.P(e["p1"]), sk.P(e["p2"])
-        d = b - a
-        ts = []
-        for oid, o in sk.entities.items():
-            if oid == eid or o["type"] == "point":
-                continue
-            for t in _intersections_with_line(sk, oid, a, b):
-                if 1e-6 < t < 1 - 1e-6:
-                    ts.append(t)
-        t_click = float(np.clip(((uv - a) @ d) / max(d @ d, 1e-12), 0, 1))
-        lo = max([t for t in ts if t < t_click], default=0.0)
-        hi = min([t for t in ts if t > t_click], default=1.0)
         self.push_undo()
-        p1, p2 = e["p1"], e["p2"]
-        cons = e.get("construction", False)
-        sk.delete([eid])
-        if lo > 1e-6:
-            q = sk.add_point(*(a + lo * d))
-            if p1 not in sk.points:
-                p1 = sk.add_point(*a)
-            sk.add_line(p1, q, cons)
-        if hi < 1 - 1e-6:
-            q = sk.add_point(*(a + hi * d))
-            if p2 not in sk.points:
-                p2 = sk.add_point(*b)
-            sk.add_line(q, p2, cons)
+        OPS.trim(self.sk, eid, uv)
         self.changed(True)
 
     def _extend(self, vp, eid, uv):
@@ -2677,18 +2582,6 @@ def _inside_poly(poly, pt):
     return inside
 
 
-def _cross2(a, b):
-    return float(a[0] * b[1] - a[1] * b[0])
-
-
-def _pt_line_dist(p, a, b):
-    d = b - a
-    n = np.linalg.norm(d)
-    if n < 1e-12:
-        return float(np.linalg.norm(p - a))
-    return float(abs(d[0] * (p - a)[1] - d[1] * (p - a)[0]) / n)
-
-
 def _circumcenter(a, b, c):
     return OPS.circumcenter(a, b, c)
 
@@ -2713,43 +2606,3 @@ def _arc_pts(c, p1, p2, n=64):
         a2 += 2 * math.pi
     a = np.linspace(a1, a2, n)
     return c + r * np.c_[np.cos(a), np.sin(a)]
-
-
-def _intersections_with_line(sk, oid, a, b):
-    """Parameters t in [0,1] along segment a->b where entity oid crosses it."""
-    o = sk.entities[oid]
-    d = b - a
-    out = []
-    if o["type"] == "line":
-        c, e = sk.P(o["p1"]), sk.P(o["p2"])
-        f = e - c
-        den = d[0] * f[1] - d[1] * f[0]
-        if abs(den) < 1e-12:
-            return out
-        w = c - a
-        t = (w[0] * f[1] - w[1] * f[0]) / den
-        s = (w[0] * d[1] - w[1] * d[0]) / den
-        if -1e-9 <= s <= 1 + 1e-9:
-            out.append(t)
-    elif o["type"] in ("circle", "arc"):
-        c = sk.P(o["c"])
-        r = sk.radius(oid)
-        f = a - c
-        A = d @ d
-        B = 2 * f @ d
-        C = f @ f - r * r
-        disc = B * B - 4 * A * C
-        if disc < 0 or A < 1e-12:
-            return out
-        for sgn in (-1, 1):
-            t = (-B + sgn * math.sqrt(disc)) / (2 * A)
-            pt = a + t * d
-            if o["type"] == "arc":
-                a1, a2 = sk.arc_angles(oid)
-                ang = math.atan2(pt[1] - c[1], pt[0] - c[0])
-                while ang < a1:
-                    ang += 2 * math.pi
-                if ang > a2:
-                    continue
-            out.append(t)
-    return out

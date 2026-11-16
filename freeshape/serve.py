@@ -259,6 +259,38 @@ is one undo step. Other steps, undo, redo and commit are refused while one is op
                 (the field is not "id": that stays the request id); answers sketch.changed.
   sketch.fits   {"type": "sketch.fits", "selection": [point or entity id, ...]}  no change, allowed during a drag;
                 answers {"type": "sketch.fitted", "selection", "tools": [tool names that take it, in the order above]}.
+Dimensions, trim, fillet and use edge (I7.6). Each answers {"type": "sketch.changed", ...the fields above, "made": {...}}
+and is one undo step; a refusal is the error message and changes nothing. A number is a JSON number or the text of an
+expression (freeshape.expr: units, 2*10, #variable, evaluated with the Document's variables as the Part Studio has them
+when the sketch opened; a bare number in an angle is degrees). An expression that names a #variable is stored on the
+dimension as its "expr", as the desktop does.
+  sketch.dimension {"type": "sketch.dimension", "picks": [id] or [id, id], "pos"?: [u, v], "kind"?, "value"?}  add a
+                dimension as the desktop's Dimension tool does (sketch_ops.dim_spec). The client sends picks, never the
+                constraint type: one line gives its length (distance), one circle its diameter, one arc its radius, two
+                lines the angle (degrees) or, when parallel, their distance; a point or a circle or arc centre with a
+                line, or two points or centres, a distance. Two points far apart in both directions give an hdistance
+                or vdistance when `pos` (where the number sits, kept at that offset as the geometry moves) lies beside
+                their box; "kind" (distance, hdistance or vdistance; the field is not "type") picks one for two points.
+                "value" defaults to the current measure; given, the geometry follows. A dimension the others already
+                fix, or that cannot be met with them, is an error naming "picks" or "value". made {"constraint": id,
+                "type": distance | hdistance | vdistance | radius | diameter | angle, "value", "expr"?}.
+  sketch.dimension.set {"type": "sketch.dimension.set", "constraint": a dimension's id, "value"?, "pos"?: [u, v]}  change
+                the value (any dimension: those above and an offset) and / or move the label (one of the two is
+                needed). A value the other dimensions refuse (or 0 or less, but for an angle) is an error naming
+                "value" and the sketch is as it was. made {"constraint", "value", "expr"?}.
+  sketch.fillet {"type": "sketch.fillet", "point": a corner point's id, "radius": number or expression}  round the corner
+                where exactly two lines meet (sketch_ops.fillet_corner). made {"arc": id, "constraint": the arc's radius
+                dimension, which sketch.dimension.set can change}. A radius too large for the lines, or a point that is
+                not such a corner, is an error.
+  sketch.trim   {"type": "sketch.trim", "entity": an entity's id, "at": [u, v]}  remove the piece under `at` as the
+                desktop's Trim tool (sketch_ops.trim): a line is cut back to its neighbouring crossings with other lines,
+                circles and arcs; a circle or arc goes whole. made {"removed": id, "made": [ids of the lines left]}.
+  sketch.use_edge {"type": "sketch.use_edge", "pick": {"part", "index"}: an `edges[].pick` of sketch.opened,
+                "construction"?: bool (default true)}  bring a model edge in as fixed geometry through the engine's
+                project_edge, with its reference stored as `src` so it follows the part (the desktop's Use tool). An
+                edge that is neither straight nor circular on the plane is an error. An edge already in the sketch is
+                not added again (no step; "construction" given sets the flag of the one there). made {"entity": id
+                (a point id for an edge seen end-on), "points": [its point ids], "reused": bool}.
 When the client's registry entry expires, or the Document closes or the server stops gracefully, an unfinished sketch is
 written into the Document's autosave (I2.6) before the session is dropped: the tab's autosaved data holds the sketch
 feature (an existing one with the session's params, a new one added at the rollback bar), the open session is not
@@ -2070,7 +2102,10 @@ class _Server:
                       "sketch.delete": {"ids"}, "sketch.construction": {"ids", "value"},
                       "sketch.undo": set(), "sketch.redo": set(), "sketch.state": set(), "sketch.commit": set(),
                       "sketch.cancel": set(), "sketch.constrain": {"tool", "picks"}, "sketch.unconstrain": {"constraint"},
-                      "sketch.fits": {"selection"}, "sketch.drag.begin": {"point", "entity", "at"},
+                      "sketch.fits": {"selection"}, "sketch.dimension": {"picks", "pos", "kind", "value"},
+                      "sketch.dimension.set": {"constraint", "value", "pos"}, "sketch.fillet": {"point", "radius"},
+                      "sketch.trim": {"entity", "at"}, "sketch.use_edge": {"pick", "construction"},
+                      "sketch.drag.begin": {"point", "entity", "at"},
                       "sketch.drag.move": {"at", "t"}, "sketch.drag.end": {"cancel"}}
 
     async def _sketch_do(self, client, kind, msg, doc_id, ws=None):
@@ -2105,6 +2140,21 @@ class _Server:
         if kind.startswith("sketch.drag."):
             return await self._sketch_drag(sk, kind, msg, body, ws)
 
+        got = None
+        if kind == "sketch.use_edge":                            # the engine answers which entity the edge gives
+            d = self.docs.get(sk.document)
+            if d is None:
+                raise SketchError("the sketch's Document is not open")
+
+            def project():
+                with sk.lock:
+                    if sk.committing:
+                        raise SketchError("the sketch is being committed")
+                    sk._not_dragging()
+                    pick, plane = sk.use_edge_pick(body), sk.plane
+                return d.session.project_edge(sk.tab, plane, pick)
+            got = await self._in_session(d, project)
+
         def step():
             with sk.lock:
                 if sk.committing:
@@ -2117,6 +2167,16 @@ class _Server:
                     return {"type": "sketch.constrained", **res, **sk.view()}
                 if kind == "sketch.add":
                     made = sk.add(body)
+                elif kind == "sketch.dimension":
+                    made = sk.dimension(body)
+                elif kind == "sketch.dimension.set":
+                    made = sk.dimension_set(body)
+                elif kind == "sketch.fillet":
+                    made = sk.fillet(body)
+                elif kind == "sketch.trim":
+                    made = sk.trim(body)
+                elif kind == "sketch.use_edge":
+                    made = sk.use_edge(body, got)
                 elif kind == "sketch.unconstrain":
                     sk.unconstrain(body)
                 elif kind == "sketch.delete":
@@ -2264,6 +2324,8 @@ class _Server:
                 sk = SketchSession(d.id, tab, None, plane, None, name=f"Sketch {n}")
             sk.frame = {k: [float(x) for x in frame[k]] for k in ("origin", "xdir", "ydir", "normal")}
             sk.edges = self._json_plain(frame["edges"])
+            sk.variables = {k: v for k, v in dict(getattr(d.session.outputs(tab), "variables", None) or {}).items()
+                            if isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)}
             return sk, d.revisions.get(tab)
         sk, revision = await self._in_session(d, work)
         if entry.data.get("sketch") is not None:                 # another socket of this client opened one meanwhile

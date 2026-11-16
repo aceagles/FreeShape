@@ -1005,6 +1005,15 @@ class DocumentSession:
         except (TypeError, ValueError, KeyError, IndexError, AttributeError) as e:      # a malformed reference
             raise SessionError(f"plane: not a plane reference ({type(e).__name__})") from e
 
+    def project_edge(self, tab, plane, pick):
+        """The engine's `project_edge` (I7.1) for the sketch plane reference `plane` and an edge pick: the entity the
+        edge gives and its reference. A query. SessionError for a tab that cannot answer or an edge that cannot be used."""
+        self._need_open(tab)
+        try:
+            return self._retry(tab, lambda: self._eng.project_edge(tab, plane, pick))
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
+
     def feature_names(self, tab):
         """{feature id: name} of a Part Studio tab, in file order. SessionError for any other kind of tab."""
         out = self.outputs(tab)

@@ -35,6 +35,7 @@ async function capture(browser: Browser, width: number, height: number, key: str
     } catch (e) {
       const file = resolve(out, `${stem}.FAILED.png`)
       await page.screenshot({ path: file }).catch(() => {})
+      await after?.(page).catch((e: Error) => console.log(`  restoring after ${stem}: ${e.message.split('\n')[0]}`))
       failures.push(`${stem}: steps failed: ${(e as Error).message.split('\n')[0]} (what was on screen: ${file})`)
       return
     }

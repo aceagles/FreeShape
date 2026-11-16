@@ -147,6 +147,9 @@
 .modal-message.tight {
   margin-bottom: var(--sp-8);
 }
+.modal-message.tight + .modal-buttons {
+  margin-top: var(--sp-12);
+}
 .modal-warning {
   padding: var(--sp-8) var(--sp-12);
   border: 1px solid var(--c-selection);

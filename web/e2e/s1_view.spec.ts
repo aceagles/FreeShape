@@ -2,12 +2,14 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { expect, test } from '@playwright/test'
 import { openApp } from './support/app.ts'
+import { idOf } from './support/docs.ts'
 import { canvasCentre, fingerDrag, penStroke, twoFingers } from './support/pointer.ts'
 import { settled, readViewport } from './support/viewport.ts'
 
-// Slice S1, "A served model on the iPad", against `freeshape serve` on the bracket example (scripts/web/e2e.sh).
-// Under WebKit at 1024 x 768 with touch. The specs share one Document and run in order: the edit test is last, and
-// puts the diameter back.
+// Slice S1, "A served model on the iPad", against `freeshape serve` on a Documents root holding the bracket and the
+// hinge examples (scripts/web/e2e.sh); each test opens the bracket Document from the home screen first (openApp).
+// Under WebKit at 1024 x 768 with touch. The edit test puts the diameter back, and openApp closes every Document
+// without saving, so no test sees what another did.
 
 const expected = JSON.parse(readFileSync(resolve(import.meta.dirname, '../fixtures/bracket.expected.json'), 'utf8')) as {
   parts: number
@@ -78,7 +80,7 @@ test('an edit posted to the server reaches the page without a reload', async ({ 
   })
   const before = await readViewport(page)
   expect(before.revision).not.toBeNull()
-  const doc = (await (await request.get('/documents')).json()).documents[0].id as string
+  const doc = await idOf(request, 'Bracket')
   const tab = (await (await request.get(`/documents/${doc}/tabs`)).json()).tabs[0].id as string
   try {
     const res = await request.post(`/documents/${doc}/tabs/${tab}/edit`, { data: { ...EDIT, value: 7.0 } })

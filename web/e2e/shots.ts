@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { openApp } from './support/app.ts'
-import type { WebSocketRoute } from '@playwright/test'
+import { closeAll, discardAutosaveOf, holdLockClosed, idOf, releaseLock } from './support/docs.ts'
+import { longPressTab } from './support/tabs.ts'
 import { canvasCentre, fingerDrag, twoFingers } from './support/pointer.ts'
 import { settled } from './support/viewport.ts'
 
@@ -103,7 +104,7 @@ export const shots: ShotState[] = [
     mock: 'browsing', // the layout has no tab menu; the top bar and panel are the same
     steps: async (page) => {
       await openApp(page)
-      await longPress(page)
+      await longPressTab(page)
     },
   },
   {
@@ -120,7 +121,7 @@ export const shots: ShotState[] = [
     mock: 'browsing',
     steps: async (page) => {
       await openApp(page)
-      await longPress(page)
+      await longPressTab(page)
       await page.getByRole('menuitem', { name: 'Rename' }).click()
       await page.getByRole('textbox', { name: 'Name' }).waitFor()
     },
@@ -130,7 +131,7 @@ export const shots: ShotState[] = [
     mock: 'browsing',
     steps: async (page) => {
       await openApp(page)
-      await longPress(page)
+      await longPressTab(page)
       await page.getByRole('menuitem', { name: 'Delete' }).click()
       await page.getByRole('dialog', { name: /Delete/ }).waitFor()
     },
@@ -159,30 +160,80 @@ export const shots: ShotState[] = [
   },
   {
     name: 'read-only-banner',
-    mock: 'browsing', // no banner in the layout; a lock message from "the desktop" is injected into the real socket
+    mock: 'browsing', // no banner in the layout; the real server, with the lock written for the desktop before opening
     steps: async (page) => {
-      let route: WebSocketRoute | undefined
-      await page.routeWebSocket(/\/ws\?client=/, (ws) => {
-        route = ws
-        ws.connectToServer()
-      })
+      await holdLockClosed(page.request, 'bracket', 'desktop')
       await openApp(page)
-      const doc = await page.evaluate(() => fetch('/documents').then((r) => r.json()))
-      const id = (doc as { documents: Array<{ id: string }> }).documents[0]!.id
-      route?.send(JSON.stringify({ type: 'lock', document: id, read_only: true, holder: { program: 'desktop', instance: 'x', heartbeat: 1, stale: false } }))
       await page.getByTestId('read-only-banner').waitFor()
     },
+    after: async () => releaseLock('bracket'),
+  },
+  {
+    name: 'home',
+    mock: null, // the layout has no home screen
+    steps: async (page) => {
+      await openHome(page)
+    },
+  },
+  {
+    name: 'home-held-elsewhere',
+    mock: null,
+    steps: async (page) => {
+      await holdLockClosed(page.request, 'bracket', 'desktop')
+      await openHome(page)
+      await page.getByText('opens read-only here').waitFor()
+    },
+    after: async () => releaseLock('bracket'),
+  },
+  {
+    name: 'new-document-dialog',
+    mock: null,
+    steps: async (page) => {
+      await openHome(page)
+      await page.getByRole('button', { name: 'New Document' }).click()
+      await page.getByRole('textbox', { name: 'Name' }).fill('Hinge bracket')
+    },
+  },
+  {
+    name: 'home-recoverable',
+    mock: null,
+    steps: async (page) => {
+      await leaveAutosave(page)
+      await openHome(page)
+      await page.getByTestId('recover-mark').waitFor()
+    },
+    after: async (page) => discardAutosaveOf(page.request, 'Bracket'),
+  },
+  {
+    name: 'recover-dialog',
+    mock: null,
+    steps: async (page) => {
+      await leaveAutosave(page)
+      await openHome(page)
+      await page.getByTestId('recover-mark').waitFor()
+      await page.locator('.doc-row', { has: page.locator('.doc-name', { hasText: /^Bracket$/ }) }).click() // the dialog comes, not the shell
+      await page.getByRole('dialog', { name: /Recover unsaved changes/ }).waitFor()
+    },
+    after: async (page) => discardAutosaveOf(page.request, 'Bracket'),
   },
 ]
 
-/** Hold the first tab until its menu opens. */
-async function longPress(page: Page): Promise<void> {
-  const box = await page.locator('.tab-button').first().boundingBox()
-  if (!box) throw new Error('no tab')
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-  await page.mouse.down()
-  await page.getByRole('menu').waitFor() // opens by itself after 500 ms of holding
-  await page.mouse.up()
+/** The home screen with every Document closed, the rows loaded. */
+async function openHome(page: Page): Promise<void> {
+  await closeAll(page.request)
+  await page.goto('/')
+  await page.getByTestId('home').waitFor()
+  await page.locator('.doc-name', { hasText: /^Hinge$/ }).waitFor()
+}
+
+/** Leave an autosave of the bracket behind, the way a real session does: open, edit, close without saving. */
+async function leaveAutosave(page: Page): Promise<void> {
+  await closeAll(page.request)
+  const id = await idOf(page.request, 'Bracket')
+  await page.request.post(`/documents/${id}/open`, { data: {} })
+  const res = await page.request.post(`/documents/${id}/tabs/T1/edit`, { data: { op: 'set_param', feature: 'F5', key: 'diameter', value: 7.0 } })
+  if (!res.ok()) throw new Error(`the edit that leaves the autosave failed: ${res.status()}`)
+  await page.request.post(`/documents/${id}/close`, { data: {} })
 }
 
 const NEW_NAME = 'Base plate'
@@ -190,7 +241,7 @@ let original = ''
 
 /** Put the first tab's name back and save, so the next state starts from the Document as it was. */
 async function restoreName(page: Page): Promise<void> {
-  const doc = ((await page.evaluate(() => fetch('/documents').then((r) => r.json()))) as { documents: Array<{ id: string }> }).documents[0]!.id
+  const doc = await idOf(page.request, 'Bracket')
   const tabs = ((await page.evaluate((d) => fetch(`/documents/${d}/tabs`).then((r) => r.json()), doc)) as { tabs: Array<{ id: string; name: string }> }).tabs
   const first = tabs[0]!
   if (first.name !== NEW_NAME) return
@@ -206,7 +257,7 @@ async function restoreName(page: Page): Promise<void> {
 
 async function renameFirstTab(page: Page): Promise<void> {
   original = (await page.locator('.tab-button').first().textContent()) ?? ''
-  await longPress(page)
+  await longPressTab(page)
   await page.getByRole('menuitem', { name: 'Rename' }).click()
   const field = page.getByRole('textbox', { name: 'Name' })
   await field.fill(NEW_NAME)

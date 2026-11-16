@@ -1,8 +1,12 @@
 # Sourced by e2e.sh and shots.sh (POSIX sh). Needs ROOT (the repo root) set by the caller.
 #
 #   web_build      builds the client into freeshape/static/app (needs web/node_modules: `npm ci`, done by the caller)
-#   web_serve      copies the example Documents to a temporary folder and starts `freeshape serve` on the bracket
-#                  Document at a free port; sets FS_BASE_URL. Stops with a message if it is not ready in 60 s.
+#   web_serve      copies the example Documents to a temporary Documents root, registers them in a registry in a
+#                  temporary data directory (scripts/web/doc_tools.py), and starts `freeshape serve` on that root at a
+#                  free port; sets FS_BASE_URL. Stops with a message if it is not ready in 60 s. It also sets
+#                  FS_PY (the Python command), FS_DOCS_ROOT and FS_DATA_DIR, which the specs hand to doc_tools.py.
+#                  The lock timeout is an hour, so a lock a spec writes for another holder is still live when the
+#                  spec looks; the real data directory is never touched.
 #   a trap (set here) stops the server and removes the temporary folder on exit, failure or interrupt.
 #
 # Python: $FS_PYTHON if set; else the gate image's fs_py (OCP defaults to the 8.x venv); else python3.
@@ -65,8 +69,18 @@ web_serve() {
   else
     py=python3
   fi
-  echo "== starting freeshape serve on a copy of examples/documents/bracket"
-  (cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 exec $py -m freeshape serve "$WEB_TMP/documents/bracket" --port 0) \
+  FS_PY="$py"
+  FS_DOCS_ROOT="$WEB_TMP/documents"
+  FS_DATA_DIR="$WEB_TMP/data"
+  export FS_PY FS_DOCS_ROOT FS_DATA_DIR
+  mkdir -p "$FS_DATA_DIR"
+  if ! (cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 $py scripts/web/doc_tools.py registry "$FS_DOCS_ROOT" "$FS_DATA_DIR"); then
+    echo "could not register the example Documents" >&2
+    exit 1
+  fi
+  echo "== starting freeshape serve on a Documents root made of a copy of examples/documents"
+  (cd "$ROOT" && PYTHONDONTWRITEBYTECODE=1 exec $py -m freeshape serve "$FS_DOCS_ROOT" --port 0 \
+    --data-dir "$FS_DATA_DIR" --lock-timeout 3600) \
     >"$WEB_TMP/serve.log" 2>&1 &
   SERVE_PID=$!
   n=0

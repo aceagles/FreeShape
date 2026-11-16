@@ -1074,7 +1074,7 @@ class _Server:
         if route == "take-over":
             return await self._take_over(d)
         if route in ("/tabs", "tabs"):
-            tabs = await self._in_session(d, d.session.tabs)
+            tabs = await self._in_session(d, lambda: self._tab_view(d))      # with each "revision", as open and the socket give
             return self._json(200, {"document": {"id": d.session.id, "name": d.session.name}, "tabs": tabs,
                                     **await self._off_loop(d.lock_state)})
         if route == "tabs.add":

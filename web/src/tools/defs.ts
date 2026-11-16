@@ -89,3 +89,106 @@ export function stripWidth(defs: readonly StripDef[], pinned: number): number {
 
 /** The types of the strip that no pin cap can leave out: every id in the defs, once. */
 export const toolIds = (defs: readonly StripDef[]): string[] => defs.flatMap((d) => (d.kind === 'tool' ? [d.tool.id] : d.tools.map((x) => x.id)))
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The Desktop-mode feature toolbar (card I9.3): one row of icon-only buttons in the desktop's order. Data, as the strip is.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * One button of the desktop row. `kind: 'feature'` starts the feature type `tool.id` and takes its state from the types
+ * route; `kind: 'command'` is any other button (the shell supplies the ones the client can do, the rest are disabled).
+ * `tip` replaces the tool's label in the tooltip where the desktop words it differently; `key` is the desktop's shortcut.
+ */
+export type DesktopEntry =
+  | { kind: 'feature' | 'command'; tool: ToolDef; key?: string; tip?: string }
+  | { kind: 'separator' }
+
+/** A desktop toolbar: the buttons from the left, and the ones kept at the right end. */
+export interface DesktopLayout {
+  items: readonly DesktopEntry[]
+  trailing: readonly DesktopEntry[]
+}
+
+const strip = new Map<string, ToolDef>([...groupTools(FEATURE_STRIP), ...FEATURE_STRIP.flatMap((d) => (d.kind === 'tool' ? [d.tool] : []))].map((x) => [x.id, x]))
+/** A ToolDef the strip already has, so the row and the strip share one. */
+const known = (id: string): ToolDef => {
+  const found = strip.get(id)
+  if (found === undefined) throw new Error(`no strip tool ${id}`)
+  return found
+}
+const SEP: DesktopEntry = { kind: 'separator' }
+const feature = (tool: ToolDef, key?: string, tip?: string): DesktopEntry => ({ kind: 'feature', tool, key, tip })
+const command = (tool: ToolDef, key?: string, tip?: string): DesktopEntry => ({ kind: 'command', tool, key, tip })
+const fromStrip = (id: string, key?: string, tip?: string): DesktopEntry => feature(known(id), key, tip)
+
+/**
+ * The desktop's feature toolbar (freeshape/ui/mainwindow.py `_build_feature_toolbar`), in its order and with its
+ * separators. The tip is the desktop's tooltip text before its dash. Left out: the Python-feature plugin buttons (one per
+ * installed Plugin, made at run time; the Plugins button stands for them) and the hidden configuration box.
+ */
+export const DESKTOP_TOOLBAR: DesktopLayout = {
+  items: [
+    command(t('undo', 'Undo'), 'Ctrl+Z'),
+    command(t('redo', 'Redo'), 'Ctrl+Y'),
+    SEP,
+    command(t('variable', 'Variable')),
+    feature(t('variable_studio_ref', 'Variable Studio reference')),
+    command(t('configs', 'Configurations')),
+    feature(t('derived', 'Derived')),
+    command(t('history', 'Compare Versions')),
+    command(t('plugin', 'Plugins')),
+    SEP,
+    fromStrip('sketch', 'Shift+S'),
+    SEP,
+    fromStrip('extrude', 'Shift+E'),
+    fromStrip('revolve', 'Shift+W'),
+    fromStrip('sweep'),
+    fromStrip('rib'),
+    fromStrip('loft'),
+    fromStrip('boundary_surface'),
+    fromStrip('fillet', 'Shift+F'),
+    fromStrip('chamfer'),
+    fromStrip('draft'),
+    fromStrip('shell'),
+    fromStrip('hole'),
+    fromStrip('thread'),
+    fromStrip('delete_face'),
+    fromStrip('move_face'),
+    fromStrip('offset_surface'),
+    fromStrip('thicken'),
+    fromStrip('enclose'),
+    fromStrip('fill'),
+    fromStrip('delete_part'),
+    SEP,
+    fromStrip('sm_base'),
+    fromStrip('sm_flange'),
+    fromStrip('sm_hem'),
+    fromStrip('sm_jog'),
+    fromStrip('sm_tab'),
+    fromStrip('sm_convert'),
+    command(t('flat', 'Flat pattern')),
+    command(t('flat_dxf', 'Export the flat pattern as DXF')),
+    command(t('nest', 'Nest for cutting')),
+    SEP,
+    fromStrip('plane'),
+    fromStrip('axis'),
+    SEP,
+    fromStrip('mirror'),
+    fromStrip('linear_pattern', undefined, 'Linear pattern'),
+    fromStrip('circular_pattern', undefined, 'Circular pattern'),
+    fromStrip('boolean'),
+    fromStrip('split'),
+    fromStrip('move'),
+    feature(t('mate_connector', 'Mate connector')),
+    SEP,
+    command(t('import', 'Import STEP')),
+    command(t('export', 'Export')),
+  ],
+  trailing: [command(t('section', 'Section view'), 'Shift+X'), command(t('interference', 'Interference detection')), command(t('fit', 'Zoom to fit'), 'F'), command(t('iso', 'Isometric'), 'Shift+7')],
+}
+
+/** The tool ids of a desktop row, in order, separators left out. */
+export const desktopToolIds = (layout: DesktopLayout): string[] => [...layout.items, ...layout.trailing].flatMap((e) => (e.kind === 'separator' ? [] : [e.tool.id]))
+
+/** What a desktop button's tooltip says: `<label> (<key>)` where the desktop has a key. */
+export const desktopTip = (e: Exclude<DesktopEntry, { kind: 'separator' }>): string => `${e.tip ?? e.tool.label}${e.key !== undefined ? ` (${e.key})` : ''}`

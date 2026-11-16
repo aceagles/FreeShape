@@ -90,6 +90,17 @@ function editOpened(page: Page): () => EditOpened {
   return () => got!
 }
 
+/** Desktop mode: click the first face the mouse picks in the view, and wait until the chip says so. */
+async function pickFaceWithMouse(page: Page): Promise<void> {
+  const [face] = await faceSpots(page, page.request, 'mouse')
+  await sendPointer(page, [{ phase: 'move', kind: 'mouse', id: 20, ...face! }])
+  await sendPointer(page, [
+    { phase: 'down', kind: 'mouse', id: 20, ...face!, button: 0 },
+    { phase: 'up', kind: 'mouse', id: 20, ...face!, button: 0 },
+  ])
+  await page.getByTestId('selection-count').filter({ hasText: '1 face' }).waitFor()
+}
+
 /** Sizes a Desktop-mode state is captured at (the sizes of scripts/web/desktop_shots.py too). */
 export const DESKTOP_SIZES = [
   { key: '1440', width: 1440, height: 900 },
@@ -153,6 +164,29 @@ export const shots: ShotState[] = [
       await featureRow(page, 'Extrude 1').dblclick()
       await page.getByRole('dialog').waitFor()
       await page.getByTestId('pad').waitFor({ state: 'attached' }).catch(() => {})
+    },
+  },
+  {
+    // I9.3: the Desktop feature toolbar with a face selected (tools that need another pick are dimmed), beside the desktop's toolbar
+    name: 'desktop-toolbar-face',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      await pickFaceWithMouse(page)
+    },
+  },
+  {
+    // I9.3: Extrude started from the toolbar with a face selected: its dialog floats over the viewport with the face in its field
+    name: 'desktop-toolbar-extrude',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await pickFaceWithMouse(page)
+      await page.locator('.desktop-toolbar').getByRole('button', { name: 'Extrude', exact: true }).click()
+      await page.getByRole('dialog').waitFor()
+      await page.locator('[data-testid^="sel-"]').first().getByTestId('sel-chip').first().waitFor()
     },
   },
   {

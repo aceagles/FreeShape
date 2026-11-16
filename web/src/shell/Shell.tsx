@@ -18,9 +18,10 @@ import { useStudioOutputs } from '../features/studioOutputs'
 import { SelectionChip } from '../selection/SelectionChip'
 import { partItem, SelectionStore } from '../selection/store'
 import { useSelection } from '../selection/useSelection'
-import { FEATURE_STRIP } from '../tools/defs'
+import { DESKTOP_TOOLBAR, FEATURE_STRIP } from '../tools/defs'
 import { picksOf } from '../tools/picks'
 import type { Pick } from '../tools/picks'
+import { DesktopToolbar } from '../tools/DesktopToolbar'
 import { ToolStrip } from '../tools/ToolStrip'
 import { stateOf, useToolTypes } from '../tools/useToolTypes'
 import { SketchBar } from '../sketch/SketchBar'
@@ -424,6 +425,15 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   // what the Desktop menus can run now; an item with no command here is shown disabled ("Desktop only for now")
   const currentInfo = tabs.find((t) => t.id === currentTab) ?? null
   const menuState: MenuState = { readOnly, tabKind }
+  const canUndo = studio?.canUndo === true && !edits.busy && !editingHere && !sketch.open
+  const canRedo = studio?.canRedo === true && !edits.busy && !editingHere && !sketch.open
+  // the Desktop feature toolbar's buttons that are not features: the ones the client has; the rest are disabled there
+  const toolbarCommands = {
+    undo: { run: edits.undo, enabled: !readOnly && canUndo },
+    redo: { run: edits.redo, enabled: !readOnly && canRedo },
+    fit: { run: () => void runViewCommand('fit') },
+    iso: { run: () => void runViewCommand('iso') },
+  }
   const commands: Commands = {
     'document.newStudio': () => void add('studio'),
     'document.newAssembly': () => void add('assembly'),
@@ -443,8 +453,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           currentTab={currentTab}
           readOnly={readOnly}
           saving={saving}
-          canUndo={studio?.canUndo === true && !edits.busy && !editingHere && !sketch.open}
-          canRedo={studio?.canRedo === true && !edits.busy && !editingHere && !sketch.open}
+          canUndo={canUndo}
+          canRedo={canRedo}
           onUndo={edits.undo}
           onRedo={edits.redo}
           debugOpen={debug.open}
@@ -484,6 +494,14 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 onDone={() => sketchStore.commit()}
               />
             }
+          />
+        ) : desktop && tabKind === 'studio' ? (
+          <DesktopToolbar
+            layout={DESKTOP_TOOLBAR}
+            stateOf={(id) => (id === 'sketch' ? 'ok' : stateOf(toolTypes, id))}
+            commands={toolbarCommands}
+            busy={editing !== null || dialog !== null || sketch.open || sketch.opening}
+            onStart={(id) => (id === 'sketch' ? beginSketch() : startTool(id))}
           />
         ) : (
           <ToolStrip

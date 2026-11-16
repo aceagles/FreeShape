@@ -18,7 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "web" / "src" / "icons"
 
-# The icon name of every tool on the feature strip (web/src/tools/defs.ts), by desktop icon name.
+# The icon name of every tool on the feature strip and the Desktop toolbar (web/src/tools/defs.ts), by desktop icon name.
 TOOLS = (
     "sketch", "plane", "axis",
     "extrude", "revolve", "sweep", "rib", "loft", "boundary_surface",
@@ -26,6 +26,9 @@ TOOLS = (
     "thicken", "enclose", "fill", "delete_part",
     "sm_base", "sm_flange", "sm_hem", "sm_jog", "sm_tab", "sm_convert",
     "mirror", "linear_pattern", "circular_pattern", "boolean", "split", "move",
+    # the Desktop-mode feature toolbar's other buttons (web/src/tools/defs.ts DESKTOP_TOOLBAR)
+    "undo", "redo", "variable", "variable_studio_ref", "configs", "derived", "history", "plugin",
+    "flat", "flat_dxf", "nest", "mate_connector", "import", "export", "section", "interference", "fit", "iso",
 )
 SIZE = 32
 

@@ -432,4 +432,19 @@ def _stop_leaked_autosave_timers():
     stop_leaked_autosave_timers()
 
 
+@pytest.fixture(autouse=True)
+def _forget_saved_view_toggles():
+    """P, Shift+P and K save planes / axes / connectors on or off in the app settings (MainWindow.
+    CONSTRUCTION_VIEW), and the Sketch panel saves Show constraints / Show sketch regions: forget them after each
+    test, so the next window in this process starts with them all shown."""
+    yield
+    if sys.modules.get("freeshape.ui.mainwindow") is None:
+        return
+    from PySide6.QtCore import QSettings
+    s = QSettings("FreeShape", "FreeShape")
+    for k in ("view/show_planes", "view/show_axes", "view/show_connectors", "sketch_show_constraints",
+              "sketch_show_regions"):
+        s.remove(k)
+
+
 __all__ = [n for n in dir() if not n.startswith("_")]

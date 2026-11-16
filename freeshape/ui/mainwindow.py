@@ -163,7 +163,8 @@ class MainWindow(QMainWindow):
         self._sketch_buttons = {}
         self.section_panel = None
         self.studio_interf = None   # the Interference detection panel of a Part Studio while open
-        # view state of the visibility keys: none of it is saved with the file
+        # view state of the visibility keys: none of it is saved with the file. Planes, axes and connectors on or
+        # off is kept in the app settings (_load_construction_view), so a restart does not show them again
         self.show_axes = True                               # construction axes (Shift+P)
         self.show_connectors = True                         # a Part Studio's mate connectors (K, Shift+P)
         self._transparent = weakref.WeakKeyDictionary()     # document -> ids of the parts made transparent (Shift+T)
@@ -193,6 +194,7 @@ class MainWindow(QMainWindow):
         self.set_select_through_context(
             str(self.settings.value("select_through_context", "true")).lower() != "false", save=False)
         self.set_context_alpha(self.settings.value("view/context_alpha", 0.3), save=False)
+        self._load_construction_view()
         self._add_tab(self._new_document())
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self.autosave)
@@ -1656,6 +1658,10 @@ class MainWindow(QMainWindow):
             self._sk_tool("line")
 
     def _sketch_display_toggles(self):
+        if isinstance(self.dialog, SketchDialog):
+            for key, cb in (("sketch_show_constraints", self.dialog.show_cons),
+                            ("sketch_show_regions", self.dialog.show_regions)):
+                self.settings.setValue(key, "true" if cb.isChecked() else "false")
         if self.sketcher and self.dialog:
             self.sketcher.show_constraints = self.dialog.show_cons.isChecked()
             self.sketcher.show_regions = self.dialog.show_regions.isChecked()
@@ -3806,7 +3812,27 @@ class MainWindow(QMainWindow):
         self.status.showMessage("Context hidden: Shift+Y shows it again" if hide else "Context shown", 6000)
 
     def _toggle_planes(self):
+        self._save_construction_view()
         self._reshow()
+
+    # app settings for P, Shift+P and K: (setting, attribute of the window or None for the planes action)
+    CONSTRUCTION_VIEW = (("view/show_planes", None), ("view/show_axes", "show_axes"),
+                         ("view/show_connectors", "show_connectors"))
+
+    def _load_construction_view(self):
+        """Planes, axes and mate connectors shown or hidden as they were left: hiding them with P, Shift+P or K
+        lasts until they are shown again, across restarts too."""
+        for key, attr in self.CONSTRUCTION_VIEW:
+            on = str(self.settings.value(key, "true")).lower() != "false"
+            if attr is None:
+                self.act_planes.setChecked(on)
+            else:
+                setattr(self, attr, on)
+
+    def _save_construction_view(self):
+        for key, attr in self.CONSTRUCTION_VIEW:
+            on = self.act_planes.isChecked() if attr is None else getattr(self, attr)
+            self.settings.setValue(key, "true" if on else "false")
 
     def _reshow(self):
         """Draw the 3D view again after a view switch changed (planes, axes, connectors): the same state as
@@ -3970,6 +3996,7 @@ class MainWindow(QMainWindow):
     def _svis_planes(self):
         on = not self.act_planes.isChecked()
         self.act_planes.setChecked(on)
+        self._save_construction_view()
         self._reshow()
         return "Planes shown: P hides them again" if on else "Planes hidden: P shows them again"
 
@@ -3977,12 +4004,14 @@ class MainWindow(QMainWindow):
         on = not (self.act_planes.isChecked() or self.show_axes or self.show_connectors)
         self.act_planes.setChecked(on)
         self.show_axes = self.show_connectors = on
+        self._save_construction_view()
         self._reshow()
         return ("Planes, axes and mate connectors shown: Shift+P hides them again" if on else
                 "Planes, axes and mate connectors hidden: Shift+P shows them again")
 
     def _svis_connectors(self):
         self.show_connectors = on = not self.show_connectors
+        self._save_construction_view()
         self._reshow()
         return "Mate connectors shown: K hides them again" if on else "Mate connectors hidden: K shows them again"
 

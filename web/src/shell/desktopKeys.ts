@@ -3,6 +3,7 @@ import type { DialogKeys } from '../dialog/FeatureDialog'
 import type { SelectionItem, SelectionStore } from '../selection/store'
 import type { ConstraintStore } from '../sketch/constraints'
 import type { SketchStore } from '../sketch/store'
+import { escapeSketch, sketchKeyCommands } from '../sketch/desktopSketchKeys'
 import type { ViewHandler } from '../viewport/viewCommands'
 
 /**
@@ -55,7 +56,19 @@ export interface DesktopKeyContext {
 /** Space and Enter on a focused button press the button, as the browser does; the keymap leaves them to it. */
 const onButton = (): boolean => {
   const a = document.activeElement
-  return a instanceof HTMLElement && (a.tagName === 'BUTTON' || a.tagName === 'A' || a.getAttribute('role') === 'button')
+  if (!(a instanceof HTMLElement && (a.tagName === 'BUTTON' || a.tagName === 'A' || a.getAttribute('role') === 'button'))) return false
+  // a button a mouse click focused (Chromium does; WebKit may) is no reason to give it the key: the click's focus is let go
+  if (mouseFocus) {
+    a.blur()
+    return false
+  }
+  return true
+}
+/** The last thing that moved the focus was a mouse press, not Tab: set by the two capture listeners below. */
+let mouseFocus = false
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerdown', (e) => (mouseFocus = e.pointerType === 'mouse'), true)
+  window.addEventListener('keydown', (e) => e.key === 'Tab' && (mouseFocus = false), true)
 }
 
 const FLAT: ReadonlySet<string> = new Set(['face', 'plane', 'region'])
@@ -179,7 +192,7 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
         return true
       }
       if (sk !== null) {
-        if (!c.constraints.escape() && !sk.stepBack()) c.leaveSketch()
+        if (!escapeSketch(sk, c.constraints)) c.leaveSketch()
         return true
       }
       c.selection.clear()
@@ -191,6 +204,8 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
       return dialog !== null && !onButton() ? dialog.accept() : false
     },
   }
+  // the sketch's own keys (card I9.7: the tool keys, Q, Ctrl+A), only while a sketch is open here
+  if (sk !== null) Object.assign(commands, sketchKeyCommands(sk, c.constraints))
   if (!c.modalOpen) return commands
   // a small dialog over the page has the keyboard (it takes Esc itself): no key acts behind it
   return {}

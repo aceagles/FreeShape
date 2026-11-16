@@ -32,6 +32,8 @@ export interface SketchPointerTool {
   aim?(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): void
   /** A double tap or double click on `hit`; true when the tool took it (the view then does not fit). */
   doubleTap(hit: SketchHit): boolean
+  /** Esc (Desktop mode, I9.7): give up what the tool has half done (an open value box, the picks made); true when there was something. */
+  escape?(): boolean
 }
 
 /** What the Trim and Use edge tools show for the Aim: the piece of a line a Trim would remove, or the model edge a Use would bring in. Both in sketch coordinates. */
@@ -69,6 +71,8 @@ export interface SketchState {
   preview: SketchPreview | null
   /** Construction mode (F20): what the drawing tools make now is construction geometry. Off when a sketch opens and when it closes; it stays on across tools, as the desktop's does. */
   construction: boolean
+  /** A short note about a key that did nothing ("Desktop only for now"), shown over the view until the tool or the selection changes (I9.7). */
+  notice: string | null
 }
 
 /** What a `sketch.add` made: the ids of the point of each pick and of the entities. */
@@ -77,7 +81,7 @@ export interface Made {
   entities: string[]
 }
 
-const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, picking: false, drawing: 0, live: null, preview: null, construction: false }
+const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, picking: false, drawing: 0, live: null, preview: null, construction: false, notice: null }
 
 const same = (a: SketchHit | null, b: SketchHit | null): boolean => a === b || (a !== null && b !== null && a.kind === b.kind && a.id === b.id)
 
@@ -183,7 +187,9 @@ export class SketchStore {
   readonly getState = (): SketchState => this.state
 
   private set(patch: Partial<SketchState>): void {
-    this.state = { ...this.state, ...patch }
+    // a note stays until the tool or the selection moves
+    const moved = this.state.notice !== null && !('notice' in patch) && ('tool' in patch || 'toolSeq' in patch || 'selected' in patch)
+    this.state = { ...this.state, ...patch, ...(moved ? { notice: null } : {}) }
     this.listeners.forEach((l) => l())
   }
 
@@ -272,6 +278,31 @@ export class SketchStore {
     if (now === id && id !== 'select') return this.leaveTool()
     if (now !== id) return this.set({ tool: id, toolSeq: this.state.toolSeq + 1, drawing: 0, ...(isDrawTool(id) && this.state.selected.length > 0 ? { selected: [] } : {}) })
     this.set({ toolSeq: this.state.toolSeq + 1, drawing: 0 })
+  }
+  /**
+   * A tool key (I9.7). The desktop's set_tool: the tool chosen drops the selection, and a tool already on starts over (the shape in
+   * progress is given up and the tool stays on), where the same BUTTON pressed again goes back to Select (`chooseTool`).
+   */
+  keyTool(id: string): void {
+    if (!this.state.open) return
+    if (this.state.tool === id) this.set({ toolSeq: this.state.toolSeq + 1, drawing: 0, selected: [] })
+    else {
+      this.chooseTool(id)
+      this.clearSelection()
+    }
+  }
+  /** Esc's give-up step for the tools that hold picks of their own (the Dimension tool): true when one had something to drop. */
+  escapeTools(): boolean {
+    return this.tools.some((t) => t.escape?.() === true)
+  }
+  /** Ctrl+A: every item of the sketch is selected, as the desktop selects its entities. */
+  selectAll(): void {
+    const view = this.state.view
+    if (this.state.open && view) this.set({ selected: Object.keys(view.sketch.entities).map((id): SketchHit => ({ kind: 'entity', id })) })
+  }
+  /** Say why a key did nothing, over the view. */
+  showNotice(text: string): void {
+    if (this.state.open) this.set({ notice: text })
   }
   /** Back to Select with whatever the tool had in progress given up. The same step as the second Esc, and the first when nothing is in progress. */
   private leaveTool(): void {

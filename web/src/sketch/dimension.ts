@@ -1,3 +1,5 @@
+import { isSketchToolChord } from '../input/bindings'
+import { chordOf, runKeyChord } from '../input/keys'
 import type { PickPointer } from '../viewport/pick'
 import { formatValue } from './draw'
 import type { SketchHit } from './pick'
@@ -334,6 +336,31 @@ export class DimensionTool implements SketchPointerTool {
     this.sent = null
     this.openSession({ mode: 'set', label: c.type === 'distance' && c.refs.length === 1 ? 'Length' : (LABELS[c.type] ?? 'Value'), value: text, initial: text, pending: false, error: null, seq: 0 }, pointer)
     return true
+  }
+
+  /**
+   * Esc (Desktop mode): the open value box or pad closes, or else the picks made so far are dropped and the tool stays on, as the
+   * desktop's escape does. True when there was something to close.
+   */
+  escape(): boolean {
+    if (this.state.pad !== null) {
+      this.padCancel()
+      return true
+    }
+    if (this.state.picks.length === 0) return false
+    this.clearPicks()
+    this.set({ hint: this.hintFor([]) })
+    return true
+  }
+
+  /**
+   * A key pressed in a new dimension's value box or pad while the value is as it opened (the desktop's `_offer_dims` tool_key):
+   * when it is a tool key, the box closes with no dimension and the key then does what it does in the sketch. True when it took the key.
+   */
+  readonly toolKey = (e: Parameters<typeof chordOf>[0]): boolean => {
+    if (this.state.pad?.mode !== 'new' || !isSketchToolChord(chordOf(e))) return false
+    this.padCancel()
+    return runKeyChord(e)
   }
 
   /** The pad's Enter. */

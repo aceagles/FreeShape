@@ -51,6 +51,39 @@ const STANDARD_VIEWS = [
   ['iso', 'Isometric'],
 ] as const
 
+/**
+ * The sketch's tool keys (card I9.7): freeshape/ui/sketcher.py TOOL_KEYS. The tool is the client's id (sketch/strip.ts); the
+ * desktop's Center rectangle, 3-point arc and Use are the strip's 'center_rectangle', 'arc' and 'use_edge'. Offset is not
+ * built yet: its key shows the hint "Desktop only for now".
+ */
+const SKETCH_TOOL_KEYS = [
+  ['L', 'line', 'Line'],
+  ['G', 'rectangle', 'Corner rectangle'],
+  ['R', 'center_rectangle', 'Center rectangle'],
+  ['C', 'circle', 'Circle'],
+  ['A', 'arc', '3-point arc'],
+  ['D', 'dimension', 'Dimension'],
+  ['I', 'coincident', 'Coincident'],
+  ['H', 'horizontal', 'Horizontal'],
+  ['V', 'vertical', 'Vertical'],
+  ['E', 'equal', 'Equal'],
+  ['T', 'tangent', 'Tangent'],
+  ['S', 'select', 'Select'],
+  ['P', 'point', 'Point'],
+  ['U', 'use_edge', 'Use'],
+  ['O', 'offset', 'Offset'],
+] as const
+
+/** The command each tool key runs, with its tool: sketch/keys.ts. */
+export const SKETCH_TOOL_COMMANDS = SKETCH_TOOL_KEYS.map(([, tool]) => [`sketch.tool.${tool}`, tool] as const)
+
+/** Sketch keys (card I9.7). Enter finishing a spline is not here: the client has no spline. */
+const SKETCH_BINDINGS: readonly Binding[] = [
+  ...SKETCH_TOOL_KEYS.map(([chord, tool, label]): Binding => ({ chord, command: `sketch.tool.${tool}`, label, where: ['sketch'] })),
+  { chord: 'Q', command: 'sketch.construction', label: 'Construction', where: ['sketch'] },
+  { chord: 'Ctrl+A', command: 'sketch.selectAll', label: 'Select all', where: ['sketch'] },
+]
+
 /** Every desktop key, in the order a shortcut list shows them. */
 export const BINDINGS: readonly Binding[] = [
   { chord: 'Ctrl+Z', command: 'edit.undo', label: 'Undo', where: ['studio', 'sketch'] },
@@ -100,6 +133,8 @@ export const BINDINGS: readonly Binding[] = [
   { chord: 'Backspace', command: 'delete', label: 'Delete', where: ['studio', 'sketch', 'assembly'] },
   { chord: 'Escape', command: 'cancel', label: 'Cancel / step back', where: ALL },
   { chord: 'Enter', command: 'dialog.accept', label: 'Accept the dialog', where: ['dialog'] },
+
+  ...SKETCH_BINDINGS,
 ]
 
 /**
@@ -113,5 +148,21 @@ export function chordFor(command: string): string | undefined {
   return BINDINGS.find((b) => b.command === command)?.chord
 }
 
-/** The chords bound in Desktop mode: chord to command name. */
-export const desktopKeymap: Readonly<Record<string, string>> = Object.fromEntries(BINDINGS.filter((b) => !b.shownOnly).map((b) => [b.chord, b.command]))
+/** Whether a chord is one of the sketch's tool keys or Q: the keys a new dimension's untouched box hands on (card I9.7). */
+export const isSketchToolChord = (chord: string): boolean => BINDINGS.some((b) => b.chord === chord && !b.shownOnly && (b.command.startsWith('sketch.tool.') || b.command === 'sketch.construction'))
+
+/**
+ * The chords bound in Desktop mode: chord to command name. A chord bound in two workspaces (P is Point in a sketch and Show
+ * planes outside one) names both commands, a sketch command first, separated by a space; the listener runs them in turn
+ * until one takes the key, and a command that does not apply where it is returns false.
+ */
+export const desktopKeymap: Readonly<Record<string, string>> = (() => {
+  const names = new Map<string, string[]>()
+  for (const b of BINDINGS) {
+    if (b.shownOnly) continue
+    const list = names.get(b.chord) ?? []
+    if (!list.includes(b.command)) list[b.command.startsWith('sketch.') ? 'unshift' : 'push'](b.command)
+    names.set(b.chord, list)
+  }
+  return Object.fromEntries([...names].map(([chord, list]) => [chord, list.join(' ')]))
+})()

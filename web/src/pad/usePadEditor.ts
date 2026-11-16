@@ -15,6 +15,8 @@ export interface PadOptions {
   onCancel: () => void
   /** Called with the text after every edit, so a dialog can show it live. */
   onChange?: (text: string) => void
+  /** A key pressed while the opening value is untouched; true when it took the key (a new dimension's pad hands a tool key on, I9.7). */
+  onUntouchedKey?: (e: KeyboardEvent) => boolean
   /** False pauses the hardware keyboard listener (default true while mounted). */
   active?: boolean
 }
@@ -89,7 +91,9 @@ export function usePadEditor(opts: PadOptions): PadEditor {
       if (e.defaultPrevented) return
       if (e.key === 'Enter') commit()
       else if (e.key === 'Escape') cancel()
-      else {
+      else if (latest.current.state.fresh && latest.current.opts.onUntouchedKey?.(e) === true) {
+        // handed on: the pad's session is over
+      } else {
         const a = actionForKey(e)
         if (a === null) return
         apply(a)

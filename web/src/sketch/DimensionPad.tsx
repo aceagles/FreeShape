@@ -25,7 +25,7 @@ export function DimensionPad({ tool, variables }: { tool: DimensionTool; variabl
 }
 
 function PadSession({ pad, tool, variables }: { pad: DimensionPadState; tool: DimensionTool; variables: readonly string[] }) {
-  const editor = usePadEditor({ value: pad.value, variables, onCommit: tool.padCommit, onCancel: tool.padCancel, active: !pad.pending })
+  const editor = usePadEditor({ value: pad.value, variables, onCommit: tool.padCommit, onCancel: tool.padCancel, active: !pad.pending, onUntouchedKey: tool.toolKey })
   return (
     <>
       <PadField editor={editor} label={pad.label} />
@@ -93,6 +93,7 @@ function InlineDimension({ tool, pad }: { tool: DimensionTool; pad: DimensionPad
         unitLabel={false}
         commitOnBlur={false}
         autoFocus
+        onUntouchedKey={(e) => tool.toolKey(e.nativeEvent)}
         width={BOX_W}
         testId="dimension-inline-field"
         onCommit={tool.padCommit}

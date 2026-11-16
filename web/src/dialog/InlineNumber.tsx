@@ -92,6 +92,8 @@ export interface InlineNumberProps {
   commitOnBlur?: boolean
   /** A pen or touch press: called instead of focusing the field, to open the number pad. Absent: every pointer focuses it. */
   onPad?: () => void
+  /** A key pressed before anything was typed in the field; true when it took the key (the dimension box hands a tool key on, I9.7). */
+  onUntouchedKey?: (e: ReactKeyboardEvent<HTMLElement>) => boolean
   /** Focus the field on mount with its text selected (the dimension box). */
   autoFocus?: boolean
   /** Width of the field in px (default 110, the desktop's). */
@@ -123,6 +125,7 @@ export function InlineNumber({
   onBlur,
   commitOnBlur = true,
   onPad,
+  onUntouchedKey,
   autoFocus = false,
   width = 110,
   fieldKey,
@@ -132,6 +135,8 @@ export function InlineNumber({
   // the text being typed, or null while the field shows `value`
   const [draft, setDraft] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
+  // set by the first edit: until then the text is as the field opened
+  const touched = useRef(false)
   // a pen or touch press opens the pad: the focus that follows it is given back
   const padPress = useRef(false)
   const latest = useRef({ draft, value, onCommit, variables })
@@ -205,14 +210,22 @@ export function InlineNumber({
           }
           if (draft === null) setDraft(value)
         }}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => {
+          touched.current = true
+          setDraft(e.target.value)
+        }}
         onBlur={() => {
           if (commitOnBlur && !empty) commit()
           setDraft(null)
           latest.current.draft = null
           onBlur?.()
         }}
-        onKeyDown={(e) =>
+        onKeyDown={(e) => {
+          if (!touched.current && onUntouchedKey?.(e) === true) {
+            e.preventDefault()
+            e.stopPropagation()
+            return
+          }
           fieldKeyDown(e, {
             commit,
             onEnter,
@@ -222,7 +235,7 @@ export function InlineNumber({
               onEscape?.()
             },
           })
-        }
+        }}
       />
       {unit && unitLabel && (
         <span className="inline-number-unit" aria-hidden="true">

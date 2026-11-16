@@ -42,6 +42,19 @@ export function isTyping(t: EventTarget | null): boolean {
 
 let held = 0
 
+/** The key lookup of the attached listener, so a field that took a key can hand it on (`runKeyChord`). */
+let dispatch: ((e: KeyLike) => boolean) | null = null
+type KeyLike = Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'> & { code?: string }
+
+/**
+ * Run the command the keymap names for a key event, without the listener's checks for a field, the pad or a default already
+ * prevented. For a field that read a key first and decided it was a command's (the dimension box on a tool key, card I9.7).
+ * True when a command took it.
+ */
+export function runKeyChord(e: KeyLike): boolean {
+  return dispatch?.(e) ?? false
+}
+
 /**
  * Keep the keymap quiet until the returned function is called: for something that reads the keys itself while it is on, such
  * as the number pad of a field being edited. Calls nest.
@@ -68,12 +81,24 @@ export function attachKeys(
   map: Readonly<Record<string, string>> | (() => Readonly<Record<string, string>>) = keymap,
 ): () => void {
   // a function is read at each key, so one listener follows a keymap and commands that change (the mode, what is open)
+  // a chord bound in two workspaces names both commands, space separated: the first that does not decline takes the key
+  const run = (e: KeyLike): boolean => {
+    const names = (typeof map === 'function' ? map() : map)[chordOf(e)]
+    if (names === undefined) return false
+    const all = typeof commands === 'function' ? commands() : commands
+    return names.split(' ').some((name) => {
+      const command = all[name]
+      return command !== undefined && command() !== false
+    })
+  }
   const onKey = (e: KeyboardEvent): void => {
     if (e.defaultPrevented || e.isComposing || keysSuspended() || isTyping(e.target)) return
-    const name = (typeof map === 'function' ? map() : map)[chordOf(e)]
-    const run = name === undefined ? undefined : (typeof commands === 'function' ? commands() : commands)[name]
-    if (run && run() !== false) e.preventDefault()
+    if (run(e)) e.preventDefault()
   }
   window.addEventListener('keydown', onKey)
-  return () => window.removeEventListener('keydown', onKey)
+  dispatch = run
+  return () => {
+    window.removeEventListener('keydown', onKey)
+    if (dispatch === run) dispatch = null
+  }
 }

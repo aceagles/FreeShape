@@ -36,6 +36,11 @@ export function SketchChip({ store }: { store: SketchStore }) {
         <span className="sketch-name">{s.view.name}</span>
         <span className="sketch-solve">{status.text}</span>
       </div>
+      {s.notice !== null && (
+        <div className="sketch-hint" role="status" data-testid="sketch-notice">
+          {s.notice}
+        </div>
+      )}
       {s.error && (
         <div className="sketch-error" role="alert" data-testid="sketch-error">
           {s.error}

@@ -79,10 +79,14 @@ describe('the desktop keymap', () => {
     const commands = spies()
     off = attachKeys(commands, keymapFor('desktop'))
     for (const b of bound) {
+      // a chord bound in two workspaces (P) names both commands: the others do not apply where this one does
+      const others = (keymapFor('desktop')[b.chord] ?? '').split(' ').filter((c) => c !== b.command)
+      for (const c of others) commands[c]!.mockReturnValue(false)
       const e = press(keyOf(b.chord))
       expect(commands[b.command], b.chord).toHaveBeenCalled()
       expect(e.defaultPrevented, b.chord).toBe(true)
       commands[b.command]!.mockClear()
+      for (const c of others) commands[c]!.mockReset()
     }
     expect(bound.map((b) => b.chord)).toEqual(expect.arrayContaining(['Ctrl+Z', 'Ctrl+Y', 'Ctrl+Shift+Z', 'Ctrl+S', 'Ctrl+O', 'Shift+S', 'Shift+E', 'Shift+W', 'Shift+F', 'N', 'F', 'Space', 'Delete', 'Escape', 'Enter']))
     expect(bound.filter((b) => /^Shift\+[1-7]$/.test(b.chord)).map((b) => b.command)).toEqual(['view.front', 'view.back', 'view.left', 'view.right', 'view.top', 'view.bottom', 'view.iso'])

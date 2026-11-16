@@ -16,6 +16,7 @@ from .. import kernel as K
 from . import theme
 from . import boxsel
 from . import navstyles
+from . import cursors
 from .camera import Camera, STANDARD_VIEWS, basis
 
 PLANE_HALF = 75.0          # the default planes are 150 x 150 mm
@@ -2071,6 +2072,8 @@ class Viewport(QOpenGLWidget):
                 self.update()
                 return
             if self._nav is not None:
+                if self._moved:
+                    self.setCursor(cursors.nav_cursor(self._nav))
                 if self._nav == "orbit":
                     if self._moved:
                         if self._pivot is None:   # the orbit began part-way through the drag (a chord)
@@ -2119,7 +2122,7 @@ class Viewport(QOpenGLWidget):
                 self.hoverChanged.emit(None)
                 self.update()
             return
-        self.setCursor(Qt.ArrowCursor)
+        self.refresh_cursor()
         if self.sketcher:
             self.sketcher.mouse_move(self, x, y, e)
             self.update()
@@ -2311,6 +2314,8 @@ class Viewport(QOpenGLWidget):
             self.update()
             return
         nav, self._nav = self._nav, None
+        if nav is not None:
+            self.refresh_cursor()
         if nav is not None and self._moved:
             return                                       # the drag turned / moved / zoomed the view: not a click
         if press[2] == Qt.RightButton and not self._moved:
@@ -2327,7 +2332,7 @@ class Viewport(QOpenGLWidget):
         if self._part_drag:
             self._part_drag = False
             self.drag_handler.release(pos.x(), pos.y(), e, self._moved)
-            self.setCursor(Qt.ArrowCursor)
+            self.refresh_cursor()
             if self._moved:
                 self.update()
                 return
@@ -2491,6 +2496,10 @@ class Viewport(QOpenGLWidget):
             M = rot_axis(Rr, math.radians(deg) * sign_v)
         pivot = np.zeros(3) if self.orbit_mode == "origin" else self.orbit_pivot(-1e6, -1e6)
         self.rotate_view_about(M @ Rb, M @ Ru, pivot, duration=0.15)
+
+    def refresh_cursor(self):
+        """The cursor for the mouse at rest: the active sketch tool's (cursors.tool_cursor), else the arrow."""
+        self.setCursor(cursors.tool_cursor(self.sketcher.tool) if self.sketcher else QCursor(Qt.ArrowCursor))
 
     def keyPressEvent(self, e):
         if self.sketcher and self.sketcher.key_press(self, e):

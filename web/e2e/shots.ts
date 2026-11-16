@@ -22,13 +22,18 @@ import { gizmoOf, openAssemblyTab, readAssembly, settledAssembly } from './suppo
  *          <name>-<width>x<height>.client.png (the client alone)
  *   mock   the state of web/design/layout.html to put on the left: browsing, flyout, dialog, sketch, constrain,
  *          radial or collapsed. Leave it out when it is the same as `name`; null when the mock has no such state.
+ *   desktop  a Desktop-mode state has no mock: the shot of the desktop program to put on the left instead
+ *          (desktop-studio, desktop-menu-document, desktop-menu-view, desktop-menu-select, desktop-dialog,
+ *          desktop-sketch, desktop-assembly, desktop-context, desktop-palette, desktop-shortcuts)
  *   steps  drives the page to the state. It starts with `page` at the size being captured, nothing loaded yet. A
  *          state whose steps throw is reported and skipped; the other states are still captured.
  */
 export interface ShotState {
   name: string
-  /** The client's mode (default tablet). A desktop state is captured at DESKTOP_SIZES with no mock beside it. */
+  /** The client's mode (default tablet). A desktop state is captured at DESKTOP_SIZES; it has no mock, only `desktop`. */
   mode?: 'desktop' | 'tablet'
+  /** Desktop mode: the state of the desktop program (web/shots/desktop/<desktop>-<w>x<h>.png, written by scripts/web/desktop_shots.py) to put on the left. */
+  desktop?: string
   mock?: string | null
   steps: (page: Page) => Promise<void>
   /** Runs after the picture is taken: puts back what the steps changed in the served Document. */
@@ -85,7 +90,7 @@ function editOpened(page: Page): () => EditOpened {
   return () => got!
 }
 
-/** Sizes a Desktop-mode state is captured at (I9.13 adds the desktop reference to put beside it). */
+/** Sizes a Desktop-mode state is captured at (the sizes of scripts/web/desktop_shots.py too). */
 export const DESKTOP_SIZES = [
   { key: '1440', width: 1440, height: 900 },
   { key: '1920', width: 1920, height: 1080 },
@@ -119,9 +124,10 @@ async function turnRing(page: Page, radians: number, release: boolean): Promise<
 
 export const shots: ShotState[] = [
   {
-    // I9.1: the Desktop-mode shell (it still looks like Tablet mode until I9.2 onwards); 1440 x 900 and 1920 x 1080, no mock
+    // I9.1: the Desktop-mode shell (it still looks like Tablet mode until I9.2 onwards); 1440 x 900 and 1920 x 1080, beside the desktop program (I9.13)
     name: 'desktop-browsing',
     mode: 'desktop',
+    desktop: 'desktop-studio',
     steps: async (page) => {
       await openApp(page)
     },

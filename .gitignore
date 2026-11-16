@@ -8,4 +8,5 @@ node_modules/
 web/test-results/
 web/playwright-report/
 web/shots/out/
+web/shots/desktop/
 freeshape/static/app/

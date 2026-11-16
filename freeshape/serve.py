@@ -2324,7 +2324,7 @@ class _Server:
                 sk = SketchSession(d.id, tab, None, plane, None, name=f"Sketch {n}")
             sk.frame = {k: [float(x) for x in frame[k]] for k in ("origin", "xdir", "ydir", "normal")}
             sk.edges = self._json_plain(frame["edges"])
-            sk.variables = {k: v for k, v in dict(getattr(d.session.outputs(tab), "variables", None) or {}).items()
+            sk.variables = {k: v for k, v in dict(frame.get("variables") or {}).items()
                             if isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)}
             return sk, d.revisions.get(tab)
         sk, revision = await self._in_session(d, work)

@@ -457,7 +457,9 @@ class Engine(abc.ABC):
             {"origin": [x, y, z], "xdir", "ydir", "normal": the sketch plane's frame in world coordinates,
              "edges": [{"pick": {"part", "kind": "edge", "index": 1-based, "want": ["edge"]}, a pick the refs route
                         accepts, "points": [[u, v], ...] the edge as a polyline in sketch coordinates,
-                        "height": the largest distance of the edge from the plane, 0 for an edge lying in it}]},
+                        "height": the largest distance of the edge from the plane, 0 for an edge lying in it}],
+             "variables": {name: number, no "#"} the variables in force at the sketch: those defined before an existing
+                          sketch feature, or before the rollback bar for a new one (as the desktop's Sketcher has them)},
         for every non-seam edge of the committed model. EngineError, naming the face, for a face that is not
         planar; EngineError for a reference that finds nothing, or a tab that is not a Part Studio."""
 

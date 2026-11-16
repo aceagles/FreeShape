@@ -504,7 +504,9 @@ class StudioTab(_Tab):
             raise EngineError(f"plane: {e}") from None
 
     def sketch_frame(self, plane):
-        pl, _base = self._sketch_plane(plane)
+        pl, base = self._sketch_plane(plane)
+        if not isinstance(plane, str):                        # a new sketch is inserted at the rollback bar
+            base = self.doc.state_before(self.doc.insert_index())
         edges = []
         for pid, part in self.doc.state.parts.items():
             seams = K.seam_edge_indices(part.shape)
@@ -518,7 +520,8 @@ class StudioTab(_Tab):
                 edges.append({"pick": {"part": pid, "kind": "edge", "index": i + 1, "want": ["edge"]},
                               "points": [list(pl.to_local(q)) for q in poly],
                               "height": float(np.abs(d).max())})
-        return plain({"origin": pl.origin, "xdir": pl.xdir, "ydir": pl.ydir, "normal": pl.normal, "edges": edges})
+        return plain({"origin": pl.origin, "xdir": pl.xdir, "ydir": pl.ydir, "normal": pl.normal, "edges": edges,
+                      "variables": dict(base.vars)})
 
     def project_edge(self, plane, pick):
         pl, base = self._sketch_plane(plane)

@@ -28,7 +28,9 @@ test('select a face, tap Extrude: the create dialog has it in its profile field;
   await page.getByRole('menuitem', { name: /^Extrude/ }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()
-  await expect(dialog.getByTestId('dialog-form')).toContainText(spot!.name)
+  // the profile field shows the pick as a readable chip (I5.7), not the raw Element name
+  await expect(dialog.getByTestId('dialog-form')).toContainText(/Face \d+ of Bracket/)
+  await expect(dialog.getByTestId('dialog-form')).toContainText('1 item')
   // the tool took the selection
   await expect(page.getByTestId('selection-count')).toHaveText('Nothing selected')
   expect((await readViewport(page)).selection.count).toBe(0)
@@ -64,9 +66,13 @@ test('a tool with a dialog the client cannot draw is disabled with the desktop-o
   const tabs = (await (await page.request.get(`/documents/${id}/tabs`)).json()).tabs as Array<{ id: string }>
   const types = ((await (await page.request.get(`/documents/${id}/tabs/${tabs[0]!.id}/features/types`)).json()).types as Array<{ type: string; standard: boolean }>)
   const custom = new Set(types.filter((t) => !t.standard).map((t) => t.type))
+  const known = types.map((t) => t.type)
   for (const name of ['Create', 'Modify', 'Copy']) {
     await group(page, name).click()
     const list = page.getByRole('menu', { name })
+    await expect(list).toBeVisible()
+    // a row reads 'off' until the types route has answered; hold the check until it has for every type the server lists
+    await expect.poll(() => list.locator('.group-row').evaluateAll((els, k) => els.filter((e) => k.includes((e as HTMLElement).dataset.tool!) && (e as HTMLElement).dataset.state === 'off').length, known)).toBe(0)
     const rows = await list.locator('.group-row').evaluateAll((els) => els.map((e) => ({ tool: (e as HTMLElement).dataset.tool!, state: (e as HTMLElement).dataset.state!, note: e.textContent?.includes('Desktop only for now') ?? false })))
     for (const r of rows) {
       if (custom.has(r.tool)) expect(r).toMatchObject({ state: 'desktop', note: true })

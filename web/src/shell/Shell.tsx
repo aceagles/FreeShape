@@ -31,7 +31,7 @@ import { SketchStore } from '../sketch/store'
 import { ConstraintNote } from '../sketch/ConstraintNote'
 import { ConstraintStore, attachDeleteKey, isConstrainTool } from '../sketch/constraints'
 import type { SketchTarget } from '../sketch/store'
-import { SKETCH_STRIP, sketchToolState } from '../sketch/strip'
+import { SKETCH_STRIP, sketchToolState, stripActive } from '../sketch/strip'
 import { StudioViewport } from '../viewport/StudioViewport'
 import type { PreviewLook } from '../viewport/controller'
 import type { StudioOutputs } from '../wire'
@@ -137,6 +137,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
     dimension.attach()
     return () => dimension.detach()
   }, [dimension])
+  // the Dimension tool is on while it is the sketch's tool (the strip, the quick menu and a tool tapped again all go through the store)
+  useEffect(() => {
+    dimension.setActive(sketch.tool === 'dimension')
+  }, [dimension, sketch.tool, sketch.toolSeq])
   const dimensionOn = useSyncExternalStore(dimension.subscribe, dimension.getState).active
   const [modal, setModal] = useState<Modal | null>(null)
   const [saving, setSaving] = useState(false)
@@ -361,9 +365,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             defs={SKETCH_STRIP}
             stateOf={(id) => (isConstrainTool(id) ? (constraintState.enabled.has(id) ? 'ok' : 'dimmed') : sketchToolState(id))}
             width={width}
-            active={dimensionOn ? 'dimension' : 'select'}
+            active={dimensionOn ? 'dimension' : stripActive(sketch.tool === 'dimension' ? 'select' : sketch.tool)}
             onStart={(id) => {
-              dimension.setActive(id === 'dimension')
+              // one tool at a time: a Constrain tool acts on the selection and leaves Select on
+              sketchStore.chooseTool(isConstrainTool(id) ? 'select' : id)
               constraints.apply(id)
             }}
             trailing={

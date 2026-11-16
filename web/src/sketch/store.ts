@@ -44,9 +44,21 @@ export interface SketchState {
   openSeq: number
   /** The revision a commit made, until the next open. */
   committed: number | null
+  /** The tool that is on (I7.8): a strip id such as 'select', 'line', 'rectangle'; 'center_rectangle' is the Rectangle's other form. */
+  tool: string
+  /** Bumps when the tool is tapped again, so a shape in progress starts over. */
+  toolSeq: number
+  /** How many points of a shape in progress are committed (set by the drawing tools). */
+  drawing: number
 }
 
-const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null }
+/** What a `sketch.add` made: the ids of the point of each pick and of the entities. */
+export interface Made {
+  points: string[]
+  entities: string[]
+}
+
+const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, drawing: 0 }
 
 const same = (a: SketchHit | null, b: SketchHit | null): boolean => a === b || (a !== null && b !== null && a.kind === b.kind && a.id === b.id)
 
@@ -84,6 +96,8 @@ export class SketchStore {
   private frame: { frame: Frame; edges: FrameEdge[] } | null = null
   /** The tool that takes Commits first, if one is on (set by the tool itself). */
   pointerTool: SketchPointerTool | null = null
+  /** The `sketch.add` messages sent and not yet answered, oldest first. The server answers a client's messages in order. */
+  private adds: ((made: Made | null) => void)[] = []
 
   constructor(private readonly transport: SketchTransport) {
     this.attach()
@@ -171,6 +185,32 @@ export class SketchStore {
     this.set({ multi: on })
   }
 
+  /** Send a `sketch.add` (the body: shape, picks, constraints ...). Resolves with what it made, or null when it was refused or the sketch is not open. */
+  add(body: Record<string, unknown>): Promise<Made | null> {
+    if (!this.state.open) return Promise.resolve(null)
+    return new Promise((resolve) => {
+      if (!this.transport.send({ type: 'sketch.add', ...body })) return resolve(null)
+      this.adds.push(resolve)
+    })
+  }
+  /** Choose a tool from the strip or the quick menu. A tool that is already on starts its shape over; the Rectangle then turns over between corner and centre. */
+  chooseTool(id: string): void {
+    if (!this.state.open) return
+    const now = this.state.tool
+    const family = (t: string) => (t === 'center_rectangle' ? 'rectangle' : t)
+    if (family(now) !== id) return this.set({ tool: id, toolSeq: this.state.toolSeq + 1, drawing: 0 })
+    if (this.state.drawing === 0 && id === 'rectangle') return this.set({ tool: now === 'rectangle' ? 'center_rectangle' : 'rectangle', toolSeq: this.state.toolSeq + 1 })
+    this.set({ toolSeq: this.state.toolSeq + 1, drawing: 0 })
+  }
+  setDrawing(n: number): void {
+    if (n !== this.state.drawing) this.set({ drawing: n })
+  }
+
+  private settleAdds(made: Made | null, all = false): void {
+    const list = all ? this.adds.splice(0) : this.adds.splice(0, 1)
+    for (const r of list) r(made)
+  }
+
   private onMessage(m: Record<string, unknown>): void {
     switch (m['type']) {
       case 'sketch.opened':
@@ -198,17 +238,26 @@ export class SketchStore {
         const alive = (h: SketchHit) =>
           h.kind === 'point' ? h.id in view.sketch.points : h.kind === 'entity' ? h.id in view.sketch.entities : view.sketch.constraints.some((c) => c.id === h.id)
         this.set({ view, error: null, selected: this.state.selected.filter(alive), aimed: null })
+        const made = m['made']
+        if (typeof made === 'object' && made !== null) {
+          const o = made as Record<string, unknown>
+          const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+          this.settleAdds({ points: ids(o['points']), entities: ids(o['entities']) })
+        }
         return
       }
       case 'sketch.committed':
         this.frame = null
+        this.settleAdds(null, true)
         this.set({ ...CLOSED, openSeq: this.state.openSeq, faceSeq: this.state.faceSeq, committed: typeof m['revision'] === 'number' ? m['revision'] : null })
         return
       case 'sketch.cancelled':
         this.frame = null
+        this.settleAdds(null, true)
         this.set({ ...CLOSED, openSeq: this.state.openSeq, faceSeq: this.state.faceSeq })
         return
       case 'error':
+        if (m['for'] === 'sketch.add') this.settleAdds(null)
         this.set({ opening: false, error: typeof m['message'] === 'string' ? m['message'] : 'The sketch could not do that.' })
         return
     }

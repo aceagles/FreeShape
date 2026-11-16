@@ -56,6 +56,24 @@ export interface HandleHandler {
   cancel(): void
 }
 
+/**
+ * A press that stays within HOLD_SLOP pixels for HOLD_TIME ms is a hold (the sketch quick menu, I7.8). `open` is asked when
+ * the time is up and returns true when the handler takes the press: the pointer is then the handler's until it lifts
+ * (`move`, then `release`, or `cancel`), and its release places and selects nothing. While `isOpen` is true a press anywhere
+ * on the view is for `dismiss` alone. Pen and finger hold; the mouse does not. Set with `PointerModule.setHoldHandler`.
+ */
+export interface HoldHandler {
+  open(x: number, y: number, pointer: 'pen' | 'touch'): boolean
+  move(p: PenPoint): void
+  release(p: PenPoint): void
+  cancel(): void
+  isOpen(): boolean
+  dismiss(): void
+}
+
+export const HOLD_TIME = 400
+export const HOLD_SLOP = 10
+
 /** A two-finger twist smaller than this (radians, 4.5 degrees) rolls nothing, so a pinch does not turn the view. */
 export const TWIST_DEAD_ZONE = (4.5 * Math.PI) / 180
 /** A tap is a touch that lasts less than this (ms) and moves no more than TAP_SLOP pixels: the one finger gesture that selects. */
@@ -111,6 +129,12 @@ export class PointerModule {
   private cancelled = false
   /** A planar view (a sketch in 2D): one finger and the right mouse button pan instead of orbit, and a twist turns the view at once. */
   private planar = false
+  private hold: HoldHandler | null = null
+  /** The press being timed for a hold, and the pointer a hold took (a ring is open under it). */
+  private holding: { id: number; x: number; y: number; kind: 'pen' | 'touch'; timer: ReturnType<typeof setTimeout> } | null = null
+  private held: number | null = null
+  /** Presses that closed an open hold: they do nothing else. */
+  private readonly swallowed = new Set<number>()
 
   constructor(
     private readonly el: HTMLElement,
@@ -147,12 +171,44 @@ export class PointerModule {
     this.planar = on
   }
 
+  /** A press held still opens something (the sketch quick menu). */
+  setHoldHandler(handler: HoldHandler | null): void {
+    this.clearHold()
+    this.hold = handler
+  }
+
+  private clearHold(): void {
+    if (this.holding) clearTimeout(this.holding.timer)
+    this.holding = null
+  }
+
+  private startHold(e: PointerEvent, kind: 'pen' | 'touch', p: Touch): void {
+    this.clearHold()
+    if (!this.hold) return
+    const id = e.pointerId
+    this.holding = { id, x: p.x, y: p.y, kind, timer: setTimeout(() => this.holdElapsed(id), HOLD_TIME) }
+  }
+
+  private holdElapsed(id: number): void {
+    const h = this.holding
+    if (!h || h.id !== id) return
+    this.holding = null
+    if (!this.hold?.open(h.x, h.y, h.kind)) return
+    this.held = id
+    if (h.kind === 'pen') this.pen?.cancel()
+    else {
+      this.tapping = null
+      this.mode = { kind: 'settling' }
+    }
+  }
+
   /** A finger tap Commits through this handler. */
   setTapHandler(handler: TapHandler | null): void {
     this.tapHandler = handler
   }
 
   dispose(): void {
+    this.clearHold()
     const el = this.el
     el.removeEventListener('pointerdown', this.onDown)
     el.removeEventListener('pointermove', this.onMove)
@@ -186,6 +242,12 @@ export class PointerModule {
     e.preventDefault()
     this.capture(e.pointerId)
     const p = this.local(e)
+    // a press on the view while a hold's ring is open closes it and does nothing else
+    if (this.hold?.isOpen() && this.held === null && (e.pointerType !== 'mouse' || e.button === 0)) {
+      this.hold.dismiss()
+      this.swallowed.add(e.pointerId)
+      return
+    }
     // a Drag handle comes first; a second finger is a pinch, never a handle
     const free = e.pointerType === 'touch' ? this.touches.size === 0 : e.pointerType === 'mouse' ? e.button === 0 && this.mouseId === null && this.mouseSelectId === null : this.penId === null
     if (free && this.handleId === null && this.handle?.press(this.penPoint(e), e.pointerType === 'pen' ? 'pen' : e.pointerType === 'mouse' ? 'mouse' : 'touch')) {
@@ -196,6 +258,7 @@ export class PointerModule {
       if (this.penId !== null) return
       this.penId = e.pointerId
       this.pen?.aim(this.penPoint(e))
+      this.startHold(e, 'pen', p)
       return
     }
     if (e.pointerType === 'mouse') {
@@ -218,8 +281,10 @@ export class PointerModule {
       this.mode = { kind: 'orbit', id: e.pointerId, pivot: this.pivotAt(p) }
       this.last = p
       this.tapping = { id: e.pointerId, x: p.x, y: p.y, t: e.timeStamp }
+      this.startHold(e, 'touch', p)
     } else if (this.touches.size === 2 && this.mode.kind === 'orbit') {
       this.tapping = null
+      this.clearHold()
       this.startTwo()
     } else {
       this.tapping = null
@@ -245,6 +310,15 @@ export class PointerModule {
   }
 
   private readonly onMove = (e: PointerEvent): void => {
+    if (this.swallowed.has(e.pointerId)) return
+    if (this.holding && this.holding.id === e.pointerId) {
+      const q = this.local(e)
+      if (Math.hypot(q.x - this.holding.x, q.y - this.holding.y) > HOLD_SLOP) this.clearHold()
+    }
+    if (this.held === e.pointerId) {
+      this.hold?.move(this.penPoint(e))
+      return
+    }
     if (this.handleId === e.pointerId) {
       this.handle?.move(this.penPoint(e))
       return
@@ -301,6 +375,16 @@ export class PointerModule {
   }
 
   private readonly onUp = (e: PointerEvent): void => {
+    if (this.swallowed.delete(e.pointerId)) return
+    if (this.holding?.id === e.pointerId) this.clearHold()
+    if (this.held === e.pointerId) {
+      this.held = null
+      if (e.pointerType === 'pen') this.penId = null
+      else this.touches.delete(e.pointerId)
+      this.hold?.release(this.penPoint(e))
+      if (e.pointerType !== 'pen') this.afterTouchLeft()
+      return
+    }
     if (this.handleId === e.pointerId) {
       this.handleId = null
       this.handle?.release(this.penPoint(e))
@@ -349,6 +433,18 @@ export class PointerModule {
   }
 
   private readonly onCancel = (e: PointerEvent): void => {
+    if (this.swallowed.delete(e.pointerId)) return
+    if (this.holding?.id === e.pointerId) this.clearHold()
+    if (this.held === e.pointerId) {
+      this.held = null
+      if (e.pointerType === 'pen') this.penId = null
+      else {
+        this.touches.delete(e.pointerId)
+        this.afterTouchLeft()
+      }
+      this.hold?.cancel()
+      return
+    }
     if (this.handleId === e.pointerId) {
       this.handleId = null
       this.handle?.cancel()

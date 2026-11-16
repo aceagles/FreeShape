@@ -161,3 +161,86 @@
   font-size: var(--fs-small);
   overflow-wrap: anywhere;
 }
+
+/* The aim mark and rubber band of the drawing tools (I7.8), over the sketch layer. */
+.sketch-aim-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+  font-family: var(--font, system-ui, sans-serif);
+}
+.sketch-aim-layer svg {
+  display: block;
+  font-family: inherit;
+}
+
+/* The sketch quick menu (layout mock, radial state): eight buttons on a ring round the point held. */
+.quick-menu {
+  position: absolute;
+  z-index: 4;
+  width: 0;
+  height: 0;
+  font-family: var(--font, system-ui, sans-serif);
+}
+.quick-menu .quick-disc {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--c-quickMenuDisc);
+  border: 1px solid var(--c-line);
+  pointer-events: none;
+}
+.quick-menu .quick-hub {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--c-white);
+  border: 2px solid var(--c-accentDark);
+  pointer-events: none;
+}
+.quick-menu button {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-quick);
+  background: var(--c-white);
+  color: var(--c-inkSoft);
+  font: inherit;
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  cursor: pointer;
+  touch-action: none;
+}
+.quick-menu button svg,
+.quick-menu button span {
+  pointer-events: none;
+}
+.quick-menu button[data-aimed] {
+  background: var(--c-accent);
+  border-color: var(--c-accentDark);
+  color: var(--c-white);
+}
+.quick-menu button[aria-disabled='true'] {
+  opacity: 0.4;
+}
+
+/* What the active drawing tool asks for, at the foot of the view. */
+.aim-hint {
+  position: absolute;
+  left: var(--sp-12);
+  bottom: var(--sp-12);
+  max-width: calc(100% - 2 * var(--sp-12) - 96px);
+  padding: var(--sp-6) var(--sp-10);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-inkSoft);
+  font-size: var(--fs-small);
+}

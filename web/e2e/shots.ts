@@ -1094,6 +1094,88 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    name: 'sketch-quickmenu',
+    mock: 'radial', // a pen held 0.4 s at the mock's place (60% across, 56% down) and slid towards Line: the ring round the press, Line lit
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      const box = (await page.getByTestId('viewport').boundingBox())!
+      const at = { x: Math.round(box.width * 0.6), y: Math.round(box.height * 0.56) }
+      await sendPointer(page, [{ phase: 'down', kind: 'pen', id: 10, ...at }])
+      await page.getByTestId('quick-line').waitFor()
+      await sendPointer(page, [{ phase: 'move', kind: 'pen', id: 10, x: at.x, y: at.y - 70 }])
+      await page.locator('.quick-menu button[data-aimed]').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-quickmenu-corner',
+    mock: 'radial', // a hold 20 px from the top left corner of the view: the ring moves inward so every button is on screen
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await sendPointer(page, [{ phase: 'down', kind: 'pen', id: 10, x: 20, y: 20 }])
+      await page.getByTestId('quick-line').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-draw-aim',
+    mock: 'sketch', // the Line tool chosen from the Draw group, a first point placed, and the pen down over the bracket's origin: the mark, the snap label and the rubber band
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
+      await page.locator('.group-row[data-tool="line"]').click()
+      await page.getByTestId('aim-hint').waitFor()
+      const o = await screenOf(page, 'point', 'origin')
+      const start = { x: o.x + 150, y: o.y - 110 }
+      await sendPointer(page, [
+        { phase: 'down', kind: 'pen', id: 10, x: start.x - 4, y: start.y },
+        { phase: 'move', kind: 'pen', id: 10, ...start },
+        { phase: 'up', kind: 'pen', id: 10, ...start, pressure: 0 },
+        { phase: 'down', kind: 'pen', id: 10, x: o.x + 40, y: o.y - 40 },
+        { phase: 'move', kind: 'pen', id: 10, x: o.x + 4, y: o.y - 3 },
+      ])
+      await page.locator('[data-kind="aim"][data-snap="point"]').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-drawn',
+    mock: 'sketch', // a new sketch with a rectangle, a circle and a line drawn with the pen, the Circle tool still on
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      const o = await screenOf(page, 'point', 'origin')
+      const penAt = (p: { x: number; y: number }) =>
+        sendPointer(page, [
+          { phase: 'down', kind: 'pen', id: 10, x: p.x - 3, y: p.y },
+          { phase: 'move', kind: 'pen', id: 10, ...p },
+          { phase: 'up', kind: 'pen', id: 10, ...p, pressure: 0 },
+        ])
+      const tool = async (group: string, id: string) => {
+        await page.locator('.tool-strip').getByRole('button', { name: new RegExp(`^${group}`) }).click()
+        await page.locator(`.group-row[data-tool="${id}"]`).click()
+        await page.getByTestId('aim-hint').filter({ hasText: id === 'rectangle' ? 'Rectangle' : id === 'line' ? 'Line' : 'Circle' }).waitFor({ timeout: 5000 })
+      }
+      await tool('Draw', 'rectangle')
+      await penAt({ x: o.x - 200, y: o.y - 120 })
+      await penAt({ x: o.x - 40, y: o.y + 60 })
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 4)
+      await tool('Draw', 'line')
+      await penAt({ x: o.x + 40, y: o.y + 120 })
+      await penAt({ x: o.x + 200, y: o.y + 40 })
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 5)
+      await tool('Draw', 'circle')
+      await penAt({ x: o.x + 110, y: o.y - 90 })
+      await penAt({ x: o.x + 170, y: o.y - 90 })
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.circles ?? 0) >= 1)
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** Listen for the open sketch's data (call before it opens); `lineWith(type)` is the first line a constraint of that type holds. */

@@ -8,10 +8,15 @@ import { layoutSketch } from './layout'
 import type { ScreenLayout } from './layout'
 import { pickSketch } from './pick'
 import type { SketchHit } from './pick'
+import type { SnapContext } from './tools/snap'
 import type { SketchStore } from './store'
 import { sketchMarkup } from './svg'
 import type { DrawStats } from './draw'
 import type { Uv } from './wire'
+import { QuickMenu } from './quickmenu'
+import { sketchToolState } from './strip'
+import { DrawTools } from './tools/drawing'
+import type { DrawReport } from './tools/drawing'
 
 /** What sketch mode needs of the viewport that hosts it. */
 export interface SketchHost {
@@ -42,6 +47,8 @@ export interface SketchReport {
   tilt: number
   /** Times the sketch layer was written. */
   paints: number
+  /** The drawing tools: the tool on, the shape in progress and where the pen's Aim is (I7.8). */
+  draw: DrawReport
 }
 
 const SIZE_PAD = 1.25
@@ -67,6 +74,8 @@ export class SketchMode {
   private readonly off: () => void
   private lastMarkup = ''
   private drawnFor: unknown = null
+  private readonly draw: DrawTools
+  private readonly menu: QuickMenu
 
   constructor(
     private readonly host: SketchHost,
@@ -76,6 +85,17 @@ export class SketchMode {
     this.layer.className = 'sketch-layer'
     this.layer.dataset['testid'] = 'sketch-layer'
     host.overlayParent.append(this.layer)
+    this.draw = new DrawTools(
+      {
+        overlayParent: host.overlayParent,
+        width: () => host.view.width,
+        height: () => host.view.height,
+        requestRender: () => host.requestRender(),
+        context: (pointer) => this.snapContext(pointer),
+      },
+      store,
+    )
+    this.menu = new QuickMenu({ overlayParent: host.overlayParent, width: () => host.view.width, height: () => host.view.height }, store, sketchToolState)
     this.wirePointer()
     this.off = store.subscribe(() => this.onStore())
     this.onStore()
@@ -83,6 +103,9 @@ export class SketchMode {
 
   dispose(): void {
     this.off()
+    this.draw.dispose()
+    this.menu.dispose()
+    this.host.pointer.setHoldHandler(null)
     this.host.pointer.setPlanar(false)
     this.layer.remove()
   }
@@ -104,10 +127,12 @@ export class SketchMode {
       },
       cancel: () => this.store.aim(null),
     })
-    p.setPenHandler(picking('pen'))
-    p.setMouseHandler(picking('mouse'))
+    p.setPenHandler(this.draw.wrap('pen', picking('pen')))
+    p.setMouseHandler(this.draw.wrap('mouse', picking('mouse')))
+    p.setHoldHandler(this.menu)
     p.setTapHandler({
       tap: (x, y) => {
+        if (this.draw.active) return // a finger places nothing with a drawing tool
         const hit = itemAt(x, y, 'touch')
         if (this.store.pointerTool?.commit(hit, this.uvAt(x, y), 'touch')) {
           this.before = null
@@ -121,6 +146,7 @@ export class SketchMode {
         return hit !== null && this.store.pointerTool?.doubleTap(hit) === true
       },
       undoTap: () => {
+        if (this.draw.active) return
         if (this.before) this.store.setSelection(this.before)
         this.before = null
       },
@@ -131,6 +157,17 @@ export class SketchMode {
   private uvAt(x: number, y: number): Uv | null {
     const f = this.store.getState().view?.frame
     return f ? viewToUv(this.host.view, f, x, y) : null
+  }
+
+  /** What the drawing tools snap against, for the view as it is now. */
+  private snapContext(pointer: 'pen' | 'mouse' | 'touch'): SnapContext | null {
+    const s = this.store.getState()
+    if (!s.open || !s.view || !this.drawing) return null
+    const { view } = this.host
+    const f = s.view.frame
+    const drawing = this.drawing
+    const toView = (uv: Uv) => uvToView(view, f, uv)
+    return { sketch: s.view.sketch, layout: layoutSketch(drawing, toView), edges: s.view.edges, toUv: (x, y) => viewToUv(view, f, x, y), toView, pointer }
   }
 
   private onStore(): void {
@@ -218,6 +255,7 @@ export class SketchMode {
     const s = this.store.getState()
     if (!s.open || !s.view) {
       this.layer.replaceChildren()
+      this.draw.update()
       return
     }
     const { view } = this.host
@@ -233,6 +271,7 @@ export class SketchMode {
       this.layer.innerHTML = markup
       this.paints++
     }
+    this.draw.update()
   }
 
   /** Turn the view square to the sketch plane (the cube's Normal to). */
@@ -282,6 +321,7 @@ export class SketchMode {
       xAxisAngle: Math.atan2(x.y - o.y, x.x - o.x),
       tilt: Math.acos(Math.min(1, Math.abs(dotN))),
       paints: this.paints,
+      draw: this.draw.report(),
     }
   }
 }

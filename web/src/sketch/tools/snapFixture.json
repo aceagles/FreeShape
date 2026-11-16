@@ -1,0 +1,597 @@
+{
+ "screen": {
+  "origin": [
+   400,
+   300
+  ],
+  "pxPerMm": 10
+ },
+ "base": {
+  "points": {
+   "origin": [
+    0.0,
+    0.0
+   ],
+   "p1": [
+    -20.0,
+    0.0
+   ],
+   "p2": [
+    20.0,
+    0.0
+   ],
+   "p4": [
+    0.0,
+    20.0
+   ],
+   "p6": [
+    30.0,
+    15.0
+   ]
+  },
+  "entities": {
+   "l3": {
+    "type": "line",
+    "p1": "p1",
+    "p2": "p2",
+    "construction": false
+   },
+   "c5": {
+    "type": "circle",
+    "c": "p4",
+    "r": 8.0,
+    "construction": false
+   }
+  },
+  "constraints": []
+ },
+ "cases": {
+  "line, both ends free": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 300,
+     "y": 250,
+     "uv": [
+      -10.0,
+      5.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 500,
+     "y": 200,
+     "uv": [
+      10.0,
+      10.0
+     ],
+     "snap": null,
+     "infer": null
+    }
+   ],
+   "constraints": []
+  },
+  "line starting on the lone point": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 703,
+     "y": 152,
+     "uv": [
+      30.0,
+      15.0
+     ],
+     "snap": {
+      "kind": "point",
+      "id": "p6"
+     },
+     "infer": null
+    },
+    {
+     "x": 600,
+     "y": 250,
+     "uv": [
+      20.0,
+      5.0
+     ],
+     "snap": null,
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "coincident",
+     "refs": [
+      "$p0",
+      "p6"
+     ]
+    }
+   ]
+  },
+  "line ending on an existing point": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 300,
+     "y": 100,
+     "uv": [
+      -10.0,
+      20.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 204,
+     "y": 297,
+     "uv": [
+      -20.0,
+      0.0
+     ],
+     "snap": {
+      "kind": "point",
+      "id": "p1"
+     },
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "coincident",
+     "refs": [
+      "$p1",
+      "p1"
+     ]
+    }
+   ]
+  },
+  "line ending on the origin": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 300,
+     "y": 100,
+     "uv": [
+      -10.0,
+      20.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 402,
+     "y": 298,
+     "uv": [
+      0.0,
+      0.0
+     ],
+     "snap": {
+      "kind": "point",
+      "id": "origin"
+     },
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "coincident",
+     "refs": [
+      "$p1",
+      "origin"
+     ]
+    }
+   ]
+  },
+  "line within 3 degrees of level": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 350,
+     "y": 250,
+     "uv": [
+      -5.0,
+      5.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 600,
+     "y": 253,
+     "uv": [
+      20.0,
+      5.0
+     ],
+     "snap": null,
+     "infer": "H"
+    }
+   ],
+   "constraints": [
+    {
+     "type": "horizontal",
+     "refs": [
+      "$e0"
+     ]
+    }
+   ]
+  },
+  "line within 3 degrees of plumb": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 350,
+     "y": 250,
+     "uv": [
+      -5.0,
+      5.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 352,
+     "y": 100,
+     "uv": [
+      -5.0,
+      20.0
+     ],
+     "snap": null,
+     "infer": "V"
+    }
+   ],
+   "constraints": [
+    {
+     "type": "vertical",
+     "refs": [
+      "$e0"
+     ]
+    }
+   ]
+  },
+  "line 5 degrees off level": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 350,
+     "y": 250,
+     "uv": [
+      -5.0,
+      5.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 600,
+     "y": 272,
+     "uv": [
+      20.0,
+      2.8
+     ],
+     "snap": null,
+     "infer": null
+    }
+   ],
+   "constraints": []
+  },
+  "line ending on a line": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 300,
+     "y": 200,
+     "uv": [
+      -10.0,
+      10.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 430,
+     "y": 303,
+     "uv": [
+      3.0,
+      0.0
+     ],
+     "snap": {
+      "kind": "on",
+      "id": "l3"
+     },
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "point_on",
+     "refs": [
+      "$p1",
+      "l3"
+     ]
+    }
+   ]
+  },
+  "line ending on a circle": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 600,
+     "y": 200,
+     "uv": [
+      20.0,
+      10.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 482,
+     "y": 100,
+     "uv": [
+      8.0,
+      20.0
+     ],
+     "snap": {
+      "kind": "on",
+      "id": "c5"
+     },
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "point_on",
+     "refs": [
+      "$p1",
+      "c5"
+     ]
+    }
+   ]
+  },
+  "line plumb from its start onto a line": {
+   "tool": "line",
+   "steps": [
+    {
+     "x": 350,
+     "y": 200,
+     "uv": [
+      -5.0,
+      10.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 352,
+     "y": 303,
+     "uv": [
+      -5.0,
+      0.0
+     ],
+     "snap": {
+      "kind": "on",
+      "id": "l3"
+     },
+     "infer": "V"
+    }
+   ],
+   "constraints": [
+    {
+     "type": "point_on",
+     "refs": [
+      "$p1",
+      "l3"
+     ]
+    },
+    {
+     "type": "vertical",
+     "refs": [
+      "$e0"
+     ]
+    }
+   ]
+  },
+  "rectangle between a point and a line": {
+   "tool": "rect",
+   "steps": [
+    {
+     "x": 703,
+     "y": 152,
+     "uv": [
+      30.0,
+      15.0
+     ],
+     "snap": {
+      "kind": "point",
+      "id": "p6"
+     },
+     "infer": null
+    },
+    {
+     "x": 450,
+     "y": 300,
+     "uv": [
+      5.0,
+      0.0
+     ],
+     "snap": {
+      "kind": "on",
+      "id": "l3"
+     },
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "coincident",
+     "refs": [
+      "$p0",
+      "p6"
+     ]
+    },
+    {
+     "type": "point_on",
+     "refs": [
+      "$p1",
+      "l3"
+     ]
+    }
+   ]
+  },
+  "rectangle, both corners free": {
+   "tool": "rect",
+   "steps": [
+    {
+     "x": 300,
+     "y": 200,
+     "uv": [
+      -10.0,
+      10.0
+     ],
+     "snap": null,
+     "infer": null
+    },
+    {
+     "x": 520,
+     "y": 150,
+     "uv": [
+      12.0,
+      15.0
+     ],
+     "snap": null,
+     "infer": null
+    }
+   ],
+   "constraints": []
+  },
+  "centre rectangle from the origin": {
+   "tool": "center_rect",
+   "steps": [
+    {
+     "x": 401,
+     "y": 299,
+     "uv": [
+      0.0,
+      0.0
+     ],
+     "snap": {
+      "kind": "point",
+      "id": "origin"
+     },
+     "infer": null
+    },
+    {
+     "x": 480,
+     "y": 240,
+     "uv": [
+      8.0,
+      6.0
+     ],
+     "snap": null,
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "coincident",
+     "refs": [
+      "$p0",
+      "origin"
+     ]
+    }
+   ]
+  },
+  "circle centred on a line": {
+   "tool": "circle",
+   "steps": [
+    {
+     "x": 350,
+     "y": 301,
+     "uv": [
+      -5.0,
+      0.0
+     ],
+     "snap": {
+      "kind": "on",
+      "id": "l3"
+     },
+     "infer": null
+    },
+    {
+     "x": 400,
+     "y": 380,
+     "uv": [
+      0.0,
+      -8.0
+     ],
+     "snap": null,
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "point_on",
+     "refs": [
+      "$p0",
+      "l3"
+     ]
+    }
+   ]
+  },
+  "point on the circle": {
+   "tool": "point",
+   "steps": [
+    {
+     "x": 401,
+     "y": 22,
+     "uv": [
+      0.102555675,
+      27.999342619
+     ],
+     "snap": {
+      "kind": "on",
+      "id": "c5"
+     },
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "point_on",
+     "refs": [
+      "$p0",
+      "c5"
+     ]
+    }
+   ]
+  },
+  "point on the lone point": {
+   "tool": "point",
+   "steps": [
+    {
+     "x": 701,
+     "y": 151,
+     "uv": [
+      30.0,
+      15.0
+     ],
+     "snap": {
+      "kind": "point",
+      "id": "p6"
+     },
+     "infer": null
+    }
+   ],
+   "constraints": [
+    {
+     "type": "coincident",
+     "refs": [
+      "$p0",
+      "p6"
+     ]
+    }
+   ]
+  }
+ }
+}

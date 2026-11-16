@@ -93,6 +93,7 @@ FEATURE_LABELS = {
     "sm_convert": "Convert to sheet metal", "delete_face": "Delete face", "move_face": "Move face", "offset_surface": "Offset surface",
     "thicken": "Thicken", "enclose": "Enclose", "fill": "Fill",
     "delete_part": "Delete part",
+    "canvas": "Canvas",
 }
 
 # ISO metric screw data (coarse threads).  clearance: close / normal / loose (ISO 273)
@@ -293,12 +294,15 @@ class ModelState:
     axes: dict = field(default_factory=dict)
     # surface bodies made through new_part(surface=True) so far: numbers `Surface n`, apart from `Part n`
     surface_counter: int = 0
+    # canvas feature id -> the placed image (run_canvas, I12.1): plain values, in feature order. No part.
+    canvases: dict = field(default_factory=dict)
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
                           set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts},
-                          dict(self.connectors), dict(self.history), dict(self.axes), self.surface_counter)
+                          dict(self.connectors), dict(self.history), dict(self.axes), self.surface_counter,
+                          dict(self.canvases))
 
     def named(self, pid):
         """The element map of part `pid`, or None when it has none or the part's shape has since been
@@ -3093,6 +3097,95 @@ def run_import(state, f):
         os.unlink(path)
 
 
+def canvas_image(p):
+    """The bytes of a canvas's image: its blob (PartStudioDoc.compute hands in `resolved`, the blob getter), else
+    its inline base64 `data`. KernelError when there is none or it cannot be read."""
+    if p.get("blob"):
+        try:
+            return p["resolved"](p["blob"])
+        except Exception as e:  # BlobError, or no getter handed in
+            raise K.KernelError(f"The image {p.get('filename') or ''} is missing: blob {p['blob']} ({e})") from e
+    if p.get("data"):
+        try:
+            return base64.b64decode(p["data"])
+        except (ValueError, TypeError) as e:
+            raise K.KernelError("The canvas image is not base64 data") from e
+    raise K.KernelError("Pick an image for the canvas")
+
+
+def canvas_size(p, info):
+    """(width, height) in mm of a canvas with params `p` showing an image with ImageInfo `info`. A missing
+    width or height (None) follows from the other at the image's aspect ratio when `keep_aspect` is set, else it
+    is the image's default size (image_info: its own resolution, or 96 dpi)."""
+    dw, dh = info.default_size_mm()
+    w, h = p.get("width"), p.get("height")
+    if w is None and h is None:
+        return dw, dh
+    if w is None:
+        return (float(h) * dw / dh if p.get("keep_aspect", True) else dw), float(h)
+    if h is None:
+        return float(w), (float(w) * dh / dw if p.get("keep_aspect", True) else dh)
+    return float(w), float(h)
+
+
+def _canvas_number(state, p, key, default, angle=False):
+    v = p.get(key, default)
+    if v is None:
+        return None
+    if isinstance(v, str):
+        val = parse_number(v, angle=angle, variables=state.vars)
+        if val is None:
+            bad = [n for n in var_names(v) if n not in state.vars]
+            raise K.KernelError(f"Unknown variable #{bad[0]}" if bad else f"Can't read '{v}'")
+        return float(val)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise K.KernelError(f"Canvas {key} must be a number")
+    return float(v)
+
+
+def run_canvas(state, f):
+    """A Canvas (I12.1): an image placed on a plane or a planar face, kept in the file as a blob. It changes no
+    part; it adds the placed image to `state.canvases`. The plane or face is resolved on every rebuild, so a face
+    that moves carries the canvas and a lost face is this feature's error. The frame: `origin` is the image
+    centre, `x` mm along the plane's x and `y` mm along its y; `xdir` and `ydir` are the image's own left-to-right
+    and bottom-to-top directions, turned `rotation` degrees about the plane normal (counter-clockwise looking
+    down the normal) and then reversed by `flip_h` and `flip_v`, so a viewer maps the picture along them as is."""
+    from . import image_info
+    p = f["params"]
+    plane = resolve_plane(state, p.get("plane") or {"kind": "std", "name": "Top"})
+    raw = canvas_image(p)
+    try:
+        info = image_info.read_info(raw)
+    except image_info.ImageError as e:
+        raise K.KernelError(str(e)) from e
+    q = {k: _canvas_number(state, p, k, None) for k in ("width", "height")}
+    w, h = canvas_size(dict(p, **q), info)
+    if not (w > 0 and h > 0) or not (math.isfinite(w) and math.isfinite(h)):
+        raise K.KernelError("A canvas's width and height must be above 0")
+    x, y = _canvas_number(state, p, "x", 0.0), _canvas_number(state, p, "y", 0.0)
+    rot = _canvas_number(state, p, "rotation", 0.0, angle=True)
+    opacity = _canvas_number(state, p, "opacity", 50.0)
+    if not 0.0 <= opacity <= 100.0:
+        raise K.KernelError("A canvas's opacity must be from 0 to 100")
+    n = np.asarray(plane.normal, float)
+    px, py = np.asarray(plane.xdir, float), np.asarray(plane.ydir, float)
+    c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+    xdir, ydir = c * px + s * py, -s * px + c * py
+    flip_h, flip_v = bool(p.get("flip_h", False)), bool(p.get("flip_v", False))
+    if flip_h:
+        xdir = -xdir
+    if flip_v:
+        ydir = -ydir
+    origin = plane.origin + x * px + y * py
+    clean = lambda v: [float(round(t, 12)) + 0.0 for t in v]       # noqa: E731  (-0.0 and 1e-17 noise out)
+    state.canvases[f["id"]] = {
+        "id": str(f["id"]), "name": str(f.get("name") or f["id"]), "blob": str(p.get("blob") or ""),
+        "filename": str(p.get("filename") or ""), "origin": clean(origin), "xdir": clean(xdir),
+        "ydir": clean(ydir), "normal": clean(n), "width": float(w), "height": float(h), "opacity": float(opacity),
+        "flip_h": flip_h, "flip_v": flip_v, "selectable": bool(p.get("selectable", True)),
+        "pixels": [int(info.width), int(info.height)]}
+
+
 def _import_names(shape, fid):
     """The element map of an imported solid. A STEP file carries no history, and FreeCAD's reader
     attaches no element map either (spec I1.7), so every element is seeded from the feature id and
@@ -4141,6 +4234,7 @@ RUNNERS = {
     "delete_face": run_delete_face, "move_face": run_move_face, "offset_surface": run_offset_surface,
     "thicken": run_thicken, "enclose": run_enclose, "fill": run_fill,
     "delete_part": run_delete_part,
+    "canvas": run_canvas,
 }
 
 
@@ -4167,6 +4261,9 @@ def default_params(ftype: str, state: ModelState | None = None) -> dict:
         "enclose": {"entities": [], "keep_tools": False, "op": "new", "scope": []},
         "fill": {"edges": [], "guides": [], "op": "new", "scope": []},
         "delete_part": {"parts": []},
+        "canvas": {"data": "", "filename": "", "plane": {"kind": "std", "name": "Top"}, "width": None,
+                   "height": None, "x": 0.0, "y": 0.0, "rotation": 0.0, "opacity": 50.0, "flip_h": False,
+                   "flip_v": False, "selectable": True, "keep_aspect": True},
         "plane": {"type": "auto", "refs": [], "offset": 20.0, "angle": 45.0, "flip": False},
         "axis": {"type": "auto", "refs": [], "click": None, "flip": False, "connector_axis": "z"},
         "mirror": {"parts": [], "plane": {"kind": "std", "name": "Right"}, "op": "add"},

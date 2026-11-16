@@ -86,7 +86,7 @@ Each entry of `features` is an object.
 
 #### Feature types
 
-Built-in types: `sketch`, `extrude`, `revolve`, `fillet`, `chamfer`, `shell`, `plane`, `axis`, `mirror`, `linear_pattern`, `circular_pattern`, `boolean`, `import`, `hole`, `variable`, `sweep`, `rib`, `loft`, `draft`, `split`, `move`, `thread`, `sm_base`, `sm_flange`, `sm_hem`, `sm_jog`, `sm_tab`, `sm_convert`, `delete_face`, `move_face`, `offset_surface`, `thicken`, `enclose`, `fill`, `delete_part`, `variable_studio_ref`, `derived`, `mate_connector`, `context`. A Python feature has a type owned by a Plugin (`py:<plugin>/<name>`). A feature added by an upstream-style plugin file has type `plugin:<id>`.
+Built-in types: `sketch`, `extrude`, `revolve`, `fillet`, `chamfer`, `shell`, `plane`, `axis`, `mirror`, `linear_pattern`, `circular_pattern`, `boolean`, `import`, `hole`, `variable`, `sweep`, `rib`, `loft`, `draft`, `split`, `move`, `thread`, `sm_base`, `sm_flange`, `sm_hem`, `sm_jog`, `sm_tab`, `sm_convert`, `delete_face`, `move_face`, `offset_surface`, `thicken`, `enclose`, `fill`, `delete_part`, `variable_studio_ref`, `derived`, `mate_connector`, `context`, `canvas`. A Python feature has a type owned by a Plugin (`py:<plugin>/<name>`). A feature added by an upstream-style plugin file has type `plugin:<id>`.
 
 Types whose `params` name something outside the feature:
 
@@ -96,6 +96,11 @@ Types whose `params` name something outside the feature:
 | `import` | `blob` | string | Blob key of the imported STEP file. Since version 3. |
 | `import` | `data` | string | Before version 3: base64 of the imported STEP file, inline. Since version 3 written only as an empty string, by an import that holds no file yet. |
 | `import` | `filename` | string | Name of the imported file. |
+| `canvas` | `blob` | string | Since version 5 (card I12.1; additive, no migration step). Blob key of the image, a PNG or JPEG file. See Where binary data lives. Any other file, or one cut short, fails the feature with a message. |
+| `canvas` | `data` | string | Base64 of the image while it is held inline. A canvas added this way is turned into `blob` before it first builds; the file holds `data` only as an empty string, for a canvas that has no image yet. |
+| `canvas` | `filename`, `plane` | string, object | `filename` is the name of the image file. `plane` is where the image lies, a plane reference as a sketch's `plane` (`{kind: std, name}`, `{kind: plane, fid}` or `{kind: face, face}`; default Top). The plane or face is resolved on every rebuild: a face that moves carries the canvas, and a lost face, or one that is not flat, is the feature's error. |
+| `canvas` | `width`, `height`, `x`, `y`, `rotation`, `opacity` | number or expression | `width` and `height` are in mm and above 0; null means the image's default size, its pixels at its own resolution (PNG `pHYs`, JPEG JFIF density), else at 96 dpi (pixels x 25.4 / 96). With one of them null and `keep_aspect` true, it follows the other at the image's aspect ratio. Adding a canvas fills in nulls it can read. `x` and `y` (mm, default 0) place the image centre in the plane's own axes. `rotation` (degrees, default 0) turns it about the plane normal, counter-clockwise looking down the normal. `opacity` is 0 to 100 (default 50). |
+| `canvas` | `flip_h`, `flip_v`, `selectable`, `keep_aspect` | bool | `flip_h` mirrors the image left to right and `flip_v` top to bottom, in its own axes (default false). `selectable` (default true) lets a click pick the canvas. `keep_aspect` (default true) asks a dialog to keep width and height in proportion. |
 | `variable_studio_ref` | `source` | object | Link source of a Variable Studio Tab. See Link sources. |
 | `variable_studio_ref` | `names` | list of string | Optional. Only these variables are taken. Absent means all. |
 | `derived` | `source` | object | Link source of a Part Studio Tab or a Version of one. See Link sources. |
@@ -507,6 +512,7 @@ Keys: the in-Document keys plus `document` (the other Document's id) and `versio
 | Part shape for an Assembly instance | `blobs/<sha256>` beside the `.fasm` file, named by `instances[]._brep_blob` | zlib-compressed BREP, one blob per part shape. |
 | Imported STEP file in an Assembly | `blobs/<sha256>` beside the `.fasm` file, named by a `step` source's `blob` | The STEP file's bytes. |
 | Imported STEP file in a Part Studio | `blobs/<sha256>` beside the `.fshape` file, named by `params.blob` of an `import` feature | The STEP file's bytes. |
+| Canvas image in a Part Studio | `blobs/<sha256>` beside the `.fshape` file, named by `params.blob` of a `canvas` feature | The PNG or JPEG file's bytes, as added. |
 | Shown shape of a Drawing | `blobs/<sha256>` beside the `.fdwg` file, named by `_brep_blob` | zlib-compressed BREP. |
 | Exact Drawing views | `blobs/<sha256>` beside the `.fdwg` file, named by `_views_blob` | JSON curves plus the sha1 of the BREP. |
 | Last build of a Python feature | `blobs/<sha256>` beside the `.fshape` file, named by `python_builds` | BREP bytes and a names JSON, one blob each. |

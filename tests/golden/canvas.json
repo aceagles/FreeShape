@@ -1,0 +1,90 @@
+{
+ "_meta": {
+  "cadquery-ocp": "8.0.1.1.0",
+  "note": "written by `pytest tests --update-golden`; see tests/conftest.py"
+ },
+ "block_top_face": {
+  "flip_h": false,
+  "flip_v": false,
+  "height": 33.866666667,
+  "normal": [
+   0.0,
+   0.0,
+   1.0
+  ],
+  "opacity": 50.0,
+  "origin": [
+   26.0,
+   9.0,
+   10.0
+  ],
+  "selectable": true,
+  "width": 50.8,
+  "xdir": [
+   0.707106781,
+   -0.707106781,
+   0.0
+  ],
+  "ydir": [
+   0.707106781,
+   0.707106781,
+   0.0
+  ]
+ },
+ "front_turned_flipped": {
+  "flip_h": true,
+  "flip_v": true,
+  "height": 90.0,
+  "normal": [
+   0.0,
+   -1.0,
+   0.0
+  ],
+  "opacity": 75.0,
+  "origin": [
+   12.5,
+   0.0,
+   -4.0
+  ],
+  "selectable": true,
+  "width": 120.0,
+  "xdir": [
+   -0.866025404,
+   0.0,
+   -0.5
+  ],
+  "ydir": [
+   0.5,
+   0.0,
+   -0.866025404
+  ]
+ },
+ "top_default": {
+  "flip_h": false,
+  "flip_v": false,
+  "height": 26.458333333,
+  "normal": [
+   0.0,
+   0.0,
+   1.0
+  ],
+  "opacity": 50.0,
+  "origin": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "selectable": true,
+  "width": 52.916666667,
+  "xdir": [
+   1.0,
+   0.0,
+   0.0
+  ],
+  "ydir": [
+   0.0,
+   1.0,
+   0.0
+  ]
+ }
+}

@@ -64,6 +64,11 @@ def _migrate_part_ids(data):
 M.register("document", _migrate_part_ids)
 
 
+# feature types that keep a file of their own as a held blob: an "import" its STEP file (I4.9), a "canvas" its
+# image (I12.1). Each is added with the file inline (base64 `params.data`) and saved naming it by `params.blob`.
+BLOB_FILE_TYPES = ("import", "canvas")
+
+
 def _import_params_with_blob(params, key):
     """An "import" feature's params with its inline base64 `data` replaced, in place, by `blob`: its key."""
     return {("blob" if k == "data" else k): (key if k == "data" else v) for k, v in params.items()}
@@ -342,11 +347,30 @@ class PartStudioDoc:
     def _hold_import(self, feat):
         """An "import" feature made with its STEP file inline (base64 `params.data`, as the Import command makes
         it) is turned, in place and before it first builds, into the form the file keeps: `params.blob`, the
-        bytes held until the next save (I4.9)."""
+        bytes held until the next save (I4.9). A "canvas" is held the same way (I12.1), and a width or height it
+        leaves as None is filled in from the image (features.canvas_size) when the image can be read."""
         stored = self._file_feature(feat)
         if stored is not feat:
             feat["params"] = stored["params"]
+        if feat.get("type") == "canvas":
+            self._size_canvas(feat)
         return feat
+
+    def _size_canvas(self, feat):
+        p = feat.get("params")
+        if not isinstance(p, dict) or (p.get("width") is not None and p.get("height") is not None):
+            return
+        from . import image_info
+        from .features import canvas_size
+        key = p.get("blob")
+        try:
+            info = image_info.read_info(self._blob_get(key) if isinstance(key, str) and key else None)
+        except (image_info.ImageError, blobstore.BlobError, ValueError, TypeError):
+            return                  # unreadable: the feature builds red and says why
+        try:
+            p["width"], p["height"] = canvas_size(p, info)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return
 
     def add_feature(self, feat, index=None):
         self._hold_import(feat)
@@ -541,8 +565,8 @@ class PartStudioDoc:
             key = (f.get("params") or {}).get("capture")
             h.update(b"1" if self._has_blob(key) else b"0")      # a capture blob that appears on a save rebuilds
             return dict(f, params=dict(f["params"], resolved=self._blob_get))
-        if f.get("type") == "import" and not f.get("suppressed") and (f.get("params") or {}).get("blob"):
-            h.update(b"1" if self._has_blob(f["params"]["blob"]) else b"0")   # the STEP file's blob (I4.9)
+        if f.get("type") in BLOB_FILE_TYPES and not f.get("suppressed") and (f.get("params") or {}).get("blob"):
+            h.update(b"1" if self._has_blob(f["params"]["blob"]) else b"0")   # the STEP file's / image's blob
             return dict(f, params=dict(f["params"], resolved=self._blob_get))
         if f.get("type") not in links.SOURCE_FEATURES or f.get("suppressed"):
             return f
@@ -1055,20 +1079,22 @@ class PartStudioDoc:
         return key
 
     def _file_feature(self, f):
-        """`f` as the file holds it: an "import" feature names its STEP file by blob key (I4.9)."""
+        """`f` as the file holds it: an "import" feature names its STEP file by blob key (I4.9), a "canvas" its
+        image (I12.1)."""
         p = f.get("params")
-        if f.get("type") == "import" and isinstance(p, dict) and isinstance(p.get("data"), str) and p["data"]:
+        if f.get("type") in BLOB_FILE_TYPES and isinstance(p, dict) and isinstance(p.get("data"), str) and p["data"]:
             key = self._import_key(p["data"])
             if key is not None:
                 return dict(f, params=_import_params_with_blob(p, key))
         return f
 
     def _import_blobs(self):
-        """{key: bytes} of the STEP file of every "import" feature that can be read now (a missing one stays
-        missing; its feature is red)."""
+        """{key: bytes} of the STEP file of every "import" feature, and the image of every "canvas", that can be
+        read now (a missing one stays missing; its feature is red)."""
         out = {}
         for f in self.features:
-            key = (self._file_feature(f).get("params") or {}).get("blob") if f.get("type") == "import" else None
+            key = (self._file_feature(f).get("params") or {}).get("blob") if f.get("type") in BLOB_FILE_TYPES \
+                else None
             if isinstance(key, str):
                 try:
                     out[key] = self._blob_get(key)

@@ -54,6 +54,10 @@ _Avoid_: copy, insert
 A frozen capture of an Assembly, taken from one part instance, that shows that part's neighbours inside its Part Studio at their mated positions so features can reference them. It changes only when the user updates it. A separate feature from Derived for the user; both use Links.
 _Avoid_: in-context snapshot, shape binder (FreeCAD's name for the mechanism)
 
+**Canvas**:
+A Part Studio feature that places a PNG or JPEG image on a plane or a flat face, to model over a photo or a drawing. The image is kept inside the Document. It has a size in mm, a position and rotation in its plane, flips and an opacity; it moves with its face and changes no part. Its default size reads the image at its own resolution, else at 96 pixels per inch.
+_Avoid_: image plane (FreeCAD's name), decal (Fusion's name for an image wrapped on faces), reference image, attached canvas
+
 **Python feature**:
 A Part Studio feature whose geometry is built by Python code with declared parameters, supplied by a Plugin. It builds through FreeShape's naming API, so its faces and edges get Element names like any built-in feature's.
 _Avoid_: scripted feature, script, macro, FeatureScript

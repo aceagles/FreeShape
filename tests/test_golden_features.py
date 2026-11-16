@@ -891,9 +891,11 @@ def test_every_runner_is_characterised():
     # upstream-style plugin features (plugin:*) by tests/test_plugins.py
     # sm_hem, sm_jog, sm_tab and sm_convert came in with upstream 2.0 after the goldens were frozen: they are
     # characterised in tests/test_20_stage4.py
+    # canvas came in after the goldens were frozen and builds no part: its frames are in the new file
+    # tests/golden/canvas.json, written and checked by tests/test_canvas_feature.py (I12.1)
     left = {t for t in F.RUNNERS if not t.startswith(("py:", "plugin:"))} - used - {
         "variable_studio_ref", "delete_part", "mate_connector", "context", "derived",
-        "sm_hem", "sm_jog", "sm_tab", "sm_convert", "axis", "rib", "thicken", "enclose", "fill"}
+        "sm_hem", "sm_jog", "sm_tab", "sm_convert", "axis", "rib", "thicken", "enclose", "fill", "canvas"}
     assert left == set(), sorted(left)
 
 

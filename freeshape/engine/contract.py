@@ -246,6 +246,28 @@ class FolderOut:
 
 
 @dataclass
+class CanvasOut:
+    """An image a Canvas feature places on a plane or planar face (I12.1). Not a part: it has no shape and no
+    element names. The image's bytes are the blob `blob` of the Part Studio; the client fetches them by that key."""
+    id: str                  # the canvas feature's id
+    name: str
+    blob: str                # sha256 key of the image (PNG or JPEG); "" while it is held inline
+    origin: list             # the image centre, a 3-list in the studio's coordinates
+    xdir: list               # unit 3-list: the image's left-to-right direction (rotation and flip_h applied)
+    ydir: list               # unit 3-list: the image's bottom-to-top direction (rotation and flip_v applied)
+    normal: list             # unit 3-list: the plane's normal (flips do not change it)
+    width: float             # mm, along xdir
+    height: float            # mm, along ydir
+    opacity: float = 50.0    # 0 (clear) to 100 (opaque)
+    flip_h: bool = False
+    flip_v: bool = False
+    selectable: bool = True
+    hidden: bool = False     # the eye in the feature list (doc.hidden_features)
+    filename: str = ""
+    pixels: list = field(default_factory=list)        # [width, height] of the image in pixels
+
+
+@dataclass
 class StudioOutputs(TabOutputs):
     parts: list = field(default_factory=list)          # [PartOut], in the studio's part order
     context: list = field(default_factory=list)        # [PartOut] of the Context bodies (reference parts), for the
@@ -269,6 +291,9 @@ class StudioOutputs(TabOutputs):
     # The drag arrows of the dialog being previewed (I6.3), dialog_schema.manipulators' dicts: field, flip, origin,
     # dir, value, symmetric, snap, min, label. Only a preview carries them; the committed outputs have none.
     manipulators: list = field(default_factory=list)
+    # The Canvas features' placed images (I12.1), [CanvasOut] in feature order. Absent in an older payload:
+    # from_wire then gives [].
+    canvases: list = field(default_factory=list)
 
 
 @dataclass

@@ -634,13 +634,16 @@ class StudioTab(_Tab):
         connectors = [connector_out(fid, c) for fid, c in st.connectors.items()]
         planes = {str(fid): plain(pl.to_dict()) for fid, pl in st.planes.items()}
         axes = {str(fid): plain(dict(ax)) for fid, ax in getattr(st, "axes", {}).items()}
+        from .contract import CanvasOut      # I12.1: the Canvas features' images, in feature order
+        canvases = [CanvasOut(**plain(dict(c)), hidden=fid in doc.hidden_features)
+                    for fid, c in getattr(st, "canvases", {}).items()]
         features, folders, rollback = feature_list(doc)
         return StudioOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
                              errors=plain(dict(errors)), consumes=self.consumes, parts=parts, context=context,
                              sketches=sketches, connectors=connectors, variables=plain(dict(st.vars)),
                              planes=planes, axes=axes, error_refs=plain(dict(error_refs)),
                              features=features, folders=folders, rollback=rollback,
-                             can_undo=bool(doc.can_undo()), can_redo=bool(doc.can_redo()))
+                             can_undo=bool(doc.can_undo()), can_redo=bool(doc.can_redo()), canvases=canvases)
 
 
 def _need_index(at, what, n, index):

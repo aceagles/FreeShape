@@ -101,7 +101,8 @@ def test_a_preview_with_manipulators_round_trips_exactly():
     assert got["ok"] and [m["field"] for m in out.manipulators] == ["depth"]
     back = round_trip(out)
     assert back.manipulators == out.manipulators and type(back.manipulators[0]["origin"][0]) is float
-    assert [f.name for f in dataclasses.fields(out)][-1] == "manipulators"      # appended, nothing renumbered
+    # appended, nothing renumbered; I12.1 appended `canvases` after it
+    assert [f.name for f in dataclasses.fields(out)][-2:] == ["manipulators", "canvases"]
 
 
 def test_the_outputs_are_not_trivial(outputs):

@@ -90,12 +90,14 @@ def _studio():
     assert doc.errors == {}
     tab = DF.Tab("T9", "studio", "other.fshape", "Other")
     extra = []
-    for ftype in ("derived", "variable_studio_ref", "mate_connector", "context", "delete_part", "import", "axis", "rib", "thicken", "enclose", "fill"):
+    for ftype in ("derived", "variable_studio_ref", "mate_connector", "context", "delete_part", "import", "axis", "rib", "thicken", "enclose", "fill", "canvas"):
         extra.append(doc.make_feature(ftype))
     extra[0]["params"]["source"] = L.studio_source(tab, "F1/1", document="doc-id", version="v1")
     extra[1]["params"].update(source={"kind": "variables", "tab": "T3", "name": "V"}, names=["w"])
     extra[3]["params"].update(assembly="T2", instance="I1", capture="0" * 64)
     extra[5]["params"].update(data="U1RFUA==", filename="p.step")      # written as `blob` (I4.9)
+    # a 1 x 1 PNG header (IHDR, IEND): the canvas's image, written as `blob` (I12.1)
+    extra[11]["params"].update(data="iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAElFTkSuQmCC", filename="c.png")
     doc.features.extend(extra)
     doc.part_overrides = {f"{py['id']}/1": {"name": "Box", "color": [0.1, 0.2, 0.3], "material": "Steel"}}
     doc.hidden_parts = {f"{py['id']}/1"}

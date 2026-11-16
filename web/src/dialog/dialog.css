@@ -347,3 +347,259 @@
 .dlg-sel:not([data-empty]) .dlg-sel-tap {
   min-height: 34px;
 }
+
+/* ------------------------------------------------------------------------------------------------------------------
+   Desktop mode (card I9.16): the feature dialog as the desktop's FeatureDialog (freeshape/ui/dialogs.py, `_build` and
+   `_make_row`) in the 300 px floating dialog of I9.2: margins 10, 8, 10, 10 and 6 px between rows; a row is its label,
+   taking the spare width, with the field at its right: a 110 px number, right aligned, and a 24 px unit; a 150 px text;
+   a dropdown; a checkbox with its label. Fields are 13 px type, 24 px high, as the desktop's QLineEdit. Everything here
+   is scoped to data-mode='desktop'; Tablet mode is not touched.
+   ------------------------------------------------------------------------------------------------------------------ */
+.shell[data-mode='desktop'] .dialog-header:has(.dlg-action) {
+  height: 40px;
+  padding: 0 var(--sp-6) 0 var(--sp-10);
+  gap: 2px;
+  background: var(--c-white);
+  border-bottom: 1px solid var(--c-lineSoft);
+}
+.shell[data-mode='desktop'] .dialog-header:has(.dlg-action) .dialog-title {
+  font-size: var(--fs-tab);
+  font-weight: 700;
+}
+.shell[data-mode='desktop'] .dlg-action {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--c-danger);
+}
+.shell[data-mode='desktop'] .dlg-action svg {
+  width: 18px;
+  height: 18px;
+}
+.shell[data-mode='desktop'] .dlg-accept {
+  background: transparent;
+  color: var(--c-ok);
+}
+/* the desktop's order: Accept, then Cancel */
+.shell[data-mode='desktop'] .dialog-header .dlg-action:not(.dlg-accept) {
+  order: 2;
+}
+/* the desktop's segment rows (Result, Create) carry no label: the buttons say it */
+.shell[data-mode='desktop'] .dlg-row:has(> .dlg-segments) > .dlg-label {
+  display: none;
+}
+.shell[data-mode='desktop'] .dlg-action:hover:not(:disabled) {
+  background: var(--c-accentSoft);
+}
+.shell[data-mode='desktop'] .dialog-body:has(> .dlg-form) {
+  padding: 8px 10px 10px;
+}
+.shell[data-mode='desktop'] .dlg-form {
+  gap: 6px;
+  font-size: var(--fs-tab);
+}
+.shell[data-mode='desktop'] .dlg-row {
+  gap: 2px;
+}
+.shell[data-mode='desktop'] .dlg-label {
+  font-size: var(--fs-tab);
+  font-weight: 400;
+  color: var(--c-inkSoft);
+}
+.shell[data-mode='desktop'] .dlg-row-line {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.shell[data-mode='desktop'] .dlg-row-line > .dlg-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell[data-mode='desktop'] .dlg-message,
+.shell[data-mode='desktop'] .dlg-info {
+  font-size: var(--fs-small);
+}
+
+/* The typed number (InlineNumber) and the typed text */
+.shell[data-mode='desktop'] .inline-number {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.shell[data-mode='desktop'] .inline-number-field,
+.shell[data-mode='desktop'] .dlg-text-inline {
+  box-sizing: border-box;
+  height: 24px;
+  padding: 3px 6px;
+  border: 1px solid var(--c-line);
+  border-radius: 4px;
+  background: var(--c-white);
+  color: var(--c-ink);
+  font: inherit;
+  font-size: var(--fs-tab);
+  outline: none;
+}
+.shell[data-mode='desktop'] .inline-number-field {
+  text-align: right;
+}
+.shell[data-mode='desktop'] .dlg-text-inline {
+  flex: none;
+  width: 150px;
+}
+.shell[data-mode='desktop'] .inline-number-field::placeholder,
+.shell[data-mode='desktop'] .dlg-text-inline::placeholder {
+  color: var(--c-muted);
+}
+.shell[data-mode='desktop'] .inline-number-field:focus,
+.shell[data-mode='desktop'] .dlg-text-inline:focus {
+  border-color: var(--c-accent);
+}
+/* the desktop's invalid style (theme.py: QLineEdit[invalid="true"]) */
+.shell[data-mode='desktop'] .inline-number-field[data-invalid],
+.shell[data-mode='desktop'] .dlg-text-inline[data-invalid] {
+  border-color: var(--c-danger);
+  background: var(--c-dangerSoft);
+}
+.shell[data-mode='desktop'] .inline-number-unit {
+  flex: none;
+  width: 24px;
+  color: var(--c-muted);
+  font-size: var(--fs-tab);
+}
+
+/* A choice: the desktop's QComboBox, its list drawn by the Menu component */
+.shell[data-mode='desktop'] .dlg-combo {
+  flex: none;
+  display: inline-flex;
+}
+.shell[data-mode='desktop'] .dlg-combo-button {
+  box-sizing: border-box;
+  min-width: 110px;
+  max-width: 170px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 4px 0 6px;
+  border: 1px solid var(--c-line);
+  border-radius: 4px;
+  background: var(--c-white);
+  color: var(--c-ink);
+  font: inherit;
+  font-size: var(--fs-tab);
+  text-align: left;
+  cursor: pointer;
+}
+.shell[data-mode='desktop'] .dlg-combo-button:focus-visible,
+.shell[data-mode='desktop'] .dlg-combo-button[aria-expanded='true'] {
+  border-color: var(--c-accent);
+  outline: none;
+}
+.shell[data-mode='desktop'] .dlg-combo-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell[data-mode='desktop'] .dlg-combo .menu-list {
+  min-width: 150px;
+}
+
+/* A check: one checkbox and its label */
+.shell[data-mode='desktop'] .dlg-check {
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--c-ink);
+  font-size: var(--fs-tab);
+  cursor: pointer;
+}
+.shell[data-mode='desktop'] .dlg-check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--c-accent);
+  cursor: pointer;
+}
+
+/* Segments (Result, Create) as the desktop's: 28 px, 13 px type */
+.shell[data-mode='desktop'] .dlg-segments {
+  border-radius: 0;
+}
+.shell[data-mode='desktop'] .dlg-segment {
+  height: 28px;
+  font-size: var(--fs-tab);
+}
+.shell[data-mode='desktop'] .dlg-segment[aria-checked='true'] {
+  font-weight: 400;
+}
+
+/* A selection field: compact chips, one line each, 13 px, with a small clear cross */
+.shell[data-mode='desktop'] .dlg-sel {
+  border-radius: 4px;
+}
+.shell[data-mode='desktop'] .dlg-chips {
+  gap: 4px;
+}
+.shell[data-mode='desktop'] .dlg-chips:not(:empty) {
+  padding: 6px 6px 0;
+}
+.shell[data-mode='desktop'] .dlg-chip {
+  height: 22px;
+  border-radius: 11px;
+  font-size: var(--fs-tab);
+}
+.shell[data-mode='desktop'] .dlg-chip-name {
+  padding: 0 4px 0 8px;
+}
+.shell[data-mode='desktop'] .dlg-chip-x {
+  width: 18px;
+  height: 18px;
+  margin: 0 2px 0 0;
+}
+.shell[data-mode='desktop'] .dlg-chip-x svg {
+  width: 12px;
+  height: 12px;
+}
+.shell[data-mode='desktop'] .dlg-sel-tap,
+.shell[data-mode='desktop'] .dlg-sel:not([data-empty]) .dlg-sel-tap {
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: var(--fs-tab);
+}
+.shell[data-mode='desktop'] .dlg-flip {
+  width: 24px;
+  height: 24px;
+}
+
+/* The sketch's inline dimension box (sketcher.py `edit_dimension`): 110 px at the label, a 2 px accent border, bold */
+.shell[data-mode='desktop'] .dimension-inline {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.shell[data-mode='desktop'] .dimension-inline .inline-number-field {
+  height: 26px;
+  padding: 2px 4px;
+  border: 2px solid var(--c-accent);
+  font-weight: 600;
+  text-align: left;
+  box-shadow: 0 2px 8px var(--c-shadow);
+}
+.shell[data-mode='desktop'] .dimension-inline .inline-number-field[data-invalid] {
+  border-color: var(--c-danger);
+}
+.shell[data-mode='desktop'] .dimension-inline .dimension-refusal {
+  max-width: 260px;
+}

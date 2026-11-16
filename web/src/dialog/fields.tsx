@@ -1,21 +1,38 @@
 import { useEffect, useRef, useState } from 'react'
+import { checkExpression, formatNumber } from '../pad/editor'
 import { NumberPad, PadField } from '../pad/NumberPad'
 import { usePadEditor } from '../pad/usePadEditor'
 import { Icon, paths } from '../shell/icons'
+import { MenuButton } from '../shell/Menu'
+import type { MenuItem } from '../shell/menus'
 import type { FieldSpec, FieldValue, SelItem } from './dialogApi'
+import { fieldKeyDown, InlineNumber } from './InlineNumber'
 import { isSegmented, labelOf, numberText } from './schema'
 import { countOf } from './selectionFields'
 
-/** A row's label, and under it the row, its message and its info text. */
-function Row({ label, active, children, message, info }: { label?: string; active?: boolean; children: React.ReactNode; message?: string | null; info?: string | null }) {
+/**
+ * A row's label, and under it the row, its message and its info text. `inline` (Desktop mode) puts the label at the left,
+ * taking the spare width, and the field at its right, as the desktop's FeatureDialog rows.
+ */
+function Row({ label, active, children, message, info, inline = false }: { label?: string; active?: boolean; children: React.ReactNode; message?: string | null; info?: string | null; inline?: boolean }) {
+  const head = label !== undefined && label !== '' && (
+    <div className="dlg-label" data-active={active ? '' : undefined}>
+      {label}
+    </div>
+  )
   return (
-    <div className="dlg-row">
-      {label !== undefined && label !== '' && (
-        <div className="dlg-label" data-active={active ? '' : undefined}>
-          {label}
+    <div className={inline ? 'dlg-row dlg-row-inline' : 'dlg-row'}>
+      {inline ? (
+        <div className="dlg-row-line">
+          {head}
+          {children}
         </div>
+      ) : (
+        <>
+          {head}
+          {children}
+        </>
       )}
-      {children}
       {message && (
         <div className="dlg-message" role="alert">
           {message}
@@ -241,6 +258,142 @@ export function TextRow({ spec, value, error, onCommit }: { spec: FieldSpec; val
         onChange={(e) => setDraft(e.target.value)}
         onBlur={done}
         onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+      />
+    </Row>
+  )
+}
+
+/* ------------------------------------------------------------------------------------------------------------------
+ * Desktop mode (card I9.16): the rows of the desktop's FeatureDialog (freeshape/ui/dialogs.py `_make_row`). A number is
+ * typed in an InlineNumber, a choice is a dropdown drawn with the Menu component, a check is a checkbox with its label.
+ * Enter in a field commits it and accepts, Esc cancels, Tab and Shift+Tab move between the fields of the form.
+ */
+
+/** What Enter and Esc in a Desktop field do: the dialog's Accept and Cancel. */
+export interface RowKeys {
+  onEnter: () => void
+  onEscape: () => void
+}
+
+/**
+ * What a Desktop number field shows: the text as typed while the server's answer is awaited; then the number the server
+ * evaluated it to, as the desktop shows it after editing (`_show`), or the text as typed where it names a variable (it
+ * follows the variable) or the server refused it. The server is the only source of the value.
+ */
+export function desktopNumberText(value: FieldValue | undefined, sent: unknown): string {
+  if (sent !== undefined && sent !== null) return String(sent)
+  const text = value?.text ?? ''
+  if (value?.error || /#[A-Za-z_]/.test(text)) return text
+  if (typeof value?.value === 'number') return formatNumber(value.value)
+  return text
+}
+
+export function DesktopNumberRow({
+  spec,
+  value,
+  sent,
+  error,
+  variables,
+  keys,
+  onCommit,
+  onPad,
+}: {
+  spec: FieldSpec
+  value: FieldValue | undefined
+  sent: unknown
+  error: string | null
+  variables: readonly string[]
+  keys: RowKeys
+  onCommit: (text: string) => void
+  /** A pen or touch press on the field: open the pad on it. */
+  onPad: () => void
+}) {
+  const label = labelOf(spec)
+  return (
+    <Row inline label={label} message={error}>
+      <InlineNumber
+        value={desktopNumberText(value, sent)}
+        label={label}
+        variables={variables}
+        unit={spec.unit ?? null}
+        invalid={error !== null}
+        onCommit={onCommit}
+        onEnter={keys.onEnter}
+        onEscape={keys.onEscape}
+        onPad={onPad}
+        fieldKey={spec.key ?? undefined}
+        testId={`inline-${spec.key}`}
+      />
+    </Row>
+  )
+}
+
+/** A choice as the desktop's QComboBox: a button with the current option that drops down the options (I9.2's Menu). */
+export function DesktopChoiceRow({ spec, value, error, keys, onPick }: { spec: FieldSpec; value: unknown; error: string | null; keys: RowKeys; onPick: (v: string) => void }) {
+  const options = spec.options ?? []
+  const label = labelOf(spec)
+  const current = options.find(([v]) => v === value) ?? options[0] // an unknown value shows the first option, as the desktop combo does
+  const entries: MenuItem[] = options.map(([v, text]) => ({ command: `option:${v}`, label: text, check: true, checked: current?.[0] === v }))
+  const commands = Object.fromEntries(options.map(([v]) => [`option:${v}`, () => current?.[0] !== v && onPick(v)]))
+  return (
+    <Row inline label={label} message={error}>
+      <span
+        className="dlg-combo"
+        data-dlg-field=""
+        data-testid={`combo-${spec.key}`}
+        onKeyDown={(e) => {
+          // the keys of the closed button only: the open list reads its own (arrows, Enter, Esc)
+          if (!(e.target instanceof HTMLElement) || e.target.getAttribute('aria-haspopup') !== 'menu') return
+          fieldKeyDown(e, keys)
+        }}
+      >
+        <MenuButton label={label} entries={entries} commands={commands} state={{ readOnly: false, tabKind: null }} className="dlg-combo-button" ariaLabel={`${label}, ${current?.[1] ?? 'none'}`}>
+          <span className="dlg-combo-text">{current?.[1] ?? ''}</span>
+          <Icon d={paths.chevronDown} px={14} stroke="var(--c-muted)" />
+        </MenuButton>
+      </span>
+    </Row>
+  )
+}
+
+/** A check row as the desktop's: one checkbox with its label. */
+export function DesktopCheckRow({ spec, on, keys, onToggle }: { spec: FieldSpec; on: boolean; keys: RowKeys; onToggle: () => void }) {
+  return (
+    <div className="dlg-row">
+      <label className="dlg-check">
+        <input type="checkbox" data-dlg-field="" checked={on} onChange={onToggle} onKeyDown={(e) => fieldKeyDown(e, keys)} />
+        <span>{labelOf(spec)}</span>
+      </label>
+    </div>
+  )
+}
+
+/** A text row as the desktop's: a 150 px field at the right of its label; an expression field is marked when it cannot be read. */
+export function DesktopTextRow({ spec, value, error, variables, keys, onCommit }: { spec: FieldSpec; value: string; error: string | null; variables: readonly string[]; keys: RowKeys; onCommit: (text: string) => void }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const label = labelOf(spec)
+  const shown = draft ?? value
+  const bad = error !== null || (spec.expr === true && shown.trim() !== '' && !checkExpression(shown, variables).ok)
+  const done = (): boolean => {
+    if (draft !== null && draft !== value) onCommit(draft)
+    setDraft(null)
+    return true
+  }
+  return (
+    <Row inline label={label} message={error}>
+      <input
+        className="dlg-text-inline"
+        type="text"
+        aria-label={label}
+        aria-invalid={bad ? true : undefined}
+        data-invalid={bad ? '' : undefined}
+        data-dlg-field=""
+        placeholder={spec.placeholder ?? ''}
+        value={shown}
+        spellCheck={false}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={done}
+        onKeyDown={(e) => fieldKeyDown(e, { commit: done, onEnter: keys.onEnter, onEscape: keys.onEscape })}
       />
     </Row>
   )

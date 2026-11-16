@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { ConnectionStore } from '../net/connection'
 import type { SelectionStore } from '../selection/store'
 import type { StudioOutputs } from '../wire'
 import { DialogArea } from '../shell/DialogArea'
 import { Icon, paths } from '../shell/icons'
-import { CheckRow, ChoiceRow, FlipButton, InfoRow, NumberRow, SelectionRow, TextRow } from './fields'
+import { useMode } from '../shell/mode'
+import { CheckRow, ChoiceRow, DesktopCheckRow, DesktopChoiceRow, DesktopNumberRow, DesktopTextRow, FlipButton, InfoRow, NumberRow, SelectionRow, TextRow } from './fields'
+import type { RowKeys } from './fields'
 import { setManipulatorSink } from './manipulator'
 import { visibleRows } from './schema'
 import { itemLabel, readableError } from './selectionFields'
@@ -76,9 +78,12 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
     serverActive: dlg.view?.active ?? null,
     set: dlg.set,
   })
+  // Desktop mode (card I9.16): numbers are typed in the row; the pad opens only for a pen or a finger on a field
+  const desktop = useMode() === 'desktop'
   // the number on the pad: the first number of the dialog opens with it, as in the layout; a tap on another moves it
   const [padKey, setPadKey] = useState<string | null | undefined>(undefined)
-  // the drag arrows in the view send their values through this dialog, and a tap on their label opens the pad
+  // the drag arrows in the view send their values through this dialog, and a tap on their label opens the pad (Desktop
+  // mode: focuses the typed field)
   const { set: setValues } = dlg
   useEffect(() => {
     // a drag closes the pad: it would still hold the old text and send it back on Enter
@@ -87,14 +92,21 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
         setPadKey(null)
         setValues(v)
       },
-      edit: setPadKey,
+      edit: (key) => {
+        const field = desktop && key !== null ? document.querySelector<HTMLInputElement>(`.dlg-form [data-field-key="${CSS.escape(key)}"]`) : null
+        if (field) {
+          setPadKey(null)
+          field.focus()
+          field.select()
+        } else setPadKey(key)
+      },
     })
     return () => setManipulatorSink(null)
-  }, [setValues])
+  }, [setValues, desktop])
   const description = dlg.view?.description ?? null
   const rows = description ? visibleRows(description.fields) : []
   const desktopOnly = description !== null && description.custom.length > 0
-  const editing = desktopOnly || padKey === null ? null : (padKey ?? rows.find((r) => r.spec.kind === 'num')?.spec.key ?? null)
+  const editing = desktopOnly || padKey === null ? null : (padKey ?? (desktop ? null : (rows.find((r) => r.spec.kind === 'num')?.spec.key ?? null)))
   const title = dlg.opened?.name ?? feature.name
   // Enter and Esc of Desktop mode reach this dialog through `featureDialogKeys` (the shell's one key listener)
   const canAccept = !desktopOnly && dlg.phase === 'open' && !dlg.accepting
@@ -121,6 +133,14 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
 
   const values = dlg.view?.values ?? {}
   const messageOf = (key: string | null) => (key === null ? null : (dlg.errors[key] ?? values[key]?.error ?? null))
+  // Enter and Esc inside a Desktop field: Accept (once the field has committed) and Cancel
+  const keys: RowKeys = {
+    onEnter: () => {
+      if (canAccept) void dlg.accept()
+    },
+    onEscape: dlg.cancel,
+  }
+  const flipOn = (flip: { key: string | null }) => (dlg.sent[flip.key!] ?? values[flip.key!]?.value) === true
 
   return (
     <DialogArea title={title} onClose={dlg.cancel} actions={actions}>
@@ -148,10 +168,30 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
         </p>
       )}
       {description !== null && !desktopOnly && (
-        <div className="dlg-form" data-testid="dialog-form">
+        <div className="dlg-form" data-testid="dialog-form" data-dlg-fields="" data-desktop={desktop ? '' : undefined}>
           {rows.map(({ spec, flip }, i) => {
             const key = spec.key ?? `row${i}`
             const v = values[key]
+            if (desktop) {
+              switch (spec.kind) {
+                case 'num':
+                  if (editing === key) break // a pen or a finger opened the pad on it: the Tablet row below draws it
+                  return (
+                    <Fragment key={`${key}:${i}`}>
+                      <DesktopNumberRow spec={spec} value={v} sent={dlg.sent[key]} error={messageOf(key)} variables={variables} keys={keys} onCommit={(text) => dlg.set({ [key]: text })} onPad={() => setPadKey(key)} />
+                      {flip !== null && <DesktopCheckRow spec={flip} on={flipOn(flip)} keys={keys} onToggle={() => dlg.set({ [flip.key!]: !flipOn(flip) })} />}
+                    </Fragment>
+                  )
+                case 'choice':
+                  return <DesktopChoiceRow key={`${key}:${i}`} spec={spec} value={dlg.sent[key] ?? v?.value} error={messageOf(key)} keys={keys} onPick={(x) => dlg.set({ [key]: x })} />
+                case 'check': {
+                  const on = (dlg.sent[key] ?? v?.value) === true
+                  return <DesktopCheckRow key={`${key}:${i}`} spec={spec} on={on} keys={keys} onToggle={() => dlg.set({ [key]: !on })} />
+                }
+                case 'text':
+                  return <DesktopTextRow key={`${key}:${i}`} spec={spec} value={typeof v?.value === 'string' ? v.value : (v?.text ?? '')} error={messageOf(key)} variables={variables} keys={keys} onCommit={(t) => dlg.set({ [key]: t })} />
+              }
+            }
             switch (spec.kind) {
               case 'num':
                 return (

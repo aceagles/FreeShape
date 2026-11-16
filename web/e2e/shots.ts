@@ -1626,6 +1626,74 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I9.16: the Extrude's depth typed in its row (Desktop mode), beside the desktop's dialog
+    name: 'desktop-dialog-typing',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await featureRow(page, 'Extrude 1').dblclick()
+      const depth = page.getByRole('dialog').getByRole('textbox', { name: 'Depth' })
+      await depth.click()
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('25/2')
+    },
+  },
+  {
+    // I9.16: a text the field cannot take, in the desktop's invalid style
+    name: 'desktop-dialog-invalid',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await featureRow(page, 'Extrude 1').dblclick()
+      const depth = page.getByRole('dialog').getByRole('textbox', { name: 'Depth' })
+      await depth.click()
+      await page.keyboard.press('Control+A')
+      await page.keyboard.type('abc')
+    },
+  },
+  {
+    // I9.16: a choice row's dropdown open (I9.2's Menu), as the desktop's QComboBox
+    name: 'desktop-dialog-dropdown',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await featureRow(page, 'Extrude 1').dblclick()
+      await page.getByRole('dialog').locator('.dlg-combo-button').first().click()
+      await page.getByRole('menu').waitFor()
+    },
+  },
+  {
+    // I9.16: a sketch in Desktop mode, beside the desktop's sketch
+    name: 'desktop-sketch',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I9.16: a dimension's value typed in the inline box at its label (a mouse double click)
+    name: 'desktop-sketch-dimension',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await settledSketch(page)
+      const at = await screenOf(page, 'dimension', 'k19')
+      const canvas = (await page.locator('[data-region="viewport"] canvas').first().boundingBox())!
+      await page.mouse.dblclick(canvas.x + at.x, canvas.y + at.y)
+      await page.getByTestId('dimension-inline').waitFor()
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** Listen for the open sketch's data (call before it opens); `lineWith(type)` is the first line a constraint of that type holds. */

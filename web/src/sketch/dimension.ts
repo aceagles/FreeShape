@@ -123,6 +123,8 @@ export interface DimensionPadState {
   error: string | null
   /** Bumps on a refusal so the pad field starts again on the text that was tried. */
   seq: number
+  /** Desktop mode with a mouse (card I9.16): the value is typed in the inline box at the dimension, not on the pad, and the dialog area stays shut. */
+  inline?: true
 }
 
 export interface DimensionState {
@@ -165,6 +167,8 @@ export class DimensionTool implements SketchPointerTool {
   /** Where the label of the pending dimension goes. */
   private placing: { picks: string[]; pos: Uv | null; kind?: DimensionType } | null = null
   private target: string | null = null
+  /** Desktop mode: a mouse's dimension takes its value in the inline box (setDesktop). */
+  private desktop = false
   private readonly now: () => number
 
   constructor(private readonly deps: DimensionDeps) {
@@ -192,6 +196,13 @@ export class DimensionTool implements SketchPointerTool {
   private set(patch: Partial<DimensionState>): void {
     this.state = { ...this.state, ...patch }
     this.listeners.forEach((l) => l())
+  }
+
+  /** Desktop mode is on (true) or Tablet mode is (false). A switch closes an open box or pad: nothing is half done. */
+  setDesktop(on: boolean): void {
+    if (on === this.desktop) return
+    if (this.state.pad !== null) this.padCancel()
+    this.desktop = on
   }
 
   /** The tool is chosen on the strip (true) or another one is (false). */
@@ -238,7 +249,7 @@ export class DimensionTool implements SketchPointerTool {
       this.last = { id: hit.id, t }
       if (prev && prev.id === hit.id && t - prev.t < DOUBLE_MS) {
         this.last = null
-        if (this.doubleTap(hit)) return true
+        if (this.doubleTap(hit, pointer)) return true
       }
     } else this.last = null
     const s = this.state
@@ -267,7 +278,7 @@ export class DimensionTool implements SketchPointerTool {
       this.set({ hint: this.hintFor(picks) })
       return true
     }
-    this.place(sk, picks.map((p) => p.id), uv)
+    this.place(sk, picks.map((p) => p.id), uv, pointer)
     return true
   }
 
@@ -277,7 +288,7 @@ export class DimensionTool implements SketchPointerTool {
     return item.kind === 'point' && e !== undefined && (e.p1 === item.id || e.p2 === item.id)
   }
 
-  private place(sk: SketchData, picks: string[], uv: Uv | null): void {
+  private place(sk: SketchData, picks: string[], uv: Uv | null, pointer: PickPointer): void {
     const spec = dimensionSpec(sk, picks[0]!, picks[1] ?? null, uv)
     if (spec === null) {
       this.clearPicks()
@@ -290,12 +301,27 @@ export class DimensionTool implements SketchPointerTool {
     const label = picks.length === 1 && spec.type === 'distance' ? 'Length' : (LABELS[spec.type] ?? 'Value')
     this.target = null
     this.sent = null
-    this.set({ pad: { mode: 'new', label, value: text, initial: text, pending: false, error: null, seq: 0 }, hint: null })
-    this.deps.openPad(this)
+    this.openSession({ mode: 'new', label, value: text, initial: text, pending: false, error: null, seq: 0 }, pointer)
   }
 
-  /** A double tap (or double click) on a dimension's label: the pad opens on its value. True when it did. */
-  doubleTap(hit: SketchHit): boolean {
+  /** Shows the value's session: in the inline box for a mouse in Desktop mode, else on the pad in the dialog area. */
+  private openSession(pad: DimensionPadState, pointer: PickPointer): void {
+    const inline = this.desktop && pointer === 'mouse'
+    this.set({ pad: inline ? { ...pad, inline } : pad, hint: null })
+    if (!inline) this.deps.openPad(this)
+  }
+
+  /** Where the inline box goes: the label of the dimension being changed (its id), or the point where the new label goes. */
+  inlineAnchor(): { constraint: string } | { uv: Uv; picks: readonly string[]; points: Readonly<Record<string, Uv>> } | null {
+    if (this.state.pad?.inline !== true) return null
+    if (this.target !== null) return { constraint: this.target }
+    const p = this.placing
+    const points = this.deps.sketch.getState().view?.sketch.points ?? {}
+    return p === null ? null : { uv: p.pos ?? [0, 0], picks: p.picks, points }
+  }
+
+  /** A double tap (or double click) on a dimension's label: the pad (Desktop mode with a mouse: the inline box) opens on its value. True when it did. */
+  doubleTap(hit: SketchHit, pointer: PickPointer = 'touch'): boolean {
     if (hit.kind !== 'dimension') return false
     const c = this.deps.sketch.getState().view?.sketch.constraints.find((k) => k.id === hit.id)
     if (!c || c.value === undefined) return false
@@ -306,8 +332,7 @@ export class DimensionTool implements SketchPointerTool {
     this.placing = null
     this.target = c.id
     this.sent = null
-    this.set({ pad: { mode: 'set', label: c.type === 'distance' && c.refs.length === 1 ? 'Length' : (LABELS[c.type] ?? 'Value'), value: text, initial: text, pending: false, error: null, seq: 0 }, hint: null })
-    this.deps.openPad(this)
+    this.openSession({ mode: 'set', label: c.type === 'distance' && c.refs.length === 1 ? 'Length' : (LABELS[c.type] ?? 'Value'), value: text, initial: text, pending: false, error: null, seq: 0 }, pointer)
     return true
   }
 
@@ -353,7 +378,8 @@ export class DimensionTool implements SketchPointerTool {
 
   /** The dialog area was closed under the pad. */
   padGone(): void {
-    if (this.state.pad === null) return
+    // the inline box is not in the dialog area: the dialog area being shut says nothing about it
+    if (this.state.pad === null || this.state.pad.inline) return
     this.sent = null
     this.placing = null
     this.target = null
@@ -362,12 +388,13 @@ export class DimensionTool implements SketchPointerTool {
   }
 
   private closePad(): void {
-    if (this.state.pad === null) return
+    const pad = this.state.pad
+    if (pad === null) return
     this.sent = null
     this.placing = null
     this.target = null
     this.set({ pad: null })
-    this.deps.closePad()
+    if (!pad.inline) this.deps.closePad()
   }
 
   private refused(message: string): void {

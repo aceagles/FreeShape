@@ -56,6 +56,8 @@ function bar() {
       onDeleteTab={noop}
       onBack={noop}
       onSave={noop}
+      onExport={noop}
+      canExport={false}
       onToggleDebug={noop}
       menu={{ commands: {}, state: { readOnly: false, tabKind: null, sketchOpen: false } }}
       narrow={false}

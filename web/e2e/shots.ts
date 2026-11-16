@@ -1885,6 +1885,76 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I11.9: the Export dialog in Tablet mode, the bracket's part selected, STL with its resolution and encoding rows
+    name: 'export-dialog',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await partRow(page, /./).first().click()
+      await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('radio', { name: 'STL' }).click()
+      await settled(page)
+    },
+  },
+  {
+    // I11.9: the same with Custom on and the pad open on the deviation
+    name: 'export-dialog-custom',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('radio', { name: 'STL' }).click()
+      await page.getByRole('radio', { name: 'Custom' }).click()
+      await page.getByRole('button', { name: /^Deviation, / }).click()
+      await page.getByTestId('pad').waitFor()
+      await settled(page)
+    },
+  },
+  {
+    // I11.9: the Export dialog floating over the Desktop-mode viewport, STL, beside the desktop's dialog
+    name: 'desktop-export-dialog',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await partRow(page, /./).first().click()
+      await page.locator('[data-region="top-bar"]').getByRole('button', { name: 'Document', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Export STL…' }).click()
+      await page.getByRole('dialog', { name: 'Export' }).waitFor()
+      await settled(page)
+    },
+  },
+  {
+    // I11.9: Custom resolution in Desktop mode: the deviation and angle typed in their rows
+    name: 'desktop-export-custom',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.locator('[data-region="top-bar"]').getByRole('button', { name: 'Document', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Export STL…' }).click()
+      const dialog = page.getByRole('dialog', { name: 'Export' })
+      await dialog.getByRole('button', { name: /^Resolution/ }).click()
+      await page.getByRole('menuitemcheckbox', { name: 'Custom' }).click()
+      await dialog.getByRole('textbox', { name: 'Deviation' }).fill('50')
+      await dialog.getByRole('textbox', { name: 'Angle' }).click()
+      await settled(page)
+    },
+  },
+  {
+    // I11.9: an Assembly's Export from its toolbar in Desktop mode: no Parts row
+    name: 'desktop-export-assembly',
+    mode: 'desktop',
+    desktop: 'desktop-assembly',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-strip="assembly"] [data-tool="export"]').click()
+      await page.getByRole('dialog', { name: 'Export' }).waitFor()
+      await settledAssembly(page)
+    },
+  },
 ]
 
 /** I9.9: drag a selection box with the mouse from above left of the bracket to below its middle; `release` lets the button go. */

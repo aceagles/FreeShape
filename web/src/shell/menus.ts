@@ -53,6 +53,7 @@ export const DESKTOP_ONLY = 'Desktop only for now'
 
 const SEP: MenuSeparator = { kind: 'separator' }
 const editable = (s: MenuState): boolean => !s.readOnly
+const canExport = (s: MenuState): boolean => (s.tabKind === 'studio' || s.tabKind === 'assembly') && s.sketchOpen !== true
 const hasView = (s: MenuState): boolean => s.tabKind === 'studio' || s.tabKind === 'assembly'
 
 /** Document (mainwindow.py `_build_topbar`, the Document menu). */
@@ -74,8 +75,8 @@ export const documentMenu: readonly MenuEntry[] = [
   { command: 'document.importNew', label: 'Import STEP / BREP (new tab)…' },
   { command: 'document.importInto', label: 'Import STEP / BREP into this tab…' },
   { command: 'document.library', label: 'Component library…', chord: chordFor('document.library') },
-  { command: 'document.exportStep', label: 'Export STEP…' },
-  { command: 'document.exportStl', label: 'Export STL…' },
+  { command: 'document.exportStep', label: 'Export STEP…', enabled: canExport },
+  { command: 'document.exportStl', label: 'Export STL…', enabled: canExport },
   { command: 'document.exportBrep', label: 'Export BREP…' },
   { command: 'document.exportDxf', label: 'Export DXF (selected sketches / flat faces)…' },
   { command: 'document.nest', label: 'Nest sheet metal for cutting…' },

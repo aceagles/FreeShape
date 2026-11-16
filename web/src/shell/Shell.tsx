@@ -7,6 +7,8 @@ import { useConnection } from '../net/react'
 import { PadDemo, padResult } from '../pad/PadDemo'
 import type { PadDemoOptions, PadResult } from '../pad/PadDemo'
 import { FeatureDialog } from '../dialog/FeatureDialog'
+import { ExportDialog } from '../files/ExportDialog'
+import type { ExportFormat, ExportResult } from '../files/filesApi'
 import type { PreviewState } from '../dialog/useFeatureDialog'
 import { AssemblyPanel } from '../assembly/AssemblyPanel'
 import { AssemblyViewport } from '../assembly/AssemblyViewport'
@@ -148,6 +150,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const [leftWidth, setLeftWidth] = useState(readLeftWidth)
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null)
   const [dialog, setDialog] = useState<DialogState | null>(null)
+  // the Export dialog (card I11.9): over the panel like a feature dialog; `format` is the one a menu item names
+  const [exporting, setExporting] = useState<{ tab: string; format?: ExportFormat } | null>(null)
   // the feature dialog open over the panel (the dialog area is its own: it carries Cancel and Accept), and the preview it drew
   const [editing, setEditing] = useState<{ tab: string; id: string; name: string; create?: { type: string; picks: Pick[] } } | null>(null)
   const [preview, setPreview] = useState<(PreviewState & { feature: string }) | null>(null)
@@ -235,6 +239,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     selection.clear()
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setEditing(null)
+    setExporting(null)
   }, [currentTab, selection])
 
   const api = useMemo<ShellApi>(
@@ -247,7 +252,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         setDialog({ title, content })
       },
       closeDialog: () => setDialog(null),
-      dialogOpen: dialog !== null || editing !== null,
+      dialogOpen: dialog !== null || editing !== null || exporting !== null,
       panelCollapsed: collapsed,
       setPanelCollapsed: setCollapsed,
       selectedFeature,
@@ -262,7 +267,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
       },
       selection,
     }),
-    [mode, dialog, editing, collapsed, selectedFeature, selectedPart, currentTab, selection],
+    [mode, dialog, editing, exporting, collapsed, selectedFeature, selectedPart, currentTab, selection],
   )
   // the dialog area closed under the Dimension pad (its close button): the dimension is given up
   useEffect(() => {
@@ -305,6 +310,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         return
       }
       setCollapsed(false)
+      setExporting(null)
       setPreview(null)
       setDialogBase(null)
       setHoldUntil(null)
@@ -325,6 +331,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     (type: string, withPicks?: Pick[]) => {
       if (currentTab === null || tabKind !== 'studio' || editing !== null || dialog !== null) return
       setCollapsed(false)
+      setExporting(null)
       setPreview(null)
       setHoldUntil(null)
       setEditing({ tab: currentTab, id: '', name: toolTypes?.get(type)?.label ?? type, create: { type, picks: withPicks ?? picks } })
@@ -461,12 +468,25 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   // Undo and Redo, one each for the top bar, the Desktop toolbar and Ctrl+Z / Ctrl+Y: the open sketch's, else the Part Studio's
   const undoCmd = sketchHere ? { enabled: sketch.view?.canUndo === true, run: () => sketchStore.undo() } : { enabled: canUndo, run: edits.undo }
   const redoCmd = sketchHere ? { enabled: sketch.view?.canRedo === true, run: () => sketchStore.redo() } : { enabled: canRedo, run: edits.redo }
+  // Export (I11.9): the Document menu, both toolbars and the Tablet top bar open the dialog; a Part Studio's selected parts ride along
+  const exportable = (tabKind === 'studio' || tabKind === 'assembly') && currentTab !== null && !sketchHere && !sketch.opening && editingHere === null
+  const openExport = (format?: ExportFormat) => {
+    if (!exportable || dialog !== null) return
+    setCollapsed(false)
+    setExporting({ tab: currentTab, format })
+  }
+  const selectedParts = tabKind === 'studio' && studio !== null ? [...new Set(picked.items.flatMap((i) => (i.kind === 'part' && i.part !== null ? [i.part] : [])))].flatMap((id) => studio.parts.filter((p) => p.id === id).map((p) => ({ id, name: p.name }))) : []
+  const finishExport = (r: ExportResult | null) => {
+    setExporting(null)
+    if (r !== null && r.skipped.length > 0) failText('Surface bodies left out', `${r.name} was saved without ${r.skipped.join(', ')}: an STL holds solid bodies only, and ${r.skipped.length === 1 ? 'this one is a surface' : 'these are surfaces'}.`)
+  }
   // the Desktop feature toolbar's buttons that are not features: the ones the client has; the rest are disabled there
   const toolbarCommands = {
     undo: { run: undoCmd.run, enabled: !readOnly && undoCmd.enabled },
     redo: { run: redoCmd.run, enabled: !readOnly && redoCmd.enabled },
     fit: { run: () => void runViewCommand('fit') },
     iso: { run: () => void runViewCommand('iso') },
+    export: { run: () => openExport(), enabled: exportable },
   }
   // the Desktop sketch toolbar: what a tool button does is what the tablet strip's does (a Constrain tool is tool-first)
   const askCancelSketch = () => (sketch.view?.canUndo ? setModal({ kind: 'discard' }) : sketchStore.cancel())
@@ -504,6 +524,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     fail,
   })
   const assemblyTools = assemblyCommands({
+    openExport: () => openExport(),
     types: assemblyTypes,
     instances: assembly.outputs?.instances ?? [],
     selected: instancesOf(picked.items),
@@ -524,6 +545,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     'document.closeTab': () => currentInfo !== null && setModal({ kind: 'delete', tab: currentInfo }),
     'document.save': () => void save(),
     'document.open': back,
+    'document.exportStep': () => openExport('step'),
+    'document.exportStl': () => openExport('stl'),
     ...Object.fromEntries(STANDARD_VIEW_ITEMS.map(([v]) => [`view.${v}`, () => void runViewCommand(v)])),
     'view.fit': () => void runViewCommand('fit'),
   }
@@ -545,7 +568,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         sketch: sketchHere ? sketchStore : null,
         constraints,
         dialog: () => (editingHere !== null ? featureDialogKeys() : null),
-        closeArea: dialog !== null ? () => setDialog(null) : null,
+        closeArea: dialog !== null ? () => setDialog(null) : exporting !== null ? () => setExporting(null) : null,
         modalOpen: modal !== null,
         selection,
         selectedFeature: featureNow && { id: featureNow.id, name: featureNow.name },
@@ -593,6 +616,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           onDeleteTab={(tab) => setModal({ kind: 'delete', tab })}
           onBack={back}
           onSave={() => void save()}
+          onExport={() => openExport()}
+          canExport={exportable}
           onToggleDebug={debug.toggle}
           menu={{ commands, state: menuState }}
           narrow={width < NARROW_BELOW}
@@ -703,6 +728,18 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 onPreview={(p) => setPreview(p === null ? null : { ...p, feature: editingHere.id })}
                 onBase={setDialogBase}
                 onDone={endEdit}
+              />
+            )}
+            {exporting !== null && exporting.tab === currentTab && doc && (tabKind === 'studio' || tabKind === 'assembly') && (
+              <ExportDialog
+                key={`${exporting.tab}:${exporting.format ?? ''}`}
+                documentId={doc.id}
+                tab={exporting.tab}
+                tabKind={tabKind}
+                format={exporting.format}
+                selected={selectedParts}
+                partCount={studio?.parts.length ?? 0}
+                onDone={finishExport}
               />
             )}
             {dialog && (

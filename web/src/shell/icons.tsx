@@ -48,6 +48,8 @@ export const paths = {
   pin: 'M9 4h6l-1 6 3 3H7l3-3z M12 13v7',
   /** The magnifier of the desktop's Search tools button. */
   search: 'M11 11m-6 0a6 6 0 1 0 12 0a6 6 0 1 0-12 0 M16 16l5 5',
+  /** Export: an arrow leaving a tray. */
+  export: 'M12 15V3 M8 7l4-4 4 4 M5 13v7h14v-7',
   drop: 'M12 3c4 5 6 8 6 11a6 6 0 0 1-12 0c0-3 2-6 6-11z',
 } as const
 

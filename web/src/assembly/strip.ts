@@ -83,12 +83,14 @@ export interface AssemblyToolbarEnv {
   redo: () => void
   setFixedAll: (instances: readonly string[], fixed: boolean) => Promise<void>
   view: (command: 'fit' | 'iso') => void
+  /** Open the Export dialog (the Desktop row's Export button). */
+  openExport: () => void
   /** Tell the person why a button did nothing. */
   say: (title: string, text: string) => void
 }
 
 /**
- * The Assembly toolbar's buttons the client can do: Undo, Redo, Fix, Move, Fit and Iso (Iso has a place in the Desktop row
+ * The Assembly toolbar's buttons the client can do: Undo, Redo, Fix, Move, Export, Fit and Iso (Iso has a place in the Desktop row
  * only), and Insert and the mate types, which are there but off until S10 enables them. Anything else of the row is not
  * here, so the row disables it as "Desktop only for now". Both modes use the same commands.
  */
@@ -100,6 +102,7 @@ export function assemblyCommands(env: AssemblyToolbarEnv): Record<string, Toolba
     redo: { run: env.redo, enabled: !env.readOnly },
     fit: { run: () => env.view('fit') },
     iso: { run: () => env.view('iso') },
+    export: { run: env.openExport },
     insert: { run: () => {}, enabled: false, note: S10_NOTE },
     asm_fix: {
       enabled: !env.readOnly,

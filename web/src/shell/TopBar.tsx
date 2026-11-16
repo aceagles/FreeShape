@@ -38,6 +38,9 @@ interface Props {
   onDeleteTab: (tab: TabInfo) => void
   onBack: () => void
   onSave: () => void
+  /** Tablet mode: the Export button's action, and whether the tab on screen can be exported. */
+  onExport: () => void
+  canExport: boolean
   onToggleDebug: () => void
   /** Desktop mode: what the menus run, and what their enabled rules read. */
   menu: { commands: Commands; state: MenuState }
@@ -49,7 +52,7 @@ interface Props {
  * The top bar: back to the home screen, the Document name, the tab switcher with add tab, undo and redo (on while the current
  * Part Studio can undo or redo), save with a dot while something is unsaved, and the connection state.
  */
-export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, onUndo, onRedo, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onToggleDebug, menu, narrow }: Props) {
+export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, onUndo, onRedo, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onExport, canExport, onToggleDebug, menu, narrow }: Props) {
   const { document, tabs } = useConnection(store)
   const mode = useMode()
   const setMode = useSetMode()
@@ -130,6 +133,9 @@ export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, 
       <TabBar tabs={tabs} currentTab={currentTab} readOnly={readOnly} onSelect={onSelectTab} onAdd={onAddTab} onRename={onRenameTab} onDelete={onDeleteTab} />
       <div className="top-bar-gap" />
       {undoRedoSave}
+      <button type="button" className="icon-button" aria-label="Export" title="Export STEP or STL" disabled={!canExport} onClick={onExport}>
+        <Icon d={paths.export} />
+      </button>
       {modeToggle}
       {fullscreen}
       <LinkStatusButton store={store} open={debugOpen} onToggle={onToggleDebug} />

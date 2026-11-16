@@ -119,11 +119,11 @@ it('Desktop: Insert and the mates are off with the S10 tooltip (the mates by the
     expect(desk(`m_${m}`).disabled).toBe(true)
     expect(desk(`m_${m}`).title).toBe(S10_NOTE)
   }
-  for (const id of ['r_gear', 'group', 'interference', 'linear_pattern', 'circular_pattern', 'bom', 'explode', 'export', 'section']) {
+  for (const id of ['r_gear', 'group', 'interference', 'linear_pattern', 'circular_pattern', 'bom', 'explode', 'section']) {
     expect(desk(id).disabled).toBe(true)
     expect(desk(id).title).toBe('Desktop only for now')
   }
-  for (const id of ['move', 'asm_fix', 'fit', 'iso']) expect(desk(id).disabled).toBe(false)
+  for (const id of ['move', 'asm_fix', 'export', 'fit', 'iso']) expect(desk(id).disabled).toBe(false)
   store.stop()
 })
 

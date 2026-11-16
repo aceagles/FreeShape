@@ -41,6 +41,8 @@ export interface AssemblyScene {
   /** Draw these instances' items as selected and this one as Aimed (see viewport/looks.ts; `part` of a look item is the instance id). Returns the ids of instances drawn whole-selected. */
   setLook(selected: readonly LookItem[], aimed: LookItem | null): Set<string>
   update(width: number, height: number): void
+  /** Draw instance `id` at the placement `T` (4 x 4, row-major) instead of the one it was built with (F17: a drag shows at once). */
+  place(id: string, T: readonly (readonly number[])[]): void
   dispose(): void
 }
 
@@ -137,6 +139,7 @@ export function buildAssemblyScene(outputs: AssemblyOutputs): AssemblyScene {
   const corners: [number, number, number][] = []
   const overlays = new Map<string, LookOverlay>()
   const placed = new Map<string, Matrix4>()
+  const edgeObjects = new Map<string, LineSegments2>()
   let size: [number, number] = [1, 1]
 
   for (const inst of outputs.instances) {
@@ -185,6 +188,7 @@ export function buildAssemblyScene(outputs: AssemblyOutputs): AssemblyScene {
       lines.renderOrder = 1
       lines.name = `edges:${inst.id}`
       root.add(lines)
+      edgeObjects.set(inst.id, lines)
     }
     looks.set(inst.id, { shaders: [mat], line, edge: line ? line.color.clone() : new Color() })
     stats.drawn++
@@ -252,6 +256,15 @@ export function buildAssemblyScene(outputs: AssemblyOutputs): AssemblyScene {
       size = [width, height]
       for (const m of lineMats) m.resolution.set(width, height)
       for (const o of overlays.values()) o.update(width, height)
+    },
+    place(id, T) {
+      const m = objects.get(id)
+      if (!m) return
+      const matrix = placement({ T: T as number[][] })
+      placed.set(id, matrix)
+      m.matrix.copy(matrix)
+      edgeObjects.get(id)?.matrix.copy(matrix)
+      overlays.get(id)?.root.matrix.copy(matrix)
     },
     dispose() {
       for (const o of overlays.values()) o.dispose()

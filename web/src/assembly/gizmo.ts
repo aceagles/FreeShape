@@ -7,8 +7,8 @@ import { selectedInstance } from './select'
 /**
  * The move gizmo of an Assembly instance (card I8.2): three axis arrows and three rotation rings, each a Drag handle, at
  * the middle of the instance's part (its origin can lie outside the part) and lined up with its own axes, as the desktop's triad is (freeshape/ui/gizmo.py). Dragging a
- * handle sends move_begin, then move_to for the latest position, then move_end; the view redraws from the outputs each
- * reply brings. A fixed or hidden instance shows no gizmo.
+ * handle sends move_begin, then move_to for the latest position, then move_end. The dragged instance follows the pointer
+ * at once (`LiveDrag`, F17); each move_to's reply brings the poses the mates solved. A fixed or hidden instance shows no gizmo.
  *
  * This file holds the layout on screen, the hit test and the drag arithmetic, and the controller that the pointer module
  * hands the press to. Nothing here draws: `AssemblyViewport` draws the shape this reports.
@@ -76,6 +76,9 @@ export interface GizmoShape {
   active: HandleRef | null
 }
 
+/** The placements a move_to changed, as its reply carries them (F17), and the motion `T` that move_to sent. */
+export type SolvedListener = (placements: Record<string, number[][]>, T: number[][]) => void
+
 /** What sends a drag to the server: `AssemblyEdits.drag`. `move` keeps only the newest transform while one is in flight. */
 export interface DragSender {
   /** Edits are not allowed here (a read-only Document). */
@@ -84,6 +87,21 @@ export interface DragSender {
   /** `T`: the 4 x 4 world motion applied to the placements `begin` remembered. */
   move(T: number[][]): void
   end(): Promise<void>
+  /** Hear the placements each answered move_to solved (null stops). */
+  listen(onSolved: SolvedListener | null): void
+}
+
+/**
+ * How the view shows a drag at once (F17), without waiting for the server: the gizmo reads each instance's placement as
+ * drawn, says when a drag begins, hands over the motion of every pointer move, and says when the server has answered the
+ * whole drag.
+ */
+export interface LiveDrag {
+  /** The placement drawn now, or null to use the outputs' own. */
+  pose(instance: string): number[][] | null
+  begin(instance: string): void
+  motion(instance: string, T: number[][]): void
+  done(): void
 }
 
 // ---------------------------------------------------------------------------------------------------- arithmetic
@@ -92,6 +110,27 @@ const dot = (a: V3, b: V3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 const norm = (a: V3): V3 => {
   const n = Math.hypot(a[0], a[1], a[2]) || 1
   return [a[0] / n, a[1] / n, a[2] / n]
+}
+
+type M4 = readonly (readonly number[])[]
+const mul = (A: M4, B: M4): number[][] =>
+  [0, 1, 2, 3].map((i) => [0, 1, 2, 3].map((j) => A[i]![0]! * B[0]![j]! + A[i]![1]! * B[1]![j]! + A[i]![2]! * B[2]![j]! + A[i]![3]! * B[3]![j]!))
+/** The inverse of a rigid motion (rotation and translation): R transposed, and -R^T t. */
+const invRigid = (A: M4): number[][] => {
+  const R = [0, 1, 2].map((i) => [0, 1, 2].map((j) => A[j]![i]!))
+  const t = [0, 1, 2].map((i) => -(R[i]![0]! * A[0]![3]! + R[i]![1]! * A[1]![3]! + R[i]![2]! * A[2]![3]!))
+  return [[...R[0]!, t[0]!], [...R[1]!, t[1]!], [...R[2]!, t[2]!], [0, 0, 0, 1]]
+}
+
+/**
+ * Where a dragged instance is drawn before the server has solved the pointer's latest position (F17): the motion of the
+ * pointer now (`motion`, against where the drag began), less the motion the newest solve answered (`answered`), applied to
+ * the placement that solve gave it (`base`). Before any answer (`answered` the identity, `base` where it began) it is the
+ * rigid move the gizmo shows; where the mates let it go, it equals that move; where they hold it, it shows only the
+ * part of the motion the server has not yet answered.
+ */
+export function livePose(motion: M4, answered: M4, base: M4): number[][] {
+  return mul(mul(motion, invRigid(answered)), base)
 }
 
 /**
@@ -281,7 +320,13 @@ export class GizmoController implements HandleHandler {
     private readonly view: ViewCamera,
     private readonly selection: SelectionStore,
     private readonly onChange: (shape: GizmoShape | null) => void,
+    private readonly live: LiveDrag | null = null,
   ) {}
+
+  /** Where an instance is drawn now: during and just after a drag that is ahead of the outputs. */
+  private poseT(inst: InstanceEntry): readonly (readonly number[])[] {
+    return this.live?.pose(inst.id) ?? inst.T
+  }
 
   setOutputs(outputs: AssemblyOutputs | null): void {
     this.outputs = outputs
@@ -309,7 +354,7 @@ export class GizmoController implements HandleHandler {
   shape(): GizmoShape | null {
     const inst = this.target()
     if (!inst) return null
-    const { origin, axes } = layoutOf(this.view, inst.T, this.anchor(inst))
+    const { origin, axes } = layoutOf(this.view, this.poseT(inst), this.anchor(inst))
     const last = this.last && this.last.instance === inst.id ? this.last : null
     const a = last ? axes[last.handle.axis]! : null
     const spot = a ? (last!.handle.kind === 'move' ? a.move : a.turn) : null
@@ -345,7 +390,8 @@ export class GizmoController implements HandleHandler {
     if (!s || !inst || !this.sender) return false
     const ref = hitHandle(s, p, pointer)
     if (!ref) return false
-    this.drag = { handle: new HandleDrag(this.view, inst.T, this.anchor(inst), ref, p), instance: inst.id }
+    this.drag = { handle: new HandleDrag(this.view, this.poseT(inst), this.anchor(inst), ref, p), instance: inst.id }
+    this.live?.begin(inst.id)
     this.sender.begin(inst.id)
     this.refresh()
     return true
@@ -356,6 +402,8 @@ export class GizmoController implements HandleHandler {
     if (!d || !this.sender) return
     const r = d.handle.at(p)
     this.last = { instance: d.instance, handle: d.handle.handle, value: r.value }
+    // the instance follows the pointer now; the server's solve, when it answers, says where the mates put everything
+    this.live?.motion(d.instance, r.T)
     this.sender.move(r.T)
     this.refresh()
   }
@@ -372,7 +420,7 @@ export class GizmoController implements HandleHandler {
   private finish(): void {
     if (!this.drag || !this.sender) return
     this.drag = null
-    void this.sender.end()
+    void this.sender.end().finally(() => this.live?.done())
     this.refresh()
   }
 
@@ -381,13 +429,15 @@ export class GizmoController implements HandleHandler {
     const inst = this.target()
     const last = this.last
     if (!inst || !last || last.instance !== inst.id || !this.sender) return
-    const pose = poseOf(inst.T, this.anchor(inst))
+    const pose = poseOf(this.poseT(inst), this.anchor(inst))
     const axis = pose.axes[last.handle.axis]
     const diff = total - last.value
     const T = last.handle.kind === 'move' ? translationMotion(axis, diff) : rotationMotion(axis, (diff * Math.PI) / 180, pose.o)
+    this.live?.begin(inst.id)
+    this.live?.motion(inst.id, T)
     this.sender.begin(inst.id)
     this.sender.move(T)
-    await this.sender.end()
+    await this.sender.end().finally(() => this.live?.done())
     this.last = { ...last, value: total }
     this.refresh()
   }

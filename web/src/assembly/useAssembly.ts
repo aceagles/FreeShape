@@ -5,7 +5,7 @@ import { useConnection, useRefetchOnRevision } from '../net/react'
 import { explainError } from '../shell/errors'
 import { decodeOutputs, isAssembly } from '../wire'
 import type { AssemblyOutputs } from '../wire'
-import type { DragSender } from './gizmo'
+import type { DragSender, SolvedListener } from './gizmo'
 
 /** Fetch and decode an Assembly's outputs from `/documents/<document>/tabs/<tab>/outputs`; null when the tab is not an Assembly. */
 export async function fetchAssembly(document: string, tab: string, signal?: AbortSignal): Promise<AssemblyOutputs | null> {
@@ -47,9 +47,71 @@ interface Options {
 }
 
 /**
+ * Loads one tab's outputs at a time (F17). `reset` starts afresh (another Document, tab or a reconnect: any answer for what
+ * was asked before is dropped); `load` asks again after a revision rose. While a fetch is in flight a further `load` only
+ * marks that one more is due, so a stream of revisions never cancels the answer on its way, and an answer older than the
+ * outputs on screen is dropped.
+ */
+export class AssemblyLoader {
+  private gen = 0
+  private busy = -1
+  private again = false
+  private shown: number | null = null
+  private want: { doc: string; tab: string } | null = null
+
+  constructor(
+    private readonly fetch: (document: string, tab: string) => Promise<AssemblyOutputs | null>,
+    private readonly show: (outputs: AssemblyOutputs) => void,
+  ) {}
+
+  reset(doc: string, tab: string): void {
+    this.gen++
+    this.shown = null
+    this.again = false
+    this.want = { doc, tab }
+    this.run()
+  }
+
+  load(doc: string, tab: string): void {
+    if (!this.want || this.want.doc !== doc || this.want.tab !== tab) return this.reset(doc, tab)
+    if (this.busy === this.gen) {
+      this.again = true
+      return
+    }
+    this.run()
+  }
+
+  private run(): void {
+    const want = this.want
+    if (!want) return
+    const gen = this.gen
+    this.busy = gen
+    this.fetch(want.doc, want.tab)
+      .then(
+        (o) => {
+          if (!o || gen !== this.gen || o.tab !== want.tab) return
+          if (this.shown !== null && o.revision < this.shown) return
+          this.shown = o.revision
+          this.show(o)
+        },
+        () => {},
+      )
+      .finally(() => {
+        if (gen !== this.gen) return
+        this.busy = -1
+        if (this.again) {
+          this.again = false
+          this.run()
+        }
+      })
+  }
+}
+
+/**
  * Sends a drag as move_begin, then move_to for the newest transform only (a sample that arrives while one is in flight
  * replaces the one waiting, which loses nothing: move_to is absolute against the placements move_begin remembered), and
- * move_end once the last move_to has been answered. A refusal is shown once and ends the stream of moves.
+ * move_end once the last move_to has been answered. A refusal is shown once and ends the stream of moves. Each move_to's
+ * reply carries the placements its solve changed (F17), handed to the listener with the motion it answered.
  */
 export function makeDragSender(
   post: (edit: Record<string, unknown>) => Promise<unknown>,
@@ -60,6 +122,11 @@ export function makeDragSender(
   let pumping: Promise<void> | null = null
   let started: Promise<boolean> = Promise.resolve(false)
   let ok = false
+  let listener: SolvedListener | null = null
+  const solved = (reply: unknown, T: number[][]): void => {
+    const placements = (reply as { placements?: unknown } | null)?.placements
+    if (placements && typeof placements === 'object') listener?.(placements as Record<string, number[][]>, T)
+  }
   const fail = (e: unknown): void => {
     if (ok) onError(e)
     ok = false
@@ -70,7 +137,7 @@ export function makeDragSender(
         while (pending && ok) {
           const T = pending
           pending = null
-          await post({ op: 'move_to', T }).catch(fail)
+          await post({ op: 'move_to', T }).then((r) => solved(r, T), fail)
         }
       } finally {
         pumping = null
@@ -98,37 +165,30 @@ export function makeDragSender(
       if (began) await post({ op: 'move_end' }).catch(() => {})
       ok = false
     },
+    listen(onSolved) {
+      listener = onSolved
+    },
   }
 }
 
 /**
  * The outputs of the Assembly tab on screen, loaded again when its revision rises (or on a reconnect), and the panel's
  * edits of it: set_hidden, set_fixed and delete_instances through the same `store.edit` path the feature panel uses (HTTP with
- * the client id and the base revision). A slower, older answer never replaces a newer one.
+ * the client id and the base revision). A slower, older answer never replaces a newer one: an answer is kept unless the
+ * outputs on screen have a higher revision. At most one fetch is in flight; revisions that rise meanwhile fetch once more
+ * after it (F17: during a drag every move_to raises the revision, and dropping each answer because a newer fetch had
+ * started left the view unchanged until the drag stopped).
  */
 export function useAssembly({ store, tab, tabKind, readOnly, documentName, onError }: Options): AssemblyState {
   const { document, epoch } = useConnection(store)
   const documentId = document?.id ?? null
   const mine = tabKind === 'assembly' ? tab : null
   const [loaded, setLoaded] = useState<AssemblyOutputs | null>(null)
-  const latest = useRef(0)
-  const load = useCallback(
-    (id: string) => {
-      if (!documentId) return
-      const n = ++latest.current
-      fetchAssembly(documentId, id).then(
-        (o) => {
-          if (o && n === latest.current) setLoaded(o)
-        },
-        () => {},
-      )
-    },
-    [documentId],
-  )
+  const [loader] = useState(() => new AssemblyLoader(fetchAssembly, setLoaded))
   useEffect(() => {
-    if (mine) load(mine)
-  }, [mine, load, epoch])
-  useRefetchOnRevision(store, mine ?? '', () => mine && load(mine))
+    if (mine && documentId) loader.reset(documentId, mine)
+  }, [loader, mine, documentId, epoch])
+  useRefetchOnRevision(store, mine ?? '', () => mine && documentId && loader.load(documentId, mine))
   const outputs = loaded !== null && loaded.tab === mine ? loaded : null
 
   const [busy, setBusy] = useState(false)

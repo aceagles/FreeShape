@@ -31,7 +31,8 @@ Routes (an exact table; no part of a request is ever joined to a file path):
     GET  /documents/<id>/tabs                  {"document": {"id", "name"}, "tabs": [...], "read_only", "holder"}
     GET  /documents/<id>/tabs/<tab>/outputs    the tab's outputs in the engine wire format (octet-stream)
     GET  /documents/<id>/tabs/<tab>/mesh.json  display meshes, see `mesh_document`
-    POST /documents/<id>/tabs/<tab>/edit       body: a contract edit dict; reply {"rebuilt": [ids]}
+    POST /documents/<id>/tabs/<tab>/edit       body: a contract edit dict; reply {"rebuilt": [ids]}; an Assembly's
+                                move_to also replies "placements": {instance id: 4x4} of the instances it changed
     POST /documents/<id>/tabs/<tab>/refs       body: {"picks": [pick, ...]}; reply {"document", "tab", "revision",
                                 "items": [item, ...]}, one item per pick, in order (I4.3; see "Refs" below)
     POST /documents/<id>/tabs/<tab>/features/<fid>/dialog        open a feature dialog (I5.3; see "Dialogs" below)
@@ -564,6 +565,15 @@ class DocumentLocked(Exception):
 
 class NoAutosave(Exception):
     """recover or discard-autosave on a Document with no recoverable autosave (HTTP 404)."""
+
+
+def _placements(out):
+    """{instance id: 4x4 placement as lists} of an Assembly's outputs; {} for any other kind of tab."""
+    return {str(i.id): [[float(x) for x in row] for row in i.T] for i in (getattr(out, "instances", None) or ())}
+
+
+def _same_placement(a, b, tol=1e-9):
+    return all(abs(x - y) <= tol for ra, rb in zip(a, b) for x, y in zip(ra, rb))
 
 
 def _holder_json(h):
@@ -1336,8 +1346,9 @@ class _Server:
             return self._json(200, doc)
         if route == "edit":
             client, base = self._edit_meta(request.headers.get("X-Client-Id"), request.headers.get("X-Base-Revision"))
-            rebuilt = await self._edit(d, tab, body, client, base)
-            return self._json(200, {"rebuilt": rebuilt})
+            reply = {}
+            rebuilt = await self._edit(d, tab, body, client, base, reply)
+            return self._json(200, {"rebuilt": rebuilt, **reply})
         if route in ("/save", "save"):
             client, _ = self._edit_meta(request.headers.get("X-Client-Id"), None)
             saved = await self._save(d, client)
@@ -1562,12 +1573,21 @@ class _Server:
             t["revision"] = d.revisions.get(tid)
         return tabs
 
-    async def _edit(self, d, tab, edit, client, base):
-        """Apply one edit, record who made it, push `changed` (and `tabs` when states moved); the rebuilt ids."""
+    async def _edit(self, d, tab, edit, client, base, reply=None):
+        """Apply one edit, record who made it, push `changed` (and `tabs` when states moved); the rebuilt ids.
+        `reply` (a dict, optional): for an Assembly's move_to it gets "placements", {instance id: 4x4} of only the
+        instances the move changed (F17), so a drag can be drawn from the edit's answer without fetching the outputs."""
+        moving = reply is not None and isinstance(edit, dict) and edit.get("op") == "move_to"
+
         def work():
             d.check_writable()
+            before = _placements(d.session.outputs(tab)) if moving else None
             rebuilt = d.session.submit_edit(tab, edit)
             d.seq += 1
+            if moving:
+                after = _placements(d.session.outputs(tab))
+                reply["placements"] = {k: T for k, T in after.items()
+                                       if k not in before or not _same_placement(before[k], T)}
             return rebuilt, self._tab_view(d, rebuilt)
         try:
             rebuilt, tabs = await self._in_session(d, work)

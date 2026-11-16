@@ -1,4 +1,4 @@
-import { Scene, Vector3, WebGLRenderer } from 'three'
+import { Matrix4, Scene, Vector3, WebGLRenderer } from 'three'
 import { PointerModule } from '../input/pointer'
 import type { NavHost } from '../input/pointer'
 import { wireSelection } from '../selection/aimCommit'
@@ -14,8 +14,8 @@ import { AssemblyPickIndex } from './pick'
 import { buildAssemblyScene, EMPTY_ASSEMBLY_STATS } from './scene'
 import type { AssemblyScene, AssemblyStats } from './scene'
 import { reconcileAssembly } from './select'
-import { GizmoController } from './gizmo'
-import type { DragSender, GizmoShape } from './gizmo'
+import { GizmoController, livePose } from './gizmo'
+import type { DragSender, GizmoShape, LiveDrag } from './gizmo'
 
 /** What `window.__freeshapeAssembly` reports, for tests that look at the page from outside. */
 export interface AssemblyReport extends AssemblyStats {
@@ -30,7 +30,7 @@ export interface AssemblyReport extends AssemblyStats {
   screenOf(instance: string): { x: number; y: number } | null
   /** The move gizmo as drawn (positions in CSS pixels from the view's top left), or null when nothing movable is selected. */
   gizmo: GizmoShape | null
-  /** Each instance's placement (4 x 4, row-major) in the outputs on screen. */
+  /** Each instance's placement (4 x 4, row-major) as drawn: the outputs on screen, or where a drag has put it (F17). */
   placements: Record<string, number[][]>
 }
 
@@ -38,6 +38,12 @@ declare global {
   interface Window {
     __freeshapeAssembly?: AssemblyReport
   }
+}
+
+/** A three.js matrix as 4 x 4 row-major rows. */
+function rowsOf(m: Matrix4): number[][] {
+  const e = m.elements
+  return [0, 1, 2, 3].map((i) => [e[i]!, e[4 + i]!, e[8 + i]!, e[12 + i]!])
 }
 
 /**
@@ -56,6 +62,16 @@ export class AssemblyController implements NavHost {
   private pending = 0
   private fitted = false
   private disposed = false
+  /**
+   * A drag drawn ahead of the outputs (F17). `solved`: the placements move_to replies brought, newer than the outputs on
+   * screen, kept until outputs arrive after the drag is done. `live`: the dragged instance, drawn at `motion` applied to
+   * `base` (the newest solved placement of it) undoing `answered` (the motion that solve answered); before the first
+   * reply that is the motion applied to where it began, so it follows the pointer at once.
+   */
+  private solved = new Map<string, number[][]>()
+  private live: { instance: string; base: number[][]; answered: number[][]; motion: number[][] } | null = null
+  private dragging = false
+  private sender: DragSender | null = null
   readonly pointer: PointerModule
   readonly gizmo: GizmoController
   private readonly unsubscribe: () => void
@@ -69,10 +85,21 @@ export class AssemblyController implements NavHost {
     this.renderer.setClearColor(viewportBackground(), 1)
     this.pointer = new PointerModule(canvas, this)
     // the DOM overlay and the test hook change together: report as soon as the shape does, not on the next frame
-    this.gizmo = new GizmoController(this.view, selection, (shape) => {
-      onGizmo(shape)
-      this.report()
-    })
+    const live: LiveDrag = {
+      pose: (id) => this.pose(id),
+      begin: (id) => this.liveBegin(id),
+      motion: (id, T) => this.liveMotion(id, T),
+      done: () => this.liveDone(),
+    }
+    this.gizmo = new GizmoController(
+      this.view,
+      selection,
+      (shape) => {
+        onGizmo(shape)
+        this.report()
+      },
+      live,
+    )
     this.pointer.setHandleHandler(this.gizmo)
     wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
     this.unsubscribe = selection.subscribe(() => {
@@ -96,7 +123,70 @@ export class AssemblyController implements NavHost {
 
   /** What sends a drag to the server; null (or a disabled one) shows no gizmo. */
   setDragSender(sender: DragSender | null): void {
+    this.sender?.listen(null)
+    this.sender = sender
+    sender?.listen((placements, T) => this.solvedStep(placements, T))
     this.gizmo.setSender(sender)
+  }
+
+  /** Where instance `id` is drawn when that is not where the outputs on screen put it; null otherwise. */
+  private pose(id: string): number[][] | null {
+    const l = this.live
+    if (l && l.instance === id) return livePose(l.motion, l.answered, l.base)
+    return this.solved.get(id) ?? null
+  }
+
+  private outputsT(id: string): number[][] | null {
+    const T = this.latest?.instances.find((i) => i.id === id)?.T
+    return T ? T.map((r) => [...r]) : null
+  }
+
+  private liveBegin(id: string): void {
+    const base = this.pose(id) ?? this.outputsT(id)
+    if (!base) return
+    const I = rowsOf(new Matrix4())
+    this.dragging = true
+    this.live = { instance: id, base, answered: I, motion: I }
+  }
+
+  private liveMotion(id: string, T: number[][]): void {
+    if (!this.live || this.live.instance !== id) return
+    this.live.motion = T
+    this.placeOverrides()
+  }
+
+  /** A move_to answered: the instances its solve moved go where it put them; the dragged one keeps following the pointer. */
+  private solvedStep(placements: Record<string, number[][]>, T: number[][]): void {
+    if (this.disposed || !this.dragging) return
+    for (const [id, P] of Object.entries(placements)) this.solved.set(id, P)
+    const l = this.live
+    if (l) {
+      const mine = placements[l.instance]
+      if (mine) l.base = mine
+      l.answered = T
+    }
+    this.placeOverrides()
+  }
+
+  /** The server has answered the whole drag: draw what it solved until the next outputs arrive. */
+  private liveDone(): void {
+    if (this.disposed) return
+    this.live = null
+    this.dragging = false
+    this.placeOverrides()
+    if (this.latest && this.built) this.picker = new AssemblyPickIndex(this.latest, this.built)
+  }
+
+  private placeOverrides(): void {
+    if (this.disposed || !this.built) return
+    for (const [id, P] of this.solved) this.built.place(id, P)
+    if (this.live) {
+      const P = this.pose(this.live.instance)
+      if (P) this.built.place(this.live.instance, P)
+    }
+    this.gizmo.refresh()
+    this.report()
+    this.requestRender()
   }
 
   resize(width: number, height: number): void {
@@ -113,13 +203,16 @@ export class AssemblyController implements NavHost {
     if (this.disposed) return
     reconcileAssembly(this.selection, outputs)
     this.drop()
+    // outputs that arrive once a drag is done are newer than anything its replies said
+    if (!this.dragging) this.solved.clear()
+    this.latest = outputs
     this.gizmo.setOutputs(outputs)
     this.built = buildAssemblyScene(outputs)
     this.scene.add(this.built.root)
+    if (this.dragging) this.placeOverrides()
     this.picker = new AssemblyPickIndex(outputs, this.built)
     this.applyLook()
     this.revision = outputs.revision
-    this.latest = outputs
     if (!this.fitted) this.fit()
     this.requestRender()
   }
@@ -131,6 +224,9 @@ export class AssemblyController implements NavHost {
     this.gizmo.setOutputs(null)
     this.latest = null
     this.revision = null
+    this.solved.clear()
+    this.live = null
+    this.dragging = false
     this.fitted = false
     this.requestRender()
   }
@@ -211,12 +307,13 @@ export class AssemblyController implements NavHost {
       pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
       screenOf: (id) => this.screenOf(id),
       gizmo: this.gizmo.current(),
-      placements: Object.fromEntries((this.latest?.instances ?? []).map((i) => [i.id, i.T.map((r) => [...r])])),
+      placements: Object.fromEntries((this.latest?.instances ?? []).map((i) => [i.id, (this.pose(i.id) ?? i.T).map((r) => [...r])])),
     }
   }
 
   dispose(): void {
     this.disposed = true
+    this.sender?.listen(null)
     this.unsubscribe()
     this.pointer.setHandleHandler(null)
     this.pointer.dispose()

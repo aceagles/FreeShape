@@ -4,6 +4,7 @@ import { openApp } from './support/app.ts'
 import { closeAll, idOf } from './support/docs.ts'
 import { gizmoOf, openAssemblyTab, readAssembly, settledAssembly } from './support/assembly.ts'
 import { sendPointer } from './support/pointer.ts'
+import { viewCanvas } from './support/viewport.ts'
 import type { PointerKind } from './support/pointer.ts'
 
 // Slice S8, moving an instance by its Drag handle (card I8.2) against `freeshape serve`: select the hinge's free leaf,
@@ -89,6 +90,41 @@ for (const kind of ['touch', 'pen'] as PointerKind[]) {
     await expect.poll(async () => differs(await pose(page), before), { timeout: 10_000 }).toBe(false)
   })
 }
+
+// F17: with a mouse (Adam's desktop report) the leaf follows the pointer while the button is held, not only after release.
+// The view draws the gizmo's motion at once on each pointer move, so the hook reports the new placement as soon as the move
+// is dispatched, with no waiting for the server.
+test('a mouse drag on a ring moves the leaf before the button is released', async ({ page }) => {
+  await selectLeaf(page)
+  const before = await pose(page)
+  const base = (await readAssembly(page)).placements['I1']!
+  const g = await gizmoOf(page)
+  const a = g.axes[2]! // the pin stands along the leaf's own Z
+  const box = (await viewCanvas(page).boundingBox())!
+  const o = g.origin
+  const dx = a.turn!.x - o.x
+  const dy = a.turn!.y - o.y
+  const at = (ang: number) => ({ x: box.x + o.x + dx * Math.cos(ang) - dy * Math.sin(ang), y: box.y + o.y + dx * Math.sin(ang) + dy * Math.cos(ang) })
+  await page.mouse.move(at(0).x, at(0).y)
+  await page.mouse.down()
+  await page.mouse.move(at(0.35).x, at(0.35).y, { steps: 4 })
+  // still held: the leaf has moved already
+  const held = await pose(page)
+  expect((await readAssembly(page)).gizmo?.active?.kind).toBe('turn')
+  expect(differs(held, before)).toBe(true)
+  await page.mouse.move(at(0.7).x, at(0.7).y, { steps: 4 })
+  const further = await pose(page)
+  expect(differs(further, held)).toBe(true)
+  await page.mouse.up()
+  await expect.poll(async () => (await readAssembly(page)).gizmo?.active ?? null).toBeNull()
+  await settledAssembly(page)
+  await expect.poll(async () => differs(await pose(page), before), { timeout: 20_000 }).toBe(true)
+  expect(differs((await readAssembly(page)).placements['I1']!, base)).toBe(false)
+  // one undo step for the whole drag
+  const doc = await idOf(page.request, 'Hinge')
+  expect((await page.request.post(`/documents/${doc}/tabs/T2/edit`, { data: { op: 'undo' } })).ok()).toBe(true)
+  await expect.poll(async () => differs(await pose(page), before), { timeout: 10_000 }).toBe(false)
+})
 
 test('the pad types an exact angle on the value label', async ({ page }) => {
   await selectLeaf(page)

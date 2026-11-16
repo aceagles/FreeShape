@@ -40,6 +40,7 @@ function rig(select: string) {
     begin: (instance) => void sent.push({ op: 'move_begin', instance }),
     move: (T) => void sent.push({ op: 'move_to', T }),
     end: async () => void sent.push({ op: 'move_end' }),
+    listen: () => {},
   }
   let shape: GizmoShape | null = null
   const gizmo = new GizmoController(view, selection, (s) => (shape = s))
@@ -63,7 +64,7 @@ describe('the gizmo of an Assembly instance', () => {
 
   it('shows none when no sender is allowed (a read-only Document)', () => {
     const r = rig('I2')
-    r.gizmo.setSender({ disabled: true, begin() {}, move() {}, async end() {} })
+    r.gizmo.setSender({ disabled: true, begin() {}, move() {}, async end() {}, listen() {} })
     expect(r.shape()).toBeNull()
   })
 })

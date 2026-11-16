@@ -113,6 +113,44 @@ export interface AxisOut {
   readonly span: readonly [number, number] | null
 }
 
+/**
+ * One row of the feature list, in the order the features build (file order). Ids are stable across edits and
+ * revisions: use them as React keys and in edits (`feature`, `ids`).
+ */
+export interface FeatureEntry {
+  readonly id: string
+  /** The feature type, for the icon: sketch, extrude, revolve, fillet, chamfer, shell, plane, axis, mirror,
+   *  linear_pattern, circular_pattern, boolean, import, hole, variable, variable_studio_ref, derived,
+   *  mate_connector, context, sweep, rib, loft, draft, split, move, thread, sm_base, sm_flange, sm_hem, sm_jog,
+   *  sm_tab, sm_convert, delete_face, move_face, offset_surface, thicken, enclose, fill, delete_part, or
+   *  `plugin:<id>` for a plugin's feature. An unknown type is shown with a generic icon. */
+  readonly type: string
+  /** The type's display label ("Extrude"); a Boundary surface (a loft) says "Boundary surface". */
+  readonly label: string
+  /** The row's text; what a rename changes. */
+  readonly name: string
+  /** The feature's own suppressed flag (a feature in a suppressed folder is not marked). */
+  readonly suppressed: boolean
+  /** The message the feature failed with, or null when it built. The same text as `errors[id]`. */
+  readonly error: string | null
+  /** Id of the folder the feature sits in (a `FolderEntry.id`), or null. */
+  readonly folder: string | null
+  /** The eye: a sketch, plane or axis hidden in the viewport. */
+  readonly hidden: boolean
+}
+
+/** A feature-list folder. Draw it above its first member; its members are contiguous in `features`. */
+export interface FolderEntry {
+  readonly id: string
+  readonly name: string
+  /** Expanded in the list. */
+  readonly open: boolean
+  /** Every member is suppressed. */
+  readonly suppressed: boolean
+  /** How many members carry an error. */
+  readonly failed: number
+}
+
 export interface StudioOutputs {
   readonly kind: 'studio'
   readonly tab: string
@@ -134,6 +172,23 @@ export interface StudioOutputs {
   readonly axes: Readonly<Record<string, AxisOut>>
   /** Failed feature id -> references to where it failed (as the engine sent them). */
   readonly errorRefs: Readonly<Record<string, readonly unknown[]>>
+  /**
+   * The feature tree. False when the payload predates it (an older server or recorded fixture): `features` and
+   * `folders` are then empty, `rollback` is 0 and both `can` flags are false, so a panel should show "no tree
+   * available" rather than an empty Part Studio. A payload with extra unknown fields still decodes.
+   */
+  readonly hasTree: boolean
+  /** The features in file order (the order they build in), rolled-back ones included. */
+  readonly features: readonly FeatureEntry[]
+  /** Folders in the order of their first member. */
+  readonly folders: readonly FolderEntry[]
+  /**
+   * The rollback position: features[0 .. rollback) are active, the rest are rolled back. Equal to
+   * features.length when nothing is rolled back. Send this number as `set_rollback`'s `index` (0-based).
+   */
+  readonly rollback: number
+  readonly canUndo: boolean
+  readonly canRedo: boolean
 }
 
 /** Any other tab kind: the common fields only. */

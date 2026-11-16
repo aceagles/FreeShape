@@ -5,8 +5,10 @@
 
 Writes, next to this script:
     bracket.outputs.fsw    the bytes GET /tabs/T1/outputs answers (session.outputs_wire)
-    bracket.expected.json  the numbers the Vitest decoder test compares with: parts, triangles, edges, faces, and
+    bracket.expected.json  the numbers the Vitest decoder test compares with: parts, triangles, edges, faces, the
+                           feature list (id, type, label, name), the rollback position, can_undo / can_redo, and
                            three element names with the 1-based engine index and the 0-based client index.
+make_tree_fixture.py writes a second fixture for the tree states the bracket does not have.
 The output is deterministic: the same bytes on every run on the same OCP build. The committed files come from
 OCP 8.0 (the build the gate compares against); OCP 7.9 names a few things differently, so --check passes on 8.0 only.
 """
@@ -58,6 +60,10 @@ def build():
         "planes": len(out.planes),
         "axes": len(out.axes),
         "connectors": len(out.connectors),
+        "features": [[f.id, f.type, f.label, f.name] for f in out.features],
+        "rollback": out.rollback,
+        "can_undo": out.can_undo,
+        "can_redo": out.can_redo,
         "names": [],
     }
     # three name lookups: the first named face, edge and vertex of the first part that has names.

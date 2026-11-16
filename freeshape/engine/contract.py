@@ -210,6 +210,30 @@ class TabOutputs:
 
 
 @dataclass
+class FeatureOut:
+    """One row of a Part Studio's feature list, as the desktop's feature tree shows it (I3.1). Presentation
+    only: nothing here enters a Link content hash (those are computed from the document, linkgraph.py)."""
+    id: str                  # the feature's id: stable across edits and revisions (undo brings the same id back)
+    type: str                # the feature type ("extrude", "sketch", "plugin:<id>" ...): the client maps it to an icon
+    label: str               # the type's display label ("Extrude"; a Boundary surface's own "Boundary surface")
+    name: str                # the row's text: the feature's own name, editable by rename_feature
+    suppressed: bool         # the feature's own flag; a feature in a suppressed folder is not marked here
+    error: str | None = None     # the message the feature failed with (doc.errors), None when it built
+    folder: str | None = None    # id of the folder the feature sits in (a key of StudioOutputs.folders), or None
+    hidden: bool = False     # the eye: a sketch, plane or axis hidden in the viewport (doc.hidden_features)
+
+
+@dataclass
+class FolderOut:
+    """A feature-list folder. It is drawn where its first member is; members are contiguous in `features`."""
+    id: str
+    name: str
+    open: bool               # expanded in the list
+    suppressed: bool         # every member is suppressed (the desktop draws the row struck out)
+    failed: int = 0          # how many members carry an error
+
+
+@dataclass
 class StudioOutputs(TabOutputs):
     parts: list = field(default_factory=list)          # [PartOut], in the studio's part order
     context: list = field(default_factory=list)        # [PartOut] of the Context bodies (reference parts), for the
@@ -223,6 +247,13 @@ class StudioOutputs(TabOutputs):
     planes: dict = field(default_factory=dict)
     axes: dict = field(default_factory=dict)
     error_refs: dict = field(default_factory=dict)     # failed feature id -> [reference dicts] to where it failed
+    # The feature tree (I3.1). Absent in a payload recorded before it: from_wire then fills the defaults below.
+    features: list = field(default_factory=list)       # [FeatureOut], in file order (the order they build in)
+    folders: list = field(default_factory=list)        # [FolderOut], in the order of their first member
+    rollback: int = 0        # the number of features that build: features[:rollback] are active, the rest rolled
+    #                          back. len(features) when nothing is rolled back. set_rollback's `index` takes it.
+    can_undo: bool = False
+    can_redo: bool = False
 
 
 @dataclass

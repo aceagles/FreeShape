@@ -25,8 +25,9 @@ from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
 from OCP.BRepTools import BRepTools
 from OCP.TopTools import TopTools_FormatVersion
 
+from .. import features as F
 from .. import kernel as K
-from .contract import MateConnectorOut, MeshOut, PartOut, SketchOut, plain
+from .contract import FeatureOut, FolderOut, MateConnectorOut, MeshOut, PartOut, SketchOut, plain
 
 _BREP_VERSION = TopTools_FormatVersion.TopTools_FormatVersion_VERSION_1
 _KIND_OF_LETTER = {"F": "face", "E": "edge", "V": "vertex"}
@@ -156,3 +157,39 @@ def connector_out(fid, entry) -> MateConnectorOut:
     digest = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
     return MateConnectorOut(id=str(fid), name=body["name"], part=body["part"], frame=frame, hash=digest,
                             sketch=str(sketch))
+
+
+# =========================================================================== the feature tree (I3.1)
+
+def feature_label(feature) -> str:
+    """The display label of a feature's type: its front door's ("Boundary surface") or FEATURE_LABELS' (the
+    one table PartStudioDoc.next_name names new features from)."""
+    door = F.front_kind(feature)
+    if door:
+        return F.FRONT_DOORS[door][1]
+    return F.FEATURE_LABELS.get(feature["type"], str(feature["type"]).title())
+
+
+def feature_list(doc):
+    """(features, folders, rollback) of a PartStudioDoc, read from the same fields the desktop's FeatureList
+    reads: doc.features, doc.folders, doc.errors, doc.hidden_features and doc.active_count()."""
+    folders_by_id = getattr(doc, "folders", {}) or {}
+    features = []
+    for f in doc.features:
+        fo = f.get("folder")
+        err = doc.errors.get(f["id"])
+        features.append(FeatureOut(
+            id=str(f["id"]), type=str(f["type"]), label=feature_label(f), name=str(f["name"]),
+            suppressed=bool(f.get("suppressed")), error=None if err is None else str(err),
+            folder=str(fo) if fo in folders_by_id else None, hidden=f["id"] in doc.hidden_features))
+    folders, seen = [], set()
+    for fe in features:
+        if fe.folder is None or fe.folder in seen:
+            continue
+        seen.add(fe.folder)
+        members = [g for g in features if g.folder == fe.folder]
+        info = folders_by_id[fe.folder]
+        folders.append(FolderOut(id=fe.folder, name=str(info["name"]), open=bool(info.get("open", True)),
+                                 suppressed=all(g.suppressed for g in members),
+                                 failed=sum(1 for g in members if g.error is not None)))
+    return features, folders, doc.active_count()

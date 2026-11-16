@@ -1,0 +1,110 @@
+{
+ "can_redo": true,
+ "can_undo": true,
+ "errors": {
+  "F9": "Select edges to fillet"
+ },
+ "features": [
+  {
+   "error": null,
+   "folder": null,
+   "hidden": true,
+   "id": "F1",
+   "label": "Sketch",
+   "name": "Bracket profile",
+   "suppressed": false,
+   "type": "sketch"
+  },
+  {
+   "error": null,
+   "folder": null,
+   "hidden": false,
+   "id": "F2",
+   "label": "Extrude",
+   "name": "Body",
+   "suppressed": false,
+   "type": "extrude"
+  },
+  {
+   "error": null,
+   "folder": null,
+   "hidden": false,
+   "id": "F3",
+   "label": "Fillet",
+   "name": "Fillet 1",
+   "suppressed": true,
+   "type": "fillet"
+  },
+  {
+   "error": null,
+   "folder": "D1",
+   "hidden": true,
+   "id": "F4",
+   "label": "Sketch",
+   "name": "Hole positions",
+   "suppressed": false,
+   "type": "sketch"
+  },
+  {
+   "error": null,
+   "folder": "D1",
+   "hidden": false,
+   "id": "F5",
+   "label": "Hole",
+   "name": "Hole 1",
+   "suppressed": false,
+   "type": "hole"
+  },
+  {
+   "error": "Select edges to fillet",
+   "folder": null,
+   "hidden": false,
+   "id": "F9",
+   "label": "Fillet",
+   "name": "Fillet 2",
+   "suppressed": false,
+   "type": "fillet"
+  },
+  {
+   "error": null,
+   "folder": null,
+   "hidden": true,
+   "id": "F6",
+   "label": "Sketch",
+   "name": "Slot",
+   "suppressed": false,
+   "type": "sketch"
+  },
+  {
+   "error": null,
+   "folder": null,
+   "hidden": false,
+   "id": "F7",
+   "label": "Extrude",
+   "name": "Slot cut",
+   "suppressed": false,
+   "type": "extrude"
+  },
+  {
+   "error": null,
+   "folder": null,
+   "hidden": false,
+   "id": "F8",
+   "label": "Chamfer",
+   "name": "Chamfer 1",
+   "suppressed": false,
+   "type": "chamfer"
+  }
+ ],
+ "folders": [
+  {
+   "failed": 0,
+   "id": "D1",
+   "name": "Holes",
+   "open": true,
+   "suppressed": false
+  }
+ ],
+ "rollback": 7,
+ "tab": "T1"
+}

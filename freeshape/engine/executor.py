@@ -23,7 +23,7 @@ from ..variable_studio import VariableStudioDoc
 from .contract import (ASSEMBLY_OPS, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
                        DrawingOutputs, Engine, EngineError, InstanceOut, MateOut, StudioOutputs, VariablesOutputs,
                        plain)
-from .encode import Encoder, connector_out, sketch_out
+from .encode import Encoder, connector_out, feature_list, sketch_out
 from .inputs import CrossTabInputs
 from .linkgraph import live_package, package_digest, propagate
 from .. import blobstore
@@ -368,10 +368,13 @@ class StudioTab(_Tab):
         connectors = [connector_out(fid, c) for fid, c in st.connectors.items()]
         planes = {str(fid): plain(pl.to_dict()) for fid, pl in st.planes.items()}
         axes = {str(fid): plain(dict(ax)) for fid, ax in getattr(st, "axes", {}).items()}
+        features, folders, rollback = feature_list(doc)
         return StudioOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
                              errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts, context=context,
                              sketches=sketches, connectors=connectors, variables=plain(dict(st.vars)),
-                             planes=planes, axes=axes, error_refs=plain(dict(getattr(doc, "error_refs", {}))))
+                             planes=planes, axes=axes, error_refs=plain(dict(getattr(doc, "error_refs", {}))),
+                             features=features, folders=folders, rollback=rollback,
+                             can_undo=bool(doc.can_undo()), can_redo=bool(doc.can_redo()))
 
 
 class VariablesTab(_Tab):

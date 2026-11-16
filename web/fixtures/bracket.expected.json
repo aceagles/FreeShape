@@ -1,8 +1,60 @@
 {
  "axes": 0,
+ "can_redo": false,
+ "can_undo": false,
  "connectors": 0,
  "edges": 42,
  "faces": 16,
+ "features": [
+  [
+   "F1",
+   "sketch",
+   "Sketch",
+   "Bracket profile"
+  ],
+  [
+   "F2",
+   "extrude",
+   "Extrude",
+   "Extrude 1"
+  ],
+  [
+   "F3",
+   "fillet",
+   "Fillet",
+   "Fillet 1"
+  ],
+  [
+   "F4",
+   "sketch",
+   "Sketch",
+   "Hole positions"
+  ],
+  [
+   "F5",
+   "hole",
+   "Hole",
+   "Hole 1"
+  ],
+  [
+   "F6",
+   "sketch",
+   "Sketch",
+   "Slot"
+  ],
+  [
+   "F7",
+   "extrude",
+   "Extrude",
+   "Slot cut"
+  ],
+  [
+   "F8",
+   "chamfer",
+   "Chamfer",
+   "Chamfer 1"
+  ]
+ ],
  "kind": "studio",
  "names": [
   {
@@ -33,6 +85,7 @@
  "parts": 1,
  "planes": 0,
  "revision": 0,
+ "rollback": 8,
  "sketches": 3,
  "tab": "T1",
  "triangles": 868,

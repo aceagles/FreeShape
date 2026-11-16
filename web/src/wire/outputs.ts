@@ -5,6 +5,8 @@ import type {
   AxisOut,
   ElementKind,
   ElementNames,
+  FeatureEntry,
+  FolderEntry,
   MateConnector,
   Part,
   PartMesh,
@@ -181,6 +183,33 @@ function connector(x: unknown, where: string): MateConnector {
   }
 }
 
+function feature(x: unknown, where: string): FeatureEntry {
+  const f = dc(x, 'FeatureOut', where)
+  const error = f['error']
+  const folder = f['folder']
+  return {
+    id: str(f['id'], `${where}.id`),
+    type: str(f['type'], `${where}.type`),
+    label: str(f['label'], `${where}.label`),
+    name: str(f['name'], `${where}.name`),
+    suppressed: bool(f['suppressed'], `${where}.suppressed`),
+    error: error === null || error === undefined ? null : str(error, `${where}.error`),
+    folder: folder === null || folder === undefined ? null : str(folder, `${where}.folder`),
+    hidden: f['hidden'] === undefined ? false : bool(f['hidden'], `${where}.hidden`),
+  }
+}
+
+function folder(x: unknown, where: string): FolderEntry {
+  const f = dc(x, 'FolderOut', where)
+  return {
+    id: str(f['id'], `${where}.id`),
+    name: str(f['name'], `${where}.name`),
+    open: bool(f['open'], `${where}.open`),
+    suppressed: bool(f['suppressed'], `${where}.suppressed`),
+    failed: f['failed'] === undefined ? 0 : num(f['failed'], `${where}.failed`),
+  }
+}
+
 function mapOf<T>(x: unknown, where: string, each: (v: Record<string, unknown>, w: string) => T): Record<string, T> {
   const out: Record<string, T> = {}
   for (const [k, v] of Object.entries(record(x, where))) out[k] = each(record(v, `${where}.${k}`), `${where}.${k}`)
@@ -200,6 +229,13 @@ function studio(f: Fields, common: Common): StudioOutputs {
     planes: mapOf<PlaneOut>(f['planes'], `${w}.planes`, (v, p) => ({ o: vec3(v['o'], p), x: vec3(v['x'], p), n: vec3(v['n'], p) })),
     axes: mapOf<AxisOut>(f['axes'], `${w}.axes`, (v, p) => ({ o: vec3(v['o'], p), d: vec3(v['d'], p), span: span(v['span'], p) })),
     errorRefs: recordOfLists(f['error_refs']),
+    // an older payload has none of the tree fields: decode them as an empty tree and say so in `hasTree`
+    hasTree: f['features'] !== undefined,
+    features: f['features'] === undefined ? [] : list(f['features'], `${w}.features`).map((e, i) => feature(e, `${w}.features[${i}]`)),
+    folders: f['folders'] === undefined ? [] : list(f['folders'], `${w}.folders`).map((e, i) => folder(e, `${w}.folders[${i}]`)),
+    rollback: f['rollback'] === undefined ? 0 : num(f['rollback'], `${w}.rollback`),
+    canUndo: f['can_undo'] === undefined ? false : bool(f['can_undo'], `${w}.can_undo`),
+    canRedo: f['can_redo'] === undefined ? false : bool(f['can_redo'], `${w}.can_redo`),
   }
 }
 

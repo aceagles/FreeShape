@@ -61,3 +61,15 @@ it('a view refetches its outputs when its tab revision changes', () => {
   expect(refetch).toHaveBeenCalledTimes(1)
   store.stop()
 })
+
+it('shows the drag round trip median and worst, and the solve time, from the recorded answers', () => {
+  const { store, say } = started()
+  render(<ConnectionPanel store={store} />)
+  say(helloMsg)
+  expect(screen.queryByTestId('drag-median')).toBeNull()
+  for (const [t, solve] of [[98, 1], [95, 2], [90, 3]] as const) say({ type: 'sketch.drag.moved', id: 1, t, solve_ms: solve, points: {}, radii: {}, held: false })
+  expect(screen.getByTestId('drag-median').textContent).toBe('5.0 ms')
+  expect(screen.getByTestId('drag-worst').textContent).toBe('10.0 ms')
+  expect(screen.getByTestId('drag-solve').textContent).toBe('2.0 ms')
+  store.stop()
+})

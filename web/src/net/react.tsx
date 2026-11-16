@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ConnectionState, ConnectionStore } from './connection'
 import { describeRtt } from './rtt'
+import { describeDrag } from '../sketch/latency'
 import './net.css'
 
 /** The connection's state, re-rendering the component whenever it changes. */
@@ -17,12 +18,15 @@ export function useRefetchOnRevision(store: ConnectionStore, tab: string, refetc
   useEffect(() => store.onRevision(tab, (rev) => latest.current(rev)), [store, tab])
 }
 
+const ms = (v: number | null) => (v === null ? '-' : `${v.toFixed(1)} ms`)
+
 /** The connection state and the debug panel: median and worst round trip, with a button that copies them. */
 export function ConnectionPanel({ store }: { store: ConnectionStore }) {
   const state = useConnection(store)
   const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle')
   const summary = store.rttSummary()
-  const text = describeRtt(summary)
+  const drag = store.dragSummary()
+  const text = drag.roundTrip.count > 0 ? `${describeRtt(summary)}\n${describeDrag(drag)}` : describeRtt(summary)
   const copy = () => {
     navigator.clipboard.writeText(text).then(
       () => setCopied('done'),
@@ -42,6 +46,18 @@ export function ConnectionPanel({ store }: { store: ConnectionStore }) {
         <dt>Samples</dt>
         <dd>{summary.count}</dd>
       </dl>
+      {drag.roundTrip.count > 0 && (
+        <dl className="net-rtt" aria-label="Sketch drag">
+          <dt>Drag median</dt>
+          <dd data-testid="drag-median">{ms(drag.roundTrip.median)}</dd>
+          <dt>Drag worst</dt>
+          <dd data-testid="drag-worst">{ms(drag.roundTrip.worst)}</dd>
+          <dt>Solve median</dt>
+          <dd data-testid="drag-solve">{ms(drag.solve.median)}</dd>
+          <dt>Drag moves</dt>
+          <dd>{drag.roundTrip.count}</dd>
+        </dl>
+      )}
       <button type="button" onClick={copy}>
         Copy round trips
       </button>

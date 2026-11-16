@@ -21,6 +21,7 @@ from __future__ import annotations
 import copy
 import math
 import threading
+import time
 
 from . import sketch_ops as OPS
 from .sketch import ORIGIN, Sketch
@@ -153,6 +154,10 @@ class SketchSession:
         self.lock = threading.Lock()
         self.stored = None                     # the stored feature dict of an existing sketch (the server sets it)
         self.committing = False                # a commit is on its way (the server sets it, under `lock`)
+        self.drag = None                       # the drag in progress (drag_begin), or None
+        self.drag_pending = None               # serve.py: the one move waiting for the solver (latest wins)
+        self.drag_worker = None                # serve.py: the task that solves the waiting moves
+        self.drag_solves = 0                   # moves solved so far (tests count them)
         work = self.sk.copy()                  # the stored sketch is shown as stored; its status from a solved copy
         work.solve()
         self._status = status_of(work)
@@ -172,6 +177,7 @@ class SketchSession:
     # ------------------------------------------------------------------ one step
     def _step(self, change):
         """Run `change()` as one undoable step, then solve. Any failure puts the sketch back as it was."""
+        self._not_dragging()
         before = self.sk.to_dict()
         status = self._status
         try:
@@ -400,12 +406,14 @@ class SketchSession:
 
     # ------------------------------------------------------------------ undo
     def undo(self):
+        self._not_dragging()
         if not self.undo_stack:
             raise SketchError("nothing to undo")
         self.redo_stack.append(self.sk.to_dict())
         self._restore(self.undo_stack.pop())
 
     def redo(self):
+        self._not_dragging()
         if not self.redo_stack:
             raise SketchError("nothing to redo")
         self.undo_stack.append(self.sk.to_dict())
@@ -416,3 +424,104 @@ class SketchSession:
         work = self.sk.copy()
         work.solve()
         self._status = status_of(work)
+
+
+    # ------------------------------------------------------------------ drag (I7.4)
+    def _not_dragging(self):
+        if self.drag is not None:
+            raise SketchError("a drag is in progress; end it first")
+
+    def drag_begin(self, body):
+        """{"point": id | "entity": id, "at": [u, v]}: start dragging a point or an entity from `at`. The sketch
+        stays as it is (every move is solved from this state, so nothing drifts) until drag_end."""
+        _only(body, {"point", "entity", "at"}, "drag")
+        self._not_dragging()
+        if ("point" in body) == ("entity" in body):
+            raise SketchError("drag: name either point or entity")
+        start = _uv(body.get("at"), "drag.at")
+        kind = "point" if "point" in body else "entity"
+        item = body[kind]
+        table = self.sk.points if kind == "point" else self.sk.entities
+        if not isinstance(item, str) or item not in table:
+            raise SketchError(f"drag.{kind}: no such {kind} in the sketch")
+        if item == ORIGIN:
+            raise SketchError("drag.point: the origin cannot be moved")
+        if kind == "entity" and self.sk.entities[item]["type"] == "point":
+            item = self.sk.entities[item].get("p", item)       # a point entity is dragged by its point
+            kind = "point"
+        self.drag = {"kind": kind, "id": item, "start": start, "orig": self.sk.to_dict(), "cur": None}
+
+    def drag_move(self, body):
+        """{"at": [u, v], "t"?: the client's send time}: solve the sketch as it was at drag_begin with the dragged
+        items moved by the offset from the start and held heavily (the desktop's Sketcher.mouse_drag). Returns
+        {"t", "solve_ms", "points": {id: [u, v]}, "radii": {entity id: r}, "held": bool}: `held` true when the
+        constraints would not let the items go there and the original positions are returned. Does not change
+        the sketch; drag_end keeps the last result."""
+        _only(body, {"at", "t"}, "drag")
+        d = self.drag
+        if d is None:
+            raise SketchError("no drag is in progress")
+        uv = _uv(body.get("at"), "drag.at")
+        t = body.get("t")
+        if t is not None:
+            t = _finite(t, "drag.t")
+        began = time.perf_counter()
+        base = Sketch.from_dict(d["orig"])
+        work = base.copy()
+        sk, kind, i = work, d["kind"], d["id"]
+        delta = [uv[0] - d["start"][0], uv[1] - d["start"][1]]
+        weights = {}
+        if kind == "point":
+            sk.points[i] = [float(base.points[i][0]) + delta[0], float(base.points[i][1]) + delta[1]]
+            weights = {(i, 0): 1e3, (i, 1): 1e3}
+        elif sk.entities[i]["type"] == "circle":
+            c = base.points[sk.entities[i]["c"]]
+            sk.entities[i]["r"] = float(max(math.hypot(uv[0] - c[0], uv[1] - c[1]), 1e-3))
+            weights = {(i, "r"): 1e3}
+        else:
+            for pid in sk.entity_points(i):
+                if pid != ORIGIN:
+                    sk.points[pid] = [float(base.points[pid][0]) + delta[0], float(base.points[pid][1]) + delta[1]]
+                    weights[(pid, 0)] = weights[(pid, 1)] = 1e3
+        held = False
+        try:
+            sk.solve(weights=weights)
+            held = not sk.status.get("ok", True)
+            if not held:
+                self.sk, saved = work, self.sk
+                try:
+                    self._check_finite()
+                finally:
+                    self.sk = saved
+        except (SketchError, ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, ArithmeticError):
+            held = True
+        shown = base if held else work
+        d["cur"] = None if held else work
+        self.drag_solves += 1
+        return {"t": t, "solve_ms": max(time.perf_counter() - began, 1e-6) * 1000.0,
+                "points": {k: [float(x) for x in p] for k, p in shown.points.items()},
+                "radii": {k: float(e["r"]) for k, e in shown.entities.items() if "r" in e}, "held": held}
+
+    @staticmethod
+    def _same(orig, cur):
+        """True when `cur` (a solved Sketch) has every point and radius of `orig` (a dict) to within 1e-6 mm."""
+        for k, p in orig["points"].items():
+            if max(abs(float(a) - float(b)) for a, b in zip(p, cur.points[k])) > 1e-6:
+                return False
+        return all(abs(float(e["r"]) - float(cur.entities[k]["r"])) <= 1e-6
+                   for k, e in orig["entities"].items() if "r" in e)
+
+    def drag_end(self, cancel=False):
+        """End the drag. The last solved position becomes the sketch as ONE undo step; a drag that never moved,
+        or whose last move was held or left everything where it was, changes nothing and adds no step. `cancel` drops the result."""
+        d, self.drag = self.drag, None
+        if d is None:
+            raise SketchError("no drag is in progress")
+        if cancel or d["cur"] is None or self._same(d["orig"], d["cur"]):
+            return
+        self.undo_stack.append(self.sk.to_dict())
+        if len(self.undo_stack) > MAX_UNDO:
+            self.undo_stack.pop(0)
+        self.redo_stack.clear()
+        self.sk = d["cur"]
+        self._status = status_of(self.sk)

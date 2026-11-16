@@ -217,6 +217,21 @@ and changes nothing; the socket stays open. A step that is refused leaves the sk
                 it when the engine refuses the feature.
   sketch.cancel {"type": "sketch.cancel"}  ends the session, changes nothing: {"type": "sketch.cancelled", "document",
                 "tab", "feature"}.
+Dragging in a sketch (I7.4; Sketcher.mouse_drag is the model). The sketch stays as it is while a drag lasts; a drag
+is one undo step. Other steps, undo, redo and commit are refused while one is open.
+  sketch.drag.begin {"type": "sketch.drag.begin", "point": id | "entity": id, "at": [u, v]}  start dragging a point
+                (not the origin) or an entity (a circle's radius follows `at`; a line or arc moves by its points) from
+                `at`, sketch coordinates. Answer {"type": "sketch.drag.begun"}.
+  sketch.drag.move  {"type": "sketch.drag.move", "at": [u, v], "t"?: number}  restore the original, move the items by
+                the offset from the start, weight them heavily and solve. `t` is the client's send time. The answer
+                {"type": "sketch.drag.moved", "t": echoed, "solve_ms": the server's solve time, "points": {id: [u, v]},
+                "radii": {entity id: r}, "held": bool} comes from a solve off the event loop; `held` is true when the
+                constraints refuse that position and the original is returned. Latest wins: a move that arrives
+                while one is solving replaces any waiting move, and the replaced move gets no answer. The sketch itself
+                is unchanged until the end.
+  sketch.drag.end   {"type": "sketch.drag.end", "cancel"?: bool}  waits for the waiting move to be solved, then keeps
+                the last solved result as one undo step and answers sketch.changed (as the steps above); a drag
+                whose last move was held or left everything where it was, or that never moved, adds no step; `cancel` drops the result.
 When the client's registry entry expires, or the Document closes or the server stops gracefully, an unfinished sketch is
 written into the Document's autosave (I2.6) before the session is dropped: the tab's autosaved data holds the sketch
 feature (an existing one with the session's params, a new one added at the rollback bar), the open session is not
@@ -1992,7 +2007,7 @@ class _Server:
                                   "message": "id: must be a string of at most 64 characters or an integer"})
             return
         try:
-            out = await self._sketch_do(client, kind, msg, doc_id)
+            out = await self._sketch_do(client, kind, msg, doc_id, ws)
         except DocumentLocked as e:
             await self._push(ws, {"type": "error", "id": ident, "for": kind, "document": e.document,
                                   "message": str(e), "locked": True, "holder": e.holder})
@@ -2002,7 +2017,8 @@ class _Server:
             _log(f"sketch message {_clean(kind, 40)}: {type(e).__name__}: {_clean(str(e), 300)}")
             await self._push(ws, {"type": "error", "id": ident, "for": kind[:40], "message": "internal error"})
         else:
-            await self._push(ws, {**out, "id": ident})
+            if out is not None:                                  # a drag move is answered by its solve, later
+                await self._push(ws, {**out, "id": ident})
 
     MAX_SKETCHES = 64                                            # sketch sessions open on this server at once
 
@@ -2010,9 +2026,10 @@ class _Server:
                       "sketch.add": {"shape", "picks", "construction", "radius", "sweep", "constraints"},
                       "sketch.delete": {"ids"}, "sketch.construction": {"ids", "value"},
                       "sketch.undo": set(), "sketch.redo": set(), "sketch.state": set(), "sketch.commit": set(),
-                      "sketch.cancel": set()}
+                      "sketch.cancel": set(), "sketch.drag.begin": {"point", "entity", "at"},
+                      "sketch.drag.move": {"at", "t"}, "sketch.drag.end": {"cancel"}}
 
-    async def _sketch_do(self, client, kind, msg, doc_id):
+    async def _sketch_do(self, client, kind, msg, doc_id, ws=None):
         from .sketch_session import SketchError
         fields = self._SKETCH_FIELDS.get(kind)
         if fields is None:
@@ -2038,7 +2055,11 @@ class _Server:
                 del entry.data["sketch"]
             return {"type": "sketch.cancelled", "document": sk.document, "tab": sk.tab, "feature": sk.feature}
         if kind == "sketch.commit":
+            if sk.drag is not None:
+                raise SketchError("a drag is in progress; end it first")
             return await self._sketch_commit(entry, sk, client)
+        if kind.startswith("sketch.drag."):
+            return await self._sketch_drag(sk, kind, msg, body, ws)
 
         def step():
             with sk.lock:
@@ -2060,6 +2081,64 @@ class _Server:
                     out["made"] = made
                 return out
         return await self._off_loop(step)
+
+    async def _sketch_drag(self, sk, kind, msg, body, ws):
+        """sketch.drag.*: begin and end run off the loop under the session's lock. A move is not answered here: it
+        replaces the one waiting move (latest wins) and a worker task solves it off the loop, then answers the
+        socket that sent it. drag.end first waits for the waiting move to be solved, so the result is the last move."""
+        from .sketch_session import SketchError
+        if kind == "sketch.drag.begin":
+            def begin():
+                with sk.lock:
+                    if sk.committing:
+                        raise SketchError("the sketch is being committed")
+                    sk.drag_begin(body)
+            await self._off_loop(begin)
+            return {"type": "sketch.drag.begun"}
+        if kind == "sketch.drag.move":
+            if sk.drag is None:
+                raise SketchError("no drag is in progress")
+            sk.drag_pending = (ws, msg.get("id"), body)
+            if sk.drag_worker is None:
+                sk.drag_worker = asyncio.ensure_future(self._drag_worker(sk))
+            return None
+        cancel = body.get("cancel", False)
+        if not isinstance(cancel, bool):
+            raise SketchError("cancel: must be true or false")
+        if cancel:
+            sk.drag_pending = None
+        while sk.drag_worker is not None:
+            await asyncio.shield(sk.drag_worker)
+
+        def end():
+            with sk.lock:
+                sk.drag_end(cancel)
+                return {"type": "sketch.changed", **sk.view()}
+        return await self._off_loop(end)
+
+    async def _drag_worker(self, sk):
+        """Solve the waiting move, then the one that arrived meanwhile, until none waits."""
+        from .sketch_session import SketchError
+
+        def solve(body):
+            with sk.lock:
+                return sk.drag_move(body)
+        try:
+            while sk.drag_pending is not None:
+                ws, ident, body = sk.drag_pending
+                sk.drag_pending = None
+                try:
+                    out = {"type": "sketch.drag.moved", **await self._off_loop(solve, body)}
+                except SketchError as e:
+                    await self._push(ws, {"type": "error", "id": ident, "for": "sketch.drag.move", "message": str(e)})
+                except Exception as e:                           # noqa: BLE001
+                    _log(f"drag move: {type(e).__name__}: {_clean(str(e), 300)}")
+                    await self._push(ws, {"type": "error", "id": ident, "for": "sketch.drag.move",
+                                          "message": "internal error"})
+                else:
+                    await self._push(ws, {**out, "id": ident})
+        finally:
+            sk.drag_worker = None
 
     @staticmethod
     def _sketch_full(sk):

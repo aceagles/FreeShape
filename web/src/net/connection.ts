@@ -2,6 +2,7 @@ import { postEdit } from './api'
 import type { DocumentReply, Holder } from './api'
 import { getClientId } from './clientId'
 import { RttLog, type RttSummary } from './rtt'
+import { DragLatency, type DragSummary } from '../sketch/latency'
 
 /** One entry of the server's tab list (session.tabs() plus the tab's revision, null when unknown). */
 export interface TabInfo {
@@ -92,6 +93,7 @@ export interface PreviewMessage {
  */
 export class ConnectionStore {
   readonly rtt = new RttLog()
+  readonly drag = new DragLatency()
   private state: ConnectionState
   private socket: SocketLike | null = null
   private listeners = new Set<Listener>()
@@ -140,6 +142,15 @@ export class ConnectionStore {
 
   rttSummary(): RttSummary {
     return this.rtt.summary()
+  }
+
+  dragSummary(): DragSummary {
+    return this.drag.summary()
+  }
+
+  /** The connection's clock in ms: stamp a `sketch.drag.move` with it as `t` so its answer gives the round trip. */
+  stamp(): number {
+    return this.now()
   }
 
   /** Call `listener` with the new revision whenever `tab`'s revision changes; returns the unsubscribe function. */
@@ -323,6 +334,12 @@ export class ConnectionStore {
         if (p !== null) this.previewListeners.forEach((l) => l(p))
         break
       }
+      case 'sketch.drag.moved':
+        if (typeof m.t === 'number' && typeof m.solve_ms === 'number') {
+          this.drag.record(this.now() - m.t, m.solve_ms)
+          this.update({ rttCount: this.state.rttCount + 1 })
+        }
+        break
       case 'pong':
         if (typeof m.t === 'number') {
           this.rtt.record(this.now() - m.t)

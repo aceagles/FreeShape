@@ -222,6 +222,11 @@
 .quick-menu button span {
   pointer-events: none;
 }
+.quick-menu button[aria-pressed='true'] {
+  border-color: var(--c-accentDark);
+  color: var(--c-accentDark);
+  background: var(--c-accentSoft);
+}
 .quick-menu button[data-aimed] {
   background: var(--c-accent);
   border-color: var(--c-accentDark);

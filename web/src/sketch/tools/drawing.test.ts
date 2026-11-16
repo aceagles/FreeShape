@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { attachKeys, suspendKeys } from '../../input/keys'
+import { installSurfaceGuards } from '../../input/surface'
 import { sketchKeys } from '../keys'
 import { OUTSIDE_MARGIN } from './drawing'
 import { rig } from './testRig'
@@ -279,8 +280,10 @@ describe('ending a shape without adding it', () => {
     expect(picks()).toBe(0)
     expect(r.adds()).toHaveLength(1)
     expect(r.store.getState().tool).toBe('line')
+    const off = installSurfaceGuards()
     const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
     r.canvas.dispatchEvent(menu)
+    off()
     expect(menu.defaultPrevented).toBe(true)
   })
 

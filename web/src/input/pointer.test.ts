@@ -2,6 +2,7 @@ import { Vector3 } from 'three'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ViewCamera } from '../viewport/camera'
 import { PointerModule, TWIST_DEAD_ZONE } from './pointer'
+import { installSurfaceGuards } from './surface'
 import type { NavHost, PenHandler } from './pointer'
 
 const deg = (r: number) => (r * 180) / Math.PI
@@ -320,9 +321,11 @@ describe('mouse', () => {
     expect(at.y).toBeCloseTo(200, 6)
   })
 
-  it('keeps the browser menu off a right click', () => {
+  it('keeps the browser menu off the canvas (the surface guards, src/input/surface.ts, own contextmenu)', () => {
+    const off = installSurfaceGuards()
     const e = new Event('contextmenu', { cancelable: true, bubbles: true })
     r.canvas.dispatchEvent(e)
+    off()
     expect(e.defaultPrevented).toBe(true)
   })
 })

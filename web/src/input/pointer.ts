@@ -136,7 +136,8 @@ const wrap = (a: number): number => (a > Math.PI ? a - 2 * Math.PI : a < -Math.P
  * Fingers navigate (one orbits, two pan, zoom and roll, a double tap fits); the mouse navigates Onshape style
  * (right drag orbits, middle drag pans, the wheel zooms at the cursor); the pen never navigates and goes to the
  * pen handler. Every pointer down is captured, because WebKit captures a finger implicitly but not the pen.
- * Nothing else adds pointer, touch or mouse listeners to the canvas.
+ * Nothing else adds pointer, touch or mouse listeners to the canvas. The browser's own long-press (selection, callout,
+ * context menu) is kept off by `src/input/surface.ts` and the touch-action rules in shell.css.
  */
 export class PointerModule {
   private readonly touches = new Map<number, Touch>()
@@ -182,7 +183,6 @@ export class PointerModule {
     el.addEventListener('pointercancel', this.onCancel)
     el.addEventListener('pointerleave', this.onLeave)
     el.addEventListener('wheel', this.onWheel, { passive: false })
-    el.addEventListener('contextmenu', this.onContextMenu)
   }
 
   setPenHandler(handler: PenHandler | null): void {
@@ -269,7 +269,6 @@ export class PointerModule {
     el.removeEventListener('pointercancel', this.onCancel)
     el.removeEventListener('pointerleave', this.onLeave)
     el.removeEventListener('wheel', this.onWheel)
-    el.removeEventListener('contextmenu', this.onContextMenu)
   }
 
   private local(e: PointerEvent | WheelEvent): Touch {
@@ -573,9 +572,5 @@ export class PointerModule {
     const p = this.local(e)
     this.host.view.zoomAt(Math.exp(-e.deltaY * unit * WHEEL_RATE), p.x, p.y)
     this.host.requestRender()
-  }
-
-  private readonly onContextMenu = (e: Event): void => {
-    e.preventDefault()
   }
 }

@@ -1300,7 +1300,7 @@ export const shots: ShotState[] = [
       const at = { x: Math.round(box.width * 0.6), y: Math.round(box.height * 0.56) }
       await sendPointer(page, [{ phase: 'down', kind: 'pen', id: 10, ...at }])
       await page.getByTestId('quick-line').waitFor()
-      await sendPointer(page, [{ phase: 'move', kind: 'pen', id: 10, x: at.x, y: at.y - 70 }])
+      await sendPointer(page, [{ phase: 'move', kind: 'pen', id: 10, x: at.x + 50, y: at.y - 50 }]) // up and right: Line (Select is the top item since F19)
       await page.locator('.quick-menu button[data-aimed]').waitFor()
     },
     after: closeAllDiscard,
@@ -1838,6 +1838,32 @@ export const shots: ShotState[] = [
       await page.getByTestId('gizmo').waitFor()
       await settledAssembly(page)
     },
+  },
+  {
+    name: 'sketch-hold-finger',
+    mock: 'radial', // F19: a finger held at the mock's place and slid, still down, to the top item (Select): the smaller ring, Select lit, nothing selected
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      const box = (await page.getByTestId('viewport').boundingBox())!
+      const at = { x: Math.round(box.width * 0.6), y: Math.round(box.height * 0.56) }
+      await sendPointer(page, [{ phase: 'down', kind: 'touch', id: 10, ...at }])
+      await page.getByTestId('quick-line').waitFor()
+      await sendPointer(page, [{ phase: 'move', kind: 'touch', id: 10, x: at.x, y: at.y - 70 }])
+      await page.locator('.quick-menu button[data-aimed]').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-hold-finger-corner',
+    mock: 'radial', // F19: a finger held 20 px from the top left corner: the smaller ring moved inward, every item on screen
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await sendPointer(page, [{ phase: 'down', kind: 'touch', id: 10, x: 20, y: 20 }])
+      await page.getByTestId('quick-line').waitFor()
+    },
+    after: closeAllDiscard,
   },
 ]
 

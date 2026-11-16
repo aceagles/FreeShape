@@ -35,10 +35,11 @@ export const size = {
   /** Gap between the strip button and the top of an open group list. */
   groupListOffset: 60,
   pinButton: 44,
-  quickMenuButton: { width: 76, height: 56 },
-  quickMenuRadius: 124,
-  quickMenuDisc: 332,
-  quickMenuHub: 28,
+  /* F19: smaller than the mock's radial state (76 x 56 buttons, radius 124, disc 332, hub 28): every button still 44 x 44 or more, none overlapping its neighbour, none under a finger */
+  quickMenuButton: { width: 64, height: 48 },
+  quickMenuRadius: 96,
+  quickMenuDisc: 264,
+  quickMenuHub: 24,
   /** Press-and-hold in the viewport this far from a wedge selects none. */
   quickMenuDeadZone: 40,
   navToggleWidth: 52,

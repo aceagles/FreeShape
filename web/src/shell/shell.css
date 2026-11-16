@@ -21,6 +21,29 @@
   cursor: default;
 }
 
+/* F19: the browser takes no long press anywhere in the app (selection, callout, its own pan or zoom). Event half: src/input/surface.ts.
+   Set once on the root, which also covers what is portalled outside .shell (menus, dialogs, the pad, the dimension box). */
+html,
+body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+/* real text entry opts back in, so typing, selecting and pasting in a field still work */
+input,
+textarea,
+[contenteditable]:not([contenteditable='false']) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* the view and everything drawn over it (sketch layer, hold ring, chips) belongs to the pointer module: no browser pan, zoom or selection drag */
+.viewport {
+  touch-action: none;
+}
+/* end F19 */
+
 /* Top bar */
 .top-bar {
   flex: none;

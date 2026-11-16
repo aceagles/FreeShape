@@ -335,6 +335,16 @@ export class SketchStore {
     }
     return false
   }
+  /**
+   * Cancel whatever is going on and leave Select on, by Esc's own steps (`stepBack`) repeated until they have nothing left to end
+   * (the quick menu's Select, F19). The selection is kept. The tool counter is bumped last: the constraint tools' pick mode
+   * watches it and leaves.
+   */
+  toSelect(): void {
+    if (!this.state.open) return
+    while ((this.state.drawing !== 0 || this.state.tool !== 'select') && this.stepBack()) continue
+    this.set({ toolSeq: this.state.toolSeq + 1 })
+  }
   setDrawing(n: number): void {
     if (n !== this.state.drawing) this.set({ drawing: n })
   }

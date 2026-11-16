@@ -4,15 +4,19 @@ import { inlinePaths } from '../tools/inlinePaths'
 import type { ToolState } from '../tools/useToolTypes'
 import type { SketchStore } from './store'
 
-/** The ring's buttons, clockwise from the top, as the layout mock's script lists them. */
+/**
+ * The ring's buttons, clockwise from the top, in the layout mock's order except that Select is first (F19): straight up from the
+ * held point is the shortest slide, away from a right hand's palm and never under it, and Select is the way out of whatever
+ * operation is running, so it is the one item that must always be easy to reach.
+ */
 export const QUICK_TOOLS: readonly { id: string; label: string }[] = [
+  { id: 'select', label: 'Select' },
   { id: 'line', label: 'Line' },
   { id: 'rectangle', label: 'Rectangle' },
   { id: 'circle', label: 'Circle' },
   { id: 'arc', label: 'Arc' },
   { id: 'dimension', label: 'Dimension' },
   { id: 'point', label: 'Point' },
-  { id: 'select', label: 'Select' },
   { id: 'construct', label: 'Construct' },
 ]
 
@@ -66,6 +70,11 @@ export class QuickMenu implements HoldHandler {
     private readonly host: QuickMenuHost,
     private readonly store: SketchStore,
     private readonly stateOf: (id: string) => ToolState,
+    /** Whether an item is drawn pressed when the ring opens: by default the tool that is on (a mode, such as construction, passes its own). */
+    private readonly pressedOf: (id: string) => boolean = (id) => {
+      const on = this.store.getState().tool
+      return (on === 'center_rectangle' ? 'rectangle' : on) === id
+    },
   ) {
     this.off = store.subscribe(() => {
       if (this.root && !this.store.getState().open) this.close()
@@ -108,6 +117,7 @@ export class QuickMenu implements HoldHandler {
       b.dataset['tool'] = t.id
       b.dataset['testid'] = `quick-${t.id}`
       if (this.stateOf(t.id) !== 'ok') b.setAttribute('aria-disabled', 'true')
+      if (this.pressedOf(t.id)) b.setAttribute('aria-pressed', 'true')
       const p = cornerOf(i)
       b.style.cssText = `left:${p.x}px;top:${p.y}px;width:${BW}px;height:${BH}px`
       const svg = document.createElementNS(SVG, 'svg')
@@ -164,7 +174,10 @@ export class QuickMenu implements HoldHandler {
     const t = QUICK_TOOLS[i]!
     const ok = this.stateOf(t.id) === 'ok'
     this.close()
-    if (ok && this.store.getState().tool !== t.id) this.store.chooseTool(t.id)
+    if (!ok) return
+    // Select is Esc's way out: end the shape in progress, leave a drawing tool, leave constraint pick mode
+    if (t.id === 'select') this.store.toSelect()
+    else if (this.store.getState().tool !== t.id) this.store.chooseTool(t.id)
   }
 
   private close(): void {

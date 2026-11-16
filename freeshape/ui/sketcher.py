@@ -95,6 +95,15 @@ def _default_popup(vp, x, y, rows, on_hover, on_choose, on_close):
     return p
 
 
+class _Mods:
+    """The modifiers of a Select other choice, as the mouse event a replayed click reads them from."""
+    def __init__(self, mods):
+        self._m = mods
+
+    def modifiers(self):
+        return self._m
+
+
 class Sketcher:
     def __init__(self, plane: K.Plane, sketch: Sketch, fid: str, on_change, on_tool_changed=None):
         self.plane = plane
@@ -112,6 +121,9 @@ class Sketcher:
         self.hover = None
         self.popup_factory = _default_popup      # (vp, x, y, rows, on_hover, on_choose, on_close); tests swap it
         self._popup = None
+        self._other_at = None        # (vp, x, y) where the Select other list was opened
+        self._other_edge_hover = False   # the list's hover put a part edge in the viewport's hover
+        self._forced = None          # a Select other row being replayed as a click: (kind, id) or a model edge Pick
         self._last_xy = None
         self.show_regions = True
         self.show_constraints = True
@@ -220,6 +232,9 @@ class Sketcher:
         return np.array([s[0], s[1]])
 
     def hit(self, vp, x, y, kinds=("point", "entity", "constraint"), exclude=()):
+        f = self._forced
+        if f is not None:                    # a Select other row stands in for whatever is under the cursor
+            return f if isinstance(f, tuple) and f[0] in kinds and f[1] not in exclude else None
         h = self.hits(vp, x, y, kinds, exclude)
         return h[0] if h else None
 
@@ -790,7 +805,7 @@ class Sketcher:
         if t == "dimension":
             return self._dimension_click(vp, x, y)
         if t == "use":
-            pk = vp.pick(x, y, kinds={"edge"}) or self._pick_axis(vp, x, y)
+            pk = self._edge_pick(vp, x, y)
             if pk and pk.kind == "axis":
                 self._use_axis(vp, pk)
             elif pk:
@@ -994,7 +1009,7 @@ class Sketcher:
             self.escape()
             return True
         if k == Qt.Key_QuoteLeft:                # Onshape's shortcut for Select other
-            if self.tool != "select" or not self._last_xy:
+            if self._pick_kinds() is None or not self._last_xy:
                 return False
             self.open_select_other(vp, *self._last_xy)
             return True
@@ -1300,8 +1315,31 @@ class Sketcher:
         if c and c["type"] in ("radius", "diameter"):
             label = "Show as diameter" if c["type"] == "radius" else "Show as radius"
             menu.addAction(label, lambda cid=c["id"]: (self.toggle_radius_diameter(cid), vp.update()))
-        if self.tool == "select" and len(self.hits(vp, x, y)) >= 2:
+        if len(self.select_other_rows(vp, x, y)) >= 2:
             menu.addAction("Select other\u2026", lambda: self.open_select_other(vp, x, y))
+
+    def _pick_kinds(self):
+        """What a click of the current tool picks, for Select other: None when the tool places points instead
+        (drawing tools snap rather than pick, so there is nothing to choose between)."""
+        t = self.tool
+        if t == "select":
+            return ("point", "entity", "constraint")
+        if t in CONSTRAINT_TOOLS or t in ("dimension", "sk_mirror", "sk_lpattern", "sk_cpattern"):
+            return ("point", "entity")
+        if t in ("trim", "extend", "offset"):
+            return ("entity",)
+        if t == "sk_fillet":
+            return ("point",)
+        if t == "use":
+            return ()
+        return None
+
+    def _edge_pick(self, vp, x, y):
+        """The part edge (or axis) a click of the use / dimension tool takes; a forced Select other row wins."""
+        f = self._forced
+        if f is not None:
+            return None if isinstance(f, tuple) else f
+        return vp.pick(x, y, kinds={"edge"}) or self._pick_axis(vp, x, y)
 
     def _hit_label(self, h):
         kind, i = h
@@ -1316,8 +1354,16 @@ class Sketcher:
         return f"{name} {i}" + (" (construction)" if e.get("construction") and e["type"] != "point" else "")
 
     def select_other_rows(self, vp, x, y):
-        """(label, id) for everything under (x, y), in hits() order."""
-        return [(self._hit_label(h), h[1]) for h in self.hits(vp, x, y)]
+        """(label, payload) for everything the current tool could pick at (x, y), in hits() order: payload is the
+        sketch id, or the part edge's Pick for the tools that take part edges (dimension, use)."""
+        kinds = self._pick_kinds()
+        if kinds is None:
+            return []
+        rows = [(self._hit_label(h), h[1]) for h in self.hits(vp, x, y, kinds)] if kinds else []
+        if self.tool in ("dimension", "use") and hasattr(vp, "pick_all"):
+            label = getattr(vp, "other_label", None)
+            rows += [(label(pk) if label else pk.label(), pk) for pk in vp.pick_all(x, y, kinds={"edge"})]
+        return rows
 
     def open_select_other(self, vp, x, y):
         """Pop up the list of everything under (x, y); needs two or more rows to be worth showing."""
@@ -1325,6 +1371,7 @@ class Sketcher:
         if len(rows) < 2:
             return None
         self._close_select_other()
+        self._other_at = (vp, x, y)
         self._popup = self.popup_factory(vp, x, y, rows, self._other_hover, self._other_choose, self._other_closed)
         return self._popup
 
@@ -1333,19 +1380,55 @@ class Sketcher:
         if p is not None and hasattr(p, "close"):
             p.close()
 
+    def _other_vp_update(self):
+        vp = self._other_at[0] if self._other_at else None
+        if vp is not None and hasattr(vp, "update"):
+            vp.update()
+
     def _other_hover(self, i):
-        self.hover = i
+        vp = self._other_at[0] if self._other_at else None
+        if isinstance(i, str):
+            self.hover = i
+        elif vp is not None:
+            self.hover = None
+            vp.hover = i                     # a part edge: the viewport draws it
+            self._other_edge_hover = True
+        self._other_vp_update()
+
+    def _kind_of(self, i):
+        if i in self.sk.points:
+            return "point"
+        return "entity" if i in self.sk.entities else "constraint"
 
     def _other_choose(self, i, mods=Qt.NoModifier):
-        if mods & Qt.ShiftModifier:
-            if i not in self.selection:
-                self.selection.append(i)
-        else:
-            self.selection = [i]
+        if self.tool == "select":
+            if mods & Qt.ShiftModifier:
+                if i not in self.selection:
+                    self.selection.append(i)
+            else:
+                self.selection = [i]
+            self._other_vp_update()
+            return
+        if self._other_at is None:
+            return
+        # any other tool: replay the click at the same spot with the chosen row standing in for the pick, so the
+        # tool (Equal, a dimension, Mirror's line) takes it exactly as it would a click on it
+        vp, x, y = self._other_at
+        self._forced = (self._kind_of(i), i) if isinstance(i, str) else i
+        try:
+            self.mouse_press(vp, x, y, _Mods(mods))
+        finally:
+            self._forced = None
+        self._other_vp_update()
 
     def _other_closed(self):
         self.hover = None
         self._popup = None
+        vp = self._other_at[0] if self._other_at else None
+        if vp is not None and self._other_edge_hover:
+            vp.hover = None
+        self._other_edge_hover = False
+        self._other_vp_update()
 
     def _swing_to(self, pair, t):
         """Turn two points about their midpoint so they line up horizontally / vertically, keeping their distance.
@@ -1693,14 +1776,14 @@ class Sketcher:
         if h is None and self.dim_second is None:
             # like Onshape: a part's edge (or corner) can be dimensioned to as well — it is brought into the
             # sketch as fixed construction geometry first
-            mp = self._model_point_hit(vp, x, y)
+            mp = self._model_point_hit(vp, x, y) if self._forced is None else None
             if mp is not None:
                 # a corner / edge midpoint / centre of the face being sketched on: a fixed point there
                 self.push_undo()
                 pid = self._model_point(mp[0], ("mpt", tuple(mp[0]), mp[1]))
                 self.changed(True)
                 h = ("point", pid)
-            pk = (vp.pick(x, y, kinds={"edge"}) or self._pick_axis(vp, x, y)) if h is None else None
+            pk = self._edge_pick(vp, x, y) if h is None else None
             if pk is not None:
                 eid = self._use_axis(vp, pk, click=(x, y)) if pk.kind == "axis" else \
                     self._use_edge(vp, pk, construction=True, click=(x, y))

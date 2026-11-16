@@ -108,10 +108,11 @@ it('names the Document, lists the tabs with the current one marked, and switches
   act(() => second.click())
   expect(second.getAttribute('aria-current')).toBe('page')
   expect(first.getAttribute('aria-current')).toBeNull()
-  expect(screen.getByTestId('feature-panel').textContent).toContain('Assembly 1')
+  // the panel lists the open tab's features; an Assembly has none yet
+  expect(screen.getByTestId('feature-panel').textContent).toContain('no feature list')
 })
 
-it('undo and redo are present and disabled until slice 3; save and add tab are on', () => {
+it('undo and redo are present and disabled while the tab has nothing to undo or redo; save and add tab are on', () => {
   setup()
   for (const name of ['Undo', 'Redo']) expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
   for (const name of ['Save', 'Add tab', 'Back to Documents']) expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false)

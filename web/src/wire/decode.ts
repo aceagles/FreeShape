@@ -70,10 +70,8 @@ export type WireInput = ArrayBuffer | ArrayBufferView
 /** Decode a whole payload to its root value. Throws {@link WireError}. */
 export function decodeWire(input: WireInput): unknown {
   if (!LITTLE_ENDIAN) throw new WireError('unsupported', 'big-endian hosts are not supported')
-  const bytes =
-    input instanceof ArrayBuffer
-      ? new Uint8Array(input)
-      : new Uint8Array(input.buffer as ArrayBuffer, input.byteOffset, input.byteLength)
+  // isView, not instanceof ArrayBuffer: a buffer from another realm (a jsdom test, an iframe) is not an instance
+  const bytes = ArrayBuffer.isView(input) ? new Uint8Array(input.buffer as ArrayBuffer, input.byteOffset, input.byteLength) : new Uint8Array(input)
   if (bytes.length < 8) {
     throw new WireError('too-short', `payload is ${bytes.length} bytes, shorter than the 8-byte prefix`)
   }

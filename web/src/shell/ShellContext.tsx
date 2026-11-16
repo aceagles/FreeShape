@@ -9,6 +9,12 @@ export interface ShellApi {
   dialogOpen: boolean
   panelCollapsed: boolean
   setPanelCollapsed(collapsed: boolean): void
+  /**
+   * The feature selected in the feature panel (a feature id such as "F3") in the current Part Studio, or null. Slice 4
+   * reads it to highlight the feature's geometry and sets it when a feature is picked in the view.
+   */
+  selectedFeature: string | null
+  selectFeature(id: string | null): void
 }
 
 export const ShellContext = createContext<ShellApi | null>(null)

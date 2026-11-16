@@ -1,0 +1,174 @@
+/* The feature list, its rows, the rollback bar and the rail icons. Sizes and colours are the layout's
+   (src/theme/tokens.ts through the custom properties on .shell). */
+.feature-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.panel-empty {
+  margin: 0;
+  padding: var(--sp-14);
+  color: var(--c-muted);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+.panel-row {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--feature-row);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-10);
+  padding: 0 var(--sp-14);
+  border: none;
+  background: transparent;
+  color: var(--c-ink);
+  text-align: left;
+  cursor: pointer;
+  /* a long press opens the row's menu: no iOS callout, no text selection */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.panel-row[data-indent] {
+  padding-left: calc(var(--sp-14) + var(--sp-16));
+}
+.panel-row[aria-current='true'] {
+  background: var(--c-selected);
+}
+.row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-message {
+  font-size: var(--fs-small);
+  color: var(--c-inkSoft);
+  /* a long message wraps, up to three lines; the selected row shows all of it */
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.panel-row[aria-current='true'] .row-message {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  display: block;
+}
+
+/* Failed: a red-tinted row, the name in red, the message under it (two lines, as in the layout). */
+.panel-row[data-state='failed'] {
+  align-items: flex-start;
+  padding-top: var(--sp-10);
+  padding-bottom: var(--sp-10);
+  background: var(--c-dangerSoft);
+}
+.panel-row[data-state='failed'][aria-current='true'] {
+  background: var(--c-selected);
+}
+.panel-row[data-state='failed'] .row-name {
+  font-weight: 600;
+  color: var(--c-danger);
+}
+/* Suppressed: greyed and struck through. Rolled back (below the bar): greyed. The desktop does the same. */
+.panel-row[data-state='suppressed'] {
+  color: var(--c-muted);
+}
+.panel-row[data-state='suppressed'] .row-name {
+  text-decoration: line-through;
+}
+.panel-row[data-state='suppressed'] svg,
+.panel-row[data-state='rolled-back'] svg {
+  opacity: 0.5;
+}
+.panel-row[data-state='rolled-back'] {
+  color: var(--c-muted);
+}
+.panel-row[data-state='rolled-back'] .row-text {
+  opacity: 0.7;
+}
+
+/* The rollback bar: a blue line with its Drag handle at the right end. */
+.rollback-bar {
+  position: relative;
+  height: var(--feature-row);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding-left: var(--sp-14);
+  z-index: 1;
+}
+.rollback-bar[data-dragging] {
+  background: rgba(255, 255, 255, 0.85);
+}
+.rollback-line {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--c-accent);
+}
+.rollback-handle {
+  flex: none;
+  width: var(--touch);
+  height: var(--touch);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-accent);
+  cursor: grab;
+  /* the handle is dragged, never the list or the page under it */
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.rollback-handle:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.rollback-bar[data-dragging] .rollback-handle {
+  cursor: grabbing;
+  background: var(--c-accentSoft);
+}
+
+/* Where the Parts list (card I3.3) goes: under the features, in the same scrolling body. */
+.panel-parts-slot {
+  flex: none;
+}
+
+/* The rail: one icon per feature, a thin line under the expand button. */
+.rail-divider {
+  flex: none;
+  width: 32px;
+  height: 1px;
+  margin: var(--sp-2) 0;
+  background: var(--c-lineSoft);
+}
+.rail-feature[aria-current='true'] {
+  background: var(--c-selected);
+}
+.rail-feature[data-state='failed'] {
+  background: var(--c-dangerSoft);
+  color: var(--c-danger);
+}
+.rail-feature[data-state='failed'][aria-current='true'] {
+  background: var(--c-selected);
+}
+.rail-feature[data-state='suppressed'],
+.rail-feature[data-state='rolled-back'] {
+  color: var(--c-muted);
+  opacity: 0.5;
+}

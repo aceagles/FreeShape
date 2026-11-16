@@ -9,6 +9,11 @@ interface Props {
   currentTab: string | null
   readOnly: boolean
   saving: boolean
+  /** The current Part Studio's can_undo and can_redo (false for a tab with no feature list). */
+  canUndo: boolean
+  canRedo: boolean
+  onUndo: () => void
+  onRedo: () => void
   debugOpen: boolean
   onSelectTab: (id: string) => void
   onAddTab: (kind: 'studio' | 'assembly') => void
@@ -20,10 +25,10 @@ interface Props {
 }
 
 /**
- * The top bar: back to the home screen, the Document name, the tab switcher with add tab, undo and redo (disabled
- * until slice 3), save with a dot while something is unsaved, and the connection state.
+ * The top bar: back to the home screen, the Document name, the tab switcher with add tab, undo and redo (on while the current
+ * Part Studio can undo or redo), save with a dot while something is unsaved, and the connection state.
  */
-export function TopBar({ store, currentTab, readOnly, saving, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onToggleDebug }: Props) {
+export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, onUndo, onRedo, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onToggleDebug }: Props) {
   const { document, tabs } = useConnection(store)
   const dirty = tabs.some((t) => t.dirty)
   return (
@@ -36,10 +41,10 @@ export function TopBar({ store, currentTab, readOnly, saving, debugOpen, onSelec
       </div>
       <TabBar tabs={tabs} currentTab={currentTab} readOnly={readOnly} onSelect={onSelectTab} onAdd={onAddTab} onRename={onRenameTab} onDelete={onDeleteTab} />
       <div className="top-bar-gap" />
-      <button type="button" className="icon-button" aria-label="Undo" disabled>
+      <button type="button" className="icon-button" aria-label="Undo" disabled={readOnly || !canUndo} onClick={onUndo}>
         <Icon d={paths.undo} />
       </button>
-      <button type="button" className="icon-button" aria-label="Redo" disabled>
+      <button type="button" className="icon-button" aria-label="Redo" disabled={readOnly || !canRedo} onClick={onRedo}>
         <Icon d={paths.redo} />
       </button>
       <button

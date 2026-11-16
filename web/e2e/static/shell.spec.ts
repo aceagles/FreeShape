@@ -99,7 +99,7 @@ test('a long strip label and the group mark do not touch', async ({ page }) => {
   expect(apart).toBe(true)
 })
 
-test('text sizes and weights are the layout tokens: strip label, Document name, tabs, Connected, panel header and rows', async ({ page }) => {
+test('text sizes and weights are the layout tokens: strip label, Document name, tabs, Connected, panel header', async ({ page }) => {
   await open(page, 1024, 768)
   const style = (selector: string) =>
     page.locator(selector).first().evaluate((el) => {
@@ -112,5 +112,4 @@ test('text sizes and weights are the layout tokens: strip label, Document name, 
   expect(await style('.tab-button:not([aria-current])')).toEqual({ size: `${fontSize.body}px`, weight: '500' })
   expect(await style('[data-testid="link-status"]')).toEqual({ size: `${fontSize.tab}px`, weight: '400' })
   expect(await style('.panel-title')).toEqual({ size: `${fontSize.body}px`, weight: '600' })
-  expect(await style('.panel-row')).toEqual({ size: `${fontSize.body}px`, weight: '600' })
 })

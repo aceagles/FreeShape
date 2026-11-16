@@ -1,3 +1,4 @@
+import { Children } from 'react'
 import type { ReactNode } from 'react'
 
 export interface Anchor {
@@ -13,17 +14,22 @@ export function anchorOf(el: HTMLElement): Anchor {
 }
 
 const WIDTH = 220
+const ITEM_HEIGHT = 44
+/** Padding and border of the menu box, around the items. */
+const BOX = 10
 
 /**
- * A menu under `anchor`, kept inside the window. A press anywhere else (the transparent scrim) closes it; it does
+ * A menu under `anchor`, kept inside the window (moved up over the anchor when it would run off the bottom). A press anywhere else (the transparent scrim) closes it; it does
  * not rely on hover or on the click that ends the press which opened it.
  */
 export function Popover({ anchor, label, onClose, children }: { anchor: Anchor; label: string; onClose: () => void; children: ReactNode }) {
   const left = Math.max(8, Math.min(anchor.left, window.innerWidth - WIDTH - 8))
+  const height = Children.count(children) * ITEM_HEIGHT + BOX
+  const top = Math.max(8, Math.min(anchor.bottom + 4, window.innerHeight - height - 8))
   return (
     <>
       <div className="popover-scrim" data-testid="popover-scrim" onPointerDown={onClose} />
-      <div className="popover" role="menu" aria-label={label} style={{ left, top: anchor.bottom + 4, width: WIDTH }}>
+      <div className="popover" role="menu" aria-label={label} style={{ left, top, width: WIDTH }}>
         {children}
       </div>
     </>

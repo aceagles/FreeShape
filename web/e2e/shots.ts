@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import { openApp } from './support/app.ts'
 import { closeAll, discardAutosaveOf, holdLockClosed, idOf, releaseLock } from './support/docs.ts'
 import { longPressTab } from './support/tabs.ts'
+import { dragRollbackTo, featureMenu, featureRow, longPressFeature } from './support/features.ts'
 import { canvasCentre, fingerDrag, twoFingers } from './support/pointer.ts'
 import { settled } from './support/viewport.ts'
 
@@ -159,6 +160,125 @@ export const shots: ShotState[] = [
     after: restoreName,
   },
   {
+    name: 'feature-panel',
+    mock: 'browsing', // the bracket's own features; the layout's panel has Origin, Sketch 1, Extrude 1, Fillet 1 and a failed Hole
+    steps: async (page) => {
+      await openApp(page)
+      await featureRow(page, 'Extrude 1').waitFor()
+    },
+  },
+  {
+    name: 'feature-selected',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await featureRow(page, 'Extrude 1').click()
+      await page.locator('.panel-row[aria-current="true"]').waitFor()
+    },
+  },
+  {
+    name: 'feature-menu',
+    mock: 'browsing', // the layout draws no row menu
+    steps: async (page) => {
+      await openApp(page)
+      await longPressFeature(page, 'Fillet 1')
+    },
+  },
+  {
+    name: 'feature-suppressed',
+    mock: 'browsing', // the layout draws no suppressed feature
+    steps: async (page) => {
+      await openApp(page)
+      await featureMenu(page, 'Fillet 1', 'Suppress')
+      await page.locator('.panel-row[data-state="suppressed"]').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'rollback-moved',
+    mock: 'browsing', // the bar above Slot: Slot, Slot cut and Chamfer 1 greyed
+    steps: async (page) => {
+      await openApp(page)
+      await dragRollbackTo(page, /^Slot$/)
+      await page.locator('.panel-row[data-state="rolled-back"]').first().waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'feature-failed',
+    mock: 'browsing', // Extrude 1 suppressed, so Fillet 1 has nothing to round: it fails with the engine's message
+    steps: async (page) => {
+      await openApp(page, { model: false })
+      await featureMenu(page, 'Extrude 1', 'Suppress')
+      await page.locator('.panel-row[data-state="failed"]').first().waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'feature-failed-selected',
+    mock: 'browsing', // the failed row selected: the whole message, whatever its length
+    steps: async (page) => {
+      await openApp(page, { model: false })
+      await featureMenu(page, 'Extrude 1', 'Suppress')
+      await page.locator('.panel-row[data-state="failed"]').first().click()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'rename-feature',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await featureMenu(page, 'Slot cut', 'Rename')
+      await page.getByRole('textbox', { name: 'Name' }).waitFor()
+    },
+  },
+  {
+    name: 'delete-feature-confirm',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await featureMenu(page, 'Chamfer 1', 'Delete')
+      await page.getByRole('dialog', { name: /Delete "Chamfer 1"/ }).waitFor()
+    },
+  },
+  {
+    name: 'rail-features',
+    mock: 'collapsed', // one icon per feature; the layout's rail has four and a failed Hole
+    steps: async (page) => {
+      await openApp(page)
+      await page.getByRole('button', { name: 'Collapse feature panel' }).click()
+      await featureRow(page, 'Extrude 1').waitFor({ state: 'detached' })
+      await page.locator('.rail-feature').first().waitFor()
+    },
+  },
+  {
+    name: 'rail-failed-selected',
+    mock: 'collapsed',
+    steps: async (page) => {
+      await openApp(page, { model: false })
+      await featureMenu(page, 'Extrude 1', 'Suppress')
+      await page.locator('.panel-row[data-state="failed"]').first().waitFor()
+      await page.getByRole('button', { name: 'Collapse feature panel' }).click()
+      await page.getByRole('button', { name: 'Chamfer 1' }).click()
+      await page.locator('.rail-feature[data-state="suppressed"]').first().waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'undo-redo-enabled',
+    mock: 'browsing', // the layout draws redo disabled
+    steps: async (page) => {
+      await openApp(page)
+      await featureMenu(page, 'Fillet 1', 'Suppress')
+      await page.locator('.panel-row[data-state="suppressed"]').waitFor()
+      await featureMenu(page, 'Chamfer 1', 'Suppress')
+      await page.getByRole('button', { name: 'Undo' }).click()
+      await page.getByRole('button', { name: 'Redo' }).and(page.locator(':enabled')).waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
     name: 'read-only-banner',
     mock: 'browsing', // no banner in the layout; the real server, with the lock written for the desktop before opening
     steps: async (page) => {
@@ -217,6 +337,11 @@ export const shots: ShotState[] = [
     after: async (page) => discardAutosaveOf(page.request, 'Bracket'),
   },
 ]
+
+/** Close every Document and throw away what the state edited, so the next state starts from the served files. */
+async function closeAllDiscard(page: Page): Promise<void> {
+  await closeAll(page.request)
+}
 
 /** The home screen with every Document closed, the rows loaded. */
 async function openHome(page: Page): Promise<void> {

@@ -4,10 +4,12 @@ import type { ConnectionStore } from '../net/connection'
 import { addTab, ApiError, closeDocument, deleteTab, fetchDocumentTabs, renameTab, saveDocument, takeOver } from '../net/api'
 import type { TabInfo } from '../net/connection'
 import { useConnection } from '../net/react'
+import { FeaturePanel } from '../features/FeaturePanel'
+import { useFeatureEdits } from '../features/useFeatureEdits'
+import { useStudioOutputs } from '../features/studioOutputs'
 import { StudioViewport } from '../viewport/StudioViewport'
 import { DialogArea } from './DialogArea'
 import { explainError } from './errors'
-import { FeaturePanel } from './FeaturePanel'
 import { DebugPopover, useDebugPanel } from './LinkStatus'
 import { ConfirmDialog } from './Modal'
 import { ReadOnlyBanner } from './ReadOnlyBanner'
@@ -59,6 +61,7 @@ declare global {
 export function Shell({ store, documentId, version, onLeave }: { store: ConnectionStore; documentId: string; version?: string; onLeave: () => void }) {
   const { tabs, document: doc, readOnly, holder, client } = useConnection(store)
   const [selected, setSelected] = useState<string | null>(null)
+  const [pickedFeature, setPickedFeature] = useState<{ tab: string; id: string } | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [dialog, setDialog] = useState<DialogState | null>(null)
   const debug = useDebugPanel()
@@ -68,6 +71,11 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
 
   const currentTab = tabs.some((t) => t.id === selected) ? selected : (tabs[0]?.id ?? null)
   const column = columnWidth(width, collapsed)
+  const tabKind = tabs.find((t) => t.id === currentTab)?.kind ?? null
+  const outputs = useStudioOutputs(store, currentTab)
+  // the outputs of the tab on screen (the loader keeps the last Part Studio's while an Assembly is open)
+  const studio = outputs !== null && outputs.tab === currentTab && tabKind === 'studio' ? outputs : null
+  const selectedFeature = studio !== null && pickedFeature?.tab === currentTab && studio.features.some((f) => f.id === pickedFeature.id) ? pickedFeature.id : null
 
   const api = useMemo<ShellApi>(
     () => ({
@@ -79,8 +87,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
       dialogOpen: dialog !== null,
       panelCollapsed: collapsed,
       setPanelCollapsed: setCollapsed,
+      selectedFeature,
+      selectFeature: (id) => setPickedFeature(id === null || currentTab === null ? null : { tab: currentTab, id }),
     }),
-    [dialog, collapsed],
+    [dialog, collapsed, selectedFeature, currentTab],
   )
   useEffect(() => {
     window.__freeshape = { shell: api }
@@ -93,6 +103,8 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const dirty = !readOnly && tabs.some((t) => t.dirty)
   const closeModal = useCallback(() => setModal(null), [])
   const fail = (title: string, e: unknown) => setModal({ kind: 'message', title, text: explainError(e, name) })
+  const failText = useCallback((title: string, text: string) => setModal({ kind: 'message', title, text }), [])
+  const edits = useFeatureEdits({ store, tab: tabKind === 'studio' ? currentTab : null, readOnly, documentName: name, onError: failText })
 
   const add = async (kind: 'studio' | 'assembly') => {
     try {
@@ -166,6 +178,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           currentTab={currentTab}
           readOnly={readOnly}
           saving={saving}
+          canUndo={studio?.canUndo === true && !edits.busy}
+          canRedo={studio?.canRedo === true && !edits.busy}
+          onUndo={edits.undo}
+          onRedo={edits.redo}
           debugOpen={debug.open}
           onSelectTab={setSelected}
           onAddTab={(kind) => void add(kind)}
@@ -180,10 +196,13 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
         <div className="shell-main">
           <div className="left-column" data-region="left-column" data-testid="left-column" style={{ width: column }}>
             <FeaturePanel
-              store={store}
               collapsed={collapsed}
               locked={dialog !== null}
-              currentTab={currentTab}
+              tabKind={tabKind}
+              outputs={studio}
+              selected={selectedFeature}
+              edits={edits}
+              onSelect={api.selectFeature}
               onCollapsedChange={setCollapsed}
             />
             {dialog && (
@@ -193,7 +212,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             )}
           </div>
           <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport">
-            <StudioViewport store={store} tab={currentTab} />
+            <StudioViewport outputs={outputs} />
             {/* The selection chip (S4) is placed here, top left. */}
             <div className="chip-slot" data-testid="chip-slot" />
           </div>

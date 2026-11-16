@@ -3233,6 +3233,8 @@ class MainWindow(QMainWindow):
             self.cancel_dialog()
         elif self.mode == "idle":
             self.viewport.clear_selection()
+            self.left.features.clearSelection()      # rows picked in the lists are a selection too
+            self.left.parts.clearSelection()
 
     def _delete_key(self):
         if self.is_dwg:

@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect, test } from '@playwright/test'
 import { openApp } from './support/app.ts'
-import { closeAll } from './support/docs.ts'
+import { closeAll, idOf } from './support/docs.ts'
 import { edgeSpot, emptySpot, faceSpots, pickAll, vertexSpot } from './support/pick.ts'
 import { fingerTap, sendPointer } from './support/pointer.ts'
 import type { Point } from './support/pointer.ts'
@@ -9,7 +9,8 @@ import { readViewport, settled } from './support/viewport.ts'
 
 // Slice S4, selection (card I4.2) against `freeshape serve`: Aim, Commit on release and the selection chip, with synthetic
 // pen, finger and mouse sequences on the canvas. What is selected is read from the viewport hook (`selection`) and from
-// the chip on the screen. The slice gate (I4.4) extends this file.
+// the chip on the screen. The slice gate (I4.4) adds the gate cases at the end: the lift over empty space, the finger on
+// an edge, and the reference the refs route gives for the selected item.
 
 test.afterEach(async ({ page }) => closeAll(page.request))
 
@@ -170,4 +171,69 @@ test('the mouse highlights on a move and Commits on a click', async ({ page, req
     { phase: 'up', kind: 'mouse', id: 20, ...a!, button: 0 },
   ])
   expect(await names(page)).toEqual([a!.name])
+})
+
+// --- gate (I4.4) ---
+
+test('single mode: a pen down on the model and a lift over empty space clears a selected face', async ({ page, request }) => {
+  await openApp(page)
+  const [a, b] = await faceSpots(page, request, 'pen')
+  const empty = await emptySpot(page, 'pen')
+  await penPick(page, a!)
+  expect(await names(page)).toEqual([a!.name])
+  await penDown(page, b!)
+  expect((await selection(page)).aimed).toMatchObject({ name: b!.name })
+  await penMove(page, empty)
+  await penUp(page, empty)
+  expect((await selection(page)).count).toBe(0)
+  await expect(chip(page)).toHaveText('Nothing selected')
+})
+
+test('Multi with two faces selected: down on the model and a lift over empty space leaves both, and Clear empties', async ({ page, request }) => {
+  await openApp(page)
+  const [a, b] = await faceSpots(page, request, 'pen')
+  const empty = await emptySpot(page, 'pen')
+  await multi(page).click()
+  await penPick(page, a!)
+  await penPick(page, b!)
+  await penDown(page, a!)
+  await penMove(page, empty)
+  await penUp(page, empty)
+  expect(await names(page)).toEqual([a!.name, b!.name])
+  await page.getByTestId('selection-clear').click()
+  expect((await selection(page)).count).toBe(0)
+})
+
+test('a finger tap on an edge selects the edge; a finger drag from it selects nothing', async ({ page, request }) => {
+  await openApp(page)
+  const e = await edgeSpot(page, request, 'touch')
+  await fingerTap(page, e)
+  expect((await selection(page)).items).toMatchObject([{ kind: 'edge', name: e.name, index: e.edge }])
+  await expect(chip(page)).toHaveText('1 edge')
+  await page.getByTestId('selection-clear').click()
+  expect((await selection(page)).count).toBe(0)
+  await sendPointer(page, [
+    { phase: 'down', kind: 'touch', id: 2, x: e.x, y: e.y },
+    ...[1, 2, 3, 4, 5, 6, 7, 8].map((i) => ({ phase: 'move' as const, kind: 'touch' as const, id: 2, x: e.x + 5 * i, y: e.y })),
+    { phase: 'up', kind: 'touch', id: 2, x: e.x + 40, y: e.y },
+  ])
+  await settled(page)
+  expect((await selection(page)).count).toBe(0)
+  await expect(chip(page)).toHaveText('Nothing selected')
+})
+
+test("the selected face's reference from the refs route carries the Element name the view showed", async ({ page, request }) => {
+  await openApp(page)
+  const [a] = await faceSpots(page, request, 'pen')
+  await penPick(page, a!)
+  const item = (await selection(page)).items[0]!
+  expect(item.kind).toBe('face')
+  const doc = await idOf(request, 'Bracket')
+  const tab = ((await (await request.get(`/documents/${doc}/tabs`)).json()).tabs[0] as { id: string }).id
+  // the client counts from 0, the route from 1
+  const res = await request.post(`/documents/${doc}/tabs/${tab}/refs`, { data: { picks: [{ part: item.part, kind: 'face', index: item.index + 1, want: ['face'] }] } })
+  expect(res.status()).toBe(200)
+  const [got] = (await res.json()).items as { ok: boolean; kind: string; name: string; ref: { name?: string } }[]
+  expect(got).toMatchObject({ ok: true, kind: 'face', name: item.name })
+  expect(got!.ref.name).toBe(item.name)
 })

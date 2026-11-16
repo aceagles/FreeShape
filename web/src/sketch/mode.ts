@@ -13,12 +13,13 @@ import type { ScreenLayout } from './layout'
 import { pickSketch } from './pick'
 import type { SketchHit } from './pick'
 import type { SnapContext } from './tools/snap'
-import type { SketchStore } from './store'
+import type { SketchPreview, SketchStore } from './store'
 import { sketchMarkup } from './svg'
 import type { DrawStats } from './draw'
 import type { Uv } from './wire'
 import { QuickMenu } from './quickmenu'
 import { sketchToolState } from './strip'
+import { EDIT_TOOLS } from './tools/trim'
 import { DrawTools } from './tools/drawing'
 import type { DrawReport } from './tools/drawing'
 
@@ -146,7 +147,9 @@ export class SketchMode {
           }
           this.penDown = true
         }
-        this.store.aim(itemAt(pt.x, pt.y, kind))
+        const hit = itemAt(pt.x, pt.y, kind)
+        this.store.aim(hit)
+        this.store.aimTools(hit, this.uvAt(pt.x, pt.y), kind, this.mmPerPx())
       },
       commit: (pt: PenPoint) => {
         if (kind === 'pen') {
@@ -155,8 +158,9 @@ export class SketchMode {
         }
         if (kind === 'mouse') this.store.aim(itemAt(pt.x, pt.y, kind))
         const hit = this.store.getState().aimed
-        if (!this.store.pointerTool?.commit(hit, this.uvAt(pt.x, pt.y), kind)) this.store.select(hit)
+        if (!this.store.commitTools(hit, this.uvAt(pt.x, pt.y), kind, this.mmPerPx())) this.store.select(hit)
         if (kind === 'pen') this.store.aim(null)
+        this.store.setPreview(null)
       },
       cancel: () => {
         if (kind === 'pen') {
@@ -164,6 +168,7 @@ export class SketchMode {
           this.penDrag.cancel()
         }
         this.store.aim(null)
+        this.store.setPreview(null)
       },
     })
     p.setPenHandler(this.draw.wrap('pen', picking('pen')))
@@ -175,7 +180,7 @@ export class SketchMode {
       tap: (x, y) => {
         if (this.draw.active) return // a finger places nothing with a drawing tool
         const hit = itemAt(x, y, 'touch')
-        if (this.store.pointerTool?.commit(hit, this.uvAt(x, y), 'touch')) {
+        if (this.store.commitTools(hit, this.uvAt(x, y), 'touch', this.mmPerPx())) {
           this.before = null
           return
         }
@@ -184,7 +189,7 @@ export class SketchMode {
       },
       doubleTap: (x, y) => {
         const hit = itemAt(x, y, 'touch')
-        return hit !== null && this.store.pointerTool?.doubleTap(hit) === true
+        return hit !== null && this.store.doubleTapTools(hit)
       },
       undoTap: () => {
         if (this.draw.active) return
@@ -211,6 +216,14 @@ export class SketchMode {
     return { sketch: s.view.sketch, layout: layoutSketch(drawing, toView), edges: s.view.edges, toUv: (x, y) => viewToUv(view, f, x, y), toView, pointer }
   }
 
+  /** Sketch millimetres under one CSS pixel of the view, near its middle (for reaches that are measured on screen). */
+  private mmPerPx(): number {
+    const { view } = this.host
+    const a = this.uvAt(view.width / 2, view.height / 2)
+    const b = this.uvAt(view.width / 2 + 100, view.height / 2)
+    return a && b ? Math.hypot(b[0] - a[0], b[1] - a[1]) / 100 : 1
+  }
+
   /** The centre of a dimension's label, in sketch coordinates. */
   private labelUv(id: string): Uv | null {
     const l = this.layout?.dims.find((d) => d.id === id)?.label
@@ -219,7 +232,8 @@ export class SketchMode {
 
   /** Select is the tool: no drawing tool and no Dimension is on, so an item can be dragged. */
   private get selecting(): boolean {
-    return !this.draw.active && this.store.getState().tool !== 'dimension'
+    const tool = this.store.getState().tool
+    return !this.draw.active && tool !== 'dimension' && !EDIT_TOOLS.has(tool)
   }
 
   /** The Drag handles of the selected items now. */
@@ -327,13 +341,21 @@ export class SketchMode {
     }
     this.layout = layoutSketch(this.drawing!, (uv) => uvToView(view, f, uv))
     const handles = this.spots()
-    const markup = sketchMarkup(this.layout, { selected: s.selected, aimed: s.aimed, handles, grabbed: this.handles.grabbed }, view.width, view.height)
+    const markup = sketchMarkup(this.layout, { selected: s.selected, aimed: s.aimed, handles, grabbed: this.handles.grabbed, preview: this.previewPath(s.preview) }, view.width, view.height)
     if (markup !== this.lastMarkup) {
       this.lastMarkup = markup
       this.layer.innerHTML = markup
       this.paints++
     }
     this.draw.update()
+  }
+
+  /** The screen path of the tool's preview, for the layer. */
+  private previewPath(p: SketchPreview | null): { kind: 'trim' | 'edge'; pts: { x: number; y: number }[] } | null {
+    const f = this.store.getState().view?.frame
+    if (!p || !f) return null
+    const { view } = this.host
+    return { kind: p.kind, pts: (p.kind === 'trim' ? [p.from, p.to] : p.points).map((uv) => uvToView(view, f, uv)) }
   }
 
   /** Turn the view square to the sketch plane (the cube's Normal to). */

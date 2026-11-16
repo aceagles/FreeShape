@@ -26,10 +26,15 @@ export type SketchTarget = { document: string; tab: string } & ({ feature: strin
 /** A tool that takes the pointer's Commit before the selection does (the Dimension tool, I7.11). */
 export interface SketchPointerTool {
   /** A Commit on `hit` (or on nothing) at sketch point `uv`; true when the tool took it, so nothing is selected. */
-  commit(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer): boolean
+  commit(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): boolean
+  /** The pen or the mouse Aims at `hit` or at `uv` (I7.12): the tool shows what a Commit there would do (`SketchStore.setPreview`). */
+  aim?(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): void
   /** A double tap or double click on `hit`; true when the tool took it (the view then does not fit). */
   doubleTap(hit: SketchHit): boolean
 }
+
+/** What the Trim and Use edge tools show for the Aim: the piece of a line a Trim would remove, or the model edge a Use would bring in. Both in sketch coordinates. */
+export type SketchPreview = { kind: 'trim'; from: Uv; to: Uv } | { kind: 'edge'; points: readonly Uv[] }
 
 export interface SketchState {
   /** No sketch is open. */
@@ -57,6 +62,8 @@ export interface SketchState {
   drawing: number
   /** Items of a drag in progress as they are drawn (moved points, radii, a dimension's label); null when none is dragged (I7.9). */
   live: LiveDrag | null
+  /** What the tool on shows for the pen's Aim (I7.12); null when it shows nothing. */
+  preview: SketchPreview | null
 }
 
 /** What a `sketch.add` made: the ids of the point of each pick and of the entities. */
@@ -65,7 +72,7 @@ export interface Made {
   entities: string[]
 }
 
-const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, drawing: 0, live: null }
+const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, drawing: 0, live: null, preview: null }
 
 const same = (a: SketchHit | null, b: SketchHit | null): boolean => a === b || (a !== null && b !== null && a.kind === b.kind && a.id === b.id)
 
@@ -103,6 +110,8 @@ export class SketchStore {
   private frame: { frame: Frame; edges: FrameEdge[] } | null = null
   /** The tool that takes Commits first, if one is on (set by the tool itself). */
   pointerTool: SketchPointerTool | null = null
+  /** More tools that take Commits and Aims first (Trim, Fillet and Use edge, I7.12); each takes them only while it is the tool on. */
+  private readonly extraTools = new Set<SketchPointerTool>()
   /** The `sketch.add` messages sent and not yet answered, oldest first. The server answers a client's messages in order. */
   private adds: ((made: Made | null) => void)[] = []
   /** Moving by dragging (I7.9). */
@@ -111,6 +120,31 @@ export class SketchStore {
   constructor(private readonly transport: SketchTransport) {
     this.drag = new SketchDrag(transport, this)
     this.attach()
+  }
+
+  /** Add a tool to those that take the pointer first; returns the way to remove it. */
+  addPointerTool(tool: SketchPointerTool): () => void {
+    this.extraTools.add(tool)
+    return () => void this.extraTools.delete(tool)
+  }
+  private get tools(): SketchPointerTool[] {
+    return [...(this.pointerTool ? [this.pointerTool] : []), ...this.extraTools]
+  }
+  /** The pointer's Commit goes to the tools in turn; true when one took it, so nothing is selected. */
+  commitTools(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): boolean {
+    return this.tools.some((t) => t.commit(hit, uv, pointer, mmPerPx))
+  }
+  doubleTapTools(hit: SketchHit): boolean {
+    return this.tools.some((t) => t.doubleTap(hit))
+  }
+  aimTools(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): void {
+    for (const t of this.tools) t.aim?.(hit, uv, pointer, mmPerPx)
+  }
+  setPreview(preview: SketchPreview | null): void {
+    const now = this.state.preview
+    if (now === preview) return
+    if (now !== null && preview !== null && JSON.stringify(now) === JSON.stringify(preview)) return
+    this.set({ preview })
   }
 
   /** Listen to the connection (done by the constructor; call it again after `detach`, as React's strict mode does). */
@@ -274,7 +308,7 @@ export class SketchStore {
         // an item the step removed is no longer selected
         const alive = (h: SketchHit) =>
           h.kind === 'point' ? h.id in view.sketch.points : h.kind === 'entity' ? h.id in view.sketch.entities : view.sketch.constraints.some((c) => c.id === h.id)
-        this.set({ view, error: null, selected: this.state.selected.filter(alive), aimed: null, live: null })
+        this.set({ view, error: null, selected: this.state.selected.filter(alive), aimed: null, live: null, preview: null })
         const made = m['made']
         if (typeof made === 'object' && made !== null) {
           const o = made as Record<string, unknown>

@@ -9,7 +9,7 @@ import type { Spot } from './support/pick.ts'
 import { canvasCentre, fingerDrag, fingerTap, penStroke, sendPointer, twoFingers } from './support/pointer.ts'
 import type { PointerStep } from './support/pointer.ts'
 import { chooseWithRing, place, regionSpot, screenFor } from './support/draw.ts'
-import { openNewSketch, openSketchFeature, screenOf, settledSketch } from './support/sketch.ts'
+import { openNewSketch, openSketchFeature, screenOf, settledSketch, uvAt } from './support/sketch.ts'
 import { settled } from './support/viewport.ts'
 import { gizmoOf, openAssemblyTab, readAssembly, settledAssembly } from './support/assembly.ts'
 
@@ -64,6 +64,24 @@ async function penPickEdge(page: Page): Promise<void> {
 }
 
 /** Sizes of the screen, as the layout has them (key = the mock's size key). */
+/** The `sketch.opened` answer of the page's live connection, for states that need the sketch's ids and the model's edges (I7.12). Call before the sketch is opened. */
+type EditOpened = { sketch: { points: Record<string, [number, number]>; entities: Record<string, { type: string; p1?: string; p2?: string }> }; edges: { pick: unknown; points: [number, number][] }[] }
+function editOpened(page: Page): () => EditOpened {
+  let got: EditOpened | null = null
+  page.on('websocket', (ws) =>
+    ws.on('framereceived', (f) => {
+      if (typeof f.payload !== 'string' || !f.payload.includes('sketch.opened')) return
+      try {
+        const m = JSON.parse(f.payload) as { type?: string }
+        if (m.type === 'sketch.opened') got = m as unknown as EditOpened
+      } catch {
+        // not JSON
+      }
+    }),
+  )
+  return () => got!
+}
+
 export const SIZES = [
   { key: '1024', width: 1024, height: 768 },
   { key: '1366', width: 1366, height: 1024 },
@@ -1188,6 +1206,78 @@ export const shots: ShotState[] = [
         { phase: 'move', kind: 'pen', id: 10, x: o.x + 4, y: o.y - 3 },
       ])
       await page.locator('[data-kind="aim"][data-snap="point"]').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-trim-aim',
+    mock: 'sketch', // Trim chosen from the Draw group and the pen down on a line of the bracket profile: the piece a Commit would remove is marked red and dashed, with the tool's hint at the top left
+    steps: async (page) => {
+      const opened = editOpened(page)
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
+      await page.locator('.group-row[data-tool="trim"]').click()
+      await page.getByTestId('edit-hint').waitFor()
+      await settledSketch(page)
+      const sk = opened().sketch
+      const id = Object.keys(sk.entities).find((k) => sk.entities[k]!.type === 'line')!
+      const a = await screenOf(page, 'point', sk.entities[id]!.p1!)
+      const b = await screenOf(page, 'point', sk.entities[id]!.p2!)
+      const at = { x: a.x + (b.x - a.x) * 0.3, y: a.y + (b.y - a.y) * 0.3 }
+      await sendPointer(page, [
+        { phase: 'down', kind: 'pen', id: 10, x: at.x - 4, y: at.y },
+        { phase: 'move', kind: 'pen', id: 10, ...at },
+      ])
+      await page.locator('.sketch-layer g[data-preview="trim"]').waitFor({ state: 'attached' })
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-fillet-pad',
+    mock: 'dialog', // Corner fillet on a corner of the bracket profile: the dialog area holds the radius on the pad, the corner is selected
+    steps: async (page) => {
+      const opened = editOpened(page)
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
+      await page.locator('.group-row[data-tool="corner_fillet"]').click()
+      await settledSketch(page)
+      const sk = opened().sketch
+      const users = (pid: string) => Object.values(sk.entities).filter((e) => e.p1 === pid || e.p2 === pid)
+      const corner = Object.keys(sk.points).find((p) => p !== 'origin' && users(p).length === 2 && users(p).every((e) => e.type === 'line'))!
+      await fingerTap(page, await screenOf(page, 'point', corner))
+      await page.getByTestId('pad').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-use-edge-aim',
+    mock: 'sketch', // Use edge on a new sketch on the Top plane, the pen down on a model edge: the edge is marked blue through the see-through solid
+    steps: async (page) => {
+      const opened = editOpened(page)
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
+      await page.locator('.group-row[data-tool="use_edge"]').click()
+      await page.getByTestId('edit-hint').waitFor()
+      await settledSketch(page)
+      const e = opened().edges.find((x) => x.points.length === 2) ?? opened().edges[0]!
+      const mid = { u: (e.points[0]![0] + e.points[1]![0]) / 2, v: (e.points[0]![1] + e.points[1]![1]) / 2 }
+      const o = await screenOf(page, 'point', 'origin')
+      const a = (await uvAt(page, o.x + 100, o.y))!
+      const b = (await uvAt(page, o.x, o.y + 100))!
+      const m = [
+        [a[0] / 100, b[0] / 100],
+        [a[1] / 100, b[1] / 100],
+      ]
+      const det = m[0]![0]! * m[1]![1]! - m[0]![1]! * m[1]![0]!
+      const at = { x: o.x + (m[1]![1]! * mid.u - m[0]![1]! * mid.v) / det, y: o.y + (-m[1]![0]! * mid.u + m[0]![0]! * mid.v) / det }
+      await sendPointer(page, [
+        { phase: 'down', kind: 'pen', id: 10, x: at.x - 3, y: at.y },
+        { phase: 'move', kind: 'pen', id: 10, ...at },
+      ])
+      await page.locator('.sketch-layer g[data-preview="edge"]').waitFor({ state: 'attached' })
     },
     after: closeAllDiscard,
   },

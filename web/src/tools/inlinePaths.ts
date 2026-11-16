@@ -25,5 +25,8 @@ export const inlinePaths: Readonly<Record<string, string>> = {
   symmetric: 'M12 3v18 M5 8l3 4-3 4 M19 8l-3 4 3 4',
   fix: 'M12 4v12 M6 16h12 M8 20l2-4 M12 20l2-4 M16 20l2-4',
   normal: 'M4 19c4-10 12-10 16 0 M12 11V3',
+  trim: 'M4 18L20 6 M4 6l5 5 M4 12l3 3 M15 20l5-5',
+  corner_fillet: 'M5 19v-8a6 6 0 0 1 6-6h8',
+  use_edge: 'M4 20h16 M7 20V9l5-5 5 5v11 M12 12v8',
   point_on: 'M4 18L20 6 M12 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0-4 0',
 }

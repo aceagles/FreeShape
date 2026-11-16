@@ -36,6 +36,8 @@ export interface SketchLook {
   /** The Drag handles of the selected items, and the one held. */
   handles?: readonly HandleSpot[]
   grabbed?: SketchHit | null
+  /** What a Trim would remove or a Use edge would bring in, in view pixels (I7.12). */
+  preview?: { kind: 'trim' | 'edge'; pts: readonly P[] } | null
 }
 
 const colourOf = (s: ScreenStroke | { status: Status; construction?: boolean }): string =>
@@ -117,6 +119,14 @@ export function sketchMarkup(layout: ScreenLayout, look: SketchLook, width: numb
   }
   for (const d of layout.dims) out.push(dimMarkup(d, look))
   for (const g of layout.glyphs) out.push(glyphMarkup(g, look))
+  if (look.preview && look.preview.pts.length > 1) {
+    const edge = look.preview.kind === 'edge'
+    const d = path(look.preview.pts, false)
+    out.push(
+      `<g data-kind="preview" data-preview="${look.preview.kind}"><path d="${d}" fill="none" stroke="${edge ? color.accent : sketchColor.conflicting}" stroke-width="9" stroke-opacity="0.45" stroke-linecap="round" stroke-linejoin="round"/>` +
+        `<path d="${d}" fill="none" stroke="${edge ? color.accent : sketchColor.conflicting}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"${edge ? '' : ' stroke-dasharray="7 5"'}/></g>`,
+    )
+  }
   if (look.handles) out.push(handleMarkup(look.handles, look.grabbed ?? null))
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Sketch">${out.join('')}</svg>`
 }

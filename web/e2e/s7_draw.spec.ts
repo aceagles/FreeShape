@@ -173,13 +173,13 @@ test('a finger never places a point, and a pen lifted far outside the view drops
   expect(s.stats.lines).toBe(0)
 })
 
-test('the Draw group on the strip has its five tools lit, tapping one turns it on, and tapping Rectangle again makes it a centre rectangle', async ({ page }) => {
+test('the Draw group on the strip has its five drawing tools and Trim, Corner fillet and Use edge lit, tapping one turns it on, and tapping Rectangle again makes it a centre rectangle', async ({ page }) => {
   await openApp(page)
   await openNewSketch(page, 'Top')
   await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
   const rows = page.locator('.group-row')
-  await expect(rows).toHaveCount(5)
-  for (const id of ['line', 'rectangle', 'circle', 'arc', 'point']) await expect(page.locator(`.group-row[data-tool="${id}"]`)).toHaveAttribute('data-state', 'ok')
+  await expect(rows).toHaveCount(8)
+  for (const id of ['line', 'rectangle', 'circle', 'arc', 'point', 'trim', 'corner_fillet', 'use_edge']) await expect(page.locator(`.group-row[data-tool="${id}"]`)).toHaveAttribute('data-state', 'ok')
   await page.locator('.group-row[data-tool="rectangle"]').click()
   await tool(page).toBe('rectangle')
   await expect(page.getByTestId('aim-hint')).toContainText('Rectangle')

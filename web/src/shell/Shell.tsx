@@ -27,6 +27,8 @@ import { SketchBar } from '../sketch/SketchBar'
 import { SketchChip } from '../sketch/SketchChip'
 import { DimensionDock, DimensionHint } from '../sketch/DimensionPad'
 import { DimensionTool } from '../sketch/dimension'
+import { EditDock, EditHint } from '../sketch/EditPad'
+import { EditTools } from '../sketch/tools/edit'
 import { SketchStore } from '../sketch/store'
 import { ConstraintNote } from '../sketch/ConstraintNote'
 import { ConstraintStore, attachDeleteKey, isConstrainTool } from '../sketch/constraints'
@@ -145,6 +147,13 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   useEffect(() => {
     dimension.setActive(sketch.tool === 'dimension')
   }, [dimension, sketch.tool, sketch.toolSeq])
+  // Trim, Corner fillet and Use edge (I7.12): the radius pad opens in the dialog area like the Dimension pad
+  const [editDock] = useState(() => new EditDock())
+  const [edit] = useState(() => new EditTools({ sketch: sketchStore, transport: store, openPad: editDock.open, closePad: editDock.close }))
+  useEffect(() => {
+    edit.attach()
+    return () => edit.detach()
+  }, [edit])
   const dimensionOn = useSyncExternalStore(dimension.subscribe, dimension.getState).active
   const [modal, setModal] = useState<Modal | null>(null)
   const [saving, setSaving] = useState(false)
@@ -208,8 +217,11 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   )
   // the dialog area closed under the Dimension pad (its close button): the dimension is given up
   useEffect(() => {
-    if (!api.dialogOpen) dimension.padGone()
-  }, [api, dimension])
+    if (!api.dialogOpen) {
+      dimension.padGone()
+      edit.padGone()
+    }
+  }, [api, dimension, edit])
   useEffect(() => {
     window.__freeshape = {
       shell: api,
@@ -294,6 +306,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const look: PreviewLook | null = showPreview ? { number: preview.number, feature: preview.feature, ghost: base === null ? null : preview.outputs } : null
   const variables = useMemo(() => Object.keys(studio?.variables ?? {}).map((n) => n.replace(/^#/, '')), [studio])
   useEffect(() => dock.bind(api, variables))
+  useEffect(() => editDock.bind(api, variables))
   const assembly = useAssembly({ store, tab: currentTab, tabKind, readOnly, documentName: name, onError: failText })
 
   const add = async (kind: 'studio' | 'assembly') => {
@@ -484,6 +497,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
               {sketchHere ? <SketchChip store={sketchStore} /> : <SelectionChip store={selection} />}
               {sketchHere && <ConstraintNote store={constraints} />}
               {sketchHere && <DimensionHint tool={dimension} />}
+              {sketchHere && <EditHint tool={edit} />}
             </div>
           </div>
         </div>

@@ -19,23 +19,53 @@ export async function featureMenu(page: Page, name: string | RegExp, item: strin
   await page.getByRole('menuitem', { name: item, exact: true }).click()
 }
 
-/** Drag the rollback bar's Drag handle (a mouse, with the button held) to the line above the row `above`, or below the last row. */
-export async function dragRollbackTo(page: Page, above: string | RegExp | null): Promise<void> {
-  const handle = await page.getByTestId('rollback-handle').boundingBox()
-  if (!handle) throw new Error('no Drag handle')
-  let y: number
+/** The y (page pixels) to drag the Drag handle to: the line above the row `above`, or just below the last row. */
+async function rollbackTargetY(page: Page, above: string | RegExp | null): Promise<number> {
   if (above === null) {
     const last = await page.locator('.panel-row[data-feature]').last().boundingBox()
     if (!last) throw new Error('no rows')
-    y = last.y + last.height + 4
-  } else {
-    const row = await featureRow(page, above).boundingBox()
-    if (!row) throw new Error(`no feature row ${String(above)}`)
-    y = row.y + 1
+    return last.y + last.height + 4
   }
+  const row = await featureRow(page, above).boundingBox()
+  if (!row) throw new Error(`no feature row ${String(above)}`)
+  return row.y + 1
+}
+
+/**
+ * Drag the rollback bar's Drag handle to the line above the row `above`, or below the last row. `by` is the pointer:
+ * 'mouse' holds the button with the real mouse; 'touch' and 'pen' are PointerEvents dispatched on the handle with that
+ * pointerType (WebKit under Playwright has no touch or pen device), one frame apart so the panel draws each move.
+ */
+export async function dragRollbackTo(page: Page, above: string | RegExp | null, by: 'mouse' | 'touch' | 'pen' = 'mouse'): Promise<void> {
+  const handle = await page.getByTestId('rollback-handle').boundingBox()
+  if (!handle) throw new Error('no Drag handle')
+  const y = await rollbackTargetY(page, above)
   const x = handle.x + handle.width / 2
-  await page.mouse.move(x, handle.y + handle.height / 2)
-  await page.mouse.down()
-  await page.mouse.move(x, y, { steps: 6 })
-  await page.mouse.up()
+  const y0 = handle.y + handle.height / 2
+  if (by === 'mouse') {
+    await page.mouse.move(x, y0)
+    await page.mouse.down()
+    await page.mouse.move(x, y, { steps: 6 })
+    await page.mouse.up()
+    return
+  }
+  await page.evaluate(
+    async ({ kind, x, y0, y }) => {
+      const handle = document.querySelector('[data-testid="rollback-handle"]') as HTMLElement
+      const frame = () => new Promise<void>((r) => requestAnimationFrame(() => r()))
+      const send = (type: string, at: number, pressed: boolean) =>
+        handle.dispatchEvent(
+          new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, pointerId: 7, pointerType: kind, isPrimary: true, clientX: x, clientY: at, button: type === 'pointermove' ? -1 : 0, buttons: pressed ? 1 : 0, pressure: pressed ? 0.5 : 0 }),
+        )
+      send('pointerdown', y0, true)
+      await frame()
+      for (let i = 1; i <= 6; i++) {
+        send('pointermove', y0 + ((y - y0) * i) / 6, true)
+        await frame()
+      }
+      send('pointerup', y, false)
+      await frame()
+    },
+    { kind: by, x, y0, y },
+  )
 }

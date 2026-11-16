@@ -8,7 +8,7 @@ import type { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { decodeOutputs, isStudio } from '../wire'
 import type { Part, StudioOutputs } from '../wire'
-import { buildScene } from './scene'
+import { buildScene, fitBoundsFor } from './scene'
 import { HIGHLIGHT_AMOUNT } from './shading'
 import { sceneDraw } from '../theme/tokens'
 import { ViewCamera } from './camera'
@@ -241,5 +241,16 @@ describe('fit', () => {
     cam.apply()
     expect(cam.camera.right - cam.camera.left).toBeCloseTo(500)
     expect(cam.camera.top - cam.camera.bottom).toBeCloseTo(250)
+  })
+})
+
+describe('fitBoundsFor', () => {
+  it('takes in the default planes round the origin when the model sits beside it', () => {
+    const model = { lo: [0, 0, 0], hi: [100, 60, 20] } as const
+    expect(fitBoundsFor(model, 40)).toEqual({ lo: [-40, -40, -40], hi: [100, 60, 40] })
+  })
+  it('leaves the planes out when the origin is far from the model', () => {
+    const model = { lo: [900, 900, 0], hi: [1000, 960, 20] } as const
+    expect(fitBoundsFor(model, 40)).toBe(model)
   })
 })

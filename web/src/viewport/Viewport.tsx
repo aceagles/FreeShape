@@ -2,13 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import type { StudioOutputs } from '../wire'
 import { ViewportController } from './controller'
 import { ViewCube } from './ViewCube'
+import { notDrawnText } from './notDrawn'
 import './viewport.css'
 
 /**
  * The 3D view of a Part Studio. Fills its parent; draws `outputs` and redraws when they change (a new revision
  * arrives as new outputs). The controller's pointer module (src/input) navigates; the view cube is the control for standard views.
  */
-export function Viewport({ outputs, selectedPart = null }: { outputs: StudioOutputs | null; selectedPart?: string | null }) {
+export function Viewport({ outputs, selectedPart = null, tabKind = 'studio' }: { outputs: StudioOutputs | null; selectedPart?: string | null; tabKind?: string | null }) {
+  // a tab that is not a Part Studio draws nothing of its own and none of another tab's
+  const message = tabKind !== null && tabKind !== 'studio' ? notDrawnText(tabKind) : null
   const host = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const controller = useRef<ViewportController | null>(null)
@@ -45,14 +48,22 @@ export function Viewport({ outputs, selectedPart = null }: { outputs: StudioOutp
 
   useEffect(() => {
     if (outputs) controller.current?.setOutputs(outputs)
-  }, [outputs, failed])
+    else controller.current?.clear(message === null ? null : tabKind)
+  }, [outputs, message, tabKind, failed])
 
   return (
     <div ref={host} className="viewport" data-testid="viewport">
       <canvas ref={canvas} className="viewport-canvas" />
-      <div className="viewport-cube-slot">
-        <ViewCube onView={(n) => controller.current?.setStandardView(n)} onNormalTo={() => controller.current?.normalTo()} />
-      </div>
+      {message === null && (
+        <div className="viewport-cube-slot">
+          <ViewCube onView={(n) => controller.current?.setStandardView(n)} onNormalTo={() => controller.current?.normalTo()} />
+        </div>
+      )}
+      {message !== null && (
+        <p className="viewport-empty" data-testid="viewport-empty">
+          {message}
+        </p>
+      )}
       {failed && <p className="viewport-error">The 3D view could not start: {failed}</p>}
     </div>
   )

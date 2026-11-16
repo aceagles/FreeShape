@@ -73,11 +73,12 @@ it('the menu renames and deletes the tab it was opened on, and a press elsewhere
   expect(screen.queryByRole('menu')).toBeNull()
 })
 
-it('the tab menu items are off while the Document is read-only', () => {
+it('a read-only Document opens no tab menu', () => {
   setup(true)
-  press(screen.getByRole('button', { name: 'Part Studio 1' }), 500)
-  expect((screen.getByRole('menuitem', { name: 'Rename' }) as HTMLButtonElement).disabled).toBe(true)
-  expect((screen.getByRole('menuitem', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(true)
+  const tab = screen.getByRole('button', { name: 'Part Studio 1' })
+  expect(tab.getAttribute('aria-haspopup')).toBeNull()
+  press(tab, 500)
+  expect(screen.queryByRole('menu')).toBeNull()
 })
 
 it('add tab offers a Part Studio and an Assembly', () => {

@@ -19,6 +19,8 @@ export interface ViewportReport extends SceneStats {
   frames: number
   /** Id of the part drawn highlighted, or null (a selected part the eye hides is not drawn, so it is null). */
   highlightedPart: string | null
+  /** Why nothing is drawn when the tab on screen is not a Part Studio (its kind: assembly, drawing, variables); null otherwise. */
+  emptyKind: string | null
 }
 
 declare global {
@@ -43,6 +45,7 @@ export class ViewportController implements NavHost {
   private disposed = false
   private selectedPart: string | null = null
   private highlighted: string | null = null
+  private emptyKind: string | null = null
   /** Half-size of the default planes of the last scene that had a model: an emptied studio keeps it. */
   private planeHalf: number | null = null
   readonly pointer: PointerModule
@@ -77,7 +80,27 @@ export class ViewportController implements NavHost {
     this.highlighted = this.built.stats.visiblePartIds.includes(this.selectedPart ?? '') ? this.selectedPart : null
     if (this.built.hasModel) this.planeHalf = this.built.stats.planeHalf
     this.revision = outputs.revision
+    this.emptyKind = null
     if (!this.fitted) this.fit()
+    this.requestRender()
+  }
+
+  /**
+   * Draw nothing: the tab on screen is not a Part Studio (`kind` says which), or its outputs have not arrived. No part,
+   * plane or highlight of another tab stays. The next outputs are fitted afresh, and the planes' size is forgotten.
+   */
+  clear(kind: string | null = null): void {
+    if (this.disposed) return
+    if (this.built) {
+      this.scene.remove(this.built.root)
+      this.built.dispose()
+      this.built = null
+    }
+    this.highlighted = null
+    this.planeHalf = null
+    this.revision = null
+    this.fitted = false
+    this.emptyKind = kind
     this.requestRender()
   }
 
@@ -91,7 +114,7 @@ export class ViewportController implements NavHost {
 
   fit(): void {
     if (!this.built) return
-    this.view.fit(this.built.bounds)
+    this.view.fit(this.built.fitBounds)
     // an empty studio is fitted to the default box, but the first model that is drawn is fitted too
     this.fitted = this.built.hasModel
     this.requestRender()
@@ -162,6 +185,7 @@ export class ViewportController implements NavHost {
       camera: this.view.state(),
       frames: this.frames,
       highlightedPart: this.highlighted,
+      emptyKind: this.emptyKind,
     }
   }
 

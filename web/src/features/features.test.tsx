@@ -247,6 +247,12 @@ it('an Assembly tab has no feature list, and a payload from an older server says
   fireEvent.click(screen.getByRole('button', { name: 'Assembly 1' }))
   expect(screen.getByTestId('feature-panel').textContent).toContain('This tab has no feature list.')
   expect((screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled).toBe(true)
+  // the view draws nothing of the Part Studio and says so; the view cube is not offered over an empty view
+  expect(screen.getByTestId('viewport-empty').textContent).toBe('Assemblies are not drawn here yet.')
+  expect(screen.queryByRole('button', { name: /View cube/ })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Part Studio 1' }))
+  expect(screen.queryByTestId('viewport-empty')).toBeNull()
+  expect(screen.getByRole('button', { name: /View cube/ })).toBeTruthy()
 })
 
 it('the collapsed rail has one icon button per feature, and a tap selects', async () => {

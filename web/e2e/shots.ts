@@ -365,6 +365,15 @@ export const shots: ShotState[] = [
     after: closeAllDiscard,
   },
   {
+    name: 'assembly-tab',
+    mock: 'browsing', // the Hinge's Assembly tab: no Part Studio, so what the panel and the view show for another kind of tab
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await page.locator('.tab-button[data-kind="assembly"]').click()
+      await page.locator('.tab-button[data-kind="assembly"][aria-current="page"]').waitFor()
+    },
+  },
+  {
     name: 'planes-all-features-failed',
     mock: 'browsing', // every part gone after the base extrude is suppressed: the default planes keep the model's size
     steps: async (page) => {

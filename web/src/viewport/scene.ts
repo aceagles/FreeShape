@@ -83,6 +83,8 @@ export interface BuiltScene {
   hasModel: boolean
   /** Box round the drawn parts, never tighter than MIN_HALF; a default box when nothing is drawn. */
   bounds: Bounds
+  /** The model and the default planes: what a fit frames (see fitBoundsFor). */
+  fitBounds: Bounds
   /** Keep line widths and the origin triad right for the viewport size and zoom (mm per pixel). */
   update(width: number, height: number, scale: number): void
   dispose(): void
@@ -301,6 +303,20 @@ export function planeHalfFor(b: Bounds): number {
   return Math.max(longest * 0.4, sceneDraw.planeMin)
 }
 
+/**
+ * What the camera fits: the model and the default planes, which sit at the origin and are drawn `half` either side of
+ * it, so a model that does not straddle the origin (the Hinge's parts) does not push a plane off the view. When the
+ * origin is so far from the model that the union's longest side is over 2.5 times the model's, fitting both would
+ * shrink the model too much: the planes then run off the view and the model alone is fitted.
+ */
+export function fitBoundsFor(model: Bounds, half: number): Bounds {
+  const lo = model.lo.map((v) => Math.min(v, -half)) as unknown as Bounds['lo']
+  const hi = model.hi.map((v) => Math.max(v, half)) as unknown as Bounds['hi']
+  const side = (b: Bounds) => Math.max(b.hi[0] - b.lo[0], b.hi[1] - b.lo[1], b.hi[2] - b.lo[2])
+  const union = { lo, hi }
+  return side(union) <= 2.5 * side(model) ? union : model
+}
+
 const DEFAULT_PLANES: readonly { name: string; o: Vec3; x: Vec3; n: Vec3 }[] = [
   { name: 'Top', o: [0, 0, 0], x: [1, 0, 0], n: [0, 0, 1] },
   { name: 'Front', o: [0, 0, 0], x: [1, 0, 0], n: [0, -1, 0] },
@@ -396,6 +412,7 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     select,
     hasModel,
     bounds,
+    fitBounds: hasModel ? fitBoundsFor(bounds, half) : bounds,
     update(width, height, scale) {
       for (const m of lineMats) m.resolution.set(width, height)
       triad.scale.setScalar(scale * sceneDraw.triad)

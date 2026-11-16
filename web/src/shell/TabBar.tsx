@@ -18,14 +18,15 @@ interface Props {
 
 type Open = { kind: 'tab'; tab: TabInfo; anchor: Anchor } | { kind: 'add'; anchor: Anchor }
 
-function TabButton({ tab, current, onSelect, onMenu }: { tab: TabInfo; current: boolean; onSelect: () => void; onMenu: (el: HTMLElement) => void }) {
-  const press = useLongPress(onMenu)
+function TabButton({ tab, current, canMenu, onSelect, onMenu }: { tab: TabInfo; current: boolean; canMenu: boolean; onSelect: () => void; onMenu: (el: HTMLElement) => void }) {
+  // read-only: no menu, as for the feature and part rows (every item would be off)
+  const press = useLongPress((el) => canMenu && onMenu(el))
   return (
     <button
       type="button"
       className="tab-button"
       aria-current={current ? 'page' : undefined}
-      aria-haspopup="menu"
+      aria-haspopup={canMenu ? 'menu' : undefined}
       data-kind={tab.kind}
       onClick={onSelect}
       {...press}
@@ -37,7 +38,7 @@ function TabButton({ tab, current, onSelect, onMenu }: { tab: TabInfo; current: 
 
 /**
  * The tab switcher and the add-tab button of the top bar. A short press switches tab; a press held for 500 ms opens
- * the tab's menu (Rename, Delete). The add-tab button opens a choice between a Part Studio and an Assembly.
+ * the tab's menu (Rename, Delete); a read-only Document opens no menu. The add-tab button opens a choice between a Part Studio and an Assembly.
  */
 export function TabBar({ tabs, currentTab, readOnly, onSelect, onAdd, onRename, onDelete }: Props) {
   const [open, setOpen] = useState<Open | null>(null)
@@ -49,6 +50,7 @@ export function TabBar({ tabs, currentTab, readOnly, onSelect, onAdd, onRename, 
           key={t.id}
           tab={t}
           current={t.id === currentTab}
+          canMenu={!readOnly}
           onSelect={() => onSelect(t.id)}
           onMenu={(el) => setOpen({ kind: 'tab', tab: t, anchor: anchorOf(el) })}
         />
@@ -68,7 +70,6 @@ export function TabBar({ tabs, currentTab, readOnly, onSelect, onAdd, onRename, 
           <PopoverItem
             label="Rename"
             icon={<Icon d={paths.sketch} />}
-            disabled={readOnly}
             onClick={() => {
               close()
               onRename(open.tab)
@@ -78,7 +79,6 @@ export function TabBar({ tabs, currentTab, readOnly, onSelect, onAdd, onRename, 
             label="Delete"
             icon={<Icon d={paths.trash} />}
             danger
-            disabled={readOnly}
             onClick={() => {
               close()
               onDelete(open.tab)

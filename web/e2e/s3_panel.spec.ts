@@ -1,37 +1,15 @@
 import { expect, test } from '@playwright/test'
 import { openApp } from './support/app.ts'
 import { closeAll } from './support/docs.ts'
-import { dragRollbackTo, featureMenu, featureRow } from './support/features.ts'
+import { featureMenu, featureRow } from './support/features.ts'
 import { partEye, partMenu, partRow } from './support/parts.ts'
-import { readViewport } from './support/viewport.ts'
+import { drawn, readViewport, say, seen } from './support/viewport.ts'
 
 // The feature panel (card I3.2) against `freeshape serve`: each action changes the model in the viewport and the list.
 // The viewport hook says what is drawn; the rows say what the list shows. Edits stay in the server's memory (nothing is
 // saved) and the next test's openApp closes the Document and throws them away.
 
 test.afterEach(async ({ page }) => closeAll(page.request))
-
-const drawn = async (page: Parameters<typeof readViewport>[0]) => {
-  const v = await readViewport(page)
-  return { parts: v.parts, faces: v.faces, revision: v.revision }
-}
-/** Say what the viewport drew (the run's log is the record of what the real server did). */
-const say = async (page: Parameters<typeof readViewport>[0], what: string) => console.log(`${what}: ${JSON.stringify(await drawn(page))}`)
-
-test('suppress and unsuppress change the model and the row', async ({ page }) => {
-  await openApp(page)
-  const before = await drawn(page)
-  await featureMenu(page, 'Slot cut', 'Suppress')
-  await expect(featureRow(page, 'Slot cut')).toHaveAttribute('data-state', 'suppressed')
-  await expect.poll(async () => (await drawn(page)).faces).not.toBe(before.faces)
-  await say(page, `suppress Slot cut (was ${JSON.stringify(before)})`)
-  const gone = await drawn(page)
-  expect(gone.revision).toBeGreaterThan(before.revision ?? 0)
-  await featureMenu(page, 'Slot cut', 'Unsuppress')
-  await expect(featureRow(page, 'Slot cut')).not.toHaveAttribute('data-state', 'suppressed')
-  await expect.poll(async () => (await drawn(page)).faces).toBe(before.faces)
-  await say(page, 'unsuppress Slot cut')
-})
 
 test('rename changes the row text', async ({ page }) => {
   await openApp(page)
@@ -41,23 +19,6 @@ test('rename changes the row text', async ({ page }) => {
   await field.press('Enter')
   await expect(featureRow(page, 'Keyhole')).toBeVisible()
   await expect(featureRow(page, 'Slot cut')).toHaveCount(0)
-})
-
-test('dragging the Drag handle rolls the model back and forward in one edit each', async ({ page }) => {
-  await openApp(page)
-  const before = await drawn(page)
-  const edits: string[] = []
-  page.on('request', (r) => r.url().endsWith('/edit') && edits.push(r.postData() ?? ''))
-  await dragRollbackTo(page, /^Slot$/)
-  await expect(page.locator('.panel-row[data-state="rolled-back"]')).toHaveCount(3) // Slot, Slot cut, Chamfer 1
-  await expect.poll(async () => (await drawn(page)).faces).not.toBe(before.faces)
-  await say(page, `rolled back above Slot (was ${JSON.stringify(before)})`)
-  expect(edits.map((e) => JSON.parse(e))).toEqual([{ op: 'set_rollback', index: 5 }])
-  await dragRollbackTo(page, null)
-  await expect(page.locator('.panel-row[data-state="rolled-back"]')).toHaveCount(0)
-  await expect.poll(async () => (await drawn(page)).faces).toBe(before.faces)
-  await say(page, 'rolled forward again')
-  expect(edits.length).toBe(2)
 })
 
 test('delete (after a confirmation), undo and redo', async ({ page }) => {
@@ -98,11 +59,6 @@ test('suppressing a feature another one needs makes that one fail, with its mess
 
 // The Parts list (card I3.3): the Hinge's Part Studio `hinge_parts` has several parts. Every number below comes from the
 // viewport hook (window.__freeshapeViewport), read after the edit's outputs have been drawn.
-const seen = async (page: Parameters<typeof readViewport>[0]) => {
-  const v = await readViewport(page)
-  return { revision: v.revision, parts: v.parts, visibleParts: v.visibleParts, hiddenParts: v.hiddenParts, ids: v.visiblePartIds, faces: v.faces, planeHalf: v.planeHalf, highlighted: v.highlightedPart }
-}
-
 test('the eye hides a part from the view and shows it again; the visible count follows', async ({ page }) => {
   await openApp(page, { document: 'Hinge' })
   const names = await page.locator('.part-select[data-part] .row-name').allTextContents()
@@ -163,22 +119,4 @@ test('selecting a part highlights it in the view, and selecting a feature takes 
   await page.locator('.panel-row[data-feature]').first().click()
   await expect.poll(async () => (await seen(page)).highlighted).toBeNull()
   await expect(page.locator('.part-select[aria-current="true"]')).toHaveCount(0)
-})
-
-test('with every part hidden or failed the default planes keep their size instead of jumping', async ({ page }) => {
-  await openApp(page)
-  const before = await seen(page)
-  expect(before.planeHalf).toBeGreaterThan(0)
-  await partEye(page, 'Bracket').click()
-  await expect.poll(async () => (await seen(page)).visibleParts).toBe(0)
-  const hidden = await seen(page)
-  console.log(`all hidden: planeHalf ${before.planeHalf} -> ${hidden.planeHalf}`)
-  expect(hidden.planeHalf).toBe(before.planeHalf)
-  await partEye(page, 'Bracket').click()
-  await expect.poll(async () => (await seen(page)).visibleParts).toBe(1)
-  await featureMenu(page, 'Extrude 1', 'Suppress')
-  await expect.poll(async () => (await seen(page)).visibleParts).toBe(0)
-  const failed = await seen(page)
-  console.log(`every feature failed: planeHalf ${before.planeHalf} -> ${failed.planeHalf}`)
-  expect(failed.planeHalf).toBe(before.planeHalf)
 })

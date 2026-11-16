@@ -36,3 +36,18 @@ export async function settled(page: Page): Promise<ViewportReport> {
   await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))
   return readViewport(page)
 }
+
+/** The counts a spec compares before and after an edit. */
+export const drawn = async (page: Page) => {
+  const v = await readViewport(page)
+  return { parts: v.parts, faces: v.faces, revision: v.revision }
+}
+
+/** Say what the viewport drew (the run's log is the record of what the real server did). */
+export const say = async (page: Page, what: string) => console.log(`${what}: ${JSON.stringify(await drawn(page))}`)
+
+/** What the Parts list's specs read from the hook, after the edit's outputs have been drawn. */
+export const seen = async (page: Page) => {
+  const v = await readViewport(page)
+  return { revision: v.revision, parts: v.parts, visibleParts: v.visibleParts, hiddenParts: v.hiddenParts, ids: v.visiblePartIds, faces: v.faces, planeHalf: v.planeHalf, highlighted: v.highlightedPart }
+}

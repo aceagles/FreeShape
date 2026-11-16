@@ -225,7 +225,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             )}
           </div>
           <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport">
-            <StudioViewport outputs={outputs} selectedPart={selectedPart} />
+            <StudioViewport outputs={studio} selectedPart={selectedPart} tabKind={tabKind} />
             {/* The selection chip (S4) is placed here, top left. */}
             <div className="chip-slot" data-testid="chip-slot" />
           </div>

@@ -45,7 +45,7 @@ def test_root_returns_the_built_index(client_dir, tmp_path, monkeypatch):
         status, h, body = s.request("GET", "/assets/app-1a2b.js")
         assert status == 200 and body == JS and h["Content-Type"].startswith("text/javascript")
         assert s.request("GET", "/assets/app-1a2b.css")[1]["Content-Type"].startswith("text/css")
-        assert s.request("GET", "/viewer")[0] == 200            # the old viewer stays reachable
+        assert s.request("GET", "/viewer")[0] == 404            # the old viewer page is gone
     finally:
         s.close()
 

@@ -11,7 +11,6 @@ The server binds 127.0.0.1 and nothing else; there is no option for another addr
 Routes (an exact table; no part of a request is ever joined to a file path):
     GET  /                      the built Browser client (freeshape/static/app/index.html), or, when it is not built,
                                 a plain page naming `npm --prefix web run build`
-    GET  /viewer                the old viewer page (freeshape/static/viewer.html, package data; 404 if not installed)
     GET  <file of the client>   a file of the built client, looked up in a table of the files found under
                                 freeshape/static/app/ (see `_client_files`); a path not in the table is 404
     GET  /health                {"ok", "version", "qt_imported", "qt_modules"}
@@ -63,10 +62,8 @@ BODY_DEADLINE = 30.0            # seconds for the whole body of one request
 DEFAULT_PORT = 8765
 READY_PREFIX = "FREESHAPE_SERVE_READY"
 _TAB_PATH = re.compile(r"^/tabs/([A-Za-z0-9_-]{1,64})/(outputs|mesh\.json|edit)$")
-_FIXED = {"/viewer": ("GET",), "/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
+_FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
 _EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST"}
-_VIEWER_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
-               "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 _CLIENT_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
                "img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; base-uri 'none'; "
                "form-action 'none'; frame-ancestors 'none'")
@@ -79,22 +76,13 @@ _CLIENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; c
 _CLIENT_DIR = Path(__file__).resolve().parent / "static" / "app"     # `npm --prefix web run build` writes here
 _CLIENT_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _NOT_BUILT = (b"The FreeShape client is not built.\n\nBuild it with:\n\n    npm --prefix web run build\n\n"
-              b"then reload this page. The old viewer is at /viewer.\n")
+              b"then reload this page.\n")
 _CLIENT_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 CLIENT_TTL = 600.0              # seconds a client's registry entry outlives its last socket
 WS_HEARTBEAT = 25.0             # seconds between protocol pings that keep a tunnel open and find dead sockets
 WS_SEND_TIMEOUT = 5.0           # seconds a slow socket gets for one pushed message before it is dropped
 _REMOTE_MESSAGE = ("remote access needs authentication that does not exist yet; "
                    "serve binds 127.0.0.1 only (use a port forward or the tunnel)")
-
-
-def _viewer_page():
-    """The viewer page bytes read from the package data, or None when the file is not installed."""
-    try:
-        from importlib import resources
-        return resources.files("freeshape").joinpath("static/viewer.html").read_bytes()
-    except (OSError, ModuleNotFoundError, FileNotFoundError):
-        return None
 
 
 def _client_files():
@@ -477,12 +465,6 @@ class _Server:
                 return self._send(200, _NOT_BUILT, "text/plain; charset=utf-8")
             data = await asyncio.get_running_loop().run_in_executor(None, tab[0].read_bytes)
             return self._send(200, data, tab[1], [("Content-Security-Policy", _CLIENT_CSP)])
-        if route == "/viewer":
-            page = _viewer_page()
-            if page is None:
-                return self._send(404, b"The viewer page is not installed; see /tabs and /tabs/<id>/mesh.json.\n",
-                                  "text/plain; charset=utf-8")
-            return self._send(200, page, "text/html; charset=utf-8", [("Content-Security-Policy", _VIEWER_CSP)])
         if route == "/health":                                   # needs no session, so never waits for the lock
             from . import __version__
             qt = _qt_modules()

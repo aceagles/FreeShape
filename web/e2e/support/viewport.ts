@@ -30,3 +30,9 @@ export async function nextFrame(page: Page, timeout = 10_000): Promise<ViewportR
   await page.waitForFunction((n) => (window.__freeshapeViewport?.frames ?? 0) > n, before, { timeout })
   return readViewport(page)
 }
+
+/** Lets two frames pass (so a camera change from the last gesture has been drawn), then reads the hook. The view draws on demand, so this never waits for a frame that nothing asks for. */
+export async function settled(page: Page): Promise<ViewportReport> {
+  await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))
+  return readViewport(page)
+}

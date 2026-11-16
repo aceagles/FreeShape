@@ -8,7 +8,7 @@ one clause per step over HTTP (urllib, no proxy, 127.0.0.1): the server runs wit
 127.0.0.1 only (ready line, a connection, the listening socket in /proc/net/tcp, a foreign Host header refused);
 the tab list names every tab with its kind; a Part Studio's and the Assembly's outputs in the wire format decode to
 arrays equal to the engine's own; the mesh JSON has consistent lengths; one `set_param` edit rebuilds the studio
-and the Assembly once each and changes both meshes; the viewer page is served and references only its own origin;
+and the Assembly once each and changes both meshes; the old viewer page is gone (404) and `/` answers with the client or the not-built note;
 a request to bind 0.0.0.0 or :: is refused; and SIGTERM stops the server and every worker with no process or port
 left. The server is stopped in a `finally`, whatever fails.
 
@@ -407,24 +407,13 @@ def run(state):
         print(f"  (revision before/after the edit: studio {state['a0']['revision']}/{a1['revision']}, "
               f"assembly {state['asm0']['revision']}/{asm1['revision']})")
 
-    @step("viewer page is served with a strict Content-Security-Policy")
+    @step("the old viewer page is gone and / answers")
     def _():
-        status, h, body = req("GET", "/viewer")
-        check(status == 200 and h["Content-Type"].startswith("text/html"), (status, h.get("Content-Type")))
-        csp = h.get("Content-Security-Policy", "")
-        check("connect-src 'self'" in csp and "default-src 'none'" in csp, f"CSP {csp!r}")
-        state["page"] = body.decode("utf-8")
-
-    @step("viewer page references only same-origin URLs")
-    def _():
-        page = state["page"]
-        check(not re.search(r"https?:", page, re.I), "an http(s) URL in the page")
-        check(not re.search(r"""["'`(=,]\s*//[\w.-]""", page), "a scheme-relative URL in the page")
-        check("@import" not in page and "url(" not in page, "@import or url( in the page")
-        for m in re.finditer(r"""\b(src|href)\s*=\s*["']?([^"'\s>]*)""", page, re.I):
-            target = m.group(2)
-            check(target.startswith("/") and not target.startswith("//") or target.startswith("#"),
-                  f"{m.group(1)}= points off-origin: {target!r}")
+        status, _h, body = req("GET", "/viewer")
+        check(status == 404, f"/viewer -> {status}, want 404")
+        check(b"viewer" not in body.lower(), f"the 404 body names the viewer: {body[:200]!r}")
+        status, h, _body = req("GET", "/")
+        check(status == 200 and h["Content-Type"].startswith(("text/html", "text/plain")), (status, h.get("Content-Type")))
 
     @step("a request to bind 0.0.0.0 or :: is refused and nothing listens")
     def _():

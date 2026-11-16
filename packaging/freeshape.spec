@@ -38,8 +38,9 @@ datas.append((os.path.join(ROOT, "freeshape", "plugin_examples"), os.path.join("
 # bundled plugins (fasteners, gears, hardware): found by scanning this folder for plugin.json, and they read
 # their size tables from it, so the folder has to exist on disk beside the code
 datas.append((os.path.join(ROOT, "freeshape", "addons"), os.path.join("freeshape", "addons")))
-# the browser viewer page of `FreeShape serve`
-datas.append((os.path.join(ROOT, "freeshape", "static"), os.path.join("freeshape", "static")))
+# the built Browser client of `FreeShape serve` (freeshape/static/app, written by `npm --prefix web run build`)
+if os.path.isdir(os.path.join(ROOT, "freeshape", "static")):      # absent until the client is built
+    datas.append((os.path.join(ROOT, "freeshape", "static"), os.path.join("freeshape", "static")))
 datas.append((os.path.join(ROOT, "PLUGINS.md"), "."))
 datas.append((os.path.join(ROOT, "examples"), "examples"))
 datas.append((os.path.join(ROOT, "README.md"), "."))

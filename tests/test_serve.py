@@ -187,9 +187,9 @@ def test_outputs_come_back_in_the_wire_format(served):
     assert out.tab == served.ids["asm"] and len(out.instances) == 2
 
 
-def test_viewer_route_is_the_viewer_page(served):
-    status, h, body = served.request("GET", "/viewer")
-    assert status == 200 and h["Content-Type"].startswith("text/html") and b"<title>FreeShape viewer</title>" in body
+def test_the_old_viewer_route_is_gone(served):
+    status, _h, body = served.request("GET", "/viewer")
+    assert status == 404 and "viewer" not in body.decode().lower()
 
 
 def test_the_socket_is_bound_to_loopback_only(served):

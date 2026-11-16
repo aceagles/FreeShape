@@ -421,17 +421,20 @@
   cursor: default;
 }
 
-/* Mode toggle (Desktop | Tablet) in the top bar */
+/* Mode toggle (Desktop | Tablet) in the top bar. Tablet: the pill is as tall as its 44 px buttons (no padding of its own),
+   so it lines up with undo, save and the link and stays inside the 52 px bar; the pressed ring is drawn inside the button. */
 .mode-toggle {
   flex: none;
   display: flex;
+  align-items: center;
   box-sizing: border-box;
-  padding: 2px;
+  padding: 0;
   gap: 2px;
   border-radius: var(--r-sm);
   background: var(--c-accentSoft);
 }
 .mode-option {
+  box-sizing: border-box;
   min-width: var(--touch);
   height: var(--touch);
   padding: 0 var(--sp-10);
@@ -447,7 +450,7 @@
   background: var(--c-white);
   color: var(--c-ink);
   font-weight: 600;
-  box-shadow: 0 0 0 1px var(--c-line);
+  box-shadow: inset 0 0 0 1px var(--c-line);
 }
 
 /* ------------------------------------------------------------------------------------------------------------------
@@ -468,6 +471,15 @@
 }
 .shell[data-mode='desktop'] .top-bar .icon-button {
   width: 32px;
+}
+/* the mode toggle: a 32 px pill like its neighbours, its two 28 px buttons inside it (the 44 px rule is Tablet mode's) */
+.shell[data-mode='desktop'] .top-bar .mode-toggle {
+  padding: 2px;
+}
+.shell[data-mode='desktop'] .top-bar .mode-option {
+  height: 28px;
+  min-width: 0;
+  padding: 0 var(--sp-10);
 }
 .shell[data-mode='desktop'] .top-bar-name {
   margin: 0;
@@ -801,8 +813,13 @@
   --d-indent: 36px;
   --d-head-height: 28px;
   --d-head-pad: 8px 10px 4px 10px;
+  /* card F18: a section header has the desktop's 1 px separator above it and no gap besides; the title row's buttons
+     are 22 px; the eye and lock columns are 24 px (the 18 px icon and 3 px either side) */
+  --d-head-gap: 0px;
+  --d-head-rule: 1px;
+  --d-header-button: 22px;
   --d-eye-size: 18px;
-  --d-eye-column: 28px;
+  --d-eye-column: 24px;
   --d-eye-ink: #5f6b7a;
   --d-eye-ink-hidden: #a3acb8;
   --d-rollback-row: 12px;

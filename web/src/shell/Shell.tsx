@@ -238,7 +238,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     () => ({
       openDialog: (title, content) => {
         if (editing !== null) return
-        setCollapsed(false)
+        // Tablet mode: the dialog area is the column's own box, so the column opens for it. Desktop mode: it floats over
+        // the viewport, so a column collapsed in a sketch stays collapsed under the Dimension box.
+        if (mode !== 'desktop') setCollapsed(false)
         setDialog({ title, content })
       },
       closeDialog: () => setDialog(null),
@@ -257,7 +259,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
       },
       selection,
     }),
-    [dialog, editing, collapsed, selectedFeature, selectedPart, currentTab, selection],
+    [mode, dialog, editing, collapsed, selectedFeature, selectedPart, currentTab, selection],
   )
   // the dialog area closed under the Dimension pad (its close button): the dimension is given up
   useEffect(() => {
@@ -620,7 +622,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
             ) : (
             <FeaturePanel
               collapsed={collapsed}
-              locked={dialog !== null || editingHere !== null || sketchHere}
+              locked={dialog !== null || editingHere !== null}
               tabKind={tabKind}
               outputs={studio}
               selected={selectedFeature}

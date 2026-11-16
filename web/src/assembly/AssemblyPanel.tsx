@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Icon, paths } from '../shell/icons'
 import { ConfirmDialog } from '../shell/Modal'
+import { useMode } from '../shell/mode'
 import { size } from '../theme/tokens'
 import { cssColor } from '../features/partPalette'
 import type { AssemblyOutputs, InstanceEntry, MateEntry } from '../wire'
@@ -67,14 +68,13 @@ function InstanceRow({ inst, error, selected, edits, onSelect }: { inst: Instanc
 }
 
 function MateRow({ mate, names, error }: { mate: MateEntry; names: ReadonlyMap<string, string>; error: string | undefined }) {
+  const detail = `${typeLabel(mate.type)}: ${names.get(mate.a) ?? mate.a} and ${names.get(mate.b) ?? mate.b}${mate.suppressed ? ', suppressed' : ''}`
+  // Desktop mode shows the name alone (assembly.css); the type and the instances are the row's tooltip there
   return (
-    <li className="mate-row" data-mate-row={mate.id} data-state={error !== undefined ? 'failed' : mate.suppressed ? 'suppressed' : undefined}>
+    <li className="mate-row" data-mate-row={mate.id} data-state={error !== undefined ? 'failed' : mate.suppressed ? 'suppressed' : undefined} title={detail}>
       <span className="row-text">
         <span className="row-name">{mate.name}</span>
-        <span className="row-message">
-          {typeLabel(mate.type)}: {names.get(mate.a) ?? mate.a} and {names.get(mate.b) ?? mate.b}
-          {mate.suppressed ? ', suppressed' : ''}
-        </span>
+        <span className="row-message mate-detail">{detail}</span>
         {error !== undefined && <span className="row-message mate-error">{error}</span>}
       </span>
     </li>
@@ -85,9 +85,12 @@ function MateRow({ mate, names, error }: { mate: MateEntry; names: ReadonlyMap<s
  * The Assembly panel (card I8.1), in the place of the feature panel on an Assembly tab: "Instances (n)", one 44 px row per
  * instance (a tap selects it, with the same cube, name and colour swatch as the Parts list), a fixed toggle and the eye at the right end; under the
  * selected instance a Delete button (after a confirmation); then "Mates (n)", read-only, each with its type and any error.
+ * Desktop mode (card F18), as the desktop's panel: "Instances (n)" is the title row itself, Delete is a small icon in it
+ * (and the Delete key), and a mate row shows its name only.
  */
 export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onSelect, onCollapsedChange }: Props) {
   const [deleting, setDeleting] = useState<InstanceEntry | null>(null)
+  const desktop = useMode() === 'desktop'
   if (collapsed) {
     return (
       <div className="panel-rail" data-testid="panel-rail">
@@ -99,10 +102,24 @@ export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onS
   }
   const names = new Map(outputs?.instances.map((i) => [i.id, i.name]) ?? [])
   const errors = outputs?.errors ?? {}
+  const canDelete = outputs !== null && selected !== null && !edits.disabled
+  const askDelete = () => setDeleting(outputs?.instances.find((i) => i.id === selected) ?? null)
+  const deleteLabel = `Delete ${(selected !== null && names.get(selected)) || selected}`
   return (
     <section className="panel" data-testid="assembly-panel" aria-label="Assembly panel" data-selected-instance={selected ?? undefined}>
       <div className="panel-header">
-        <div className="panel-title">Assembly</div>
+        {desktop ? (
+          <div className="panel-title" id="instances-heading">
+            Instances{outputs !== null ? ` (${outputs.instances.length})` : ''}
+          </div>
+        ) : (
+          <div className="panel-title">Assembly</div>
+        )}
+        {desktop && canDelete && (
+          <button type="button" className="icon-button instance-delete-icon" aria-label={deleteLabel} title="Delete (Del)" disabled={edits.busy} onClick={askDelete}>
+            <Icon d={paths.trash} />
+          </button>
+        )}
         <button type="button" className="icon-button" aria-label="Collapse feature panel" disabled={locked} onClick={() => onCollapsedChange(true)}>
           <Icon d={paths.collapse} />
         </button>
@@ -113,22 +130,24 @@ export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onS
         ) : (
           <>
             {errors[''] !== undefined && <p className="panel-empty assembly-error">{errors['']}</p>}
-            <div className="parts-heading" id="instances-heading">
-              Instances ({outputs.instances.length})
-            </div>
+            {!desktop && (
+              <div className="parts-heading" id="instances-heading">
+                Instances ({outputs.instances.length})
+              </div>
+            )}
             <ul className="parts-list" aria-labelledby="instances-heading" data-testid="instance-list">
               {outputs.instances.map((inst) => (
                 <InstanceRow key={inst.id} inst={inst} error={errors[inst.id]} selected={inst.id === selected} edits={edits} onSelect={() => onSelect(inst)} />
               ))}
             </ul>
-            {selected !== null && !edits.disabled && (
+            {!desktop && canDelete && (
               <div className="instance-actions">
                 <button
                   type="button"
                   className="instance-delete"
                   disabled={edits.busy}
-                  aria-label={`Delete ${names.get(selected) ?? selected}`}
-                  onClick={() => setDeleting(outputs.instances.find((i) => i.id === selected) ?? null)}
+                  aria-label={deleteLabel}
+                  onClick={askDelete}
                 >
                   <Icon d={paths.trash} px={size.iconSmall} />
                   Delete

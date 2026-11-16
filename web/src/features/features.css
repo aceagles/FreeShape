@@ -289,8 +289,8 @@
   color: var(--c-ink);
 }
 .shell[data-mode='desktop'] .panel-header .icon-button {
-  width: 22px;
-  height: 22px;
+  width: var(--d-header-button);
+  height: var(--d-header-button);
 }
 .shell[data-mode='desktop'] .panel-header .icon-button svg {
   width: 16px;
@@ -299,8 +299,8 @@
 .shell[data-mode='desktop'] .parts-heading {
   height: var(--d-head-height);
   box-sizing: border-box;
-  border-top: 1px solid var(--c-line);
-  margin-top: 4px;
+  border-top: var(--d-head-rule) solid var(--c-line);
+  margin-top: var(--d-head-gap);
 }
 .shell[data-mode='desktop'] .panel-row {
   min-height: var(--d-row-feature);
@@ -385,7 +385,8 @@
   opacity: 1;
 }
 
-/* Parts: 14 px icon and swatch, a 24 px row. */
+/* Parts (and Assembly instances): a 24 px row whose icon is the 14 px colour swatch, as on the desktop; the cube is not
+   drawn and the swatch moves from the right end to the front (card F18). */
 .shell[data-mode='desktop'] .part-row {
   min-height: var(--d-row-part);
 }
@@ -393,10 +394,10 @@
   min-height: var(--d-row-part);
 }
 .shell[data-mode='desktop'] .part-select > svg {
-  width: var(--d-icon-part);
-  height: var(--d-icon-part);
+  display: none;
 }
 .shell[data-mode='desktop'] .part-swatch {
+  order: -1;
   width: var(--d-icon-part);
   height: var(--d-icon-part);
   border-radius: 3px;

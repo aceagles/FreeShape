@@ -1716,6 +1716,33 @@ export const shots: ShotState[] = [
       await settled(page)
     },
   },
+  {
+    // F18: a sketch open with the left column collapsed to its rail (Desktop mode); the view takes the width
+    name: 'desktop-sketch-collapsed',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await page.getByRole('button', { name: 'Collapse feature panel' }).click()
+      await page.getByTestId('panel-rail').waitFor()
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // F18: the same in Tablet mode, beside the mock's collapsed panel
+    name: 'sketch-collapsed',
+    mock: 'collapsed',
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await page.getByRole('button', { name: 'Collapse feature panel' }).click()
+      await page.getByTestId('panel-rail').waitFor()
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I9.9: drag a selection box with the mouse from above left of the bracket to below its middle; `release` lets the button go. */

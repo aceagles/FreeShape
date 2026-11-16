@@ -113,3 +113,48 @@ test('text sizes and weights are the layout tokens: strip label, Document name, 
   expect(await style('[data-testid="link-status"]')).toEqual({ size: `${fontSize.tab}px`, weight: '400' })
   expect(await style('.panel-title')).toEqual({ size: `${fontSize.body}px`, weight: '600' })
 })
+
+// F18: the Desktop | Tablet toggle lies inside the top bar in both modes (it broke through the bar's foot in Desktop mode
+// and stood taller than its neighbours in Tablet mode). Tablet mode keeps 44 x 44 buttons.
+for (const [width, height] of [[1024, 768], [1440, 900]] as const) {
+  for (const mode of ['tablet', 'desktop'] as const) {
+    test(`the mode toggle and the full-screen button lie inside the top bar, which does not overflow, in ${mode} mode at ${width} x ${height}`, async ({ page }) => {
+      await open(page, width, height)
+      if (mode === 'desktop') await page.locator('[data-testid="mode-toggle"] [data-mode="desktop"]').click()
+      await expect(page.getByTestId('shell')).toHaveAttribute('data-mode', mode)
+      const bar = await regionBox(page, 'top-bar')
+      const inside = (b: { x: number; y: number; width: number; height: number }, what: string) => {
+        expect(b.y, `${what} top`).toBeGreaterThanOrEqual(bar.y)
+        expect(b.y + b.height, `${what} bottom`).toBeLessThanOrEqual(bar.y + bar.height)
+        expect(b.x, `${what} left`).toBeGreaterThanOrEqual(bar.x)
+        expect(b.x + b.width, `${what} right`).toBeLessThanOrEqual(bar.x + bar.width)
+      }
+      const pill = (await page.getByTestId('mode-toggle').boundingBox())!
+      inside(pill, 'toggle')
+      for (const b of await page.locator('[data-testid="mode-toggle"] button').all()) {
+        const r = (await b.boundingBox())!
+        inside(r, `toggle button ${await b.textContent()}`)
+        // each button lies inside the pill too
+        expect(r.y).toBeGreaterThanOrEqual(pill.y)
+        expect(r.y + r.height).toBeLessThanOrEqual(pill.y + pill.height)
+        if (mode === 'tablet') expect([r.width >= 44, r.height >= 44]).toEqual([true, true])
+      }
+      // the pill is no taller than the undo button beside it
+      const undo = (await page.locator('[data-region="top-bar"]').getByRole('button', { name: 'Undo' }).boundingBox())!
+      expect(pill.height).toBeLessThanOrEqual(undo.height)
+      // the full-screen button (item 4 of F18; WebKit has the Fullscreen API) sits beside it, sized like its neighbours
+      const full = (await page.getByRole('button', { name: 'Full screen' }).boundingBox())!
+      inside(full, 'full-screen button')
+      expect([full.width, full.height]).toEqual(mode === 'tablet' ? [44, 44] : [32, 32])
+      // nothing in the bar runs past its ends or is squeezed: every child keeps its own width inside the bar
+      const kids = await page.locator('[data-region="top-bar"] > *').evaluateAll((els) =>
+        els.map((el) => ({ cls: el.className, left: el.getBoundingClientRect().left, right: el.getBoundingClientRect().right, scroll: el.scrollWidth, client: el.clientWidth })),
+      )
+      for (const k of kids) {
+        expect(k.left, `${k.cls} left`).toBeGreaterThanOrEqual(bar.x - 0.5)
+        expect(k.right, `${k.cls} right`).toBeLessThanOrEqual(bar.x + bar.width + 0.5)
+      }
+      expect(await page.locator('[data-region="top-bar"]').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+    })
+  }
+}

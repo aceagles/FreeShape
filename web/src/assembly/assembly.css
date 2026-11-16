@@ -67,21 +67,15 @@
 .shell[data-mode='desktop'] .instance-row[data-hidden] .instance-fixed[data-eye='off'] {
   opacity: 0;
 }
-.shell[data-mode='desktop'] .instance-actions {
-  padding: 2px 6px 4px;
+/* Desktop mode deletes with the Delete key (I9.6) or this small button in the Instances title row (card F18); the
+   panel has no Delete block under the list */
+.shell[data-mode='desktop'] .panel-header .instance-delete-icon {
+  color: var(--d-eye-ink);
 }
-.shell[data-mode='desktop'] .instance-delete {
-  min-height: 24px;
-  padding: 0 10px;
-  gap: 6px;
-  border-radius: var(--d-row-radius);
-  font-size: var(--d-font);
+.shell[data-mode='desktop'] .panel-header .instance-delete-icon:not(:disabled):hover {
+  color: var(--c-danger);
 }
-.shell[data-mode='desktop'] .instance-delete svg {
-  width: var(--d-icon-part);
-  height: var(--d-icon-part);
-}
-/* a mate is one line: its name, then its type and the two instances, muted */
+/* a mate is one line, its name only, as on the desktop; the type and the two instances are its tooltip (card F18) */
 .shell[data-mode='desktop'] .mate-row {
   min-height: var(--d-row-mate);
   padding: var(--d-row-pad-y) var(--d-row-pad-x);
@@ -98,13 +92,17 @@
   gap: 8px;
 }
 .shell[data-mode='desktop'] .mate-row .row-name {
-  flex: none;
-  max-width: 55%;
+  flex: 0 1 auto;
+  min-width: 0;
 }
-.shell[data-mode='desktop'] .mate-row .row-message {
+.shell[data-mode='desktop'] .mate-row .mate-detail {
+  display: none;
+}
+/* a failed mate keeps its error after the name, one line, red */
+.shell[data-mode='desktop'] .mate-row .mate-error {
   display: block;
+  flex: 1;
   min-width: 0;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--c-muted);
 }

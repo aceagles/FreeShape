@@ -12,6 +12,8 @@ export const paths = {
   save: 'M5 4h11l3 3v13H5z M8 4v5h7V4 M8 20v-6h8v6',
   collapse: 'M4 5h16v14H4z M9 5v14 M16 9l-3 3 3 3',
   expand: 'M4 5h16v14H4z M9 5v14 M13 9l3 3-3 3',
+  fullscreen: 'M4 9V4h5 M20 9V4h-5 M4 15v5h5 M20 15v5h-5',
+  exitFullscreen: 'M9 4v5H4 M15 4v5h5 M9 20v-5H4 M15 20v-5h5',
   close: 'M6 6l12 12 M18 6L6 18',
   tab: 'M4 6h16v12H4z M4 10h7',
   back: 'M15 5l-7 7 7 7',

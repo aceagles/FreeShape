@@ -8,6 +8,18 @@ import type { Commands, MenuState } from './menus'
 import { TabBar } from './TabBar'
 import { useMode, useSetMode } from './mode'
 import type { Mode } from './mode'
+import { fullscreenSupported, toggleFullscreen, useFullscreen } from './fullscreen'
+
+/** Full screen on and off; its icon and name follow the browser's state (Esc and the browser's own gesture included). */
+function FullscreenButton() {
+  const on = useFullscreen()
+  const label = on ? 'Exit full screen' : 'Full screen'
+  return (
+    <button type="button" className="icon-button fullscreen-button" aria-label={label} title={label} data-fullscreen={on ? '' : undefined} onClick={toggleFullscreen}>
+      <Icon d={on ? paths.exitFullscreen : paths.fullscreen} />
+    </button>
+  )
+}
 
 interface Props {
   store: ConnectionStore
@@ -64,6 +76,8 @@ export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, 
       </button>
     </>
   )
+  // full screen for the whole app (fullscreen.ts); not shown where the browser has no Fullscreen API
+  const fullscreen = fullscreenSupported() && <FullscreenButton />
   const modeToggle = (
     <div className="mode-toggle" role="group" aria-label="Mode" data-testid="mode-toggle">
       {(['desktop', 'tablet'] as Mode[]).map((m) => (
@@ -92,6 +106,7 @@ export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, 
         {undoRedoSave}
         <LinkStatusButton store={store} open={debugOpen} onToggle={onToggleDebug} />
         {modeToggle}
+        {fullscreen}
         <span className="top-bar-rule" aria-hidden="true" />
         <button type="button" className="search-button" disabled title={DESKTOP_ONLY} aria-label="Search tools">
           <Icon d={paths.search} px={16} />
@@ -116,6 +131,7 @@ export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, 
       <div className="top-bar-gap" />
       {undoRedoSave}
       {modeToggle}
+      {fullscreen}
       <LinkStatusButton store={store} open={debugOpen} onToggle={onToggleDebug} />
     </header>
   )

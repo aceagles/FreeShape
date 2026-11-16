@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { fixture } from '../test/fixtures'
 import { makeStore, stubFetch, tab } from '../test/fakes'
@@ -11,7 +11,7 @@ import { Shell } from './Shell'
 // takes them: the stylesheets are put in the page and a row's minimum height is resolved through the shell's custom
 // properties for the mode on it. The literals are what visualItemRect gave on the desktop program's MainWindow(engine=True)
 // at 1440 x 900 with the bracket and the hinge open: features and mates 26, parts and instances 24, rollback row 12.
-const DESKTOP = { feature: 26, part: 24, instance: 24, mate: 26, rollbackRow: 12 }
+const DESKTOP = { feature: 26, part: 24, instance: 24, mate: 26, rollbackRow: 12, header: 28 }
 const TOUCH = 44
 
 const css = ['shell/shell.css', 'features/features.css', 'assembly/assembly.css'].map((f) => readFileSync(resolve(process.cwd(), 'src', f), 'utf8')).join('\n')
@@ -115,6 +115,13 @@ it('the Desktop token set holds the rollback bar at 8 px in a 12 px row, the fon
   expect(t.get('--d-row-pad-x')).toBe('6px')
   expect(t.get('--d-row-radius')).toBe('3px')
   expect(t.get('--d-head-pad')).toBe('8px 10px 4px 10px')
+  // card F18: the title row and a section header are 28 px; a header has the desktop's 1 px separator above it and no
+  // other gap; the title row's buttons are 22 px; the eye and lock columns 24 px
+  expect(t.get('--d-head-height')).toBe(`${DESKTOP.header}px`)
+  expect(t.get('--d-head-gap')).toBe('0px')
+  expect(t.get('--d-head-rule')).toBe('1px')
+  expect(t.get('--d-header-button')).toBe('22px')
+  expect(t.get('--d-eye-column')).toBe('24px')
 })
 
 const eyeStates = () => [...document.querySelectorAll<HTMLElement>('[data-feature-eye], [data-part-eye]')].map((e) => e.dataset.eye)
@@ -159,4 +166,53 @@ it('Desktop mode, Assembly: the lock shows on a hovered or a fixed instance, the
   fireEvent.mouseEnter(plain)
   expect(plain.querySelector<HTMLElement>('[data-instance-fixed]')!.dataset.eye).toBe('shown')
   expect(plain.querySelector<HTMLElement>('[data-instance-eye]')!.dataset.eye).toBe('shown')
+})
+
+// Card F18: the blocks around the rows, as the desktop's panel has them.
+const shown = (el: Element | null) => el !== null && getComputedStyle(el).display !== 'none'
+
+it('Desktop mode, Assembly: "Instances (n)" is the title row, Delete is a small icon in it, mates show their name only', async () => {
+  await open('desktop', 'hinge')
+  const panel = screen.getByTestId('assembly-panel')
+  const header = panel.querySelector('.panel-header')!
+  expect(header.querySelector('.panel-title')!.textContent).toBe('Instances (3)')
+  expect(panel.querySelector('.panel-body .parts-heading#instances-heading')).toBeNull()
+  expect(within(panel).queryByText('Assembly')).toBeNull()
+  // the first section header under the list is the Mates one, with no gap of its own above its separator
+  expect([...panel.querySelectorAll('.panel-body .parts-heading')].map((h) => h.textContent)).toEqual(['Mates (2)'])
+  // selecting an instance puts no Delete block under the list; the title row gets a small Delete button
+  fireEvent.click(within(panel).getByRole('button', { name: /^Arm <1>/ }))
+  expect(panel.querySelector('.instance-actions')).toBeNull()
+  const del = within(header as HTMLElement).getByRole('button', { name: 'Delete Arm <1>' })
+  expect(del.classList.contains('icon-button')).toBe(true)
+  fireEvent.click(del)
+  expect(screen.getByRole('dialog', { name: /Delete "Arm <1>"/ })).toBeTruthy()
+  // a mate row: the name alone, the type and instances as its tooltip
+  const mate = panel.querySelector<HTMLElement>('[data-mate-row]')!
+  expect(shown(mate.querySelector('.row-name'))).toBe(true)
+  expect(shown(mate.querySelector('.mate-detail'))).toBe(false)
+  expect(mate.title).toBe('Fastened: Base plate <1> and Pin <1>')
+  // an instance row's icon is its colour swatch, at the front; no cube
+  const row = panel.querySelector('.instance-row .part-select')!
+  expect(shown(row.querySelector(':scope > svg'))).toBe(false)
+  expect(getComputedStyle(row.querySelector('.part-swatch')!).order).toBe('-1')
+})
+
+it('Tablet mode, Assembly: the "Assembly" title, the Instances heading, the Delete block and the mate detail are as before', async () => {
+  await open('tablet', 'hinge')
+  const panel = screen.getByTestId('assembly-panel')
+  expect(panel.querySelector('.panel-header .panel-title')!.textContent).toBe('Assembly')
+  expect(panel.querySelector('.panel-body #instances-heading')!.textContent).toBe('Instances (3)')
+  fireEvent.click(within(panel).getByRole('button', { name: /^Arm <1>/ }))
+  expect(panel.querySelector('.instance-actions .instance-delete')!.getAttribute('aria-label')).toBe('Delete Arm <1>')
+  expect(panel.querySelector('.panel-header .instance-delete-icon')).toBeNull()
+  expect(shown(panel.querySelector('[data-mate-row] .mate-detail'))).toBe(true)
+  expect(shown(panel.querySelector('.instance-row .part-select > svg'))).toBe(true)
+})
+
+it('Desktop mode, Part Studio: a part row\'s icon is its colour swatch, at the front; no cube', async () => {
+  await open('desktop', 'bracket')
+  const row = document.querySelector('.part-row .part-select')!
+  expect(shown(row.querySelector(':scope > svg'))).toBe(false)
+  expect(getComputedStyle(row.querySelector('.part-swatch')!).order).toBe('-1')
 })

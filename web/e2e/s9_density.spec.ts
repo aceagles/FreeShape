@@ -67,3 +67,51 @@ test('Assembly (hinge): instance and mate rows are at the desktop height', async
   await noneTaller(page.getByTestId('mate-list').locator('li'), MATE, 'mate')
   expect((await page.locator('.instance-row [data-instance-eye]').first().evaluate((el) => el.querySelector('svg')!.getBoundingClientRect().width))).toBe(18)
 })
+
+// Card F18: the blocks around the rows, measured against the desktop program's MainWindow(engine=True) at 1440 x 900:
+// the title row 28 px, a section header 28 px with its 1 px separator straight under the block above it, the Assembly's
+// first instance row straight under its "Instances (n)" title row (desktop: y 28), the eye column 24 px.
+const HEADER = 28
+const top = async (l: Locator) => (await l.boundingBox())!
+
+test('Part Studio: the title row is 28 px, the Parts header follows the rollback row with no gap, and the eye column is 24 px', async ({ page }) => {
+  await openApp(page)
+  const column = await top(page.getByTestId('left-column'))
+  const title = await top(page.locator('.panel-header'))
+  expect(title.y).toBe(column.y)
+  expect(title.height).toBe(HEADER)
+  const first = await top(page.locator('[aria-label="Features"] > li').first())
+  expect(first.y).toBe(title.y + HEADER)
+  const bar = await top(page.getByTestId('rollback-bar'))
+  const parts = await top(page.locator('.parts-heading'))
+  expect(parts.y).toBe(bar.y + bar.height)
+  expect(parts.height).toBe(HEADER)
+  expect((await top(page.getByTestId('parts-list').locator('li').first())).y).toBe(parts.y + HEADER)
+  expect((await top(page.locator('[data-part-eye]').first())).width).toBe(24)
+  // the part row's icon is its swatch, at the front
+  const swatch = await top(page.getByTestId('part-swatch').first())
+  expect(swatch.x - column.x).toBeLessThanOrEqual(8)
+})
+
+test('Assembly: "Instances (n)" is the title row, the rows follow it, no Delete block under the list, mates show their name only', async ({ page }) => {
+  await openApp(page, { document: 'Hinge', model: false })
+  await openAssemblyTab(page, 3)
+  await settledAssembly(page)
+  const column = await top(page.getByTestId('left-column'))
+  const title = page.locator('.panel-header .panel-title')
+  await expect(title).toHaveText('Instances (3)')
+  expect((await top(page.locator('.panel-header'))).height).toBe(HEADER)
+  const rows = page.getByTestId('instance-list').locator('li')
+  expect((await top(rows.first())).y - column.y).toBe(HEADER)
+  await page.locator('[data-instance]').nth(1).click()
+  await expect(page.locator('.panel-header').getByRole('button', { name: /^Delete / })).toBeVisible()
+  await expect(page.locator('.instance-actions')).toHaveCount(0)
+  // the Mates header sits straight under the last instance row
+  const last = await top(rows.last())
+  const mates = await top(page.locator('.parts-heading', { hasText: 'Mates' }))
+  expect(mates.y).toBe(last.y + last.height)
+  expect(mates.height).toBe(HEADER)
+  const mate = page.getByTestId('mate-list').locator('li').first()
+  await expect(mate.locator('.mate-detail')).toBeHidden()
+  await expect(mate).toHaveAttribute('title', /^Fastened: /)
+})

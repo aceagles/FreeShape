@@ -249,6 +249,20 @@ export const shots: ShotState[] = [
     after: closeAllDiscard,
   },
   {
+    name: 'fillet-dialog-scrolled',
+    mock: 'dialog', // Fillet 1 with its edge field active, the form scrolled to its end: Type and Radius reachable above the docked pad
+    steps: async (page) => {
+      await openFilletField(page)
+      await penPickEdge(page)
+      await page.evaluate(() => {
+        const form = document.querySelector('.dlg-form') as HTMLElement
+        form.scrollTop = form.scrollHeight
+      })
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
     name: 'fillet-dialog-refused',
     mock: 'dialog', // a pick the server refuses (here the refs route is made to answer with its own wording): the reason under the field, nothing added
     steps: async (page) => {

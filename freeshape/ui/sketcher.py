@@ -152,6 +152,7 @@ class Sketcher:
         self._first_cons = []   # inference constraints of the first click of a two-click tool
         self.infer_hits = []
         self._infer_cons = []
+        self.mid_mark = None    # (line id, snapped) for the midpoint square: the line under the cursor while drawing
 
     def set_tool(self, tool):
         self._end_editor()
@@ -611,6 +612,18 @@ class Sketcher:
             return "V"
         return None
 
+    def _mid_mark(self, snap):
+        """(line id, snapped) when the cursor is on a line or its midpoint, else None. Like Onshape, the line's
+        midpoint gets a hollow square while the line is hovered, filled once the cursor snaps to it."""
+        if not snap or snap[0] not in ("on", "mid"):
+            return None
+        e = self.sk.entities.get(snap[1])
+        if not e or e["type"] != "line":
+            return None
+        return snap[1], snap[0] == "mid"
+
+    MID_MARK_PX = 9.0
+
     def _hit_midpoint(self, vp, x, y, exclude=()):
         best = (8.0, None)
         for eid, e in self.sk.entities.items():
@@ -930,6 +943,7 @@ class Sketcher:
                     else (self.uv(vp, x, y), None))
         self.cursor_uv = uv
         self.snap_info = snap
+        self.mid_mark = self._mid_mark(snap)
         if self.tool == "arc_center" and len(self.temp) == 2 and uv is not None:
             c = self.temp[0][0]
             ang = math.atan2(uv[1] - c[1], uv[0] - c[0])
@@ -2693,6 +2707,18 @@ class Sketcher:
             p.setBrush(QColor("#eaf2fd"))
             p.drawRoundedRect(r, 3, 3)
             p.drawText(r, Qt.AlignCenter, label)
+        # ---- the hovered line's midpoint: a hollow square, filled when the cursor snaps to it
+        mm = getattr(self, "mid_mark", None)
+        if mm and (self.tool in DRAW_TOOLS or self.tool in ("dimension", "slot")):
+            e = sk.entities.get(mm[0])
+            if e and e["type"] == "line":
+                s = self.scr(vp, (sk.P(e["p1"]) + sk.P(e["p2"])) / 2)
+                h = self.MID_MARK_PX / 2
+                col = QColor.fromRgbF(*theme.HOVER)
+                p.setPen(QPen(col, 1.5))
+                p.setBrush(col if mm[1] else Qt.NoBrush)
+                p.drawRect(QRectF(s[0] - h, s[1] - h, 2 * h, 2 * h))
+                p.setBrush(Qt.NoBrush)
         # ---- live length readout while drawing
         if self.cursor_uv is not None:
             txt = None

@@ -2,16 +2,20 @@ import type { DocumentRow, Holder } from '../net/api'
 
 const plural = (n: number, unit: string): string => `${n} ${unit}${n === 1 ? '' : 's'} ago`
 
+/** "3 hours ago", or the date once it is a week old. `time` is seconds since the epoch. */
+export function formatAgo(time: number, nowMs: number): string {
+  const s = nowMs / 1000 - time
+  if (s < 45) return 'just now'
+  if (s < 3600) return plural(Math.max(1, Math.round(s / 60)), 'minute')
+  if (s < 86400) return plural(Math.round(s / 3600), 'hour')
+  if (s < 2 * 86400) return 'yesterday'
+  if (s < 7 * 86400) return plural(Math.floor(s / 86400), 'day')
+  return new Date(time * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 /** "Modified 3 hours ago", or the date once it is a week old. `modified` is seconds since the epoch. */
 export function formatModified(modified: number | null, nowMs: number): string {
-  if (modified === null) return 'Modified time unknown'
-  const s = nowMs / 1000 - modified
-  if (s < 45) return 'Modified just now'
-  if (s < 3600) return `Modified ${plural(Math.max(1, Math.round(s / 60)), 'minute')}`
-  if (s < 86400) return `Modified ${plural(Math.round(s / 3600), 'hour')}`
-  if (s < 2 * 86400) return 'Modified yesterday'
-  if (s < 7 * 86400) return `Modified ${plural(Math.floor(s / 86400), 'day')}`
-  return `Modified ${new Date(modified * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
+  return modified === null ? 'Modified time unknown' : `Modified ${formatAgo(modified, nowMs)}`
 }
 
 export interface RowStatus {
@@ -36,4 +40,9 @@ export function rowStatus(row: DocumentRow): RowStatus | null {
   if (row.open) return { label: 'Open', tone: 'accent', readOnly: false }
   if (h) return { label: `Open in another browser client${stale}`, tone: 'held', readOnly: true }
   return null
+}
+
+/** The marker for a Document with unsaved edits the server kept, or null. */
+export function recoverMark(row: DocumentRow): string | null {
+  return row.autosave && !row.missing ? 'Unsaved edits can be recovered' : null
 }

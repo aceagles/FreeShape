@@ -136,11 +136,13 @@ it('back with unsaved changes asks: Stay does nothing', () => {
   expect(onLeave).not.toHaveBeenCalled()
 })
 
-it('back with unsaved changes: Discard closes without saving', async () => {
+it('back with unsaved changes: Discard closes without saving and tells the server to drop its autosave', async () => {
   const { calls, onLeave } = setup((c) => (c.url === '/documents/d/close' ? { json: { closed: true } } : undefined), dirtyTabs)
   act(() => screen.getByRole('button', { name: 'Back to Documents' }).click())
+  expect(screen.getByRole('dialog').textContent).toContain('cannot be recovered afterwards')
   await act(async () => screen.getByRole('button', { name: 'Discard' }).click())
   expect(writes(calls)).toEqual(['POST /documents/d/close'])
+  expect(calls.find((c) => c.url === '/documents/d/close')!.body).toEqual({ discard: true })
   expect(onLeave).toHaveBeenCalled()
 })
 

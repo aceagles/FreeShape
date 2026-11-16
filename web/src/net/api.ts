@@ -8,6 +8,12 @@ export interface Holder {
   stale: boolean
 }
 
+/** What a row of GET /documents says about an autosave the server kept: when the newest was written, and how many there are. */
+export interface AutosaveMark {
+  time: number
+  count: number
+}
+
 /** One row of GET /documents. `modified` is seconds since the epoch, or null when the folder cannot be read. */
 export interface DocumentRow {
   id: string
@@ -16,6 +22,24 @@ export interface DocumentRow {
   holder: Holder | null
   open: boolean
   missing: boolean
+  /** Unsaved edits the server kept that nobody holds the lock of: they can be recovered. Absent on an older server. */
+  autosave?: AutosaveMark | null
+}
+
+/**
+ * What recovering an autosave would do, from the open call. `tabs` are the tabs it holds, `deleted` the tab ids it deletes,
+ * `moved_on` the tabs whose saved file changed since it was written (recovering replaces that saved work in the open
+ * Document), `list_moved_on` that the tab list was saved by someone else too. `writable` is false when another program
+ * holds the lock, so it cannot be recovered or discarded yet.
+ */
+export interface AutosaveOffer {
+  time: number
+  count: number
+  tabs: Array<{ id: string; name: string }>
+  deleted: string[]
+  moved_on: string[]
+  list_moved_on: boolean
+  writable: boolean
 }
 
 /** What opening a Document, or asking for its tabs, answers. */
@@ -24,6 +48,18 @@ export interface DocumentReply {
   tabs: TabInfo[]
   read_only: boolean
   holder: Holder | null
+  /** A recoverable autosave of this Document, or null. */
+  autosave?: AutosaveOffer | null
+}
+
+/** What POST .../recover answers: the tabs now in the open Document (all unsaved), and what could not be put back. */
+export interface RecoverReply {
+  recovered: string[]
+  moved_on: string[]
+  list_moved_on: boolean
+  skipped: Array<{ tab: string; why: string }>
+  unreadable: number
+  tabs: TabInfo[]
 }
 
 /** A server answer that was not a success: `status` is 0 when the server could not be reached at all. */
@@ -90,7 +126,11 @@ export async function listDocuments(signal?: AbortSignal): Promise<DocumentRow[]
 
 export const createDocument = (name: string) => json<{ id: string; name: string }>('POST', '/documents', { body: { name } })
 export const openDocument = (doc: string) => json<DocumentReply>('POST', `${docPath(doc)}/open`, { body: {} })
-export const closeDocument = (doc: string) => json<{ closed: boolean }>('POST', `${docPath(doc)}/close`, { body: {} })
+/** Close a Document. Unsaved changes are kept as an autosave, or removed with `discard` (the user chose Discard). */
+export const closeDocument = (doc: string, discard = false) =>
+  json<{ closed: boolean }>('POST', `${docPath(doc)}/close`, { body: discard ? { discard: true } : {} })
+export const recoverDocument = (doc: string) => json<RecoverReply>('POST', `${docPath(doc)}/recover`, { body: {} })
+export const discardAutosave = (doc: string) => json<{ discarded: number }>('POST', `${docPath(doc)}/discard-autosave`, { body: {} })
 export const takeOver = (doc: string) => json<{ read_only: boolean; holder: Holder | null }>('POST', `${docPath(doc)}/take-over`, { body: {} })
 export const fetchDocumentTabs = (doc: string) => json<DocumentReply>('GET', `${docPath(doc)}/tabs`)
 

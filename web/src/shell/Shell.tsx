@@ -134,10 +134,10 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
     }
   }
   /** Close the Document on the server and go home. A server over one Document keeps it open (409): leave anyway. */
-  const leave = async () => {
+  const leave = async (discard = false) => {
     setModal(null)
     try {
-      await closeDocument(documentId)
+      await closeDocument(documentId, discard)
     } catch (e) {
       if (!(e instanceof ApiError && (e.status === 409 || e.status === 404))) {
         fail('Could not close the Document', e)
@@ -221,9 +221,9 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
         {modal?.kind === 'leave' && (
           <ConfirmDialog
             title={`Save changes to "${name}"?`}
-            message="The Document has changes that are not saved yet."
+            message="The Document has changes that are not saved yet. Discard throws them away, and they cannot be recovered afterwards."
             confirm={{ label: 'Save' }}
-            alternative={{ label: 'Discard', danger: true, onClick: () => void leave() }}
+            alternative={{ label: 'Discard', danger: true, onClick: () => void leave(true) }}
             cancelLabel="Stay"
             onConfirm={() => {
               setModal(null)

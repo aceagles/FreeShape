@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ApiError, closeDocument, createDocument, listDocuments, openDocument } from '../net/api'
+import { ApiError, closeDocument, createDocument, discardAutosave, listDocuments, openDocument, recoverDocument } from '../net/api'
 import type { DocumentReply, DocumentRow } from '../net/api'
 import type { ConnectionStore } from '../net/connection'
 import { Icon, paths } from '../shell/icons'
@@ -7,7 +7,8 @@ import { DebugPopover, LinkStatusButton, useDebugPanel } from '../shell/LinkStat
 import { ConfirmDialog } from '../shell/Modal'
 import { TextPrompt } from '../shell/TextPrompt'
 import { tokenVars } from '../shell/vars'
-import { formatModified, rowStatus } from './format'
+import { AutosaveDialog } from './AutosaveDialog'
+import { formatModified, recoverMark, rowStatus } from './format'
 import '../shell/shell.css'
 import './home.css'
 
@@ -15,6 +16,7 @@ type Modal =
   | { kind: 'new' }
   | { kind: 'other'; blocker: { id: string; name: string }; wanted: { id: string; name: string } }
   | { kind: 'message'; title: string; text: string }
+  | { kind: 'autosave'; reply: DocumentReply }
 
 /** Newest first; a Document with no known time last. */
 function byModified(a: DocumentRow, b: DocumentRow): number {
@@ -62,13 +64,36 @@ export function Home({
   const open = async (target: { id: string; name: string }) => {
     setBusy(target.id)
     try {
-      onOpened(await openDocument(target.id))
+      const reply = await openDocument(target.id)
+      // an autosave the server kept: ask, unless another program holds the lock (nothing can be recovered then)
+      if (reply.autosave && !reply.read_only) setModal({ kind: 'autosave', reply })
+      else onOpened(reply)
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.openDocument) {
         setModal({ kind: 'other', blocker: e.openDocument, wanted: target })
       } else {
         setModal({ kind: 'message', title: `Could not open "${target.name}"`, text: e instanceof Error ? e.message : 'Something went wrong.' })
       }
+      load()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  /** Recover or discard the autosave of the Document the dialog is about, then go in (or say why not). */
+  const answerAutosave = async (reply: DocumentReply, what: 'recover' | 'discard') => {
+    const id = reply.document.id
+    setModal(null)
+    setBusy(id)
+    try {
+      if (what === 'recover') onOpened({ ...reply, tabs: (await recoverDocument(id)).tabs, autosave: null })
+      else {
+        await discardAutosave(id)
+        onOpened({ ...reply, autosave: null })
+      }
+    } catch (e) {
+      const text = e instanceof Error ? e.message : 'Something went wrong.'
+      setModal({ kind: 'message', title: what === 'recover' ? `Could not recover "${reply.document.name}"` : `Could not discard the changes to "${reply.document.name}"`, text })
       load()
     } finally {
       setBusy(null)
@@ -136,6 +161,7 @@ export function Home({
             <ul className="doc-list" aria-label="Documents">
               {sorted.map((row) => {
                 const status = rowStatus(row)
+                const recover = recoverMark(row)
                 return (
                   <li key={row.id}>
                     <button type="button" className="doc-row" disabled={row.missing || busy !== null} aria-busy={busy === row.id} onClick={() => void open(row)}>
@@ -149,9 +175,18 @@ export function Home({
                           {status?.readOnly && busy !== row.id ? ', opens read-only here' : ''}
                         </span>
                       </span>
-                      {status && (
-                        <span className="doc-badge" data-tone={status.tone}>
-                          {status.label}
+                      {(status || recover) && (
+                        <span className="doc-badges">
+                          {recover && (
+                            <span className="doc-badge" data-tone="recover" data-testid="recover-mark">
+                              {recover}
+                            </span>
+                          )}
+                          {status && (
+                            <span className="doc-badge" data-tone={status.tone}>
+                              {status.label}
+                            </span>
+                          )}
                         </span>
                       )}
                     </button>
@@ -166,10 +201,23 @@ export function Home({
       {modal?.kind === 'new' && (
         <TextPrompt title="New Document" label="Name" confirmLabel="Create" onSubmit={create} onCancel={() => setModal(null)} />
       )}
+      {modal?.kind === 'autosave' && modal.reply.autosave && (
+        <AutosaveDialog
+          name={modal.reply.document.name}
+          offer={modal.reply.autosave}
+          now={now()}
+          onRecover={() => void answerAutosave(modal.reply, 'recover')}
+          onDiscard={() => void answerAutosave(modal.reply, 'discard')}
+          onLater={() => {
+            setModal(null)
+            onOpened(modal.reply)
+          }}
+        />
+      )}
       {modal?.kind === 'other' && (
         <ConfirmDialog
           title="Another Document is open"
-          message={`"${modal.blocker.name}" is still open on the server, and only one Document can be open at a time. Close it to open "${modal.wanted.name}". Changes in "${modal.blocker.name}" that are not saved are lost.`}
+          message={`"${modal.blocker.name}" is still open on the server, and only one Document can be open at a time. Close it to open "${modal.wanted.name}". Changes in "${modal.blocker.name}" that are not saved are kept as an autosave you can recover when you open it again.`}
           confirm={{ label: `Close "${modal.blocker.name}"`, danger: true }}
           onConfirm={() => void closeOtherAndOpen(modal.blocker, modal.wanted)}
           onCancel={() => setModal(null)}

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { holder, Scripted, singleDocument, tab } from '../support/scripted.ts'
-import type { Doc } from '../support/scripted.ts'
+import type { Autosave, Doc } from '../support/scripted.ts'
 
 // The home screen, the tab bar and saving, against a scripted server (no freeshape serve). The test drives every step.
 // The whole-window screenshots go to web/shots/out/ (not committed); scripts read them from there.
@@ -26,10 +26,41 @@ const several = () =>
     doc('d', 'Moved folder', 86400 * 90, { missing: true }),
   ])
 
+const autosave = (extra: Partial<Autosave> = {}): Autosave => ({
+  time: now - 25 * 60,
+  count: 1,
+  tabs: [{ id: 'T1', name: 'Part Studio 1' }],
+  deleted: [],
+  moved_on: [],
+  list_moved_on: false,
+  writable: true,
+  ...extra,
+})
+/** The Documents of `several`, the second one of them (Pulley block) with an autosave to recover. */
+const withAutosave = (extra: Partial<Autosave> = {}) => {
+  const server = several()
+  server.doc('c').autosave = autosave(extra)
+  return server
+}
+
 const sizes = [
   { width: 1024, height: 768 },
   { width: 1366, height: 1024 },
 ] as const
+
+/** Anything clipped by the window, a button under 44 px, or text that overflows its box. */
+const layoutProblems = (page: Page) =>
+  page.evaluate(() => {
+    const out: string[] = []
+    for (const el of document.querySelectorAll('body *')) {
+      const r = el.getBoundingClientRect()
+      if (r.width === 0 && r.height === 0) continue
+      if (r.left < -0.5 || r.top < -0.5 || r.right > innerWidth + 0.5 || r.bottom > innerHeight + 0.5) out.push(`${el.className} ${JSON.stringify(r.toJSON())}`)
+      if (el.tagName === 'BUTTON' && (r.width < 43.5 || r.height < 43.5)) out.push(`small ${el.className} ${r.width}x${r.height}`)
+      if (el instanceof HTMLElement && el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX === 'visible') out.push(`overflow ${el.className}`)
+    }
+    return out
+  })
 
 async function start(page: Page, server: Scripted, width = 1024, height = 768) {
   await page.setViewportSize({ width, height })
@@ -49,18 +80,7 @@ for (const { width, height } of sizes) {
     await expect(rows.nth(1)).toContainText('Hinge')
     await expect(rows.nth(1)).toContainText('Open in the desktop')
     await expect(rows.nth(3)).toBeDisabled()
-    const bad = await page.evaluate(() => {
-      const out: string[] = []
-      for (const el of document.querySelectorAll('body *')) {
-        const r = el.getBoundingClientRect()
-        if (r.width === 0 && r.height === 0) continue
-        if (r.left < -0.5 || r.top < -0.5 || r.right > innerWidth + 0.5 || r.bottom > innerHeight + 0.5) out.push(`${el.className} ${JSON.stringify(r.toJSON())}`)
-        if (el.tagName === 'BUTTON' && (r.width < 43.5 || r.height < 43.5)) out.push(`small ${el.className} ${r.width}x${r.height}`)
-        if (el instanceof HTMLElement && el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX === 'visible') out.push(`overflow ${el.className}`)
-      }
-      return out
-    })
-    expect(bad).toEqual([])
+    expect(await layoutProblems(page)).toEqual([])
     await shot(page, 'home')
   })
 
@@ -227,4 +247,81 @@ test('back with unsaved changes asks to save, discard or stay', async ({ page })
   await shot(page, 'leave-unsaved')
   await dialog.getByRole('button', { name: 'Stay' }).click()
   await expect(page.getByTestId('shell')).toBeVisible()
+})
+
+for (const { width, height } of sizes) {
+  test(`a Document with an autosave to recover is marked on the home screen at ${width} x ${height}`, async ({ page }) => {
+    await start(page, withAutosave(), width, height)
+    const rows = page.locator('.doc-row')
+    await expect(rows).toHaveCount(4)
+    await expect(rows.nth(2)).toContainText('Pulley block')
+    await expect(rows.nth(2).getByTestId('recover-mark')).toHaveText('Unsaved edits can be recovered')
+    await expect(page.getByTestId('recover-mark')).toHaveCount(1)
+    expect(await layoutProblems(page)).toEqual([])
+    await shot(page, 'home-recoverable')
+  })
+
+  test(`opening it asks Recover or Discard, in the top half, with what each does at ${width} x ${height}`, async ({ page }) => {
+    const server = withAutosave()
+    await start(page, server, width, height)
+    await page.getByRole('button', { name: /Pulley block/ }).click()
+    const dialog = page.getByRole('dialog', { name: 'Recover unsaved changes to "Pulley block"?' })
+    await expect(dialog).toContainText('written 25 minutes ago')
+    await expect(dialog.getByRole('button')).toHaveText(['Decide later', 'Discard', 'Recover'])
+    await expect(page.getByTestId('shell')).toHaveCount(0) // the question comes before the Document
+    const box = await page.locator('.modal').boundingBox()
+    expect(box!.y + box!.height).toBeLessThan(height / 2)
+    expect(await layoutProblems(page)).toEqual([])
+    await shot(page, 'recover-dialog')
+    await dialog.getByRole('button', { name: 'Recover' }).click()
+    await expect(page.getByTestId('document-name')).toHaveText('Pulley block')
+    await expect(page.getByTestId('dirty-dot')).toBeVisible() // recovered edits are unsaved
+    expect(server.log).toEqual(['POST /documents/c/open', 'POST /documents/c/recover', 'ws subscribe c'])
+    expect(server.doc('c').autosave).toBeNull()
+  })
+
+  test(`when the saved Document has moved on the dialog says what Recover replaces at ${width} x ${height}`, async ({ page }) => {
+    await start(page, withAutosave({ moved_on: ['T1'] }), width, height)
+    await page.getByRole('button', { name: /Pulley block/ }).click()
+    const warning = page.getByTestId('autosave-moved')
+    await expect(warning).toContainText('"Part Studio 1" was saved by another program after these changes were written')
+    const box = await page.locator('.modal').boundingBox()
+    expect(box!.y + box!.height).toBeLessThan(height * 0.75)
+    expect(await layoutProblems(page)).toEqual([])
+    await shot(page, 'recover-dialog-moved-on')
+  })
+
+  test(`a Document the server closed returns the client to the home screen with a message at ${width} x ${height}`, async ({ page }) => {
+    const server = several()
+    await start(page, server, width, height)
+    await page.getByRole('button', { name: /Gearbox bracket/ }).click()
+    await expect(page.getByTestId('document-name')).toHaveText('Gearbox bracket')
+    server.doc('a').open = false
+    server.doc('a').autosave = autosave({ time: now })
+    server.push({ type: 'closed', document: 'a', reason: 'idle' }) // the server closed it for being idle
+    await expect(page.getByTestId('home')).toBeVisible()
+    await expect(page.getByTestId('home-notice')).toContainText('"Gearbox bracket" was closed because nobody was connected to it for a while')
+    await expect(page.getByTestId('home-notice')).toContainText('Changes that were not saved are kept')
+    await expect(page.locator('.doc-row').first().getByTestId('recover-mark')).toBeVisible()
+    expect(await layoutProblems(page)).toEqual([])
+    await shot(page, 'closed-notice')
+  })
+}
+
+test('Discard deletes the autosave and opens the Document as saved; Decide later opens it and deletes nothing', async ({ page }) => {
+  const server = withAutosave()
+  await start(page, server)
+  await page.getByRole('button', { name: /Pulley block/ }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Decide later' }).click()
+  await expect(page.getByTestId('document-name')).toHaveText('Pulley block')
+  await expect(page.getByTestId('dirty-dot')).toHaveCount(0)
+  expect(server.doc('c').autosave).not.toBeNull()
+  await page.getByRole('button', { name: 'Back to Documents' }).click()
+  await expect(page.getByTestId('home')).toBeVisible()
+  await page.getByRole('button', { name: /Pulley block/ }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Discard' }).click()
+  await expect(page.getByTestId('document-name')).toHaveText('Pulley block')
+  expect(server.doc('c').autosave).toBeNull()
+  expect(server.log).toContain('POST /documents/c/discard-autosave')
+  expect(server.log).not.toContain('POST /documents/c/recover')
 })

@@ -78,6 +78,27 @@ it('starts on the home screen when the one Document is not open, and when the li
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('could not be listed'))
 })
 
+it('a Document the server closes returns the client to the home screen with a message, idle or not', async () => {
+  for (const [reason, text] of [
+    [undefined, 'was closed on the server'],
+    ['idle', 'was closed because nobody was connected to it'],
+  ] as const) {
+    cleanup()
+    server([row('a', 'Bracket', false), row('b', 'Hinge', true)])
+    const { sock, store: s } = store()
+    s.start()
+    render(<App store={s} />)
+    expect(await screen.findByTestId('shell')).toBeTruthy()
+    act(() => sock.onmessage?.({ data: JSON.stringify({ type: 'closed', document: 'b', ...(reason ? { reason } : {}) }) }))
+    const notice = await screen.findByTestId('home-notice')
+    expect(screen.getByTestId('home')).toBeTruthy()
+    expect(screen.queryByTestId('shell')).toBeNull()
+    expect(notice.textContent).toContain(`"Hinge" ${text}`)
+    expect(notice.textContent).toContain('Open it again')
+    s.stop()
+  }
+})
+
 it('resumes the one open Document of several after a reload', async () => {
   server([row('a', 'Bracket', false), row('b', 'Hinge', true)])
   render(<App store={store().store} />)

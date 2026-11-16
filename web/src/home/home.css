@@ -132,3 +132,25 @@
   background: var(--c-dangerSoft);
   color: var(--c-danger);
 }
+.doc-badge[data-tone='recover'] {
+  background: var(--c-selected);
+  box-shadow: inset 0 0 0 1px var(--c-selection);
+  color: var(--c-ink);
+}
+.doc-badges {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-4);
+}
+.modal-message.tight {
+  margin-bottom: var(--sp-8);
+}
+.modal-warning {
+  padding: var(--sp-8) var(--sp-12);
+  border: 1px solid var(--c-selection);
+  border-radius: var(--r-sm);
+  background: var(--c-selected);
+  color: var(--c-ink);
+}

@@ -18,6 +18,16 @@ export interface Tab {
   dirty: boolean
   revision: number | null
 }
+/** What the server offers to recover (the open reply's `autosave`). */
+export interface Autosave {
+  time: number
+  count: number
+  tabs: Array<{ id: string; name: string }>
+  deleted: string[]
+  moved_on: string[]
+  list_moved_on: boolean
+  writable: boolean
+}
 export interface Doc {
   id: string
   name: string
@@ -26,6 +36,8 @@ export interface Doc {
   open: boolean
   missing: boolean
   tabs: Tab[]
+  /** An autosave the server kept for this Document, until it is recovered or discarded. */
+  autosave?: Autosave | null
 }
 
 export const tab = (id: string, kind: string, name: string, dirty = false): Tab => ({ id, kind, name, state: 'ok', error: null, dirty, revision: 1 })
@@ -47,7 +59,7 @@ export class Scripted {
   }
 
   private reply(d: Doc, readOnly = d.holder !== null && d.holder.program !== 'browser') {
-    return { document: { id: d.id, name: d.name }, tabs: d.tabs, read_only: readOnly, holder: readOnly ? d.holder : null }
+    return { document: { id: d.id, name: d.name }, tabs: d.tabs, read_only: readOnly, holder: readOnly ? d.holder : null, autosave: d.autosave ?? null }
   }
 
   /** Tell the page something over the socket, as the server would. */
@@ -65,14 +77,24 @@ export class Scripted {
       if (method !== 'GET') this.log.push(`${method} ${path}`)
       if (path === '/documents') {
         if (method === 'GET') {
-          return json(200, { documents: this.docs.map((d) => ({ id: d.id, name: d.name, modified: d.modified, holder: d.holder, open: d.open, missing: d.missing })) })
+          return json(200, {
+            documents: this.docs.map((d) => ({
+              id: d.id,
+              name: d.name,
+              modified: d.modified,
+              holder: d.holder,
+              open: d.open,
+              missing: d.missing,
+              autosave: d.autosave ? { time: d.autosave.time, count: d.autosave.count } : null,
+            })),
+          })
         }
         const name = (req.postDataJSON() as { name: string }).name
         const d: Doc = { id: `new${++this.made}`, name, modified: Date.now() / 1000, holder: null, open: false, missing: false, tabs: [tab('T1', 'studio', 'Part Studio 1')] }
         this.docs.push(d)
         return json(201, { id: d.id, name: d.name })
       }
-      const m = /^\/documents\/([^/]+)\/(open|close|take-over|save|tabs)(?:\/([^/]+)(?:\/(outputs|rename))?)?$/.exec(path)
+      const m = /^\/documents\/([^/]+)\/(open|close|take-over|save|recover|discard-autosave|tabs)(?:\/([^/]+)(?:\/(outputs|rename))?)?$/.exec(path)
       if (!m) return json(404, { error: 'not found' })
       const [, id, verb, tabId, sub] = m
       const d = this.doc(id!)
@@ -85,6 +107,18 @@ export class Scripted {
       if (verb === 'close') {
         d.open = false
         return json(200, { closed: true })
+      }
+      if (verb === 'recover') {
+        const a = d.autosave
+        if (!a) return json(404, { error: 'there is no autosave to recover' })
+        for (const t of d.tabs) if (a.tabs.some((x) => x.id === t.id)) t.dirty = true
+        d.autosave = null
+        return json(200, { recovered: a.tabs.map((t) => t.id), moved_on: a.moved_on, list_moved_on: a.list_moved_on, skipped: [], unreadable: 0, tabs: d.tabs })
+      }
+      if (verb === 'discard-autosave') {
+        if (!d.autosave) return json(404, { error: 'there is no autosave to discard' })
+        d.autosave = null
+        return json(200, { discarded: 1 })
       }
       if (verb === 'take-over') {
         d.holder = null

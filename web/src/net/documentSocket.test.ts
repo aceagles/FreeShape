@@ -54,6 +54,14 @@ it('follows lock messages and says when the Document was closed or is not open',
   store.stop()
 })
 
+it('tells a client that comes back to a Document the server closed for being idle', () => {
+  const { store, sock } = makeStore()
+  store.watch('doc-1')
+  sock.say({ type: 'closed', document: 'doc-1', reason: 'idle' })
+  expect(store.getState()).toMatchObject({ document: null, ended: 'idle' })
+  store.stop()
+})
+
 it('raises the epoch when a hello shows a revision that differs from the one held', () => {
   const { store, sock } = makeStore()
   store.watch('doc-1')

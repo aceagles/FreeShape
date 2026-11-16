@@ -28,8 +28,8 @@ export interface ConnectionState {
   holder: Holder | null
   /** Bumps when what the tabs show may differ from what was loaded (a reconnect that found changes, a take-over). */
   epoch: number
-  /** Why the Document being watched is gone: closed on the server, or not open there any more. */
-  ended: 'closed' | 'not-open' | null
+  /** Why the Document being watched is gone: closed on the server (`idle`: after nobody was connected), or not open there any more. */
+  ended: 'closed' | 'idle' | 'not-open' | null
 }
 
 /** The part of the browser's WebSocket the store uses; tests pass a fake. */
@@ -286,7 +286,7 @@ export class ConnectionStore {
         if (typeof m.read_only === 'boolean') this.update({ readOnly: m.read_only, holder: parseHolder(m.holder) })
         break
       case 'closed':
-        this.update({ document: null, tabs: [], revisions: {}, readOnly: false, holder: null, ended: 'closed' })
+        this.update({ document: null, tabs: [], revisions: {}, readOnly: false, holder: null, ended: m.reason === 'idle' ? 'idle' : 'closed' })
         break
       case 'error':
         if (about !== null && about === this.wanted && m.id === undefined) {

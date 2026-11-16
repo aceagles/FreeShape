@@ -25,6 +25,9 @@ Routes (an exact table; no part of a request is ever joined to a file path):
                                 lock is held elsewhere
     POST /documents/<id>/close  releases the lock, closes the session
     POST /documents/<id>/take-over   takes the lock from whoever holds it and reloads the session from the folder
+    POST /documents/<id>/recover     loads the recoverable autosave(s) into the open session as unsaved edits (never
+                                writes the Document), then removes them; 404 when there is none (see "Autosave")
+    POST /documents/<id>/discard-autosave   deletes the recoverable autosave(s) of the Document
     GET  /documents/<id>/tabs                  {"document": {"id", "name"}, "tabs": [...], "read_only", "holder"}
     GET  /documents/<id>/tabs/<tab>/outputs    the tab's outputs in the engine wire format (octet-stream)
     GET  /documents/<id>/tabs/<tab>/mesh.json  display meshes, see `mesh_document`
@@ -53,6 +56,15 @@ A client may send {"type": "hello"} (answered with hello), {"type": "ping", "t":
 {"type": "pong", "t": x}) and {"type": "edit", "id", "tab", "edit", "base"} (answered with {"type": "edited", "id",
 "rebuilt"} or {"type": "error", "id", "message"}). An HTTP edit names its sender with the headers X-Client-Id and
 X-Base-Revision (both optional). The server records both and does not yet act on a stale base revision.
+Autosave and idle close (I2.6, freeshape/autosave.py). Edits made here live in the session until `save`, so a Document
+whose lock this server holds is autosaved to `<data dir>/autosave-server/<lock instance id>/` every `--autosave-interval`
+seconds (30) and a few seconds after each burst of edits, when something changed; a save removes it. The desktop never sees
+that folder. An autosave whose holder still holds a fresh lock is live and not touched; one whose holder's lock is gone or
+stale is recoverable. `POST .../open` and `GET /documents` carry `autosave` (null, or {"time", "count", "tabs", ...}) for a
+recoverable one; only `recover` and `discard-autosave` (and a close that says {"discard": true}) delete it. When no client has
+a socket on an open Document for the client expiry time (`--client-expiry`), the server autosaves it, closes the session and
+releases the lock (a `closed` message with "reason": "idle" goes to a client that comes back). A graceful stop and a plain
+close autosave too. The server never writes an autosave over the Document.
 State of one person lives in `ClientRegistry`, keyed by client id, kept `client_ttl` seconds (default 600, option
 `--client-expiry`) after the client's last socket closes; a reconnect with the same id finds its entry.
 
@@ -76,6 +88,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from . import autosave as AS
 from . import doc_lock
 
 BIND_HOST = "127.0.0.1"
@@ -87,15 +100,18 @@ DEFAULT_PORT = 8765
 READY_PREFIX = "FREESHAPE_SERVE_READY"
 LOCK_PROGRAM = "browser"        # the holder name this server writes in a Document's lock file
 LOCK_REFRESH = doc_lock.REFRESH_INTERVAL     # seconds between lock heartbeats (tests lower it)
+AUTOSAVE_INTERVAL = 30.0        # seconds between autosaves of a Document that changed
+AUTOSAVE_BURST = 3.0            # seconds after an edit, with no further edit, before the burst is autosaved
 MAX_OPEN_DOCUMENTS = 1          # the open-Document limit; see `_Server._open_refusal`
 MAX_NAME = 100                  # longest Document name POST /documents accepts
 MAX_FOLDER = 80                 # longest folder name made from it
 _DOC_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _TAB_PATH = re.compile(r"^/tabs/([A-Za-z0-9_-]{1,64})/(outputs|mesh\.json|edit)$")
 _DOC_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})"
-                       r"(?:/(open|close|take-over|save|tabs)"
+                       r"(?:/(open|close|take-over|save|tabs|recover|discard-autosave)"
                        r"|/tabs/([A-Za-z0-9_-]{1,64})(?:/(outputs|mesh\.json|edit|rename))?)$")
-_DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POST", "tabs": "GET"}
+_DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POST", "tabs": "GET", "recover": "POST",
+              "discard-autosave": "POST"}
 _FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
 _EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST", "rename": "POST"}
 MAX_TABS = 200                  # tabs one Document may hold through POST /documents/<id>/tabs
@@ -316,6 +332,10 @@ class DocumentLocked(Exception):
                          f"(take the lock over to edit)")
 
 
+class NoAutosave(Exception):
+    """recover or discard-autosave on a Document with no recoverable autosave (HTTP 404)."""
+
+
 def _holder_json(h):
     """A doc_lock.Holder (or None) as the dict the routes send."""
     if h is None:
@@ -389,6 +409,11 @@ class _Open:
         self.revisions = {}                  # tab id -> last known revision (under `lock`)
         self.tabs_sig = None                 # last pushed tab states, to push `tabs` on change
         self.refresher = None                # the asyncio task that refreshes the lock file
+        self.autosaver = None                # the asyncio task that autosaves every interval
+        self.burst = None                    # the timer handle that autosaves after a burst of edits
+        self.idle = None                     # the timer handle that closes the Document when nobody is connected
+        self.seq = 0                         # counts changes made through the server (under `lock`)
+        self.written = 0                     # `seq` as of the last autosave written or removed
 
     @property
     def name(self):
@@ -443,12 +468,21 @@ class _Server:
     by id on request)."""
 
     def __init__(self, session=None, port=0, allow_origins=(), client_ttl=CLIENT_TTL, client_expired=None,
-                 registry=None, root=None, folder=None, lock_program=None):
+                 registry=None, root=None, folder=None, lock_program=None, data_dir=None,
+                 autosave_interval=AUTOSAVE_INTERVAL, autosave_burst=AUTOSAVE_BURST,
+                 lock_timeout=doc_lock.DEFAULT_TIMEOUT):
         from .session import SessionError
         self.session_error = SessionError
         self.registry = registry
         self.root = os.path.realpath(root) if root is not None else None
         self.lock_program = lock_program
+        self.data_dir = os.fspath(data_dir) if data_dir is not None else None    # None: no autosave
+        self.autosave_interval = autosave_interval
+        self.autosave_burst = autosave_burst
+        self.lock_timeout = lock_timeout                         # seconds after which a heartbeat is stale
+        self._closing = set()                                    # ids being closed: still open until the lock is released
+        self.closed_reasons = {}                                 # Document id -> why the server closed it (idle)
+        self._bg = set()                                         # tasks started from timers
         self.pool = ThreadPoolExecutor(max_workers=SESSION_THREADS, thread_name_prefix="serve-session")
         self.docs = {}                                           # open Document id -> _Open
         self._open_lock = None                                   # asyncio.Lock, made on the loop
@@ -511,7 +545,7 @@ class _Server:
         file_lock, holder = None, None
         if program is not None and folder is not None:
             try:
-                file_lock = doc_lock.acquire(folder, program)
+                file_lock = doc_lock.acquire(folder, program, self.lock_timeout)
             except doc_lock.LockHeld as e:
                 holder = e.holder
         self.docs[session.id] = _Open(session.id, folder, session, file_lock, holder, single=True)
@@ -553,6 +587,9 @@ class _Server:
         finally:
             for d in list(self.docs.values()):
                 self._stop_refresh(d)
+                self._disarm_idle(d)
+            for task in list(self._bg):
+                task.cancel()
             await asyncio.gather(*(ws.close(code=1001, message=b"server stopping") for ws in list(self._sockets)),
                                  return_exceptions=True)
             await runner.cleanup()
@@ -584,6 +621,8 @@ class _Server:
             self.docs.pop(d.id, None)
             got = d.lock.acquire(timeout=wait)
             try:
+                if got and d.file_lock is not None:
+                    self._final_autosave(d)                      # a graceful stop keeps what was not saved
                 if d.file_lock is not None:
                     try:
                         d.file_lock.release()
@@ -597,12 +636,21 @@ class _Server:
     # ------------------------------------------------------------------ the lock refresh
     def _start_refresh(self, d):
         if d.file_lock is not None and d.refresher is None and not d.is_read_only():
-            d.refresher = asyncio.get_running_loop().create_task(self._refresh_loop(d))
+            loop = asyncio.get_running_loop()
+            d.refresher = loop.create_task(self._refresh_loop(d))
+            if self.data_dir is not None:
+                d.autosaver = loop.create_task(self._autosave_loop(d))
 
     def _stop_refresh(self, d):
         task, d.refresher = d.refresher, None
         if task is not None and task is not asyncio.current_task():
             task.cancel()
+        task, d.autosaver = d.autosaver, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        burst, d.burst = d.burst, None
+        if burst is not None:
+            burst.cancel()
 
     async def _refresh_loop(self, d):
         while True:
@@ -624,7 +672,7 @@ class _Server:
         if not ok:
             d.lost = True
             d.refresher = None
-            await self._announce_lock(d)
+            await self._lost(d)
         return ok
 
     def refresh_locks_now(self, timeout=30.0):
@@ -634,9 +682,208 @@ class _Server:
             return {d.id: await self._refresh_one(d) for d in list(self.docs.values())}
         return asyncio.run_coroutine_threadsafe(go(), self._loop).result(timeout)
 
+    async def _lost(self, d):
+        """The lock was taken from us: tell the clients, and autosave what was not saved (once, under our instance)."""
+        await self._announce_lock(d)
+        await self._autosave_one(d, final=True)
+
     async def _announce_lock(self, d):
         state = await asyncio.get_running_loop().run_in_executor(self.pool, d.lock_state)
         await self._broadcast({"type": "lock", "document": d.id, **state}, d)
+
+    # ------------------------------------------------------------------ autosave
+    def _autosave_write(self, d, final=False):
+        """Session lock held (pool thread). Write `d`'s autosave under this server's lock instance when something
+        changed since the last one, or remove it when nothing is unsaved any more; True when a file was written.
+        A Document that is read-only is not autosaved, except `final` (the lock was just lost, or it is closing)."""
+        lock = d.file_lock
+        if self.data_dir is None or lock is None or (d.is_read_only() and not final) or d.seq == d.written:
+            return False
+        state = d.session.autosave_state()
+        if state is None:
+            AS.remove(self.data_dir, lock.instance)
+            d.written = d.seq
+            return False
+        state["document"] = d.id
+        AS.write(self.data_dir, lock.instance, state)
+        d.written = d.seq
+        return True
+
+    def _final_autosave(self, d):
+        try:
+            self._autosave_write(d, final=True)
+        except Exception as e:                                   # noqa: BLE001  (never stop a close for this)
+            _log(f"autosave of {_clean(d.id, 16)} at close: {type(e).__name__}: {_clean(str(e), 200)}")
+
+    async def _autosave_one(self, d, final=False):
+        """Autosave `d` now if something changed (off the loop); True when a file was written."""
+        if self.data_dir is None or d.file_lock is None or (not final and self.docs.get(d.id) is not d):
+            return False
+        try:
+            return await self._in_session(d, lambda: self._autosave_write(d, final))
+        except Exception as e:                                   # noqa: BLE001  (file trouble: try again later)
+            _log(f"autosave of {_clean(d.id, 16)}: {type(e).__name__}: {_clean(str(e), 200)}")
+            return False
+
+    async def _autosave_loop(self, d):
+        while True:
+            await asyncio.sleep(self.autosave_interval)
+            if self.docs.get(d.id) is not d:
+                return
+            await self._autosave_one(d)
+
+    def _spawn(self, coro):
+        task = asyncio.get_running_loop().create_task(coro)
+        self._bg.add(task)
+        task.add_done_callback(self._bg.discard)
+
+    def _arm_burst(self, d):
+        """Event loop. An edit was made: autosave once `autosave_burst` seconds pass with no further edit."""
+        if self.data_dir is None or d.file_lock is None:
+            return
+        if d.burst is not None:
+            d.burst.cancel()
+        d.burst = asyncio.get_running_loop().call_later(self.autosave_burst, lambda: self._spawn(self._autosave_one(d)))
+
+    def autosave_now(self, timeout=60.0):
+        """Autosave every open Document that changed, now, from any thread; {id: a file was written}. For tests and for
+        a caller that must not wait for the interval."""
+        async def go():
+            return {d.id: await self._autosave_one(d) for d in list(self.docs.values())}
+        return asyncio.run_coroutine_threadsafe(go(), self._loop).result(timeout)
+
+    def _recoverable(self, d):
+        """Pool thread. The autosaves of Document `d` that may be offered: oldest first, not the live one and not ours."""
+        if self.data_dir is None or d.folder is None:
+            return []
+        infos = AS.index(self.data_dir).get(d.id, [])
+        if not infos:
+            return []
+        try:
+            holder = doc_lock.holder(d.folder, self.lock_timeout)
+        except OSError:
+            holder = None
+        return AS.recoverable(infos, holder, self._own_instance(d))
+
+    @staticmethod
+    def _own_instance(d):
+        """The instance id of the lock `d` holds, or None when it holds none or has lost it (its autosave is then
+        like anyone's: its holder's lock is gone)."""
+        return d.file_lock.instance if d.file_lock is not None and not d.lost else None
+
+    def _offer(self, d):
+        """Session lock held. The `autosave` field of an open reply: null, or what recovering would do: the newest
+        time, how many autosaves there are, the tabs they hold, the tabs the saved Document has changed since they were
+        written (`moved_on`: recover would replace those), and whether document.json changed (`list_moved_on`)."""
+        infos = self._recoverable(d)
+        if not infos:
+            return None
+        tabs, deleted, moved, list_moved = {}, [], set(), False
+        for info in infos:
+            summary = info.summary()
+            tabs.update({t["id"]: t["name"] for t in summary["tabs"]})
+            deleted += [x for x in summary["deleted"] if x not in deleted]
+            m, lm = d.session.autosave_moved_on(info.bases(), info.manifest_base, info.list_changed)
+            moved.update(m)
+            list_moved = list_moved or lm
+        return {"time": infos[-1].time, "count": len(infos), "tabs": [{"id": k, "name": v} for k, v in sorted(tabs.items())],
+                "deleted": deleted, "moved_on": sorted(moved), "list_moved_on": list_moved,
+                "writable": not d.is_read_only()}
+
+    async def _recover(self, d):
+        """POST .../recover: put the recoverable autosave(s) on the open session as unsaved edits (oldest first, so the
+        newest wins a tab both hold), write a new autosave of that state under this server's lock, then remove the ones
+        applied. The Document on disk is not written; the client's Save does that. 423 when the Document is read-only."""
+        def work():
+            d.check_writable()
+            infos = self._recoverable(d)
+            if not infos:
+                raise NoAutosave("there is no autosave to recover")
+            moved, list_moved, applied, skipped, recovered, unreadable = set(), False, [], [], [], 0
+            for info in infos:
+                m, lm = d.session.autosave_moved_on(info.bases(), info.manifest_base, info.list_changed)
+                try:
+                    snap = AS.load(self.data_dir, info)
+                except AS.AutosaveError as e:
+                    _log(f"autosave {info.instance[:8]}: {_clean(str(e), 200)}")
+                    unreadable += 1
+                    continue
+                got = d.session.restore_autosave(snap)
+                moved.update(m)
+                list_moved = list_moved or lm
+                skipped += got["skipped"]
+                recovered += [t for t in got["recovered"] if t not in recovered]
+                applied.append(info)
+            d.seq += 1
+            d.refresh_tab_ids()
+            self._autosave_write(d)                             # the recovered state is safe before the old files go
+            for info in applied:
+                AS.remove(self.data_dir, info.instance)
+            return {"recovered": recovered, "moved_on": sorted(moved), "list_moved_on": list_moved, "skipped": skipped,
+                    "unreadable": unreadable}, self._tab_view(d, recovered)
+        try:
+            out, tabs = await self._in_session(d, work)
+        except DocumentLocked:
+            if d.lost:
+                await self._lost(d)
+            raise
+        self._arm_burst(d)
+        await self._announce(d, {"type": "changed", "document": d.id, "client": None, "base": None,
+                                 "rebuilt": out["recovered"], "revisions": {t["id"]: t["revision"] for t in tabs
+                                                                            if t["id"] in out["recovered"]},
+                                 "saved": []}, tabs)
+        return {**out, "tabs": tabs}
+
+    async def _discard_autosave(self, d):
+        """POST .../discard-autosave: delete the recoverable autosave(s) of the Document; the session is not touched."""
+        def work():
+            d.check_writable()
+            infos = self._recoverable(d)
+            if not infos:
+                raise NoAutosave("there is no autosave to discard")
+            for info in infos:
+                AS.remove(self.data_dir, info.instance)
+            return len(infos)
+        n = await self._in_session(d, work)
+        return {"discarded": n}
+
+    # ------------------------------------------------------------------ idle close
+    def _watched(self, d):
+        """Whether any socket is subscribed to Document `d`."""
+        return any(d.id in subs for subs in self._subs.values())
+
+    def _disarm_idle(self, d):
+        handle, d.idle = d.idle, None
+        if handle is not None:
+            handle.cancel()
+
+    def _arm_idle(self, d):
+        """Event loop. Start the idle timer of `d` unless a client is connected to it (or it is the single Document of
+        a server that stays open): when it runs out the Document is autosaved and closed."""
+        self._disarm_idle(d)
+        if d.single or self._watched(d) or self.docs.get(d.id) is not d:
+            return
+        d.idle = asyncio.get_running_loop().call_later(self.clients.ttl, lambda: self._spawn(self._idle_fire(d)))
+
+    async def _idle_fire(self, d):
+        d.idle = None
+        await self._idle_close(d)
+
+    async def _idle_close(self, d):
+        """Autosave `d`, close its session and release its lock, when no client is connected to it; True when closed."""
+        async with self._open_lock:
+            if self.docs.get(d.id) is not d or d.single or self._watched(d):
+                return False
+            self.closed_reasons[d.id] = "idle"
+            await self._release_document(d, reason="idle")
+        return True
+
+    def expire_idle_now(self, timeout=60.0):
+        """Close every open Document that no client is connected to, as the idle timer would; the ids closed. From any
+        thread, for tests and for a caller that must not wait for the client expiry time."""
+        async def go():
+            return [d.id for d in list(self.docs.values()) if not d.single and await self._idle_close(d)]
+        return asyncio.run_coroutine_threadsafe(go(), self._loop).result(timeout)
 
     # ------------------------------------------------------------------ responses
     @staticmethod
@@ -665,6 +912,8 @@ class _Server:
             resp = await self._respond(request)
         except DocumentLocked as e:
             resp = self._fail(423, str(e), document=e.document, holder=e.holder)
+        except NoAutosave as e:
+            resp = self._fail(404, str(e))
         except self.session_error as e:
             resp = self._fail(400, str(e))
         except Exception as e:                                   # noqa: BLE001
@@ -817,7 +1066,11 @@ class _Server:
         if route == "open":
             return await self._open_document(doc_id)
         if route == "close":
-            return await self._close_document(doc_id)
+            return await self._close_document(doc_id, body.get("discard") is True)
+        if route == "recover":
+            return self._json(200, await self._recover(d))
+        if route == "discard-autosave":
+            return self._json(200, await self._discard_autosave(d))
         if route == "take-over":
             return await self._take_over(d)
         if route in ("/tabs", "tabs"):
@@ -864,13 +1117,18 @@ class _Server:
             d = self._single
             rows = [{"id": d.id, "name": d.name, "folder": d.folder, "missing": False}] if d is not None else []
         out = []
+        autosaves = AS.index(self.data_dir) if self.data_dir is not None else {}
         for r in rows:
             try:
-                h = doc_lock.holder(r["folder"]) if r["folder"] else None
+                h = doc_lock.holder(r["folder"], self.lock_timeout) if r["folder"] else None
             except OSError:
                 h = None
+            mine = self.docs.get(r["id"])
+            found = AS.recoverable(autosaves.get(r["id"], []), h, self._own_instance(mine) if mine is not None else None)
             out.append({"id": r["id"], "name": r["name"], "modified": _modified(r["folder"]) if r["folder"] else None,
-                        "holder": _holder_json(h), "open": r["id"] in self.docs, "missing": r["missing"]})
+                        "holder": _holder_json(h), "open": r["id"] in self.docs or r["id"] in self._closing,
+                        "missing": r["missing"],
+                        "autosave": {"time": found[-1].time, "count": len(found)} if found else None})
         return out
 
     async def _create_document(self, body):
@@ -928,16 +1186,18 @@ class _Server:
                     return self._fail(404, "not found")
                 d = await self._off_loop(self._start_document, doc_id, folder)
                 self.docs[doc_id] = d
+                self.closed_reasons.pop(doc_id, None)
                 self._start_refresh(d)
-        tabs = await self._in_session(d, lambda: self._tab_view(d))
-        return self._json(200, {"document": {"id": d.id, "name": d.name}, "tabs": tabs,
+            self._arm_idle(d)                                    # nobody is connected to it yet
+        tabs, offer = await self._in_session(d, lambda: (self._tab_view(d), self._offer(d)))
+        return self._json(200, {"document": {"id": d.id, "name": d.name}, "tabs": tabs, "autosave": offer,
                                 **await self._off_loop(d.lock_state)})
 
     def _start_document(self, doc_id, folder):
         """Pool thread. Take the lock, then start the session (so it reads what the last holder saved)."""
         file_lock, holder = None, None
         try:
-            file_lock = doc_lock.acquire(folder, LOCK_PROGRAM)
+            file_lock = doc_lock.acquire(folder, LOCK_PROGRAM, self.lock_timeout)
         except doc_lock.LockHeld as e:
             holder = e.holder
         try:
@@ -953,9 +1213,9 @@ class _Server:
         from .session import DocumentSession
         return DocumentSession(folder)
 
-    async def _close_document(self, doc_id):
-        """POST /documents/<id>/close: stop the refresh, release the lock, close the session, tell the sockets.
-        Unsaved edits are dropped (autosave is I2.6)."""
+    async def _close_document(self, doc_id, discard=False):
+        """POST /documents/<id>/close: autosave what is not saved (or, with {"discard": true}, remove this server's
+        autosave of it), stop the refresh, release the lock, close the session, tell the sockets."""
         async with self._open_lock:
             d = self.docs.get(doc_id)
             if d is None:
@@ -964,21 +1224,40 @@ class _Server:
                 return self._fail(404, "not found")
             if d.single:
                 return self._fail(409, "this server serves a single Document; it stays open")
-            self._stop_refresh(d)
-            self.docs.pop(doc_id, None)
-            await self._broadcast({"type": "closed", "document": doc_id}, d)
-            for ws, subs in list(self._subs.items()):
-                subs.discard(doc_id)
-
-            def shut():
-                with d.lock:
-                    try:
-                        if d.file_lock is not None:
-                            d.file_lock.release()
-                    finally:
-                        d.session.close()
-            await self._off_loop(shut)
+            await self._release_document(d, discard=discard)
         return self._json(200, {"closed": True})
+
+    async def _release_document(self, d, discard=False, reason=None):
+        """`_open_lock` held. Take `d` out of the table, tell its sockets (`closed`, with `reason` when given), then
+        under the session lock: autosave unsaved changes (or remove this server's autosave when `discard`), release
+        the lock file and close the session. The autosave is written before the lock goes."""
+        self._stop_refresh(d)
+        self._disarm_idle(d)
+        self.docs.pop(d.id, None)
+        self._closing.add(d.id)
+        message = {"type": "closed", "document": d.id}
+        if reason is not None:
+            message["reason"] = reason
+        await self._broadcast(message, d)
+        for ws, subs in list(self._subs.items()):
+            subs.discard(d.id)
+
+        def shut():
+            with d.lock:
+                try:
+                    if d.file_lock is not None and self.data_dir is not None:
+                        if discard:
+                            AS.remove(self.data_dir, d.file_lock.instance)
+                        else:
+                            self._final_autosave(d)
+                    if d.file_lock is not None:
+                        d.file_lock.release()
+                finally:
+                    d.session.close()
+        try:
+            await self._off_loop(shut)
+        finally:
+            self._closing.discard(d.id)
 
     async def _take_over(self, d):
         """POST /documents/<id>/take-over: take the lock whoever holds it, then reload the session from the folder
@@ -992,7 +1271,7 @@ class _Server:
             with d.lock:
                 if not d.is_read_only() and d.file_lock is not None and d.file_lock.still_mine():
                     return False
-                d.file_lock = doc_lock.take_over(d.folder, LOCK_PROGRAM)
+                d.file_lock = doc_lock.take_over(d.folder, LOCK_PROGRAM, self.lock_timeout)
                 old = d.session
                 d.session = self._new_session(d.folder)
                 old.close()
@@ -1001,6 +1280,7 @@ class _Server:
                 d.tabs_sig = None
                 d.read_only = d.lost = False
                 d.holder = None
+                d.seq = d.written = 0
                 return True
         changed = await self._off_loop(work)
         if changed:
@@ -1045,13 +1325,15 @@ class _Server:
         def work():
             d.check_writable()
             rebuilt = d.session.submit_edit(tab, edit)
+            d.seq += 1
             return rebuilt, self._tab_view(d, rebuilt)
         try:
             rebuilt, tabs = await self._in_session(d, work)
         except DocumentLocked:
             if d.lost:
-                await self._announce_lock(d)
+                await self._lost(d)
             raise
+        self._arm_burst(d)
         revisions = {t["id"]: t["revision"] for t in tabs if t["id"] in rebuilt}
         entry = self.clients.get(client) if client else None
         if entry is not None:
@@ -1066,14 +1348,16 @@ class _Server:
         def run():
             d.check_writable()
             out = work()
+            d.seq += 1
             d.refresh_tab_ids()
             return out, self._tab_view(d)
         try:
             out, tabs = await self._in_session(d, run)
         except DocumentLocked:
             if d.lost:
-                await self._announce_lock(d)
+                await self._lost(d)
             raise
+        self._arm_burst(d)
         d.tabs_sig = json.dumps([{k: v for k, v in t.items() if k != "revision"} for t in tabs], sort_keys=True)
         await self._broadcast({"type": "tabs", "document": d.id, "tabs": tabs}, d)
         return out, tabs
@@ -1122,12 +1406,16 @@ class _Server:
         def work():
             d.check_writable()
             saved = d.session.save()
+            d.seq += 1
+            if self.data_dir is not None and d.file_lock is not None:
+                AS.remove(self.data_dir, d.file_lock.instance)         # saved: nothing left to recover
+            d.written = d.seq
             return saved, self._tab_view(d)
         try:
             saved, tabs = await self._in_session(d, work)
         except DocumentLocked:
             if d.lost:
-                await self._announce_lock(d)
+                await self._lost(d)
             raise
         await self._announce(d, {"type": "changed", "document": d.id, "client": client, "base": None, "rebuilt": [],
                                  "revisions": {}, "saved": saved}, tabs)
@@ -1205,8 +1493,11 @@ class _Server:
             _log(f"socket {_clean(client, 16)}: {type(e).__name__}: {_clean(str(e), 300)}")
         finally:
             self._sockets.pop(ws, None)
-            self._subs.pop(ws, None)
+            left = self._subs.pop(ws, None) or ()
             self.clients.detach(client)
+            for doc_id in left:
+                if doc_id in self.docs:
+                    self._arm_idle(self.docs[doc_id])
             if not ws.closed:
                 await ws.close()
         return ws
@@ -1215,10 +1506,14 @@ class _Server:
         """Subscribe `ws` to open Document `doc_id` and send its hello, or send an error when it is not open."""
         d = self.docs.get(doc_id) if isinstance(doc_id, str) and _DOC_ID.fullmatch(doc_id) else None
         if d is None:
+            if isinstance(doc_id, str) and doc_id in self.closed_reasons:       # a client that comes back after the idle close
+                await self._push(ws, {"type": "closed", "document": doc_id, "reason": self.closed_reasons[doc_id]})
+                return
             await self._push(ws, {"type": "error", "document": doc_id if isinstance(doc_id, str) else None,
                                   "message": "the Document is not open"})
             return
         self._subs[ws].add(d.id)
+        self._disarm_idle(d)
         await self._push(ws, await self._hello(client, d))
 
     @staticmethod
@@ -1246,6 +1541,8 @@ class _Server:
                 await self._subscribe(ws, client, doc_id)
         elif kind == "unsubscribe":
             self._subs[ws].discard(doc_id)
+            if doc_id in self.docs:
+                self._arm_idle(self.docs[doc_id])
         elif kind == "edit":
             ident = msg.get("id")
             try:
@@ -1271,13 +1568,18 @@ class _Server:
 
 
 def make_server(session=None, port=0, allow_origins=(), client_ttl=CLIENT_TTL, client_expired=None, *,
-                registry=None, root=None, folder=None, lock_program=None):
+                registry=None, root=None, folder=None, lock_program=None, data_dir=None,
+                autosave_interval=AUTOSAVE_INTERVAL, autosave_burst=AUTOSAVE_BURST, lock_timeout=doc_lock.DEFAULT_TIMEOUT):
     """A server on 127.0.0.1:`port` (bound, not yet serving). Over `session`: a single Document (the old routes
     alias it); `folder` and `lock_program` (the CLI passes "browser") make it take the Document lock, so an
     in-process server given neither has no lock file. Over `registry` and `root` instead: a Documents root, where
     Documents are created under `root` and opened by id. Callers run `serve_forever` (it blocks) and, at the end,
-    `shutdown`, `server_close` and close the session; `close_all` does the last three."""
-    return _Server(session, port, allow_origins, client_ttl, client_expired, registry, root, folder, lock_program)
+    `shutdown`, `server_close` and close the session; `close_all` does the last three. `data_dir` is where the autosave
+    lives (`<data_dir>/autosave-server`); without it there is none. `autosave_interval` and `autosave_burst` are the
+    autosave timers in seconds, `lock_timeout` the age at which a heartbeat is stale; tests drive `autosave_now()`,
+    `expire_idle_now()` and `refresh_locks_now()` instead of waiting for them."""
+    return _Server(session, port, allow_origins, client_ttl, client_expired, registry, root, folder, lock_program,
+                   data_dir, autosave_interval, autosave_burst, lock_timeout)
 
 
 def close_all(server, session=None, wait=10.0):
@@ -1319,7 +1621,14 @@ def main(argv=None):
                     help="also accept this public https://host[:port] origin (repeatable; none by default)")
     ap.add_argument("--client-expiry", type=float, default=CLIENT_TTL, metavar="SECONDS",
                     help="seconds a client's state is kept after its last socket closes (default 600)")
+    ap.add_argument("--autosave-interval", type=float, default=AUTOSAVE_INTERVAL, metavar="SECONDS",
+                    help="seconds between autosaves of an open Document that changed (default 30)")
+    ap.add_argument("--lock-timeout", type=float, default=doc_lock.DEFAULT_TIMEOUT, metavar="SECONDS",
+                    help="age of a Document lock's heartbeat after which it is stale (default 60)")
     args = ap.parse_args(argv)
+    if not args.autosave_interval > 0 or not args.lock_timeout > 0:
+        print("freeshape serve: --autosave-interval and --lock-timeout must be more than 0.", file=sys.stderr)
+        return 2
     if not args.client_expiry >= 0:
         print("freeshape serve: --client-expiry must be 0 or more.", file=sys.stderr)
         return 2
@@ -1340,6 +1649,7 @@ def main(argv=None):
         return 2
     from . import doc_registry
     session = None
+    data = args.data_dir or doc_registry.data_dir()
     if os.path.isfile(os.path.join(args.document, doc_registry.MANIFEST_NAME)):
         from .session import DocumentSession, SessionError
         try:
@@ -1349,13 +1659,13 @@ def main(argv=None):
             return 1
         extra = {"folder": os.path.realpath(args.document), "lock_program": LOCK_PROGRAM}
     else:
-        data = args.data_dir or doc_registry.data_dir()
         registry = doc_registry.DocRegistry(os.path.join(data, doc_registry.REGISTRY_NAME))
         problem = registry_mismatch(registry)
         if problem:
             print(f"freeshape serve: {problem}", file=sys.stderr)
             return 1
         extra = {"registry": registry, "root": args.document}
+    extra.update(data_dir=data, autosave_interval=args.autosave_interval, lock_timeout=args.lock_timeout)
     try:
         server = make_server(session, args.port, args.allow_origin, args.client_expiry, **extra)
     except OSError as e:

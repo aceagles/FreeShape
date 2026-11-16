@@ -115,3 +115,115 @@ it('when another Document is open, says which and offers to close it, then opens
   await waitFor(() => expect(onOpened).toHaveBeenCalledWith(reply('a', 'Bracket')))
   expect(calls.map((c) => c.url)).toContain('/documents/z/close')
 })
+
+const offer = (extra: object = {}) => ({
+  time: ago(300),
+  count: 1,
+  tabs: [{ id: 'T1', name: 'Plate' }],
+  deleted: [],
+  moved_on: [],
+  list_moved_on: false,
+  writable: true,
+  ...extra,
+})
+const withAutosave = [{ ...rows[0]!, autosave: { time: ago(300), count: 1 } }, rows[1]!]
+const openBracket = async () => {
+  const row = await screen.findByRole('button', { name: /Bracket/ })
+  await act(async () => row.click())
+}
+const openReply = (autosave: object | null, readOnly = false) => ({ ...reply('a', 'Bracket'), autosave, read_only: readOnly })
+
+it('marks a Document that has an autosave to recover', async () => {
+  stubFetch((c) => (c.url === '/documents' ? { json: { documents: withAutosave } } : undefined))
+  setup()
+  const marks = await screen.findAllByTestId('recover-mark')
+  expect(marks).toHaveLength(1)
+  expect(marks[0]!.textContent).toBe('Unsaved edits can be recovered')
+  expect(marks[0]!.closest('li')!.textContent).toContain('Bracket')
+})
+
+it('opening a Document with an autosave asks Recover or Discard and says when it was written and what each does', async () => {
+  const calls = stubFetch((c) => (c.url === '/documents' ? { json: { documents: withAutosave } } : c.url === '/documents/a/open' ? { json: openReply(offer()) } : undefined))
+  const { onOpened } = setup()
+  await openBracket()
+  const dialog = await screen.findByRole('dialog', { name: 'Recover unsaved changes to "Bracket"?' })
+  expect(onOpened).not.toHaveBeenCalled()
+  expect(dialog.textContent).toContain('written 5 minutes ago')
+  for (const [button, effect] of [['Recover', 'puts them back into the open Document'], ['Discard', 'deletes them'], ['Decide later', 'opens the Document as it was last saved and keeps the changes']] as const) {
+    expect(within(dialog).getByRole('button', { name: button })).toBeTruthy()
+    expect(dialog.textContent).toContain(`${button} ${effect}`)
+  }
+  expect(screen.queryByTestId('autosave-moved')).toBeNull()
+  expect(calls.filter((c) => c.method === 'POST').map((c) => c.url)).toEqual(['/documents/a/open'])
+})
+
+it('Recover asks the server to recover and opens the Document with the recovered tabs', async () => {
+  const recovered = [{ ...tab('T1', 'studio', 'Plate'), dirty: true }]
+  const calls = stubFetch((c) => {
+    if (c.url === '/documents') return { json: { documents: withAutosave } }
+    if (c.url === '/documents/a/open') return { json: openReply(offer()) }
+    if (c.url === '/documents/a/recover') return { json: { recovered: ['T1'], moved_on: [], list_moved_on: false, skipped: [], unreadable: 0, tabs: recovered } }
+    return undefined
+  })
+  const { onOpened } = setup()
+  await openBracket()
+  await act(async () => screen.getByRole('button', { name: 'Recover' }).click())
+  expect(calls.some((c) => c.method === 'POST' && c.url === '/documents/a/recover')).toBe(true)
+  await waitFor(() => expect(onOpened).toHaveBeenCalled())
+  expect(onOpened.mock.calls[0]![0]).toMatchObject({ document: { id: 'a' }, tabs: recovered, autosave: null })
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+it('Discard deletes the autosave and opens the Document as saved; Decide later opens it and deletes nothing', async () => {
+  const calls = stubFetch((c) => {
+    if (c.url === '/documents') return { json: { documents: withAutosave } }
+    if (c.url === '/documents/a/open') return { json: openReply(offer()) }
+    if (c.url === '/documents/a/discard-autosave') return { json: { discarded: 1 } }
+    return undefined
+  })
+  const { onOpened } = setup()
+  await openBracket()
+  await act(async () => screen.getByRole('button', { name: 'Discard' }).click())
+  expect(calls.some((c) => c.url === '/documents/a/discard-autosave')).toBe(true)
+  await waitFor(() => expect(onOpened).toHaveBeenCalledTimes(1))
+  expect(onOpened.mock.calls[0]![0]).toMatchObject({ tabs: [{ id: 'T1' }], autosave: null })
+  // the other way
+  calls.length = 0
+  await openBracket()
+  await act(async () => screen.getByRole('button', { name: 'Decide later' }).click())
+  expect(calls.map((c) => c.url)).toEqual(['/documents/a/open'])
+  await waitFor(() => expect(onOpened).toHaveBeenCalledTimes(2))
+})
+
+it('warns that Recover replaces work another program saved since, naming the tabs, and says nothing is saved yet', async () => {
+  stubFetch((c) => (c.url === '/documents' ? { json: { documents: withAutosave } } : c.url === '/documents/a/open' ? { json: openReply(offer({ moved_on: ['T1'] })) } : undefined))
+  setup()
+  await openBracket()
+  const warning = await screen.findByTestId('autosave-moved')
+  expect(warning.textContent).toContain('"Plate" was saved by another program after these changes were written')
+  expect(warning.textContent).toContain('replaces that saved work in the open Document')
+  expect(warning.textContent).toContain('stays on disk until you press Save')
+})
+
+it('opens a Document read-only without the question when another program holds the lock', async () => {
+  stubFetch((c) => (c.url === '/documents' ? { json: { documents: withAutosave } } : c.url === '/documents/a/open' ? { json: openReply(offer({ writable: false }), true) } : undefined))
+  const { onOpened } = setup()
+  await openBracket()
+  await waitFor(() => expect(onOpened).toHaveBeenCalled())
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+it('shows why a recover failed and does not open the Document', async () => {
+  stubFetch((c) => {
+    if (c.url === '/documents') return { json: { documents: withAutosave } }
+    if (c.url === '/documents/a/open') return { json: openReply(offer()) }
+    if (c.url === '/documents/a/recover') return { status: 423, json: { error: 'the Document is being edited by desktop' } }
+    return undefined
+  })
+  const { onOpened } = setup()
+  await openBracket()
+  await act(async () => screen.getByRole('button', { name: 'Recover' }).click())
+  const dialog = await screen.findByRole('dialog', { name: 'Could not recover "Bracket"' })
+  expect(dialog.textContent).toContain('being edited by desktop')
+  expect(onOpened).not.toHaveBeenCalled()
+})

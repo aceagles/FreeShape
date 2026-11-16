@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import type { DocumentRow } from '../net/api'
-import { formatModified, rowStatus } from './format'
+import { formatAgo, formatModified, recoverMark, rowStatus } from './format'
 
 const NOW = Date.UTC(2026, 10, 16, 12, 0, 0)
 const ago = (s: number) => NOW / 1000 - s
@@ -16,6 +16,19 @@ it('says how long ago a Document changed, and gives the date after a week', () =
 })
 
 const row = (extra: Partial<DocumentRow>): DocumentRow => ({ id: 'a', name: 'A', modified: 1, holder: null, open: false, missing: false, ...extra })
+
+it('says when something happened without a prefix, for the autosave dialog', () => {
+  expect(formatAgo(ago(10), NOW)).toBe('just now')
+  expect(formatAgo(ago(7200), NOW)).toBe('2 hours ago')
+  expect(formatAgo(ago(30 * 86400), NOW)).toBe('17 Oct 2026')
+})
+
+it('marks a Document with an autosave to recover', () => {
+  expect(recoverMark(row({}))).toBeNull()
+  expect(recoverMark(row({ autosave: null }))).toBeNull()
+  expect(recoverMark(row({ autosave: { time: 1, count: 1 } }))).toBe('Unsaved edits can be recovered')
+  expect(recoverMark(row({ autosave: { time: 1, count: 1 }, missing: true }))).toBeNull()
+})
 
 it('names who holds a Document', () => {
   expect(rowStatus(row({}))).toBeNull()

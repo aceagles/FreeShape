@@ -64,9 +64,12 @@ export function App({ store }: { store: ConnectionStore }) {
   useEffect(() => {
     if (ended && screen.kind === 'document') {
       store.unwatch()
-      const text = ended === 'closed' ? 'was closed on the server' : 'is no longer open on the server'
+      const notice =
+        ended === 'idle'
+          ? `"${screen.name}" was closed because nobody was connected to it for a while. Changes that were not saved are kept. Open it again to carry on or recover them.`
+          : `"${screen.name}" ${ended === 'closed' ? 'was closed on the server' : 'is no longer open on the server'}. Open it again to carry on.`
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setScreen({ kind: 'home', notice: `"${screen.name}" ${text}. Open it again to carry on.` })
+      setScreen({ kind: 'home', notice })
     }
   }, [ended, screen, store])
 

@@ -41,6 +41,12 @@ of deleted tabs, then rewrites the manifest (only when the tab list changed, so 
 the manifest bytes alone). A deleted tab's worker ends at once; an added tab that is never saved leaves nothing
 on disk. `tabs_unsaved()` says whether the list has changes `save()` has not written.
 
+Autosave (I2.6). `autosave_state()` gives what the server's autosave (freeshape/autosave.py) writes: the data of
+every dirty tab, exactly the bytes `save()` would write, the tab list and the blobs the data names. `restore_autosave`
+puts such a state back on a freshly opened session as unsaved edits and never writes the store. The session
+remembers the sha256 of each tab file and of the manifest as it loaded or last wrote them (`_base`), so an autosave
+can say which tabs the saved Document has changed since (`autosave_moved_on`).
+
 Threads. The session does no locking. Call it from one thread at a time: a caller with several threads (the
 serve routes of I5.4) must hold one lock around every call. The engine underneath is single-threaded by contract.
 
@@ -48,6 +54,7 @@ Imports no Qt (the test checks sys.modules in a fresh interpreter).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -61,6 +68,7 @@ from .engine import wire
 from .engine.executor import read_data
 from . import links
 from . import tabkinds as TK
+from .docstore import ChainedBlobs, HeldBlobs
 
 STATES = ("ok", "error", "crashed", "failed")
 NEW_KINDS = ("studio", "assembly")      # what `add_tab` makes
@@ -127,6 +135,8 @@ class DocumentSession:
         self._added = set()                     # tab ids added here and not yet saved
         self._deleted = []                      # [(tab id, file)] deleted here whose file save() removes
         self._manifest_dirty = False            # the tab list changed since the last save
+        self._base = {}                         # tab id -> sha256 of the tab file as loaded or last saved
+        self._manifest_base = None              # sha256 of document.json as loaded or last saved
         self._closed = False
         self._eng = None
         manifest = self._read_manifest()
@@ -148,7 +158,9 @@ class DocumentSession:
     def _read_manifest(self):
         """The parsed, shape-checked manifest (FolderDocument's own check: format, version, tab ids)."""
         try:
-            data = DF.FolderDocument._read_manifest(self.store.read_manifest())
+            raw = self.store.read_manifest()
+            self._manifest_base = hashlib.sha256(bytes(raw)).hexdigest()
+            data = DF.FolderDocument._read_manifest(raw)
         except K.KernelError as e:
             raise SessionError(str(e)) from e
         if data.get("version", 1) > DF.FORMAT_VERSION:
@@ -180,6 +192,7 @@ class DocumentSession:
                     raise SessionError(f"unknown tab kind {e['kind']!r}")
                 self.store.place_tab(tid, e["file"])         # the store checks the manifest's file name
                 raw[tid] = bytes(self.store.read_tab(tid))
+                self._base[tid] = hashlib.sha256(raw[tid]).hexdigest()
             except Exception as ex:              # noqa: BLE001 -- a tab that cannot be read is that tab's failure
                 self._failed[tid] = f"{type(ex).__name__}: {ex}"
         for e in self._order(raw):
@@ -325,23 +338,22 @@ class DocumentSession:
         for tid, file in self._deleted:
             if file not in live_files:               # a later tab may have taken the name
                 self.store.delete_tab(tid)
+                self._base.pop(tid, None)
         written = []
         for e in self._entries:
             tid = e["id"]
             if tid in self._failed:
                 continue
-            data = self._retry(tid, lambda tid=tid: self._eng.tab_data(tid, blobs=self.store.blobs(tid)))
-            d = json.loads(bytes(data).decode("utf-8"))
-            d["_tab_id"] = tid
-            if tid in self._renamed and "name" in d:
-                d["name"] = e["name"]                # the file carries the name the manifest gives it
-            self.store.write_tab(tid, json.dumps(d, indent=1).encode("utf-8"))
+            data = self._tab_bytes(tid, self.store.blobs(tid))
+            self.store.write_tab(tid, data)
+            self._base[tid] = hashlib.sha256(data).hexdigest()
             self._edited[tid] = 0
             written.append(tid)
         if self._manifest_dirty:
             for tab in self._fd.tabs:                # the manifest's name of each tab is the session's
                 tab.name = next(e["name"] for e in self._entries if e["id"] == tab.id)
             self._fd.save()                          # no tab has a document: this writes document.json only
+            self._manifest_base = hashlib.sha256(bytes(self.store.read_manifest())).hexdigest()
             self._manifest_dirty = False
             self._added.clear()
             self._deleted.clear()
@@ -350,6 +362,127 @@ class DocumentSession:
     def tabs_unsaved(self):
         """True while the tab list (an added, renamed or deleted tab) has changes `save()` has not written."""
         return self._manifest_dirty
+
+    def has_unsaved(self):
+        """True while an edit inside a tab or a change to the tab list has not been written by `save()`."""
+        return self._manifest_dirty or any(n > 0 for n in self._edited.values())
+
+    def _tab_bytes(self, tid, sink):
+        """The bytes `save()` writes for tab `tid`: the worker's data stamped with the tab id (and the manifest's name
+        for a renamed tab); the blobs the data names are put into `sink`."""
+        data = self._retry(tid, lambda: self._eng.tab_data(tid, blobs=sink))
+        d = json.loads(bytes(data).decode("utf-8"))
+        d["_tab_id"] = tid
+        entry = next(e for e in self._entries if e["id"] == tid)
+        if tid in self._renamed and "name" in d:
+            d["name"] = entry["name"]                # the file carries the name the manifest gives it
+        return json.dumps(d, indent=1).encode("utf-8")
+
+    # ------------------------------------------------------------------ autosave
+    def autosave_state(self):
+        """What freeshape.autosave.write takes, or None when nothing is unsaved: {"document", "name", "entries" (the
+        tab list), "added", "renamed", "deleted" ([{"id", "file"}]), "tabs": {tab id: (bytes, base)} for every dirty
+        tab that opened, "blobs": {key: bytes}, "manifest_base"}. `base` is the sha256 of the tab's saved file as this
+        session loaded it, None for a tab added here."""
+        self._need_alive()
+        if not self.has_unsaved():
+            return None
+        held = {}
+        sink = HeldBlobs(held)
+        tabs = {}
+        for e in self._entries:
+            tid = e["id"]
+            if tid in self._failed or not (tid in self._added or self._edited.get(tid, 0) > 0):
+                continue
+            tabs[tid] = (self._tab_bytes(tid, sink), self._base.get(tid))
+        return {"document": self.id, "name": self.name, "entries": [dict(e) for e in self._entries],
+                "added": sorted(self._added), "renamed": sorted(self._renamed & {e["id"] for e in self._entries}),
+                "deleted": [{"id": tid, "file": file} for tid, file in self._deleted], "tabs": tabs,
+                "blobs": dict(held), "manifest_base": self._manifest_base}
+
+    def autosave_moved_on(self, bases, manifest_base=None, list_changed=False):
+        """`(tab ids, list moved)`: the tabs of `bases` ({tab id: sha256 of the saved file when the autosave was
+        written, or None}) whose saved file is not that any more (changed, deleted, or taken by another tab), and
+        whether document.json changed when the autosave holds a tab-list change."""
+        self._need_alive()
+        moved = sorted(tid for tid, base in bases.items() if self._base.get(tid) != base)
+        return moved, bool(list_changed and manifest_base != self._manifest_base)
+
+    def restore_autosave(self, snap):
+        """Put an autosave (freeshape.autosave.load's dict) onto this session as unsaved edits: tabs it deleted are
+        deleted, every tab it holds data for is opened from that data in place of the loaded one (or added, when it
+        is a tab this Document does not have), renamed tabs take their names. Tabs it holds no data for are left as
+        they are. Nothing is written to the store. Returns {"recovered": [ids], "skipped": [{"tab", "why"}]}."""
+        self._need_alive()
+        recovered, skipped = [], []
+        have = lambda: {e["id"] for e in self._entries}          # noqa: E731
+        for gone in snap["deleted"]:
+            if gone["id"] in have():
+                try:
+                    self.delete_tab(gone["id"])
+                except SessionError as ex:
+                    skipped.append({"tab": gone["id"], "why": str(ex)})
+        auto = {e["id"]: e for e in snap["entries"]}
+        raw = snap["tabs"]
+        held = HeldBlobs(dict(snap["blobs"]))
+        mine, self._entries = self._entries, self._entries + [auto[t] for t in raw if t in auto and t not in have()]
+        try:
+            order = [e for e in self._order(raw) if e["id"] in raw]
+        finally:
+            self._entries = mine
+        for e in order:
+            tid, name = e["id"], e["name"]
+            kind = auto.get(tid, e)["kind"]
+            current = next((x for x in self._entries if x["id"] == tid), None)
+            try:
+                if kind not in TK.KINDS:
+                    raise SessionError(f"unknown tab kind {kind!r}")
+                if current is not None:
+                    name = auto[tid]["name"] if tid in snap["renamed"] and tid in auto else current["name"]
+                    file = current["file"]
+                else:
+                    file = self._free_file(auto[tid])
+                self.store.place_tab(tid, file)
+                blobs = ChainedBlobs(held, self.store.blobs(tid))
+                if current is not None and tid not in self._failed:
+                    self._eng.close_tab(tid)
+                self._failed.pop(tid, None)
+                self._eng.open_tab_data(kind, raw[tid], tid, name, blobs=blobs)
+            except Exception as ex:                  # noqa: BLE001 -- the tab stays as it was loaded, or failed
+                if current is not None:
+                    self._failed[tid] = f"{type(ex).__name__}: {ex}"
+                skipped.append({"tab": tid, "why": f"{type(ex).__name__}: {ex}"})
+                continue
+            if current is None:
+                self._entries.append({"id": tid, "kind": kind, "file": file, "name": name})
+                self._fd.tabs.append(DF.Tab(tid, kind, file, name))
+                self._fd._counter = max(self._fd._counter, int("".join(c for c in tid if c.isdigit()) or 0))
+                self._added.add(tid)
+                self._manifest_dirty = True
+            elif tid in snap["renamed"]:
+                current["name"] = name
+                self._renamed.add(tid)
+                self._manifest_dirty = True
+            self._edited[tid] = max(self._edited.get(tid, 0), 1)
+            self._refresh_state(tid)
+            try:
+                self._eng.rebuild_dependents(tid)
+            except LinkCycleError as ex:
+                self.cycle = str(ex)
+            recovered.append(tid)
+        for tid in recovered:
+            self._refresh_state(tid)
+        return {"recovered": recovered, "skipped": skipped}
+
+    def _free_file(self, entry):
+        """A file name for a tab recovered from an autosave: the entry's own when nothing has it, else a free one."""
+        file = entry["file"]
+        stem, ext = os.path.splitext(file)
+        n = 2
+        while self.store.file_taken(file) or any(t.file == file for t in self._fd.tabs):
+            file = f"{stem} {n}{ext}"
+            n += 1
+        return file
 
     # ------------------------------------------------------------------ the tab list
     def add_tab(self, kind, name=None):

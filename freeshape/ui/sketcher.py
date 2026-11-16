@@ -80,11 +80,18 @@ TOOL_HINTS = {
     "slot": "Click the two end centres of the slot, then type its width — or click an existing line, arc or chain "
             "to wrap a slot round it.",
     "insert_file": "Pick a DXF or SVG file; set its size and layers, and its curves join this sketch.",
-    "sk_mirror": "Select geometry, then click the line to mirror it about.",
+    "sk_mirror": "Select the mirror line.",
     "sk_lpattern": "Select geometry, then click a line for the direction; type the count and spacing.",
     "sk_cpattern": "Select geometry, then click the centre point; type the count and angle.",
 }
 PICK_FIRST_TOOLS = {"sk_mirror", "sk_lpattern", "sk_cpattern"}   # keep the selection when chosen
+
+# Prompts for tools that take several picks: tool -> fn(sketcher) giving the hint for the step it is on, or None
+# to fall back to TOOL_HINTS. hint() reads this, and the viewport shows it in its status line after every click.
+STEP_HINTS = {
+    "sk_mirror": lambda s: "Select entities to mirror. Esc or Enter to finish."
+                           if s.mirror_axis is not None else None,
+}
 
 
 def _default_popup(vp, x, y, rows, on_hover, on_choose, on_close):
@@ -153,6 +160,8 @@ class Sketcher:
         self.infer_hits = []
         self._infer_cons = []
         self.mid_mark = None    # (line id, snapped) for the midpoint square: the line under the cursor while drawing
+        self.mirror_axis = None     # Mirror: the line picked first; every entity picked after it is mirrored
+        self._mirrored = set()      # Mirror: entities mirrored (and their copies) this use of the tool
 
     def set_tool(self, tool):
         self._end_editor()
@@ -174,6 +183,11 @@ class Sketcher:
             return self._prompt_label
         if self.tool in CONSTRAINT_TOOLS:
             return CONSTRAINT_TOOLS[self.tool]
+        step = STEP_HINTS.get(self.tool)
+        if step is not None:
+            txt = step(self)
+            if txt:
+                return txt
         if self.tool == "dimension" and getattr(self, "dim_first", None) is not None:
             if self.dim_second is not None:
                 return "Click where the dimension should go."
@@ -822,7 +836,10 @@ class Sketcher:
         if t in DRAW_TOOLS:
             return self._draw_click(vp, x, y)
         if t in ("sk_fillet", "offset", "slot", "sk_mirror", "sk_lpattern", "sk_cpattern"):
-            return self._ops_click(vp, x, y, e)
+            r = self._ops_click(vp, x, y, e)
+            if self.tool == t:
+                vp.status_text = self.hint()      # a tool that takes several picks says what to pick next
+            return r
         return False
 
     def mouse_drag(self, vp, x, y, e):
@@ -1014,6 +1031,9 @@ class Sketcher:
             return True
         if k in (Qt.Key_Return, Qt.Key_Enter) and self.tool == "spline" and self.temp:
             self._finish_spline(vp)
+            return True
+        if k in (Qt.Key_Return, Qt.Key_Enter) and self.tool == "sk_mirror":
+            self.set_tool("select")              # Enter ends Mirror, as Esc does
             return True
         if k in (Qt.Key_Delete, Qt.Key_Backspace):
             self.delete_selection()
@@ -1910,24 +1930,14 @@ class Sketcher:
             self._prompt(vp, (a + b) / 2, "Slot width", round(max(np.linalg.norm(b - a) / 3, 1e-3), 3), make,
                          expr_target=lambda: self._last_radius_constraint(), expr_scale=0.5)
             return True
-        # mirror / patterns: click geometry to (de)select it, then the line / centre
+        if t == "sk_mirror":
+            return self._mirror_click(vp, x, y)
+        # patterns: click geometry to (de)select it, then the line / centre
         sel = [i for i in self.selection if i in sk.entities]
         h = self.hit(vp, x, y, kinds=("point", "entity"))
-        if t in ("sk_mirror", "sk_lpattern"):
+        if t == "sk_lpattern":
             if h and h[0] == "entity" and sk.entities[h[1]]["type"] == "line" and sel and h[1] not in sel:
                 axis = h[1]
-                if t == "sk_mirror":
-                    self.push_undo()
-                    try:
-                        OPS.mirror(self.sk, sel, axis)
-                    except ValueError as err:
-                        self.undo_stack.pop()
-                        self._flash(vp, str(err))
-                        return True
-                    self.selection = []
-                    self.changed(True)
-                    self.set_tool("select")
-                    return True
                 e_ = sk.entities[axis]
                 d = sk.P(e_["p2"]) - sk.P(e_["p1"])
                 # copies go towards the side you clicked on (away from the selection), not the
@@ -1963,6 +1973,55 @@ class Sketcher:
             else:
                 self.selection.append(h[1])
         return True
+
+    def _mirror_pick(self, vp, x, y):
+        """The entity a Mirror click is on: a point entity under the cursor, else the nearest curve. A bare end of a
+        line is not geometry of its own, so the click goes to the line."""
+        for kind, i in self.hits(vp, x, y, kinds=("point", "entity")):
+            if kind == "entity":
+                return i
+            pe = next((k for k, e in self.sk.entities.items() if e["type"] == "point" and e.get("p") == i), None)
+            if pe is not None:
+                return pe
+        return None
+
+    def _mirror_click(self, vp, x, y):
+        """Mirror as in Onshape: the first click picks the mirror line, then each entity clicked is mirrored about
+        it straight away, linked by symmetric constraints. The tool stays on until Esc or Enter. Geometry selected
+        before the tool was chosen is mirrored as soon as the line is picked."""
+        sk = self.sk
+        if self.mirror_axis is not None and self.mirror_axis not in sk.entities:
+            self.mirror_axis = None             # the line was deleted or undone: pick it again
+        eid = self._mirror_pick(vp, x, y)
+        if eid is None:
+            return True
+        if self.mirror_axis is None:
+            if sk.entities[eid]["type"] != "line":
+                self._flash(vp, "Select a line to mirror about")
+                return True
+            self.mirror_axis = eid
+            pre = [i for i in self.selection if i in sk.entities and i != eid]
+            self.selection = [eid]              # the mirror line stays highlighted while the tool is on
+            if pre:
+                self._mirror_these(vp, pre)
+            return True
+        if eid == self.mirror_axis or eid in self._mirrored:
+            return True                         # already mirrored (or a copy): a second click does nothing
+        self._mirror_these(vp, [eid])
+        return True
+
+    def _mirror_these(self, vp, ids):
+        self.push_undo()
+        before = set(self.sk.entities)
+        try:
+            OPS.mirror(self.sk, ids, self.mirror_axis)
+        except ValueError as err:
+            self.undo_stack.pop()
+            self._flash(vp, str(err))
+            return
+        self._mirrored |= set(ids) | (set(self.sk.entities) - before)
+        self.selection = [self.mirror_axis]
+        self.changed(True)
 
     def _finish_pick_tool(self):
         self.selection = []

@@ -4,6 +4,8 @@ import type { ConnectionStore } from '../net/connection'
 import { addTab, ApiError, closeDocument, deleteTab, fetchDocumentTabs, renameTab, saveDocument, takeOver } from '../net/api'
 import type { TabInfo } from '../net/connection'
 import { useConnection } from '../net/react'
+import { PadDemo, padResult } from '../pad/PadDemo'
+import type { PadDemoOptions, PadResult } from '../pad/PadDemo'
 import { FeaturePanel } from '../features/FeaturePanel'
 import { useFeatureEdits } from '../features/useFeatureEdits'
 import { useStudioOutputs } from '../features/studioOutputs'
@@ -52,7 +54,13 @@ type Modal =
 declare global {
   interface Window {
     /** Hands tests (and the screenshot script) the shell's API; nothing in the client reads it. */
-    __freeshape?: { shell: ShellApi }
+    __freeshape?: {
+      shell: ShellApi
+      /** Test hook: open the dialog area with one number field and the pad docked under it (see src/pad/PadDemo.tsx). */
+      openPadDemo: (opts?: PadDemoOptions) => void
+      /** Test hook: how the last demo pad ended, or null. */
+      padResult: () => PadResult | null
+    }
   }
 }
 
@@ -121,7 +129,12 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
     [dialog, collapsed, selectedFeature, selectedPart, currentTab, selection],
   )
   useEffect(() => {
-    window.__freeshape = { shell: api }
+    window.__freeshape = {
+      shell: api,
+      openPadDemo: (o = {}) =>
+        api.openDialog(o.title ?? 'Extrude 1', <PadDemo label={o.label ?? 'Depth'} value={o.value ?? '25 mm'} variables={o.variables ?? ['depth', 'width', 'wall']} />),
+      padResult,
+    }
     return () => {
       delete window.__freeshape
     }

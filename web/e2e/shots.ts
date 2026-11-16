@@ -80,6 +80,37 @@ export const shots: ShotState[] = [
     },
   },
   {
+    name: 'pad-open',
+    mock: 'dialog', // the number pad docked at the foot of the dialog, a number being edited
+    steps: async (page) => {
+      await openApp(page)
+      await page.evaluate(() => window.__freeshape?.openPadDemo({ value: '25 mm' }))
+      await page.getByTestId('pad').waitFor()
+    },
+  },
+  {
+    name: 'pad-variables',
+    mock: 'dialog', // the # key's list of variables in scope, above the keys
+    steps: async (page) => {
+      await openApp(page)
+      await page.evaluate(() => window.__freeshape?.openPadDemo({ value: '25 mm', variables: ['depth', 'width', 'wall_thickness', 'hole_diameter', 'pitch'] }))
+      await page.getByRole('button', { name: 'Variables' }).click()
+      await page.getByTestId('pad-variables').waitFor()
+    },
+  },
+  {
+    name: 'pad-expression',
+    mock: 'dialog', // an expression with a variable and a unit typed on the pad
+    steps: async (page) => {
+      await openApp(page)
+      await page.evaluate(() => window.__freeshape?.openPadDemo({ value: '25 mm', variables: ['depth', 'width'] }))
+      const key = (n: string) => page.getByTestId('pad').getByRole('button', { name: n, exact: true }).click()
+      await key('Variables')
+      await page.getByRole('option', { name: '#width' }).click()
+      for (const n of ['Multiply', '2', 'Plus', 'Open bracket', '1', 'Decimal point', '5', 'Close bracket', 'mm']) await key(n)
+    },
+  },
+  {
     name: 'orbited',
     mock: 'browsing',
     steps: async (page) => {

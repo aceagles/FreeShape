@@ -38,6 +38,11 @@ function entityPoints(data: SketchData, id: string): string[] {
   return [e.p1, e.p2, e.c, e.p].filter((p): p is string => typeof p === 'string')
 }
 
+/** A radius or diameter dimension, or an equal, fixes the radius of circle `id` (sketch_session.py _radius_held). */
+function radiusHeld(data: SketchData, id: string): boolean {
+  return data.constraints.some((c) => ['radius', 'diameter', 'equal'].includes(c.type) && c.refs.includes(id))
+}
+
 /** Where the dragged items are when the pointer is at `at` and the drag began at `start`: the server's rule (sketch_session.py drag_move) without the solve. */
 export function predict(data: SketchData, target: DragTarget, start: Uv, at: Uv, origin: Uv | null = null): LiveDrag {
   const dx = at[0] - start[0]
@@ -52,7 +57,11 @@ export function predict(data: SketchData, target: DragTarget, start: Uv, at: Uv,
   if (!e) return none
   if (e.type === 'circle') {
     const c = data.points[e.c ?? '']
-    return c ? { ...none, radii: { [target.id]: Math.max(Math.hypot(at[0] - c[0], at[1] - c[1]), 1e-3) } } : none
+    // a held radius cannot follow the rim: the circle moves whole, as the server solves it
+    if (c && radiusHeld(data, target.id)) return { ...none, points: { [e.c ?? '']: [c[0] + dx, c[1] + dy] } }
+    // the rim follows the pointer by how far it has gone from the centre since the press (sketch_session.py drag_move)
+    const grown = c ? Math.hypot(at[0] - c[0], at[1] - c[1]) - Math.hypot(start[0] - c[0], start[1] - c[1]) : 0
+    return c ? { ...none, radii: { [target.id]: Math.max((e.r ?? 0) + grown, 1e-3) } } : none
   }
   const points: Record<string, Uv> = {}
   for (const id of entityPoints(data, target.id)) {

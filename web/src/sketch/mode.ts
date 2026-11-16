@@ -135,7 +135,17 @@ export class SketchMode {
     const p = this.host.pointer
     const itemAt = (x: number, y: number, kind: PickPointer): SketchHit | null => (this.layout ? pickSketch(this.layout, x, y, kind) : null)
     const picking = (kind: 'pen' | 'mouse'): PenHandler => ({
+      // the mouse's left button goes down on a movable item: as with the pen, past 6 px it drags the item (the desktop drags on a press)
+      press: (pt: PenPoint) => {
+        const hit = itemAt(pt.x, pt.y, kind)
+        const view = this.store.getState().view
+        if (view && this.selecting && isMovable(view.sketch, hit)) this.penDrag.arm(hit, pt.x, pt.y)
+      },
       aim: (pt: PenPoint) => {
+        if (kind === 'mouse' && this.penDrag.armed) {
+          this.penDrag.move(pt.x, pt.y)
+          if (this.penDrag.active) return
+        }
         if (kind === 'pen') {
           if (this.penDrag.armed) {
             // a press that began on a movable item: past 6 px it drags the item, short of that it is an Aim as before
@@ -157,6 +167,7 @@ export class SketchMode {
           this.penDown = false
           if (this.penDrag.release(pt.x, pt.y)) return
         }
+        if (kind === 'mouse' && this.penDrag.release(pt.x, pt.y)) return
         if (kind === 'mouse') this.store.aim(itemAt(pt.x, pt.y, kind))
         const hit = this.store.getState().aimed
         if (!this.store.commitTools(hit, this.uvAt(pt.x, pt.y), kind, this.mmPerPx())) this.store.select(hit)
@@ -168,6 +179,7 @@ export class SketchMode {
           this.penDown = false
           this.penDrag.cancel()
         }
+        if (kind === 'mouse') this.penDrag.cancel()
         this.store.aim(null)
         this.store.setPreview(null)
       },

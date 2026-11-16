@@ -152,3 +152,38 @@ def test_each_reply_echoes_the_client_time_and_carries_a_solve_time(root):
             assert none["type"] == "error" and "no drag" in none["message"]
             await ws.close()
     _run(go())
+
+
+def _circle(constraints):
+    s = SketchSession("D1", "T1", None, TOP, None, name="Sketch 1")
+    made = s.add({"shape": "circle", "picks": [[20.0, 20.0]], "radius": 7.5, "constraints": constraints})
+    return s, made["entities"][0], made["points"][0]
+
+
+def test_f14_a_rim_drag_moves_a_circle_whose_diameter_is_dimensioned():
+    s, circle, centre = _circle([{"type": "diameter", "refs": ["$e0"], "value": 15}])
+    s.drag_begin({"entity": circle, "at": [27.5, 20]})
+    out = s.drag_move({"at": [32.5, 23]})
+    assert out["held"] is False
+    assert out["points"][centre] == pytest.approx([25.0, 23.0], abs=1e-3)
+    assert out["radii"][circle] == pytest.approx(7.5, abs=1e-6)
+    s.drag_end()
+    assert _pos(s, centre) == pytest.approx([25.0, 23.0], abs=1e-3)
+    assert s.sk.entities[circle]["r"] == pytest.approx(7.5, abs=1e-6)
+
+
+def test_f14_a_rim_drag_still_resizes_a_circle_with_a_free_radius():
+    s, circle, centre = _circle([])
+    s.drag_begin({"entity": circle, "at": [27.5, 20]})
+    out = s.drag_move({"at": [30, 20]})
+    assert out["radii"][circle] == pytest.approx(10.0, abs=1e-3)
+    assert out["points"][centre] == pytest.approx([20.0, 20.0], abs=1e-3)
+    s.drag_end()
+
+
+def test_f14_a_free_circle_dragged_from_off_its_rim_grows_by_the_distance_gone():
+    s, circle, centre = _circle([])
+    s.drag_begin({"entity": circle, "at": [32, 20]})                # 4.5 mm outside the rim, as a Drag handle starts
+    out = s.drag_move({"at": [34, 20]})
+    assert out["radii"][circle] == pytest.approx(9.5, abs=1e-3)
+    s.drag_end(cancel=True)

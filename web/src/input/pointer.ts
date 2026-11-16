@@ -26,6 +26,8 @@ export interface PenPoint {
  * hands these over and never lets the pen navigate. Set with `PointerModule.setPenHandler`.
  */
 export interface PenHandler {
+  /** The mouse's left button went down (before its first `aim`, which a hover also sends). */
+  press?(p: PenPoint): void
   aim(p: PenPoint): void
   commit(p: PenPoint): void
   cancel(): void
@@ -269,6 +271,7 @@ export class PointerModule {
       if (this.mouseId !== null || this.mouseSelectId !== null) return
       if (e.button === 0) {
         this.mouseSelectId = e.pointerId
+        this.mousePick?.press?.(this.penPoint(e))
         this.mousePick?.aim(this.penPoint(e))
         return
       }

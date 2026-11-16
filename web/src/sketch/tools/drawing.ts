@@ -121,6 +121,7 @@ export class DrawTools {
   /** The handler of a pointer kind: it draws when a drawing tool is on, and otherwise hands over to `other` (selection). */
   wrap(kind: 'pen' | 'mouse', other: PenHandler): PenHandler {
     return {
+      press: (p) => (this.active ? undefined : other.press?.(p)),
       aim: (p) => (this.active ? this.aimAt(p, kind) : other.aim(p)),
       commit: (p) => (this.active ? this.commitAt(p, kind) : other.commit(p)),
       cancel: () => {

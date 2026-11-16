@@ -2,8 +2,9 @@ import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { openApp } from './support/app.ts'
 import { closeAll } from './support/docs.ts'
-import { fingerDrag, fingerTap, penStroke } from './support/pointer.ts'
-import { handleOf, openSketchFeature, readSketch, screenOf, settledSketch } from './support/sketch.ts'
+import { canvasCentre, fingerDrag, fingerTap, mouseDrag, penStroke, sendPointer } from './support/pointer.ts'
+import type { Point } from './support/pointer.ts'
+import { handleOf, openNewSketch, pickSketchAt, openSketchFeature, readSketch, screenOf, settledSketch, uvAt } from './support/sketch.ts'
 
 // Slice S7, selecting, moving, deleting and construction in the sketch (card I7.9) against `freeshape serve`: the Bracket
 // profile sketch, opened through the test hook. The profile is fully defined, so each test first deletes the 60 mm
@@ -107,4 +108,79 @@ test('a dimension label moves by a pen drag and stays where it was dropped', asy
   await settledSketch(page)
   expect((await screenOf(page, 'dimension', 'k19')).y).toBeCloseTo(after.y, 0)
   expect((await readSketch(page)).selected).toEqual([])
+})
+
+// F14: a drag on a circle's rim. With the radius held by a diameter dimension the whole circle moves by the drag offset;
+// with it free the rim resizes the circle, as the desktop's Sketcher.mouse_drag does.
+async function drawCircle(page: Page): Promise<{ centre: string; circle: string }> {
+  await openApp(page)
+  await openNewSketch(page, 'Top')
+  const c = await canvasCentre(page)
+  const pen = (phase: 'down' | 'move' | 'up', p: Point) => ({ phase, kind: 'pen' as const, id: 10, ...p, pressure: phase === 'up' ? 0 : 0.5 })
+  await sendPointer(page, [pen('down', c)])
+  await expect(page.getByTestId('quick-circle')).toBeVisible()
+  const b = (await page.getByTestId('quick-circle').boundingBox())!
+  const box = (await page.getByTestId('viewport').boundingBox())!
+  const to = { x: b.x + b.width / 2 - box.x, y: b.y + b.height / 2 - box.y }
+  await sendPointer(page, [pen('move', { x: (c.x + to.x) / 2, y: (c.y + to.y) / 2 }), pen('move', to), pen('up', to)])
+  const place = (p: Point) => sendPointer(page, [pen('down', { x: p.x - 3, y: p.y }), pen('move', p), pen('up', p)])
+  await place({ x: c.x + 150, y: c.y + 100 })
+  await place({ x: c.x + 230, y: c.y + 100 })
+  await expect.poll(async () => (await settledSketch(page)).stats.circles).toBe(1)
+  const circle = (await page.locator('.sketch-layer [data-kind="circle"]').first().getAttribute('data-id'))!
+  const centre = (await page.locator('.sketch-layer circle[data-kind="point"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-id')!))).find((i) => i !== 'origin')!
+  return { centre, circle }
+}
+
+/** The circle's radius in mm: the distance in the sketch between its centre and a point of its rim. */
+async function radiusOf(page: Page, centre: string, circle: string): Promise<number> {
+  const a = (await uvAt(page, ...Object.values(await screenOf(page, 'point', centre)) as [number, number]))!
+  const b = (await uvAt(page, ...Object.values(await screenOf(page, 'entity', circle)) as [number, number]))!
+  return Math.hypot(a[0] - b[0], a[1] - b[1])
+}
+
+test('a mouse drag on the rim of a circle with a diameter dimension moves the whole circle and keeps the diameter', async ({ page }) => {
+  const { centre, circle } = await drawCircle(page)
+  const rim0 = await screenOf(page, 'entity', circle)
+  await page.locator('[data-strip="sketch"] [data-tool="dimension"]').click()
+  await fingerTap(page, rim0)
+  await fingerTap(page, { x: rim0.x + 90, y: rim0.y - 70 })
+  await expect(page.getByTestId('pad')).toBeVisible()
+  for (const k of ['1', '5']) await page.getByTestId('pad').getByRole('button', { name: k, exact: true }).click()
+  await page.getByTestId('pad').getByRole('button', { name: 'Enter', exact: true }).click()
+  await expect(page.getByTestId('pad')).toHaveCount(0)
+  await page.locator('[data-strip="sketch"] [data-tool="select"]').click()
+  await settledSketch(page)
+  const c0 = (await uvAt(page, ...Object.values(await screenOf(page, 'point', centre)) as [number, number]))!
+  const r0 = await radiusOf(page, centre, circle)
+  expect(r0).toBeCloseTo(7.5, 2)
+  const from = await screenOf(page, 'entity', circle)
+  expect(await pickSketchAt(page, from.x, from.y, 'mouse')).toEqual({ kind: 'entity', id: circle })
+  const to = { x: from.x + 50, y: from.y + 30 }
+  const u0 = (await uvAt(page, from.x, from.y))!
+  const u1 = (await uvAt(page, to.x, to.y))!
+  await mouseDrag(page, 0, from, to, { moves: 10 })
+  await expect
+    .poll(async () => {
+      const c = (await uvAt(page, ...Object.values(await screenOf(page, 'point', centre)) as [number, number]))!
+      return Math.hypot(c[0] - c0[0] - (u1[0] - u0[0]), c[1] - c0[1] - (u1[1] - u0[1]))
+    })
+    .toBeLessThan(0.05)
+  expect(await radiusOf(page, centre, circle)).toBeCloseTo(7.5, 2)
+})
+
+test('a mouse drag on the rim of a circle with a free radius resizes it, as on the desktop', async ({ page }) => {
+  const { centre, circle } = await drawCircle(page)
+  await page.locator('[data-strip="sketch"] [data-tool="select"]').click()
+  await settledSketch(page)
+  const c0 = await screenOf(page, 'point', centre)
+  const r0 = await radiusOf(page, centre, circle)
+  const from = await screenOf(page, 'entity', circle)
+  expect(await pickSketchAt(page, from.x, from.y, 'mouse')).toEqual({ kind: 'entity', id: circle })
+  // the middle of the stroke is the rim point farthest left: dragging left grows the circle
+  await mouseDrag(page, 0, from, { x: from.x - 40, y: from.y }, { moves: 10 })
+  await expect.poll(async () => (await radiusOf(page, centre, circle)) - r0).toBeGreaterThan(1)
+  const c1 = await screenOf(page, 'point', centre)
+  expect(c1.x).toBeCloseTo(c0.x, 1)
+  expect(c1.y).toBeCloseTo(c0.y, 1)
 })

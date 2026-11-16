@@ -289,3 +289,36 @@ describe('Delete and Construct', () => {
     expect(isMovable(data, { kind: 'dimension', id: 'k3' })).toBe(true)
   })
 })
+
+describe('a circle dragged by its rim (F14)', () => {
+  const data = rectAndCircle()
+  const start: Uv = [40, 24]
+  const at: Uv = [45, 27]
+  it('resizes when its radius is free', () => {
+    const live = predict(data, { kind: 'entity', id: 'e5' }, start, at)
+    expect(live.points).toEqual({})
+    expect(live.radii['e5']).toBeCloseTo(Math.hypot(15, 3), 6)
+  })
+  it('grows by the distance gone from the centre when the press was off the rim (a Drag handle)', () => {
+    const live = predict(data, { kind: 'entity', id: 'e5' }, [46, 24], [48, 24])
+    expect(live.radii['e5']).toBeCloseTo(12, 6)
+  })
+  it('moves whole when a diameter dimension holds the radius, with no radius drawn', () => {
+    const held = { ...data, constraints: [...data.constraints, { id: 'k9', type: 'diameter', refs: ['e5'], value: 20 }] }
+    const live = predict(held, { kind: 'entity', id: 'e5' }, start, at)
+    expect(live.radii).toEqual({})
+    expect(live.points['c1']).toEqual([35, 27])
+  })
+})
+
+describe('a mouse drag in the sketch (F14)', () => {
+  it('drags a circle by its rim past the threshold and sends sketch.drag.begin for the entity', () => {
+    const rim = r.at('entity', 'e5')
+    r.fire('pointerdown', { pointerId: 20, pointerType: 'mouse', button: 0, buttons: 1, clientX: rim.x, clientY: rim.y })
+    r.fire('pointermove', { pointerId: 20, pointerType: 'mouse', button: -1, buttons: 1, clientX: rim.x + 30, clientY: rim.y + 10 })
+    expect(r.sent.find((m) => m['type'] === 'sketch.drag.begin')).toMatchObject({ entity: 'e5' })
+    expect(r.sent.some((m) => m['type'] === 'sketch.drag.move')).toBe(true)
+    r.fire('pointerup', { pointerId: 20, pointerType: 'mouse', button: 0, buttons: 0, clientX: rim.x + 30, clientY: rim.y + 10 })
+    expect(r.sent.some((m) => m['type'] === 'sketch.drag.end')).toBe(true)
+  })
+})

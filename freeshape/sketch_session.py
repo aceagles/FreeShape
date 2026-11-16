@@ -764,8 +764,17 @@ class SketchSession:
             weights = {(i, 0): 1e3, (i, 1): 1e3}
         elif sk.entities[i]["type"] == "circle":
             c = base.points[sk.entities[i]["c"]]
-            sk.entities[i]["r"] = float(max(math.hypot(uv[0] - c[0], uv[1] - c[1]), 1e-3))
-            weights = {(i, "r"): 1e3}
+            if self._radius_held(base, i):
+                # a held radius (a radius or diameter dimension, an equal) cannot follow the rim: the circle moves whole
+                cid = sk.entities[i]["c"]
+                sk.points[cid] = [float(c[0]) + delta[0], float(c[1]) + delta[1]]
+                weights = {(cid, 0): 1e3, (cid, 1): 1e3}
+            else:
+                # the rim follows the pointer by the distance it has gone from the centre since the press (the press is
+                # on the rim for a direct drag, and up to a handle's length off it for a Drag handle)
+                grown = math.hypot(uv[0] - c[0], uv[1] - c[1]) - math.hypot(d["start"][0] - c[0], d["start"][1] - c[1])
+                sk.entities[i]["r"] = float(max(float(base.entities[i]["r"]) + grown, 1e-3))
+                weights = {(i, "r"): 1e3}
         else:
             for pid in sk.entity_points(i):
                 if pid != ORIGIN:
@@ -789,6 +798,12 @@ class SketchSession:
         return {"t": t, "solve_ms": max(time.perf_counter() - began, 1e-6) * 1000.0,
                 "points": {k: [float(x) for x in p] for k, p in shown.points.items()},
                 "radii": {k: float(e["r"]) for k, e in shown.entities.items() if "r" in e}, "held": held}
+
+    @staticmethod
+    def _radius_held(sk, eid):
+        """True when a constraint fixes the radius of circle `eid`: a radius or diameter dimension on it, or an
+        equal with another curve. A rim drag then moves the circle instead of resizing it (the desktop only resizes)."""
+        return any(c["type"] in ("radius", "diameter", "equal") and eid in c.get("refs", ()) for c in sk.constraints)
 
     @staticmethod
     def _same(orig, cur):

@@ -321,6 +321,19 @@ class StudioTab(_Tab):
     def _set_part_override(self, edit):
         apply_part_override(self.doc, edit)
 
+    def _set_features_hidden(self, edit):
+        ids = _need(edit, "ids")
+        value = _need(edit, "value")
+        if not isinstance(value, bool) or not isinstance(ids, (list, tuple)):
+            raise EngineError("set_features_hidden: ids is a list, value is true or false")
+        for i in ids:
+            f = self.doc.feature(i)
+            if f is None and i not in ("Top", "Front", "Right"):
+                raise EngineError(f"no feature {i!r} in “{self.doc.name}”")
+            if f is not None and f.get("type") not in ("sketch", "plane", "axis", "context"):
+                raise EngineError(f"feature {i!r} has no eye (it is a {f.get('type')})")
+        self.doc.set_features_hidden(ids, value)
+
     def _folder(self, edit):
         fo = _need(edit, "folder")
         if fo not in self.doc.folders:

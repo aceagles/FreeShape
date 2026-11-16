@@ -36,7 +36,10 @@ export const rowTitle = (f: FeatureEntry): string => (f.error !== null ? `${f.na
 /** Two taps on a row this close together (ms) are a double tap. */
 const DOUBLE_TAP_MS = 400
 
-function FeatureButton({ feature, index, indent, selected, rolledBack, slot, canMenu, onSelect, onEdit, onMenu }: {
+/** Sketches, planes and axes have an eye; the other features do not. */
+export const hasEye = (f: FeatureEntry): boolean => f.type === 'sketch' || f.type === 'plane' || f.type === 'axis'
+
+function FeatureButton({ feature, index, indent, selected, rolledBack, slot, canMenu, eyeLocked, onSelect, onEdit, onMenu, onEye }: {
   feature: FeatureEntry
   index: number
   indent: boolean
@@ -44,15 +47,17 @@ function FeatureButton({ feature, index, indent, selected, rolledBack, slot, can
   rolledBack: boolean
   slot: number | null
   canMenu: boolean
+  eyeLocked: boolean
   onSelect: () => void
   onEdit?: () => void
   onMenu: (el: HTMLElement) => void
+  onEye: () => void
 }) {
   const press = useLongPress((el) => canMenu && onMenu(el))
   const lastTap = useRef<number | null>(null)
   const state = stateOf(feature, rolledBack)
   return (
-    <li data-row="" data-slot={slot ?? undefined}>
+    <li data-row="" data-slot={slot ?? undefined} className={hasEye(feature) ? 'feature-eyed' : undefined} data-hidden={hasEye(feature) && feature.hidden ? '' : undefined}>
       <button
         type="button"
         className="panel-row"
@@ -81,6 +86,19 @@ function FeatureButton({ feature, index, indent, selected, rolledBack, slot, can
           {feature.error !== null && <span className="row-message">{feature.error}</span>}
         </span>
       </button>
+      {hasEye(feature) && (
+        <button
+          type="button"
+          className="icon-button feature-eye"
+          aria-label={`${feature.hidden ? 'Show' : 'Hide'} ${feature.type}`}
+          title={`${feature.hidden ? 'Show' : 'Hide'} ${feature.name}`}
+          data-feature-eye={feature.id}
+          disabled={eyeLocked}
+          onClick={onEye}
+        >
+          <Icon d={feature.hidden ? paths.eyeOff : paths.eye} px={size.iconSmall} />
+        </button>
+      )}
     </li>
   )
 }
@@ -123,7 +141,7 @@ interface Drag {
 /**
  * The feature list of a Part Studio: rows in file order with a type icon, the suppressed, failed and rolled-back
  * states, folders as collapsible groups, and the rollback bar. A tap selects; a press of 500 ms opens the row's menu
- * (Rename, Suppress or Unsuppress, Delete, Roll to here). The bar moves only by its Drag handle, and one set_rollback
+ * (Rename, Hide or Show for a sketch, plane or axis, Suppress or Unsuppress, Delete, Roll to here); the eye at the right of such a row does the same as Hide or Show. The bar moves only by its Drag handle, and one set_rollback
  * is sent when the handle is released. Delete asks first; Rename asks for the new name.
  */
 export function FeatureList({ outputs, selected, edits, onEdit, onSelect }: Props) {
@@ -250,6 +268,8 @@ export function FeatureList({ outputs, selected, edits, onEdit, onSelect }: Prop
                   rolledBack={rolledBack}
                   slot={slot}
                   canMenu={!edits.disabled}
+                  eyeLocked={edits.disabled || edits.busy}
+                  onEye={() => edits.setFeatureHidden(row.feature.id, !row.feature.hidden)}
                   onSelect={() => onSelect(row.feature.id)}
                   onEdit={onEdit ? () => onEdit(row.feature) : undefined}
                   onMenu={(el) => open(row.feature, row.index, el)}
@@ -282,6 +302,17 @@ export function FeatureList({ outputs, selected, edits, onEdit, onSelect }: Prop
               setDialog({ kind: 'rename', feature: menu.feature })
             }}
           />
+          {hasEye(menu.feature) && (
+            <PopoverItem
+              label={menu.feature.hidden ? 'Show' : 'Hide'}
+              icon={<Icon d={menu.feature.hidden ? paths.eye : paths.eyeOff} />}
+              disabled={edits.busy}
+              onClick={() => {
+                close()
+                edits.setFeatureHidden(menu.feature.id, !menu.feature.hidden)
+              }}
+            />
+          )}
           <PopoverItem
             label={menu.feature.suppressed ? 'Unsuppress' : 'Suppress'}
             icon={<Icon d={paths.hole} />}

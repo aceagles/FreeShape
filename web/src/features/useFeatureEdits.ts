@@ -13,6 +13,8 @@ export interface FeatureEdits {
   deleteFeature(feature: string): Promise<boolean>
   /** `index` is the number of features that build (outputs.rollback). Resolves false when the edit failed. */
   setRollback(index: number): Promise<boolean>
+  /** The eye of a sketch, plane or axis row (set_features_hidden: a view setting, no undo step). */
+  setFeatureHidden(feature: string, hidden: boolean): void
   /** The eye of a part (set_part_override with `hidden`). */
   setPartHidden(part: string, hidden: boolean): void
   /** Rename a part; resolves with a message in plain words when the server refused (the rename dialog shows it). */
@@ -83,6 +85,7 @@ export function useFeatureEdits({ store, tab, readOnly, documentName, onError }:
       },
       setSuppressed: (feature, value) => void act(value ? 'Could not suppress the feature' : 'Could not unsuppress the feature', { op: 'set_suppressed', feature, value }),
       deleteFeature: (feature) => act('Could not delete the feature', { op: 'delete_features', ids: [feature] }),
+      setFeatureHidden: (feature, hidden) => void act(hidden ? 'Could not hide the feature' : 'Could not show the feature', { op: 'set_features_hidden', ids: [feature], value: hidden }),
       setPartHidden: (part, hidden) => void act(hidden ? 'Could not hide the part' : 'Could not show the part', { op: 'set_part_override', part, hidden }),
       async renamePart(part, name) {
         if (disabled) return

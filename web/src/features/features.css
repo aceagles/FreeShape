@@ -144,6 +144,32 @@
   background: var(--c-accentSoft);
 }
 
+/* Sketch, plane and axis rows end in an eye like the Parts list's; a hidden one is greyed. */
+.feature-eyed {
+  display: flex;
+  align-items: center;
+}
+.feature-eyed > .panel-row {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+  align-self: stretch;
+}
+.feature-eye {
+  align-self: stretch;
+  height: auto;
+  min-height: var(--touch);
+}
+.feature-eyed[data-hidden] .panel-row:not([data-state='failed']) {
+  color: var(--c-muted);
+}
+.feature-eyed[data-hidden] .panel-row svg {
+  opacity: 0.5;
+}
+.feature-eyed[data-hidden] .feature-eye {
+  color: var(--c-muted);
+}
+
 /* The Parts list: under the features, in the same scrolling body. The heading is the layout's: 12 px, 600, muted. */
 .panel-parts-slot {
   flex: none;

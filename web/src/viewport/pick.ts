@@ -6,7 +6,7 @@ import type { Part, StudioOutputs, Vec3 } from '../wire'
 import { inRegion, visibleRegions } from '../sketch/regions'
 import type { RegionShape } from '../sketch/regions'
 import type { ViewCamera } from './camera'
-import { axisEnds, DEFAULT_PLANES } from './scene'
+import { axisEnds, DEFAULT_PLANES, eyeHidden } from './scene'
 import type { BuiltScene } from './scene'
 
 /**
@@ -279,8 +279,10 @@ export class PickIndex {
       return { key, o: new Vector3(...o), x: xv, y, n: nv.clone().normalize() }
     }
     for (const p of DEFAULT_PLANES) this.planes.push(frame(p.name, p.o, p.x, p.n))
-    for (const [key, p] of Object.entries(outputs.planes)) this.planes.push(frame(key, p.o, p.x, p.n))
+    const hid = eyeHidden(outputs)
+    for (const [key, p] of Object.entries(outputs.planes)) if (!hid.has(key)) this.planes.push(frame(key, p.o, p.x, p.n))
     for (const [key, a] of Object.entries(outputs.axes)) {
+      if (hid.has(key)) continue
       const [pa, pb] = axisEnds(a.o, a.d, a.span)
       this.axes.push({ key, a: pa, b: pb })
     }

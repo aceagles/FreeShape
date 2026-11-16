@@ -53,6 +53,8 @@ export interface SceneStats {
   /** Planes drawn: the three default ones plus the studio's own. */
   planes: number
   axes: number
+  /** Sketch regions drawn (those of sketches the eye shows). */
+  sketchRegions: number
   /** Parts of a dialog's preview drawn as the translucent ghost over the model (see SceneOptions.ghost). */
   ghostParts: number
 }
@@ -71,6 +73,7 @@ export const EMPTY_STATS: SceneStats = {
   triangles: 0,
   planes: 0,
   axes: 0,
+  sketchRegions: 0,
   ghostParts: 0,
 }
 
@@ -376,6 +379,11 @@ export function fitBoundsFor(model: Bounds, half: number): Bounds {
 }
 
 /** The three default planes: name, origin, x direction and normal (the third axis is normal x x). Picking uses the same frames. */
+/** Ids of the plane, axis and sketch features the eye hides (the view draws and picks none of them). */
+export function eyeHidden(outputs: StudioOutputs): Set<string> {
+  return new Set(outputs.features.filter((f) => f.hidden).map((f) => f.id))
+}
+
 export const DEFAULT_PLANES: readonly { name: string; o: Vec3; x: Vec3; n: Vec3 }[] = [
   { name: 'Top', o: [0, 0, 0], x: [1, 0, 0], n: [0, 0, 1] },
   { name: 'Front', o: [0, 0, 0], x: [1, 0, 0], n: [0, -1, 0] },
@@ -447,6 +455,7 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   // zoomed for the model that was there. A studio that opens empty gets the default box and the desktop's size.
   const half = hasModel || opts.keepPlaneHalf == null ? planeHalfFor(bounds) : opts.keepPlaneHalf
   stats.planeHalf = half
+  const hid = eyeHidden(outputs)
   const planes = new Group()
   planes.name = 'planes'
   const addPlane = (key: string, p: { o: Vec3; x: Vec3; n: Vec3 }) => {
@@ -455,10 +464,11 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     planes.add(g)
   }
   for (const p of DEFAULT_PLANES) addPlane(p.name, p)
-  for (const [key, p] of Object.entries(outputs.planes)) addPlane(key, p)
+  for (const [key, p] of Object.entries(outputs.planes)) if (!hid.has(key)) addPlane(key, p)
   stats.planes = planes.children.length
   root.add(planes)
   for (const [key, a] of Object.entries(outputs.axes)) {
+    if (hid.has(key)) continue
     sources.axes.set(key, axisEnds(a.o, a.d, a.span))
     const l = axisLine(a.o, a.d, a.span, materials)
     geometries.push(l.geometry)
@@ -467,6 +477,7 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   }
   const sketchRegions = buildSketchRegions(outputs, materials, geometries)
   sources.regions = sketchRegions.regions
+  stats.sketchRegions = sketchRegions.regions.size
   root.add(sketchRegions.group)
   const triad = triadObject(materials)
   root.add(triad)

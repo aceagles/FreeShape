@@ -75,6 +75,8 @@ STUDIO_OPS = {
     "rename_feature": "feature, name",
     "set_part_override": "part, plus any of name / color (None puts it back) / hidden (the eye: a view setting, no "
                          "undo step); or colors ({part: color}) for several parts in one undo step",
+    "set_features_hidden": "ids (sketch / plane / axis feature ids, or a standard plane's name), value (true hides, "
+                           "false shows: the eye, a view setting stored in the Document's hidden_features; no undo step)",
     "make_folder": "ids (a run of features), name (optional), folder (optional id to give it)",
     "ungroup_folder": "folder",
     "remove_from_folder": "ids",

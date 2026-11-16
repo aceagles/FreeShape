@@ -445,6 +445,27 @@ export const shots: ShotState[] = [
     after: closeAllDiscard,
   },
   {
+    name: 'feature-sketch-menu',
+    mock: 'browsing', // the layout draws no row menu: a sketch row's menu with Hide, and the eyes at the row ends
+    steps: async (page) => {
+      await openApp(page)
+      const name = (await page.locator('.panel-row[data-type="sketch"] .row-name').first().innerText()).trim()
+      await longPressFeature(page, new RegExp(`^${name}`))
+    },
+  },
+  {
+    name: 'feature-sketch-shown',
+    mock: 'browsing', // the layout draws no shown sketch: the Bracket's sketches are hidden (Extrude uses them); one shown from its eye
+    steps: async (page) => {
+      await openApp(page)
+      const eye = page.locator('[data-feature-eye]').first()
+      if ((await eye.getAttribute('aria-label')) === 'Show sketch') await eye.click()
+      await page.locator('li.feature-eyed:not([data-hidden])').first().waitFor()
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketchRegions ?? 0) > 0)
+    },
+    after: closeAllDiscard,
+  },
+  {
     name: 'rollback-moved',
     mock: 'browsing', // the bar above Slot: Slot, Slot cut and Chamfer 1 greyed
     steps: async (page) => {

@@ -54,6 +54,20 @@ describe('buildScene', () => {
     built.dispose()
   })
 
+  it('draws a plane and an axis the eye has not hidden, and leaves a hidden one out', () => {
+    const base = studio()
+    const plane = { o: [0, 0, 0], x: [1, 0, 0], n: [0, 0, 1] } as const
+    const axis = { o: [0, 0, 0], d: [0, 0, 1], span: null } as never
+    const feat = (id: string, type: string, hidden: boolean) => ({ id, type, label: type, name: id, suppressed: false, error: null, folder: null, hidden })
+    const withEye = (hidden: boolean): StudioOutputs => ({ ...base, planes: { P1: plane }, axes: { A1: axis }, features: [feat('P1', 'plane', hidden), feat('A1', 'axis', hidden)] })
+    const shown = buildScene(withEye(false))
+    expect([shown.stats.planes, shown.stats.axes]).toEqual([4, 1])
+    shown.dispose()
+    const hid = buildScene(withEye(true))
+    expect([hid.stats.planes, hid.stats.axes]).toEqual([3, 0])
+    hid.dispose()
+  })
+
   it('uses the typed arrays of the response without copying them', () => {
     const out = studio()
     const built = buildScene(out)

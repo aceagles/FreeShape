@@ -2,9 +2,11 @@ import { isSketchToolChord } from '../input/bindings'
 import { chordOf, runKeyChord } from '../input/keys'
 import type { PickPointer } from '../viewport/pick'
 import { formatValue } from './draw'
+import { DRAG_THRESHOLD } from './drag'
+import { PREVIEW_DIM } from './pick'
 import type { SketchHit } from './pick'
 import type { SketchPointerTool, SketchStore, SketchTransport } from './store'
-import type { SketchData, Uv } from './wire'
+import type { SketchConstraint, SketchData, Uv } from './wire'
 
 /** The kinds of dimension the server makes (sketch.dimension's `made.type`). */
 export type DimensionType = 'distance' | 'hdistance' | 'vdistance' | 'radius' | 'diameter' | 'angle'
@@ -171,6 +173,10 @@ export class DimensionTool implements SketchPointerTool {
   private target: string | null = null
   /** Desktop mode: a mouse's dimension takes its value in the inline box (setDesktop). */
   private desktop = false
+  /** Desktop mode, a mouse press in the view: what it went down on and how it has gone since (F22). */
+  private gesture: { picked: boolean; uv: Uv | null; moved: boolean; dropped: boolean } | null = null
+  /** The preview of the dimension being placed is on the view (it is the store's `live`). */
+  private previewKey: string | null = null
   private readonly now: () => number
 
   constructor(private readonly deps: DimensionDeps) {
@@ -205,6 +211,9 @@ export class DimensionTool implements SketchPointerTool {
     if (on === this.desktop) return
     if (this.state.pad !== null) this.padCancel()
     this.desktop = on
+    this.gesture = null
+    this.hidePreview()
+    if (this.state.active && this.state.hint !== null && this.state.pad === null) this.set({ hint: this.hintFor(this.state.picks) })
   }
 
   /** The tool is chosen on the strip (true) or another one is (false). */
@@ -212,15 +221,63 @@ export class DimensionTool implements SketchPointerTool {
     if (on === this.state.active) return
     this.closePad()
     this.clearPicks()
+    this.gesture = null
+    this.hidePreview()
     this.set({ active: on, hint: on ? this.hintFor([]) : null })
   }
 
   private hintFor(picks: readonly SketchHit[]): string {
     const sk = this.deps.sketch.getState().view?.sketch
-    if (picks.length === 0) return 'Pick a line, circle, arc or point to dimension'
-    if (picks.length === 2) return 'Tap where the dimension goes'
+    // Desktop mode is a mouse's: Click, and a press that drags to the place (F22)
+    const verb = this.desktop ? 'Click' : 'Tap'
+    if (picks.length === 0) return this.desktop ? 'Click a line, circle, arc or point, or press on it and drag to where the dimension goes' : 'Pick a line, circle, arc or point to dimension'
+    if (picks.length === 2) return `${verb} where the dimension goes`
     const first = picks[0]!
-    return sk && dimensionSpec(sk, first.id, null, null) ? 'Tap where the dimension goes, or pick a second item' : 'Pick a second point or a line'
+    return sk && dimensionSpec(sk, first.id, null, null) ? `${verb} where the dimension goes, or ${this.desktop ? 'click' : 'pick'} a second item` : this.desktop ? 'Click a second point or a line' : 'Pick a second point or a line'
+  }
+
+  /** The dimension the picks take with its label at `at`, as the view draws it before it is placed; null when they take none. */
+  private previewOf(picks: readonly SketchHit[], at: Uv): SketchConstraint | null {
+    const sk = this.deps.sketch.getState().view?.sketch
+    if (!sk || picks.length === 0) return null
+    const refs = picks.map((p) => p.id)
+    const spec = dimensionSpec(sk, refs[0]!, refs[1] ?? null, at)
+    return spec === null ? null : { id: PREVIEW_DIM, type: spec.type, refs, value: spec.value, pos: at }
+  }
+
+  private showPreview(c: SketchConstraint | null): void {
+    const key = c === null ? null : JSON.stringify(c)
+    if (key === this.previewKey) return
+    this.previewKey = key
+    this.deps.sketch.setLive(c === null ? null : { points: {}, radii: {}, labels: {}, extra: [c] })
+  }
+
+  private hidePreview(): void {
+    this.showPreview(null)
+  }
+
+  /**
+   * The mouse's Aim, Desktop mode (F22): once an item is picked the dimension follows the pointer, drawn as a placed one is, so
+   * the next click clearly places it (the desktop's `_dim_over_item`: while the pointer is over an item it stays off, so the
+   * item can be picked as the second). A press-drag past the slop marks the gesture as a drag.
+   */
+  aim(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): void {
+    const s = this.state
+    if (!this.desktop || pointer !== 'mouse' || !s.active || s.pad !== null || uv === null) return this.hidePreview()
+    const g = this.gesture
+    if (g && !g.moved && g.uv && Math.hypot(uv[0] - g.uv[0], uv[1] - g.uv[1]) > DRAG_THRESHOLD * (mmPerPx ?? 0)) g.moved = true
+    const over = hit !== null && (hit.kind === 'point' || hit.kind === 'entity')
+    this.showPreview(s.picks.length === 2 || (s.picks.length === 1 && !over) ? this.previewOf(s.picks, uv) : null)
+  }
+
+  /** The mouse went down (Desktop mode): an item under it is picked at once, as the desktop picks on a press; the release then places it if the press dragged. */
+  press(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer): void {
+    this.gesture = null
+    if (!this.desktop || pointer !== 'mouse' || !this.state.active || this.state.pad !== null || !this.deps.sketch.getState().view) return
+    const item = hit !== null && (hit.kind === 'point' || hit.kind === 'entity') ? hit : null
+    const picked = this.state.picks.length === 0 && item !== null
+    if (picked) this.setPicks([item])
+    this.gesture = { picked, uv, moved: false, dropped: false }
   }
 
   private clearPicks(): void {
@@ -244,7 +301,16 @@ export class DimensionTool implements SketchPointerTool {
   }
 
   /** The pointer's Commit: true when the tool took it (the selection then does nothing). */
-  commit(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer): boolean {
+  commit(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): boolean {
+    const g = this.gesture
+    this.gesture = null
+    this.hidePreview()
+    if (g && this.desktop && pointer === 'mouse' && this.state.active) {
+      if (g.dropped) return true // Esc during the press: nothing is picked or placed by its release
+      if (g.uv && uv && Math.hypot(uv[0] - g.uv[0], uv[1] - g.uv[1]) > DRAG_THRESHOLD * (mmPerPx ?? 0)) g.moved = true
+      // a press that picked an item and let go in place is only the pick; the label goes at the next click
+      if (g.picked && !g.moved) return true
+    }
     if (pointer !== 'touch' && hit?.kind === 'dimension') {
       const prev = this.last
       const t = this.now()
@@ -343,6 +409,8 @@ export class DimensionTool implements SketchPointerTool {
    * desktop's escape does. True when there was something to close.
    */
   escape(): boolean {
+    if (this.gesture) this.gesture.dropped = true
+    this.hidePreview()
     if (this.state.pad !== null) {
       this.padCancel()
       return true

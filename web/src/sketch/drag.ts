@@ -1,6 +1,6 @@
 import type { DragTarget } from './select'
 import type { SketchStore, SketchTransport } from './store'
-import type { SketchData, Uv } from './wire'
+import type { SketchConstraint, SketchData, Uv } from './wire'
 
 /** A press that moves farther than this many CSS pixels drags the item under it (the pen); less is an Aim. Settled on the browser probe. */
 export const DRAG_THRESHOLD = 6
@@ -11,6 +11,8 @@ export interface LiveDrag {
   radii: Readonly<Record<string, number>>
   /** A dimension's label position (sketch coordinates), while its label is dragged. */
   labels: Readonly<Record<string, Uv>>
+  /** Constraints drawn over the sketch's own and held by no one: the Dimension tool's preview of the dimension being placed (F22). */
+  extra?: readonly SketchConstraint[]
 }
 
 /** The sketch as a drag shows it: `live` laid over `data`. Returns `data` itself when there is nothing to lay over. */
@@ -28,7 +30,7 @@ export function applyLive(data: SketchData, live: LiveDrag | null): SketchData {
     delete placed.pos_anchor
     return placed
   })
-  return { points, entities, constraints }
+  return { points, entities, constraints: live.extra ? [...constraints, ...live.extra] : constraints }
 }
 
 /** The points an entity is moved by, as freeshape/sketch.py entity_points has them. */

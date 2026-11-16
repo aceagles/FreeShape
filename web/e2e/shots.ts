@@ -1865,6 +1865,26 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // F22: Dimension in Desktop mode, a side picked by a press and the dimension following the mouse before it is placed
+    name: 'desktop-sketch-dimension-preview',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      const mouse = (phase: 'move' | 'down' | 'up', p: { x: number; y: number }): PointerStep => ({ phase, kind: 'mouse', id: 20, ...p, ...(phase === 'move' ? {} : { button: 0 }) })
+      await page.keyboard.press('g')
+      for (const p of [await screenFor(page, -30, -10), await screenFor(page, 20, 15)]) await sendPointer(page, [mouse('move', p), mouse('down', p), mouse('up', p)])
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 4)
+      await page.keyboard.press('d')
+      const side = await screenFor(page, -17.5, -10)
+      const away = await screenFor(page, -17.5, -24)
+      await sendPointer(page, [mouse('move', side), mouse('down', side), mouse('move', away)])
+      await page.locator('.sketch-layer g[data-preview="1"]').waitFor()
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I9.9: drag a selection box with the mouse from above left of the bracket to below its middle; `release` lets the button go. */

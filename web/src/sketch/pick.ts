@@ -1,6 +1,9 @@
 import type { PickPointer } from '../viewport/pick'
 import type { P, ScreenLayout } from './layout'
 
+/** The id of the dimension the Dimension tool shows while it is being placed (F22): drawn like a placed one, never picked. */
+export const PREVIEW_DIM = '__preview'
+
 export type SketchPickKind = 'point' | 'entity' | 'dimension' | 'constraint'
 
 /** What is under a view position in a sketch: a point or an entity (by its id), a dimension, or a constraint glyph. */
@@ -45,7 +48,7 @@ export function pickSketch(layout: ScreenLayout, x: number, y: number, pointer: 
     }
   }
   if (best) return best
-  for (const l of layout.dims) if (inRect(x, y, l.label, tol.label)) return { kind: 'dimension', id: l.id }
+  for (const l of layout.dims) if (l.id !== PREVIEW_DIM && inRect(x, y, l.label, tol.label)) return { kind: 'dimension', id: l.id }
   for (const g of layout.glyphs) if (inRect(x, y, { x: g.x - g.size / 2, y: g.y - g.size / 2, w: g.size, h: g.size }, tol.label)) return { kind: 'constraint', id: g.id }
   bestD = tol.entity
   for (const s of layout.strokes) {

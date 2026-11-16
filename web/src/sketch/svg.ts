@@ -4,6 +4,7 @@ import type { P, ScreenDim, ScreenGlyph, ScreenLayout, ScreenStroke } from './la
 import { DIM } from './layout'
 import { handleMarkup } from './handle'
 import type { HandleSpot } from './handle'
+import { PREVIEW_DIM } from './pick'
 import type { SketchHit } from './pick'
 import type { Status } from './wire'
 
@@ -75,7 +76,7 @@ function dimMarkup(d: ScreenDim, look: SketchLook): string {
   const l = d.label
   const edge = sel ? color.accent : aim ? sketchColor.aimed : d.ok ? color.line : sketchColor.conflicting
   return (
-    `<g data-kind="dimension" data-id="${esc(d.id)}"${d.ok ? '' : ' data-status="conflicting"'}>` +
+    `<g data-kind="dimension" data-id="${esc(d.id)}"${d.id === PREVIEW_DIM ? ' data-preview="1"' : ''}${d.ok ? '' : ' data-status="conflicting"'}>` +
     `<path d="${lines}${arc}${heads}" fill="none" stroke="${ink}" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>` +
     `<rect x="${n(l.x)}" y="${n(l.y)}" width="${n(l.w)}" height="${n(l.h)}" rx="6" fill="#fff" stroke="${edge}" stroke-width="${sel ? 2 : 1}"/>` +
     `<text x="${n(l.x + l.w / 2)}" y="${n(l.y + l.h / 2 + 5)}" fill="${d.ok ? color.ink : sketchColor.conflicting}" font-size="14" font-weight="500" text-anchor="middle">${esc(l.text)}</text></g>`

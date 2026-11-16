@@ -141,6 +141,7 @@ export class SketchMode {
       press: (pt: PenPoint) => {
         const hit = itemAt(pt.x, pt.y, kind)
         const view = this.store.getState().view
+        if (kind === 'mouse') this.store.pressTools(hit, this.uvAt(pt.x, pt.y), kind, this.mmPerPx())
         if (view && this.selecting && isMovable(view.sketch, hit)) this.penDrag.arm(hit, pt.x, pt.y)
       },
       aim: (pt: PenPoint) => {

@@ -30,6 +30,8 @@ export interface SketchPointerTool {
   commit(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): boolean
   /** The pen or the mouse Aims at `hit` or at `uv` (I7.12): the tool shows what a Commit there would do (`SketchStore.setPreview`). */
   aim?(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): void
+  /** The mouse's left button went down on `hit` (or on nothing) at `uv`, Desktop mode and Tablet mode alike; its Commit follows on release (F22). */
+  press?(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): void
   /** A double tap or double click on `hit`; true when the tool took it (the view then does not fit). */
   doubleTap(hit: SketchHit): boolean
   /** Esc (Desktop mode, I9.7): give up what the tool has half done (an open value box, the picks made); true when there was something. */
@@ -152,6 +154,9 @@ export class SketchStore {
   /** The pointer's Commit goes to the tools in turn; true when one took it, so nothing is selected. */
   commitTools(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): boolean {
     return this.tools.some((t) => t.commit(hit, uv, pointer, mmPerPx))
+  }
+  pressTools(hit: SketchHit | null, uv: Uv | null, pointer: PickPointer, mmPerPx?: number): void {
+    for (const t of this.tools) t.press?.(hit, uv, pointer, mmPerPx)
   }
   doubleTapTools(hit: SketchHit): boolean {
     return this.tools.some((t) => t.doubleTap(hit))

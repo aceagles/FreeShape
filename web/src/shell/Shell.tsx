@@ -347,7 +347,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           </div>
           <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport">
             {tabKind === 'assembly' ? (
-              <AssemblyViewport outputs={assembly.outputs} selection={selection} />
+              <AssemblyViewport outputs={assembly.outputs} selection={selection} drag={assembly.edits.drag} />
             ) : (
               <StudioViewport
                 outputs={showPreview ? preview.outputs : studio}

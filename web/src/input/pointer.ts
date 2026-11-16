@@ -47,7 +47,8 @@ export interface TapHandler {
  * lifts (`move`, then `release`, or `cancel`). Set with `PointerModule.setHandleHandler`.
  */
 export interface HandleHandler {
-  press(p: PenPoint): boolean
+  /** `pointer` is the kind of pointer that pressed; a handler may size its hit area by it. */
+  press(p: PenPoint, pointer?: 'pen' | 'mouse' | 'touch'): boolean
   move(p: PenPoint): void
   release(p: PenPoint): void
   cancel(): void
@@ -175,7 +176,7 @@ export class PointerModule {
     const p = this.local(e)
     // a Drag handle comes first; a second finger is a pinch, never a handle
     const free = e.pointerType === 'touch' ? this.touches.size === 0 : e.pointerType === 'mouse' ? e.button === 0 && this.mouseId === null && this.mouseSelectId === null : this.penId === null
-    if (free && this.handleId === null && this.handle?.press(this.penPoint(e))) {
+    if (free && this.handleId === null && this.handle?.press(this.penPoint(e), e.pointerType === 'pen' ? 'pen' : e.pointerType === 'mouse' ? 'mouse' : 'touch')) {
       this.handleId = e.pointerId
       return
     }

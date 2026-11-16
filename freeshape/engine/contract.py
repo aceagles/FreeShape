@@ -99,6 +99,9 @@ ASSEMBLY_OPS = {
     "delete_mates": "ids",
     "solve": "",
     "refresh": "",
+    "move_begin": "instance: start a drag; remembers every placement and opens one undo step",
+    "move_to": "T (4x4 world motion applied to the placements at move_begin; latest wins), then solve",
+    "move_end": "close the drag (nothing moved: the undo step is dropped)",
     "undo": "", "redo": "",
     "save": "path (optional)",
 }

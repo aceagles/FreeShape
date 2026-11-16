@@ -865,6 +865,40 @@ class AssemblyTab(_ConsumerTab):
                                errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts,
                                instances=instances, mates=mates, dof=int(doc.dof))
 
+    # -- a drag by a Drag handle (I8.2): move_to is absolute against the placements move_begin remembered, so a
+    # dropped (stale) move_to loses nothing; move_begin opens the one undo step and move_end closes it.
+    def _drag_close(self):
+        d, self._drag = getattr(self, "_drag", None), None
+        if d is not None and len(self.doc._undo) == d["undo_len"] and not any(
+                not np.allclose(i["T"], d["T"][i["id"]], atol=1e-9) for i in self.doc.instances if i["id"] in d["T"]):
+            self.doc._undo.pop()                      # nothing moved (or the mates put everything back): no undo step
+        return d
+
+    def _move_begin(self, edit):
+        iid = self._instance(_need(edit, "instance"))
+        self._drag_close()
+        self.doc.checkpoint()
+        self._drag = {"inst": iid, "undo_len": len(self.doc._undo),
+                      "T": {i["id"]: copy.deepcopy(i["T"]) for i in self.doc.instances}}
+
+    def _move_to(self, edit):
+        d = getattr(self, "_drag", None)
+        if d is None:
+            raise EngineError("move_to without move_begin")
+        M = np.asarray(_need(edit, "T"), float)
+        if M.shape != (4, 4):
+            raise EngineError("T must be a 4x4 matrix")
+        for i in self.doc.instances:
+            if i["id"] in d["T"]:
+                i["T"] = copy.deepcopy(d["T"][i["id"]])
+        inst = self.doc.instance(d["inst"])
+        inst["T"] = A.orthonormalize(M @ np.array(d["T"][d["inst"]], float)).tolist()
+        self.doc.solve(keep=d["inst"])
+        self.doc.notify()
+
+    def _move_end(self, edit):
+        self._drag_close()
+
 
 class DrawingTab(_ConsumerTab):
     kind = "drawing"

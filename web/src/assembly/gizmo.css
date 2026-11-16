@@ -1,0 +1,41 @@
+/* The move gizmo over an Assembly view: arrows, rings and the value label, in the mock's Drag handle look
+   (Main.dc.html, mode "dialog": white disc, accent ring, value label with the accent line). */
+.gizmo {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+}
+.gizmo-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.gizmo-handle-active circle {
+  stroke-width: 3.5;
+}
+.gizmo-label {
+  position: absolute;
+  transform: translateY(-50%);
+  box-sizing: border-box;
+  min-height: 32px;
+  padding: 0 var(--sp-10, 10px);
+  border: 1px solid var(--c-accentLine);
+  border-radius: 6px;
+  background: var(--c-white);
+  color: var(--c-accentDark);
+  font: inherit;
+  font-size: var(--fs-small);
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.gizmo-pad-error {
+  margin: var(--sp-6) 0 0;
+  color: var(--c-danger);
+  font-size: var(--fs-small);
+}

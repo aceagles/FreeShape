@@ -5,6 +5,7 @@ import { useConnection, useRefetchOnRevision } from '../net/react'
 import { explainError } from '../shell/errors'
 import { decodeOutputs, isAssembly } from '../wire'
 import type { AssemblyOutputs } from '../wire'
+import type { DragSender } from './gizmo'
 
 /** Fetch and decode an Assembly's outputs from `/documents/<document>/tabs/<tab>/outputs`; null when the tab is not an Assembly. */
 export async function fetchAssembly(document: string, tab: string, signal?: AbortSignal): Promise<AssemblyOutputs | null> {
@@ -23,6 +24,8 @@ export interface AssemblyEdits {
   setFixed(instance: string, fixed: boolean): void
   /** Delete one instance and the mates on it (delete_instances); resolves false when it failed. */
   deleteInstance(instance: string): Promise<boolean>
+  /** A drag by a Drag handle: move_begin, move_to (the latest only while one is in flight) and move_end. */
+  drag: DragSender
 }
 
 export interface AssemblyState {
@@ -41,6 +44,61 @@ interface Options {
   documentName: string
   /** A refusal to show the person. */
   onError: (title: string, message: string) => void
+}
+
+/**
+ * Sends a drag as move_begin, then move_to for the newest transform only (a sample that arrives while one is in flight
+ * replaces the one waiting, which loses nothing: move_to is absolute against the placements move_begin remembered), and
+ * move_end once the last move_to has been answered. A refusal is shown once and ends the stream of moves.
+ */
+export function makeDragSender(
+  post: (edit: Record<string, unknown>) => Promise<unknown>,
+  onError: (e: unknown) => void,
+  disabled: boolean,
+): DragSender {
+  let pending: number[][] | null = null
+  let pumping: Promise<void> | null = null
+  let started: Promise<boolean> = Promise.resolve(false)
+  let ok = false
+  const fail = (e: unknown): void => {
+    if (ok) onError(e)
+    ok = false
+  }
+  const pump = (): Promise<void> => {
+    pumping ??= (async () => {
+      try {
+        while (pending && ok) {
+          const T = pending
+          pending = null
+          await post({ op: 'move_to', T }).catch(fail)
+        }
+      } finally {
+        pumping = null
+      }
+    })()
+    return pumping
+  }
+  return {
+    disabled,
+    begin(instance) {
+      pending = null
+      ok = true
+      started = post({ op: 'move_begin', instance }).then(
+        () => true,
+        (e) => (fail(e), false),
+      )
+    },
+    move(T) {
+      pending = T
+      void started.then((s) => (s ? pump() : undefined))
+    },
+    async end() {
+      const began = await started
+      await pump()
+      if (began) await post({ op: 'move_end' }).catch(() => {})
+      ok = false
+    },
+  }
 }
 
 /**
@@ -94,15 +152,25 @@ export function useAssembly({ store, tab, tabKind, readOnly, documentName, onErr
     },
     [store, mine, disabled, onError, documentName],
   )
+  const drag = useMemo(
+    () =>
+      makeDragSender(
+        (edit) => (mine === null ? Promise.reject(new Error('no tab')) : store.edit(mine, edit)),
+        (e) => onError('Could not move the instance', explainError(e, documentName)),
+        disabled,
+      ),
+    [store, mine, disabled, onError, documentName],
+  )
   const edits = useMemo<AssemblyEdits>(
     () => ({
+      drag,
       busy,
       disabled,
       setHidden: (instance, hidden) => void act(hidden ? 'Could not hide the instance' : 'Could not show the instance', { op: 'set_hidden', instance, value: hidden }),
       setFixed: (instance, fixed) => void act(fixed ? 'Could not fix the instance' : 'Could not free the instance', { op: 'set_fixed', instance, value: fixed }),
       deleteInstance: (instance) => act('Could not delete the instance', { op: 'delete_instances', ids: [instance] }),
     }),
-    [busy, disabled, act],
+    [busy, disabled, act, drag],
   )
   return { outputs, edits }
 }

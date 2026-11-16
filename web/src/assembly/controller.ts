@@ -14,6 +14,8 @@ import { AssemblyPickIndex } from './pick'
 import { buildAssemblyScene, EMPTY_ASSEMBLY_STATS } from './scene'
 import type { AssemblyScene, AssemblyStats } from './scene'
 import { reconcileAssembly } from './select'
+import { GizmoController } from './gizmo'
+import type { DragSender, GizmoShape } from './gizmo'
 
 /** What `window.__freeshapeAssembly` reports, for tests that look at the page from outside. */
 export interface AssemblyReport extends AssemblyStats {
@@ -26,6 +28,10 @@ export interface AssemblyReport extends AssemblyStats {
   pickAt(x: number, y: number, pointer: PickPointer, filter?: PickFilter): ElementPick | null
   /** Screen position (CSS pixels from the view's top left) of the middle of a drawn instance's bounding box, or null. */
   screenOf(instance: string): { x: number; y: number } | null
+  /** The move gizmo as drawn (positions in CSS pixels from the view's top left), or null when nothing movable is selected. */
+  gizmo: GizmoShape | null
+  /** Each instance's placement (4 x 4, row-major) in the outputs on screen. */
+  placements: Record<string, number[][]>
 }
 
 declare global {
@@ -45,22 +51,30 @@ export class AssemblyController implements NavHost {
   private built: AssemblyScene | null = null
   private picker: AssemblyPickIndex | null = null
   private revision: number | null = null
+  private latest: AssemblyOutputs | null = null
   private frames = 0
   private pending = 0
   private fitted = false
   private disposed = false
   readonly pointer: PointerModule
+  readonly gizmo: GizmoController
   private readonly unsubscribe: () => void
 
   constructor(
     readonly canvas: HTMLCanvasElement,
     private readonly selection: SelectionStore,
+    onGizmo: (shape: GizmoShape | null) => void = () => {},
   ) {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' })
     this.renderer.setClearColor(viewportBackground(), 1)
     this.pointer = new PointerModule(canvas, this)
+    this.gizmo = new GizmoController(this.view, selection, onGizmo)
+    this.pointer.setHandleHandler(this.gizmo)
     wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
-    this.unsubscribe = selection.subscribe(() => this.drawLook())
+    this.unsubscribe = selection.subscribe(() => {
+      this.gizmo.refresh()
+      this.drawLook()
+    })
     this.report()
   }
 
@@ -74,6 +88,11 @@ export class AssemblyController implements NavHost {
     const items = this.selection.getState().items.flatMap((i) => (i.instance === undefined ? [] : [{ kind: i.kind, part: i.instance, index: i.index, key: null }]))
     const aimed = this.selection.getAimed()
     this.built?.setLook(items, aimed?.instance === undefined ? null : { kind: aimed.kind, part: aimed.instance, index: aimed.index, key: null })
+  }
+
+  /** What sends a drag to the server; null (or a disabled one) shows no gizmo. */
+  setDragSender(sender: DragSender | null): void {
+    this.gizmo.setSender(sender)
   }
 
   resize(width: number, height: number): void {
@@ -90,11 +109,13 @@ export class AssemblyController implements NavHost {
     if (this.disposed) return
     reconcileAssembly(this.selection, outputs)
     this.drop()
+    this.gizmo.setOutputs(outputs)
     this.built = buildAssemblyScene(outputs)
     this.scene.add(this.built.root)
     this.picker = new AssemblyPickIndex(outputs, this.built)
     this.applyLook()
     this.revision = outputs.revision
+    this.latest = outputs
     if (!this.fitted) this.fit()
     this.requestRender()
   }
@@ -103,6 +124,8 @@ export class AssemblyController implements NavHost {
   clear(): void {
     if (this.disposed) return
     this.drop()
+    this.gizmo.setOutputs(null)
+    this.latest = null
     this.revision = null
     this.fitted = false
     this.requestRender()
@@ -168,6 +191,7 @@ export class AssemblyController implements NavHost {
   render(): void {
     if (this.disposed) return
     this.view.apply()
+    this.gizmo.refresh()
     this.built?.update(this.view.width, this.view.height)
     this.renderer.render(this.scene, this.view.camera)
     this.frames++
@@ -182,12 +206,15 @@ export class AssemblyController implements NavHost {
       frames: this.frames,
       pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
       screenOf: (id) => this.screenOf(id),
+      gizmo: this.gizmo.current(),
+      placements: Object.fromEntries((this.latest?.instances ?? []).map((i) => [i.id, i.T.map((r) => [...r])])),
     }
   }
 
   dispose(): void {
     this.disposed = true
     this.unsubscribe()
+    this.pointer.setHandleHandler(null)
     this.pointer.dispose()
     if (this.pending) cancelAnimationFrame(this.pending)
     this.drop()

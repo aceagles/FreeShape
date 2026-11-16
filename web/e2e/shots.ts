@@ -7,8 +7,9 @@ import { partEye, partMenu, partRow, longPressPart } from './support/parts.ts'
 import { edgeSpot, faceSpots, planeSpot, vertexSpot } from './support/pick.ts'
 import type { Spot } from './support/pick.ts'
 import { canvasCentre, fingerDrag, fingerTap, sendPointer, twoFingers } from './support/pointer.ts'
+import type { PointerStep } from './support/pointer.ts'
 import { settled } from './support/viewport.ts'
-import { openAssemblyTab, settledAssembly } from './support/assembly.ts'
+import { openAssemblyTab, readAssembly, settledAssembly } from './support/assembly.ts'
 
 /**
  * The states `sh scripts/web/shots.sh` captures: a name and the steps that reach the state from a fresh page.
@@ -60,6 +61,27 @@ export const SIZES = [
   { key: '1024', width: 1024, height: 768 },
   { key: '1366', width: 1366, height: 1024 },
 ] as const
+
+/** Swings the finger `radians` about the gizmo's origin from the ring on the leaf's own Z (the pin's axis), then waits until the view shows the leaf turned; `release` lifts the finger, else it stays down. */
+async function turnRing(page: Page, radians: number, release: boolean): Promise<void> {
+  const before = (await readAssembly(page)).placements['I2']!
+  const g = (await readAssembly(page)).gizmo!
+  const a = g.axes[2]!
+  if (!a.turn) throw new Error('the pin ring has no handle')
+  const dx = a.turn.x - g.origin.x
+  const dy = a.turn.y - g.origin.y
+  const at = (t: number) => ({ x: g.origin.x + dx * Math.cos(t) - dy * Math.sin(t), y: g.origin.y + dx * Math.sin(t) + dy * Math.cos(t) })
+  const steps: PointerStep[] = [{ phase: 'down', kind: 'touch', id: 9, ...at(0) }]
+  for (let k = 1; k <= 6; k++) steps.push({ phase: 'move', kind: 'touch', id: 9, ...at((radians * k) / 6) })
+  if (release) steps.push({ phase: 'up', kind: 'touch', id: 9, ...at(radians) })
+  await sendPointer(page, steps)
+  // each move_to solves on the server, which takes a while: wait for the answer, never a fixed time
+  await page.waitForFunction((b) => {
+    const now = window.__freeshapeAssembly?.placements['I2']
+    return !!now && now.some((row, i) => row.some((v, j) => Math.abs(v - b[i]![j]!) > 0.05))
+  }, before, { timeout: 30_000 })
+  await settledAssembly(page)
+}
 
 export const shots: ShotState[] = [
   {
@@ -798,6 +820,53 @@ export const shots: ShotState[] = [
       const box = (await page.locator('[data-region="viewport"] canvas').first().boundingBox())!
       await page.mouse.click(box.x + at.x, box.y + at.y)
       await page.waitForFunction(() => document.querySelector('[data-testid="chip-slot"]')?.textContent?.includes('1 face'))
+      await settledAssembly(page)
+    },
+  },
+  {
+    name: 'assembly-gizmo',
+    mock: 'dialog', // the move gizmo on a selected free instance; its Drag handles follow the mock's look
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-instance="I2"]').click()
+      await page.getByTestId('gizmo').waitFor()
+      await settledAssembly(page)
+    },
+  },
+  {
+    name: 'assembly-gizmo-drag',
+    mock: 'dialog', // a drag in progress on a rotation ring: the ring highlighted, the angle beside it, the finger still down
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-instance="I2"]').click()
+      await page.getByTestId('gizmo').waitFor()
+      await turnRing(page, 0.5, false)
+    },
+  },
+  {
+    name: 'assembly-gizmo-pad',
+    mock: 'dialog', // the pad open on the angle label of the last drag, docked in the dialog area
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-instance="I2"]').click()
+      await page.getByTestId('gizmo').waitFor()
+      await turnRing(page, 0.5, true)
+      await page.getByTestId('gizmo-label').click()
+      await page.getByTestId('pad').waitFor()
+      await settledAssembly(page)
+    },
+  },
+  {
+    name: 'assembly-gizmo-fixed',
+    mock: 'browsing', // a fixed instance selected: tinted, and no gizmo over it
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('.instance-row[data-fixed] [data-instance]').first().click()
+      await page.locator('.instance-delete').waitFor()
       await settledAssembly(page)
     },
   },

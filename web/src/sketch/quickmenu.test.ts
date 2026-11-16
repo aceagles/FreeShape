@@ -125,12 +125,11 @@ describe('the sketch quick menu', () => {
     expect(r.mode.report()!.draw.picks).toHaveLength(1)
   })
 
-  it('a button for a tool a later card builds is dimmed and does nothing', () => {
+  it('every button is on; Construct acts on the selection and leaves the tool alone (no tool is left without a card)', () => {
     r.pen('pointerdown', { x: 300, y: 300 })
     hold()
     r.pen('pointerup', { x: 300, y: 300 })
-    expect(button('construct').getAttribute('aria-disabled')).toBe('true')
-    for (const id of ['line', 'rectangle', 'circle', 'arc', 'point', 'select', 'dimension']) expect(button(id).hasAttribute('aria-disabled')).toBe(false)
+    for (const id of ['line', 'rectangle', 'circle', 'arc', 'point', 'select', 'dimension', 'construct']) expect(button(id).hasAttribute('aria-disabled')).toBe(false)
     button('construct').click()
     expect(r.store.getState().tool).toBe('line')
   })

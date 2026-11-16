@@ -37,6 +37,8 @@ export interface Dim {
   dirs?: [Uv, Uv]
   text: string
   ok: boolean
+  /** Where the label was placed (a drag of the label), moved along with the geometry; absent: the layout's own place. */
+  at?: Uv
 }
 
 /** A constraint glyph: the constraint, and the places beside its items where the glyph may sit. */
@@ -275,6 +277,45 @@ function dimOf(c: SketchConstraint, data: SketchData, ok: boolean): Dim | null {
   return { id: c.id, kind: 'angle', a: l1[0], b: l2[0], corner, dirs: [away(l1), away(l2)], text: `${formatValue(v)}°`, ok }
 }
 
+/** The point of the measured geometry a dimension's label keeps its offset from (freeshape/sketch.py dim_anchor), or null. */
+function dimAnchor(c: SketchConstraint, data: SketchData): Uv | null {
+  const mean = (list: Uv[]): Uv | null => (list.length === 0 ? null : [list.reduce((n, p) => n + p[0], 0) / list.length, list.reduce((n, p) => n + p[1], 0) / list.length])
+  const R = c.refs
+  if (c.type === 'radius' || c.type === 'diameter') {
+    const e = data.entities[R[0] ?? '']
+    return e?.c ? (data.points[e.c] ?? null) : null
+  }
+  if (c.type === 'angle') {
+    const l1 = lineEnds(R[0] ?? '', data)
+    const l2 = lineEnds(R[1] ?? '', data)
+    return l1 && l2 ? mean([...l1, ...l2]) : null
+  }
+  if (R.length === 1) {
+    const ends = lineEnds(R[0]!, data)
+    return ends ? mean([...ends]) : null
+  }
+  const pts: Uv[] = []
+  for (const r of R) {
+    const e = data.entities[r]
+    if (!e) {
+      const p = data.points[r]
+      if (p) pts.push(p)
+    } else if (e.type !== 'line') {
+      const p = pointOf(r, data) ?? (e.c ? data.points[e.c] : undefined)
+      if (p) pts.push(p)
+    }
+  }
+  return mean(pts)
+}
+
+/** Where a dimension's label is now: its placed position, shifted by how far the geometry has moved since (translation only). */
+function labelAt(c: SketchConstraint, data: SketchData): Uv | null {
+  if (!c.pos) return null
+  const now = dimAnchor(c, data)
+  if (!c.pos_anchor || !now) return c.pos
+  return [c.pos[0] + now[0] - c.pos_anchor[0], c.pos[1] + now[1] - c.pos_anchor[1]]
+}
+
 /** Everything the viewport draws of a sketch, in sketch coordinates, with the solve status that colours it. */
 export function drawSketch(data: SketchData, status: SketchStatus): SketchDrawing {
   const strokes: Stroke[] = []
@@ -314,7 +355,11 @@ export function drawSketch(data: SketchData, status: SketchStatus): SketchDrawin
     const ok = status.constraints[c.id] !== 'conflicting'
     if (DIMENSION_TYPES.has(c.type)) {
       const d = dimOf(c, data, ok)
-      if (d) dims.push(d)
+      if (d) {
+        const at = labelAt(c, data)
+        if (at) d.at = at
+        dims.push(d)
+      }
     } else if (!NO_GLYPH.has(c.type)) {
       const anchors = c.refs.slice(0, 2).map((r) => anchorOf(r, data)).filter((a): a is { at: Uv; dir: Uv } => a !== null)
       if (anchors.length > 0) glyphs.push({ id: c.id, type: c.type, ok, anchors })

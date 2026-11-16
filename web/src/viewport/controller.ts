@@ -149,6 +149,8 @@ export class ViewportController implements NavHost {
       )
     } else {
       wireSelection(this.pointer, this.selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
+      // the sketch's Drag handles gave up the hook: the drag arrows of a preview take it back
+      this.pointer.setHandleHandler(this.manipulators)
     }
     if (this.built) setSeeThrough(this.built.root, store !== null)
     this.report()

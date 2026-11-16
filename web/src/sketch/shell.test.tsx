@@ -57,9 +57,11 @@ it('opening a sketch swaps the feature strip for the sketch strip and draws the 
   expect(document.querySelector('[data-strip="feature"]')).toBeNull()
   const labels = [...document.querySelectorAll('[data-strip="sketch"] > .strip-button .strip-label')].map((e) => e.textContent)
   expect(labels).toEqual(['Select', 'Draw', 'Dimension', 'Constrain', 'Construct', 'Delete'])
-  // Select is on; the tools that have no card yet are dimmed and start nothing
+  // Select is on; Dimension, the drawing tools, Construct and Delete have their cards
   expect(document.querySelector('[data-tool="select"]')?.getAttribute('data-state')).toBe('ok')
-  expect(document.querySelector('[data-tool="construct"]')?.getAttribute('data-state')).toBe('dimmed')
+  expect(document.querySelector('[data-tool="dimension"]')?.getAttribute('data-state')).toBe('ok')
+  // Construct and Delete act on the selection (I7.9)
+  expect(document.querySelector('[data-tool="construct"]')?.getAttribute('data-state')).toBe('ok')
   // the right end: 2D / 3D toggle (2D on), Normal to, Cancel, Done
   expect(screen.getByTestId('nav-2d').getAttribute('aria-pressed')).toBe('true')
   expect(screen.getByTestId('nav-3d').getAttribute('aria-pressed')).toBe('false')

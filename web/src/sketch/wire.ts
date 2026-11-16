@@ -30,6 +30,9 @@ export interface SketchConstraint {
   type: string
   refs: string[]
   value?: number
+  /** A dimension: where its label sits (sketch coordinates), and where the measured geometry was when it was put there. */
+  pos?: Uv
+  pos_anchor?: Uv
 }
 
 export interface SketchData {
@@ -90,7 +93,10 @@ export function parseSketchData(raw: unknown): SketchData | null {
   const constraints: SketchConstraint[] = []
   for (const c of raw['constraints'])
     if (isObj(c) && typeof c['id'] === 'string' && typeof c['type'] === 'string' && Array.isArray(c['refs']))
-      constraints.push({ id: c['id'], type: c['type'], refs: c['refs'].filter((r): r is string => typeof r === 'string'), ...(isNum(c['value']) ? { value: c['value'] } : {}) })
+      constraints.push({ id: c['id'], type: c['type'], refs: c['refs'].filter((r): r is string => typeof r === 'string'), ...(isNum(c['value']) ? { value: c['value'] } : {}),
+        ...(isUv(c['pos']) ? { pos: c['pos'] } : {}),
+        ...(isUv(c['pos_anchor']) ? { pos_anchor: c['pos_anchor'] } : {}),
+      })
   return { points, entities, constraints }
 }
 

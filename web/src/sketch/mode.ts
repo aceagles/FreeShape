@@ -1,8 +1,12 @@
 import type { PenHandler, PenPoint, PointerModule } from '../input/pointer'
 import type { Bounds, ViewCamera } from '../viewport/camera'
 import type { PickPointer } from '../viewport/pick'
+import { applyLive, PointerDrag } from './drag'
 import { drawSketch } from './draw'
 import type { SketchDrawing } from './draw'
+import { handleSpots, SketchHandles } from './handle'
+import type { HandleSpot } from './handle'
+import { isMovable } from './select'
 import { uvToView, viewToUv } from './frame'
 import { layoutSketch } from './layout'
 import type { ScreenLayout } from './layout'
@@ -45,6 +49,8 @@ export interface SketchReport {
   xAxisAngle: number
   /** The angle between the view direction and the plane's normal, radians: 0 when the view is square to the plane. */
   tilt: number
+  /** Where an item's Drag handle is on screen (CSS pixels from the view's top left), or null when it shows none. */
+  handleOf(kind: 'point' | 'entity' | 'dimension', id: string): { x: number; y: number } | null
   /** Times the sketch layer was written. */
   paints: number
   /** The drawing tools: the tool on, the shape in progress and where the pen's Aim is (I7.8). */
@@ -71,11 +77,16 @@ export class SketchMode {
   private twist = 0
   private paints = 0
   private before: readonly SketchHit[] | null = null
+  /** The pen is down (its first Aim has been seen). */
+  private penDown = false
   private readonly off: () => void
   private lastMarkup = ''
   private drawnFor: unknown = null
   private readonly draw: DrawTools
   private readonly menu: QuickMenu
+  private drawnLive: unknown = null
+  private readonly handles: SketchHandles
+  private readonly penDrag: PointerDrag
 
   constructor(
     private readonly host: SketchHost,
@@ -96,6 +107,9 @@ export class SketchMode {
       store,
     )
     this.menu = new QuickMenu({ overlayParent: host.overlayParent, width: () => host.view.width, height: () => host.view.height }, store, sketchToolState)
+    const dragView = { uvAt: (x: number, y: number) => this.uvAt(x, y), labelUv: (id: string) => this.labelUv(id) }
+    this.penDrag = new PointerDrag(store, dragView)
+    this.handles = new SketchHandles(store, { ...dragView, spots: () => this.spots() }, () => this.host.requestRender())
     this.wirePointer()
     this.off = store.subscribe(() => this.onStore())
     this.onStore()
@@ -107,6 +121,7 @@ export class SketchMode {
     this.menu.dispose()
     this.host.pointer.setHoldHandler(null)
     this.host.pointer.setPlanar(false)
+    this.host.pointer.setHandleHandler(null)
     this.layer.remove()
   }
 
@@ -118,18 +133,44 @@ export class SketchMode {
     const p = this.host.pointer
     const itemAt = (x: number, y: number, kind: PickPointer): SketchHit | null => (this.layout ? pickSketch(this.layout, x, y, kind) : null)
     const picking = (kind: 'pen' | 'mouse'): PenHandler => ({
-      aim: (pt: PenPoint) => this.store.aim(itemAt(pt.x, pt.y, kind)),
+      aim: (pt: PenPoint) => {
+        if (kind === 'pen') {
+          if (this.penDrag.armed) {
+            // a press that began on a movable item: past 6 px it drags the item, short of that it is an Aim as before
+            this.penDrag.move(pt.x, pt.y)
+            if (this.penDrag.active) return
+          } else if (!this.penDown) {
+            const hit = itemAt(pt.x, pt.y, kind)
+            const view = this.store.getState().view
+            if (view && this.selecting && isMovable(view.sketch, hit)) this.penDrag.arm(hit, pt.x, pt.y)
+          }
+          this.penDown = true
+        }
+        this.store.aim(itemAt(pt.x, pt.y, kind))
+      },
       commit: (pt: PenPoint) => {
+        if (kind === 'pen') {
+          this.penDown = false
+          if (this.penDrag.release(pt.x, pt.y)) return
+        }
         if (kind === 'mouse') this.store.aim(itemAt(pt.x, pt.y, kind))
         const hit = this.store.getState().aimed
         if (!this.store.pointerTool?.commit(hit, this.uvAt(pt.x, pt.y), kind)) this.store.select(hit)
         if (kind === 'pen') this.store.aim(null)
       },
-      cancel: () => this.store.aim(null),
+      cancel: () => {
+        if (kind === 'pen') {
+          this.penDown = false
+          this.penDrag.cancel()
+        }
+        this.store.aim(null)
+      },
     })
     p.setPenHandler(this.draw.wrap('pen', picking('pen')))
     p.setMouseHandler(this.draw.wrap('mouse', picking('mouse')))
     p.setHoldHandler(this.menu)
+    // a Drag handle takes a press before the pen's Aim and the finger's navigation
+    p.setHandleHandler(this.handles)
     p.setTapHandler({
       tap: (x, y) => {
         if (this.draw.active) return // a finger places nothing with a drawing tool
@@ -168,6 +209,24 @@ export class SketchMode {
     const drawing = this.drawing
     const toView = (uv: Uv) => uvToView(view, f, uv)
     return { sketch: s.view.sketch, layout: layoutSketch(drawing, toView), edges: s.view.edges, toUv: (x, y) => viewToUv(view, f, x, y), toView, pointer }
+  }
+
+  /** The centre of a dimension's label, in sketch coordinates. */
+  private labelUv(id: string): Uv | null {
+    const l = this.layout?.dims.find((d) => d.id === id)?.label
+    return l ? this.uvAt(l.x + l.w / 2, l.y + l.h / 2) : null
+  }
+
+  /** Select is the tool: no drawing tool and no Dimension is on, so an item can be dragged. */
+  private get selecting(): boolean {
+    return !this.draw.active && this.store.getState().tool !== 'dimension'
+  }
+
+  /** The Drag handles of the selected items now. */
+  private spots(): readonly HandleSpot[] {
+    const s = this.store.getState()
+    if (!s.view || !this.layout || !this.selecting) return []
+    return handleSpots(this.layout, s.selected, s.view.sketch, this.host.view.width)
   }
 
   private onStore(): void {
@@ -260,12 +319,15 @@ export class SketchMode {
     }
     const { view } = this.host
     const f = s.view.frame
-    if (this.drawnFor !== s.view) {
-      this.drawing = drawSketch(s.view.sketch, s.view.status)
+    if (this.drawnFor !== s.view || this.drawnLive !== s.live) {
+      // a drag draws its items where the pointer or the solve has them, over the sketch the server holds
+      this.drawing = drawSketch(applyLive(s.view.sketch, s.live), s.view.status)
       this.drawnFor = s.view
+      this.drawnLive = s.live
     }
     this.layout = layoutSketch(this.drawing!, (uv) => uvToView(view, f, uv))
-    const markup = sketchMarkup(this.layout, { selected: s.selected, aimed: s.aimed }, view.width, view.height)
+    const handles = this.spots()
+    const markup = sketchMarkup(this.layout, { selected: s.selected, aimed: s.aimed, handles, grabbed: this.handles.grabbed }, view.width, view.height)
     if (markup !== this.lastMarkup) {
       this.lastMarkup = markup
       this.layer.innerHTML = markup
@@ -315,6 +377,11 @@ export class SketchMode {
           return d ? { x: d.label.x + d.label.w / 2, y: d.label.y + d.label.h / 2 } : null
         }
         return l.glyphs.find((g) => g.id === id) ?? null
+      },
+      handleOf: (kind, id) => {
+        const l = layout()
+        const spot = handleSpots(l, s.selected, s.view!.sketch, view.width).find((h) => h.hit.kind === kind && h.hit.id === id)
+        return spot ? { x: spot.x, y: spot.y } : null
       },
       pickAt: (px, py, pointer) => pickSketch(layout(), px, py, pointer),
       uvAt: (px, py) => viewToUv(view, f, px, py),

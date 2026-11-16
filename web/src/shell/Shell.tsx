@@ -31,7 +31,7 @@ import { SketchStore } from '../sketch/store'
 import { ConstraintNote } from '../sketch/ConstraintNote'
 import { ConstraintStore, attachDeleteKey, isConstrainTool } from '../sketch/constraints'
 import type { SketchTarget } from '../sketch/store'
-import { SKETCH_STRIP, sketchToolState, stripActive } from '../sketch/strip'
+import { runSketchTool, SKETCH_STRIP, sketchToolState, stripActive } from '../sketch/strip'
 import { StudioViewport } from '../viewport/StudioViewport'
 import type { PreviewLook } from '../viewport/controller'
 import type { StudioOutputs } from '../wire'
@@ -367,7 +367,8 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             width={width}
             active={dimensionOn ? 'dimension' : stripActive(sketch.tool === 'dimension' ? 'select' : sketch.tool)}
             onStart={(id) => {
-              // one tool at a time: a Constrain tool acts on the selection and leaves Select on
+              // Delete and Construct act on the selection and change no tool; a Constrain tool acts on it and leaves Select on
+              if (id === 'delete' || id === 'construct') return runSketchTool(sketchStore, id)
               sketchStore.chooseTool(isConstrainTool(id) ? 'select' : id)
               constraints.apply(id)
             }}

@@ -75,7 +75,7 @@ test('the quick menu opens on a hold, never while panning, and its release place
   }
   await sendPointer(page, [up({ x: 30, y: 30 })])
   await expect(page.getByTestId('quick-line')).toBeVisible() // released without sliding: it stays for a tap
-  await expect(page.getByTestId('quick-construct')).toHaveAttribute('aria-disabled', 'true') // a later card builds Construct
+  await expect(page.getByTestId('quick-construct')).not.toHaveAttribute('aria-disabled', 'true') // every ring tool has its card
   await expect(page.getByTestId('quick-line')).not.toHaveAttribute('aria-disabled', 'true')
   await page.getByTestId('quick-circle').click()
   await tool(page).toBe('circle')

@@ -7,7 +7,7 @@ import { readViewport } from './viewport.ts'
 import { featureRow } from './features.ts'
 
 /** What the hook reports of sketch mode that survives a trip out of the page (its three functions are the helpers below). */
-export type SketchState = Omit<SketchReport, 'screenOf' | 'pickAt' | 'uvAt'>
+export type SketchState = Omit<SketchReport, 'screenOf' | 'pickAt' | 'uvAt' | 'handleOf'>
 
 /** The sketch mode of the view, as the hook reports it; throws when no sketch is open in the view. */
 export async function readSketch(page: Page): Promise<SketchState> {
@@ -20,8 +20,13 @@ export async function readSketch(page: Page): Promise<SketchState> {
 export async function screenOf(page: Page, kind: SketchHit['kind'], id: string): Promise<{ x: number; y: number }> {
   const at = await page.evaluate(([k, i]) => window.__freeshapeViewport?.sketch?.screenOf(k as SketchHit['kind'], i) ?? null, [kind, id] as const)
   if (at === null) throw new Error(`no ${kind} ${id} in the sketch`)
-  return at
+  // only the position: the layout's own item (with its id) spread into a pointer step would overwrite the step's pointer id
+  return { x: at.x, y: at.y }
 }
+
+/** Where the Drag handle of a selected item is on screen, or null when it shows none. */
+export const handleOf = (page: Page, kind: 'point' | 'entity' | 'dimension', id: string): Promise<{ x: number; y: number } | null> =>
+  page.evaluate(([k, i]) => window.__freeshapeViewport?.sketch?.handleOf(k as 'point' | 'entity' | 'dimension', i) ?? null, [kind, id] as const)
 
 /** What a pointer at a view position picks in the sketch. */
 export const pickSketchAt = (page: Page, x: number, y: number, pointer: 'pen' | 'touch' | 'mouse'): Promise<SketchHit | null> =>

@@ -1086,6 +1086,54 @@ export const shots: ShotState[] = [
     after: closeAllDiscard,
   },
   {
+    name: 'sketch-handle',
+    mock: 'sketch', // a point that can move selected: its Drag handle up and right of it, the dashed line between (the mock draws the same on a corner)
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      await fingerTap(page, await screenOf(page, 'point', 'p3'))
+      await page.getByTestId('selection-count').filter({ hasText: '1 point' }).waitFor()
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-dragging',
+    mock: 'sketch', // the 60 mm dimension is deleted first (the profile is fully defined, so no point could move): the 3 free items say so, and nothing is selected. The pen is down on the bottom edge's right end and has moved 60 px left: the end is at the pen, the vertical constraint carries its partner, the 6 mm dimension follows, and the pale box beyond is the extruded solid, which does not move until Done
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      // the profile is fully defined; the 60 mm dimension goes so that the end of the edge can move
+      await fingerTap(page, await screenOf(page, 'dimension', 'k19'))
+      await page.locator('[data-tool="delete"]').click()
+      await page.getByTestId('selection-count').filter({ hasText: 'Nothing selected' }).waitFor()
+      const p = await screenOf(page, 'point', 'p2')
+      await sendPointer(page, [
+        { phase: 'down', kind: 'pen', id: 10, ...p },
+        { phase: 'move', kind: 'pen', id: 10, x: p.x - 30, y: p.y },
+        { phase: 'move', kind: 'pen', id: 10, x: p.x - 60, y: p.y + 12 },
+      ])
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'sketch-construction',
+    mock: 'sketch', // the bottom edge turned to construction with Construct: dashed grey, still selected, its handle beside it
+    steps: async (page) => {
+      await openApp(page)
+      await openSketchFeature(page, 'Bracket profile')
+      const a = await screenOf(page, 'point', 'origin')
+      const b = await screenOf(page, 'point', 'p2')
+      await fingerTap(page, { x: a.x + (b.x - a.x) / 4, y: a.y + (b.y - a.y) / 4 })
+      await page.getByTestId('selection-count').filter({ hasText: '1 item' }).waitFor()
+      await page.locator('[data-tool="construct"]').click()
+      await page.locator('.sketch-layer path[data-id="l7"][data-dashed]').waitFor({ state: 'attached' })
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
     name: 'sketch-new',
     mock: 'sketch', // a new sketch on the Top plane: nothing drawn yet but the axes, "Empty"
     steps: async (page) => {

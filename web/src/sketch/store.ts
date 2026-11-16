@@ -1,5 +1,8 @@
+import { SketchDrag } from './drag'
+import type { LiveDrag } from './drag'
 import type { SketchHit } from './pick'
 import type { PickPointer } from '../viewport/pick'
+import { constructionPlan, deletionIds } from './select'
 import { parseSketchView } from './wire'
 import type { Frame, FrameEdge, SketchView, Uv } from './wire'
 
@@ -13,6 +16,8 @@ export interface SketchTransport {
   onSketch(listener: (m: Record<string, unknown>) => void): () => void
   /** The socket (re)connected: a sketch that was open is asked for again. */
   onHello(listener: () => void): () => void
+  /** The connection's clock in ms, to stamp a `sketch.drag.move` (ConnectionStore.stamp); the page's clock when absent. */
+  stamp?(): number
 }
 
 /** What to open: an existing sketch feature, or a new sketch on a plane reference (as a sketch's `plane` param stores it). */
@@ -50,6 +55,8 @@ export interface SketchState {
   toolSeq: number
   /** How many points of a shape in progress are committed (set by the drawing tools). */
   drawing: number
+  /** Items of a drag in progress as they are drawn (moved points, radii, a dimension's label); null when none is dragged (I7.9). */
+  live: LiveDrag | null
 }
 
 /** What a `sketch.add` made: the ids of the point of each pick and of the entities. */
@@ -58,7 +65,7 @@ export interface Made {
   entities: string[]
 }
 
-const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, drawing: 0 }
+const CLOSED: SketchState = { open: false, opening: false, view: null, nav: '2d', selected: [], aimed: null, multi: false, error: null, faceSeq: 0, openSeq: 0, committed: null, tool: 'select', toolSeq: 0, drawing: 0, live: null }
 
 const same = (a: SketchHit | null, b: SketchHit | null): boolean => a === b || (a !== null && b !== null && a.kind === b.kind && a.id === b.id)
 
@@ -98,19 +105,24 @@ export class SketchStore {
   pointerTool: SketchPointerTool | null = null
   /** The `sketch.add` messages sent and not yet answered, oldest first. The server answers a client's messages in order. */
   private adds: ((made: Made | null) => void)[] = []
+  /** Moving by dragging (I7.9). */
+  readonly drag: SketchDrag
 
   constructor(private readonly transport: SketchTransport) {
+    this.drag = new SketchDrag(transport, this)
     this.attach()
   }
 
   /** Listen to the connection (done by the constructor; call it again after `detach`, as React's strict mode does). */
   attach(): void {
     if (this.off.length > 0) return
+    this.drag.attach()
     this.off = [this.transport.onSketch((m) => this.onMessage(m)), this.transport.onHello(() => this.state.open && this.transport.send({ type: 'sketch.state' }))]
   }
 
   /** Stop listening to the connection. */
   detach(): void {
+    this.drag.detach()
     for (const f of this.off) f()
     this.off = []
   }
@@ -196,6 +208,9 @@ export class SketchStore {
   /** Choose a tool from the strip or the quick menu. A tool that is already on starts its shape over; the Rectangle then turns over between corner and centre. */
   chooseTool(id: string): void {
     if (!this.state.open) return
+    // Delete and Construct act on the selection and change no tool (I7.9)
+    if (id === 'delete') return this.deleteSelected()
+    if (id === 'construct') return this.toggleConstruction()
     const now = this.state.tool
     const family = (t: string) => (t === 'center_rectangle' ? 'rectangle' : t)
     if (family(now) !== id) return this.set({ tool: id, toolSeq: this.state.toolSeq + 1, drawing: 0 })
@@ -204,6 +219,27 @@ export class SketchStore {
   }
   setDrawing(n: number): void {
     if (n !== this.state.drawing) this.set({ drawing: n })
+  }
+
+  /** Draw items of a drag where the pointer or the solve has them; null when the drag is over. */
+  setLive(live: LiveDrag | null): void {
+    if (live !== null || this.state.live !== null) this.set({ live })
+  }
+
+  /** Delete what is selected, and what depends on it (the server's rule); the selection is empty at once. */
+  deleteSelected(): void {
+    if (!this.state.open) return
+    const ids = deletionIds(this.state.selected)
+    if (ids.length === 0) return
+    if (this.transport.send({ type: 'sketch.delete', ids })) this.set({ selected: [] })
+  }
+
+  /** Make the selected entities construction, or real again when they all are construction. */
+  toggleConstruction(): void {
+    const view = this.state.view
+    if (!this.state.open || !view) return
+    const plan = constructionPlan(view.sketch, this.state.selected)
+    if (plan) this.transport.send({ type: 'sketch.construction', ids: plan.ids, value: plan.value })
   }
 
   private settleAdds(made: Made | null, all = false): void {
@@ -224,6 +260,7 @@ export class SketchStore {
           opening: false,
           view,
           error: null,
+          live: null,
           ...(fresh ? { nav: '2d' as const, selected: [], aimed: null, multi: false, openSeq: this.state.openSeq + 1, faceSeq: this.state.faceSeq + 1, committed: null } : {}),
         })
         return
@@ -237,7 +274,7 @@ export class SketchStore {
         // an item the step removed is no longer selected
         const alive = (h: SketchHit) =>
           h.kind === 'point' ? h.id in view.sketch.points : h.kind === 'entity' ? h.id in view.sketch.entities : view.sketch.constraints.some((c) => c.id === h.id)
-        this.set({ view, error: null, selected: this.state.selected.filter(alive), aimed: null })
+        this.set({ view, error: null, selected: this.state.selected.filter(alive), aimed: null, live: null })
         const made = m['made']
         if (typeof made === 'object' && made !== null) {
           const o = made as Record<string, unknown>
@@ -258,7 +295,7 @@ export class SketchStore {
         return
       case 'error':
         if (m['for'] === 'sketch.add') this.settleAdds(null)
-        this.set({ opening: false, error: typeof m['message'] === 'string' ? m['message'] : 'The sketch could not do that.' })
+        this.set({ opening: false, live: null, error: typeof m['message'] === 'string' ? m['message'] : 'The sketch could not do that.' })
         return
     }
   }

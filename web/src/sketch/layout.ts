@@ -115,13 +115,14 @@ function layoutDim(d: Dim, proj: Project, centre: P): ScreenDim {
     // sideOf wants the normal's side; the normal of `along` is what it returns
     const mid = { x: (A.x + B.x) / 2, y: (A.y + B.y) / 2 }
     const N = outward(sideOf(along), mid, centre)
-    const t = Math.max(dot(A, N), dot(B, N)) + DIM.offset
+    const place = d.at ? proj(d.at) : null
+    const t = place ? dot(place, N) : Math.max(dot(A, N), dot(B, N)) + DIM.offset
     const A2 = add(A, N, t - dot(A, N))
     const B2 = add(B, N, t - dot(B, N))
     out.segs.push([add(A, N, DIM.gap), add(A2, N, DIM.overshoot)], [add(B, N, DIM.gap), add(B2, N, DIM.overshoot)], [A2, B2])
     const dir = norm(sub(B2, A2))
     out.arrows.push({ tip: A2, dir: { x: -dir.x, y: -dir.y } }, { tip: B2, dir })
-    out.label = labelBox({ x: (A2.x + B2.x) / 2, y: (A2.y + B2.y) / 2 }, d.text)
+    out.label = labelBox(place ?? { x: (A2.x + B2.x) / 2, y: (A2.y + B2.y) / 2 }, d.text)
     return out
   }
   if (d.kind === 'radius' || d.kind === 'diameter') {
@@ -134,7 +135,7 @@ function layoutDim(d: Dim, proj: Project, centre: P): ScreenDim {
     out.segs.push([far, add(edge, dir, DIM.overshoot)])
     out.arrows.push({ tip: edge, dir })
     if (d.kind === 'diameter') out.arrows.push({ tip: far, dir: { x: -dir.x, y: -dir.y } })
-    const lab = labelBox(add(edge, dir, DIM.overshoot + 36), d.text)
+    const lab = labelBox(d.at ? proj(d.at) : add(edge, dir, DIM.overshoot + 36), d.text)
     out.label = lab
     return out
   }
@@ -154,7 +155,7 @@ function layoutDim(d: Dim, proj: Project, centre: P): ScreenDim {
     out.arc.push({ x: corner.x + R * Math.cos(a), y: corner.y + R * Math.sin(a) })
   }
   const mid = a1 + sweep / 2
-  out.label = labelBox({ x: corner.x + (R + 28) * Math.cos(mid), y: corner.y + (R + 28) * Math.sin(mid) }, d.text)
+  out.label = labelBox(d.at ? proj(d.at) : { x: corner.x + (R + 28) * Math.cos(mid), y: corner.y + (R + 28) * Math.sin(mid) }, d.text)
   const tail = (a: number, s: number): P => ({ x: -Math.sin(a) * s, y: Math.cos(a) * s })
   out.arrows.push({ tip: out.arc[0]!, dir: norm(tail(a1, -Math.sign(sweep) || -1)) }, { tip: out.arc[out.arc.length - 1]!, dir: norm(tail(a2, Math.sign(sweep) || 1)) })
   return out

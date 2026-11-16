@@ -38,10 +38,16 @@ export const SKETCH_STRIP: readonly StripDef[] = [
   { kind: 'tool', tool: t('delete', 'Delete') },
 ]
 
-/** The tools whose cards are done: Select picks and selects in the view (I7.7); the drawing tools place points (I7.8). Every other button waits for its card and stays dimmed. */
-const WIRED: ReadonlySet<string> = new Set(['select', 'dimension', 'line', 'rectangle', 'circle', 'arc', 'point'])
+/** The tools whose cards are done: Select picks and selects in the view (I7.7); the drawing tools place points (I7.8); Dimension is I7.11; Construct and Delete act on the selection (I7.9). Every other button waits for its card and stays dimmed. */
+const WIRED: ReadonlySet<string> = new Set(['select', 'dimension', 'line', 'rectangle', 'circle', 'arc', 'point', 'construct', 'delete'])
 
 /** The strip button that is lit for a tool: the Rectangle stays lit in its centre form. */
 export const stripActive = (tool: string): string => (tool === 'center_rectangle' ? 'rectangle' : tool)
 
 export const sketchToolState = (id: string): ToolState => (WIRED.has(id) ? 'ok' : 'dimmed')
+
+/** What a tap on a wired sketch tool does. Select is a mode, not an action, and stays on. */
+export function runSketchTool(store: { deleteSelected(): void; toggleConstruction(): void }, id: string): void {
+  if (id === 'delete') store.deleteSelected()
+  else if (id === 'construct') store.toggleConstruction()
+}

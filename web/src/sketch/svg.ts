@@ -2,6 +2,8 @@ import { color } from '../theme/tokens'
 import { inlinePaths } from '../tools/inlinePaths'
 import type { P, ScreenDim, ScreenGlyph, ScreenLayout, ScreenStroke } from './layout'
 import { DIM } from './layout'
+import { handleMarkup } from './handle'
+import type { HandleSpot } from './handle'
 import type { SketchHit } from './pick'
 import type { Status } from './wire'
 
@@ -31,6 +33,9 @@ const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;'
 export interface SketchLook {
   selected: readonly SketchHit[]
   aimed: SketchHit | null
+  /** The Drag handles of the selected items, and the one held. */
+  handles?: readonly HandleSpot[]
+  grabbed?: SketchHit | null
 }
 
 const colourOf = (s: ScreenStroke | { status: Status; construction?: boolean }): string =>
@@ -112,6 +117,7 @@ export function sketchMarkup(layout: ScreenLayout, look: SketchLook, width: numb
   }
   for (const d of layout.dims) out.push(dimMarkup(d, look))
   for (const g of layout.glyphs) out.push(glyphMarkup(g, look))
+  if (look.handles) out.push(handleMarkup(look.handles, look.grabbed ?? null))
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Sketch">${out.join('')}</svg>`
 }
 

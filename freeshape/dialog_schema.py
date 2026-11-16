@@ -1004,8 +1004,12 @@ def custom_feature_types():
 
 def startable_feature_types():
     """The feature types a client can start a dialog for (I6.1): those with a schema that also make default
-    parameters and have a label (SCHEMAS holds a stub or two that are not features yet), sorted."""
-    return sorted(t for t in SCHEMAS if t in F.FEATURE_LABELS)
+    parameters and have a label (SCHEMAS holds a stub or two that are not features yet), sorted. Python-feature and
+    plugin types are never listed: the desktop adds them to SCHEMAS and FEATURE_LABELS when it loads them, so the
+    answer would depend on what the process has imported. They are told apart by their type string."""
+    from .plugins import is_plugin_type
+    from .pyfeature.registry import is_python_type
+    return sorted(t for t in SCHEMAS if t in F.FEATURE_LABELS and not is_python_type(t) and not is_plugin_type(t))
 
 
 # ---------------------------------------------------------------------- behaviour (I5.2)

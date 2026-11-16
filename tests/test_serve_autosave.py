@@ -232,6 +232,20 @@ def _wait(pred, what, deadline=DEADLINE):
     raise AssertionError(f"timed out waiting for {what}")
 
 
+def _wait_info(work, what):
+    """The first autosave's info once its manifest exists (the folder appears before it)."""
+    def info():
+        for inst in work.autosaves():
+            try:
+                got = AS.read_info(work.data, inst)
+            except (OSError, ValueError, KeyError):
+                continue
+            if got is not None:
+                return got
+        return None
+    return _wait(info, what)
+
+
 def _instance(work):
     """The instance id in the Document's lock file."""
     h = doc_lock.holder(work.folder)
@@ -305,8 +319,7 @@ def test_the_interval_timer_writes_the_autosave(work, inproc):
     s = inproc(autosave_interval=0.2)
     s.open()
     s.edit(EDIT_A)
-    _wait(lambda: work.autosaves(), "the interval autosave")
-    assert AS.read_info(work.data, work.autosaves()[0]).document == DOC_ID
+    assert _wait_info(work, "the interval autosave").document == DOC_ID
 
 
 def test_the_burst_timer_writes_the_autosave_after_an_edit(work, inproc):
@@ -314,7 +327,7 @@ def test_the_burst_timer_writes_the_autosave_after_an_edit(work, inproc):
     s.open()
     assert work.autosaves() == []
     s.edit(EDIT_A)
-    _wait(lambda: work.autosaves(), "the burst autosave")
+    _wait_info(work, "the burst autosave")
 
 
 def test_tab_adds_renames_and_deletes_are_autosaved_and_recovered(work, inproc):

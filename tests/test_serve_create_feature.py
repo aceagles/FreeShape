@@ -313,6 +313,19 @@ def test_types_marks_the_types_with_custom_fields_as_not_all_standard(root):
     assert rows["hole"]["standard"] is False and "boundary_surface" not in rows
 
 
+def test_python_feature_and_plugin_types_are_never_listed_whatever_the_process_has_loaded(root, monkeypatch):
+    """The desktop's install() and the plugin loader add types to SCHEMAS and FEATURE_LABELS; the list must not move."""
+    before = DSC.startable_feature_types()
+    assert before and not any(t.startswith(("py:", "plugin:")) for t in before)
+    for t in ("py:gears/gear", "plugin:demo/ring"):                                  # what install() and the loaders do
+        monkeypatch.setitem(DSC.SCHEMAS, t, DSC.SCHEMAS["extrude"])
+        monkeypatch.setitem(DSC.F.FEATURE_LABELS, t, "Loaded type")
+    assert DSC.startable_feature_types() == before
+    r, doc_id, _ = _open(root)
+    got = r.ok("GET", _tab(doc_id, "features/types"), client=None)
+    assert [t["type"] for t in got["types"]] == before
+
+
 def test_types_says_which_types_can_start_with_a_selection(root):
     r, doc_id, _ = _open(root)
     pid = _outputs(r, doc_id).parts[0].id

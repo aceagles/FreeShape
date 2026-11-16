@@ -89,6 +89,7 @@ def make_window(tmp_path, monkeypatch):
     for w in made:
         w._autosave_timer.stop()
         w.folder = None
+        w._unlock_document()
         w.deleteLater()
 
 
@@ -248,6 +249,7 @@ def test_an_autosave_left_by_the_previous_version_is_recovered(make_window, tmp_
     d = tmp_path / "autosave" / "pid"
     (d / f"{fd.id}.T1.fshape").write_bytes(json.dumps(legacy).encode())     # as the previous version left it
     w.folder = None
+    w._unlock_document()   # the dead window's Document lock (stale within a minute of a real crash)
     dead = _kill(tmp_path)
     w2 = make_window("pid2")
     w2.offer_recovery()
@@ -276,6 +278,7 @@ def test_open_edit_autosave_close_reopen_recover_on_a_counting_store(make_window
     fd0 = w.folder
     doc_id, tab_id = fd0.id, fd0.tabs[0].id
     w.folder = None                                                          # close; the files stay
+    w._unlock_document()   # the dead window's Document lock (stale within a minute of a real crash)
     w._autosave_timer.stop()
 
     # open: a window on a Document backed by the counting store
@@ -308,6 +311,7 @@ def test_open_edit_autosave_close_reopen_recover_on_a_counting_store(make_window
     assert os.listdir(tmp_path / "autosave" / "pid1") == [key]
     w1._autosave_timer.stop()
     w1.folder = None
+    w1._unlock_document()   # the dead window's Document lock (stale within a minute of a real crash)
     dead = _kill(tmp_path, "pid1")
 
     # reopen on a fresh counting store and recover
@@ -483,6 +487,7 @@ def test_document_tabs_autosave_their_blobs_and_recover_the_same_geometry(make_w
     assert not fd.store.has_blob(step_key, asm.id)                  # never saved: only the autosave has it
 
     w.folder = None                                                # the in-memory tabs are gone
+    w._unlock_document()   # the dead window's Document lock (stale within a minute of a real crash)
     w._autosave_timer.stop()
     dead = _kill(tmp_path)
     w2 = make_window("pid2")

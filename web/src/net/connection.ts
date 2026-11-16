@@ -1,3 +1,5 @@
+import { postEdit } from './api'
+import type { DocumentReply, Holder } from './api'
 import { getClientId } from './clientId'
 import { RttLog, type RttSummary } from './rtt'
 
@@ -21,6 +23,13 @@ export interface ConnectionState {
   revisions: Readonly<Record<string, number>>
   /** bumps on every round trip, so a panel showing `rtt` re-renders */
   rttCount: number
+  /** The server opened the Document for someone else (read-only for this client), and who has the lock. */
+  readOnly: boolean
+  holder: Holder | null
+  /** Bumps when what the tabs show may differ from what was loaded (a reconnect that found changes, a take-over). */
+  epoch: number
+  /** Why the Document being watched is gone: closed on the server, or not open there any more. */
+  ended: 'closed' | 'not-open' | null
 }
 
 /** The part of the browser's WebSocket the store uses; tests pass a fake. */
@@ -74,6 +83,7 @@ export class ConnectionStore {
   private retry: ReturnType<typeof setTimeout> | null = null
   private pinger: ReturnType<typeof setInterval> | null = null
   private attempts = 0
+  private wanted: string | null = null
   private stopped = true
   private readonly url: string
   private readonly create: (url: string) => SocketLike
@@ -90,7 +100,18 @@ export class ConnectionStore {
     this.pingMs = options.pingMs ?? PING_MS
     this.now = options.now ?? (() => performance.now())
     this.visible = options.visible ?? (() => typeof document === 'undefined' || document.visibilityState !== 'hidden')
-    this.state = { connected: false, client, document: null, tabs: [], revisions: {}, rttCount: 0 }
+    this.state = {
+      connected: false,
+      client,
+      document: null,
+      tabs: [],
+      revisions: {},
+      rttCount: 0,
+      readOnly: false,
+      holder: null,
+      epoch: 0,
+      ended: null,
+    }
   }
 
   readonly subscribe = (listener: Listener): (() => void) => {
@@ -112,6 +133,56 @@ export class ConnectionStore {
     return () => {
       set.delete(listener)
     }
+  }
+
+  /**
+   * Follow Document `id`: subscribe the socket to it (again after every reconnect) and keep its tabs, revisions and
+   * lock. `seed` is the answer of the open call, so the screen has the Document before the socket's hello.
+   */
+  watch(id: string, seed?: DocumentReply): void {
+    const same = this.state.document?.id === id
+    this.wanted = id
+    this.update(same ? { ended: null } : { document: null, tabs: [], revisions: {}, readOnly: false, holder: null, ended: null })
+    if (seed) this.apply(seed, false)
+    this.sendSubscribe()
+  }
+
+  /** Stop following the Document: unsubscribe and forget its tabs. */
+  unwatch(): void {
+    const id = this.wanted
+    this.wanted = null
+    if (id !== null) this.sendJson({ type: 'unsubscribe', document: id })
+    this.update({ document: null, tabs: [], revisions: {}, readOnly: false, holder: null, ended: null })
+  }
+
+  /** Take in a tab list the server answered over HTTP (the socket pushes the same list to everyone). */
+  setTabs(tabs: readonly TabInfo[]): void {
+    this.onTabs(tabs, {})
+  }
+
+  /** Take in the lock state the server answered over HTTP. */
+  setLock(readOnly: boolean, holder: Holder | null): void {
+    this.update({ readOnly, holder })
+  }
+
+  /** Ask the panels to load what they show again. */
+  reload(): void {
+    this.update({ epoch: this.state.epoch + 1 })
+  }
+
+  /** One edit of `tab`, made by this client on the revision it last heard of. */
+  edit(tab: string, edit: Record<string, unknown>): Promise<{ rebuilt: string[] }> {
+    const doc = this.wanted ?? this.state.document?.id
+    if (!doc) return Promise.reject(new Error('no Document is open'))
+    return postEdit(doc, tab, edit, this.state.client, this.state.revisions[tab] ?? null)
+  }
+
+  private sendSubscribe(): void {
+    if (this.wanted !== null) this.sendJson({ type: 'subscribe', document: this.wanted })
+  }
+
+  private sendJson(msg: object): void {
+    if (this.socket && this.socket.readyState === OPEN) this.socket.send(JSON.stringify(msg))
   }
 
   start(): void {
@@ -157,6 +228,7 @@ export class ConnectionStore {
     this.socket = socket
     socket.onopen = () => {
       this.attempts = 0
+      this.sendSubscribe()
     }
     socket.onmessage = (ev) => this.onMessage(ev.data)
     socket.onclose = () => {
@@ -191,15 +263,35 @@ export class ConnectionStore {
     }
     if (typeof msg !== 'object' || msg === null) return
     const m = msg as Record<string, unknown>
+    const about = typeof m.document === 'string' ? m.document : null
+    if (m.type !== 'hello' && about !== null && this.wanted !== null && about !== this.wanted) return
     switch (m.type) {
-      case 'hello':
-        this.onTabs(m.tabs, { connected: true, document: parseDocument(m.document) })
+      case 'hello': {
+        const doc = parseDocument(m.document)
+        if (doc === null || (this.wanted !== null && doc.id !== this.wanted)) {
+          this.update({ connected: true })
+        } else {
+          this.apply(m as unknown as DocumentReply, true)
+          this.update({ connected: true })
+        }
         break
+      }
       case 'tabs':
         this.onTabs(m.tabs, {})
         break
       case 'changed':
         this.onChanged(m.revisions)
+        break
+      case 'lock':
+        if (typeof m.read_only === 'boolean') this.update({ readOnly: m.read_only, holder: parseHolder(m.holder) })
+        break
+      case 'closed':
+        this.update({ document: null, tabs: [], revisions: {}, readOnly: false, holder: null, ended: 'closed' })
+        break
+      case 'error':
+        if (about !== null && about === this.wanted && m.id === undefined) {
+          this.update({ document: null, tabs: [], revisions: {}, readOnly: false, holder: null, ended: 'not-open' })
+        }
         break
       case 'pong':
         if (typeof m.t === 'number') {
@@ -210,11 +302,27 @@ export class ConnectionStore {
     }
   }
 
-  private onTabs(raw: unknown, extra: Partial<ConnectionState>): void {
+  /** A Document's state from a hello or an open call. `fromHello` is true for a hello (a reload may follow). */
+  private apply(m: DocumentReply, fromHello: boolean): void {
+    const doc = parseDocument(m.document)
+    if (doc === null) return
+    const known = this.state.revisions
+    const tabs = Array.isArray(m.tabs) ? (m.tabs.filter(isTabInfo) as TabInfo[]) : []
+    const differs = fromHello && tabs.some((t) => t.revision !== null && known[t.id] !== undefined && known[t.id] !== t.revision)
+    this.onTabs(tabs, {
+      document: doc,
+      readOnly: m.read_only === true,
+      holder: parseHolder(m.holder),
+      ended: null,
+      ...(differs ? { epoch: this.state.epoch + 1 } : {}),
+    }, true)
+  }
+
+  private onTabs(raw: unknown, extra: Partial<ConnectionState>, replace = false): void {
     const tabs = Array.isArray(raw) ? (raw.filter(isTabInfo) as TabInfo[]) : this.state.tabs
     const found: Record<string, number> = {}
     for (const t of tabs) if (t.revision !== null) found[t.id] = t.revision
-    this.applyRevisions(found, { ...extra, tabs })
+    this.applyRevisions(found, { ...extra, tabs }, replace)
   }
 
   private onChanged(raw: unknown): void {
@@ -226,12 +334,13 @@ export class ConnectionStore {
   }
 
   /** Keep the newest revision per tab; tell the listeners of the tabs that moved after the state is in place. */
-  private applyRevisions(found: Record<string, number>, extra: Partial<ConnectionState>): void {
-    const revisions = { ...this.state.revisions }
+  private applyRevisions(found: Record<string, number>, extra: Partial<ConnectionState>, replace = false): void {
+    const revisions = replace ? {} : { ...this.state.revisions }
+    const before = this.state.revisions
     const moved: Array<[string, number]> = []
     for (const [id, rev] of Object.entries(found)) {
       if (revisions[id] === undefined || rev > revisions[id]) {
-        if (revisions[id] !== undefined) moved.push([id, rev])
+        if (before[id] !== undefined && rev > before[id]) moved.push([id, rev])
         revisions[id] = rev
       }
     }
@@ -249,6 +358,18 @@ function parseDocument(raw: unknown): { id: string; name: string } | null {
   if (typeof raw !== 'object' || raw === null) return null
   const { id, name } = raw as { id?: unknown; name?: unknown }
   return typeof id === 'string' && typeof name === 'string' ? { id, name } : null
+}
+
+function parseHolder(raw: unknown): Holder | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const h = raw as Record<string, unknown>
+  if (typeof h.program !== 'string') return null
+  return {
+    program: h.program,
+    instance: typeof h.instance === 'string' ? h.instance : '',
+    heartbeat: typeof h.heartbeat === 'number' ? h.heartbeat : 0,
+    stale: h.stale === true,
+  }
 }
 
 function isTabInfo(raw: unknown): raw is TabInfo {

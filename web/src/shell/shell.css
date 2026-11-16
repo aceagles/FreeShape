@@ -66,6 +66,12 @@
   white-space: nowrap;
   cursor: pointer;
 }
+.tab-button {
+  /* a long press opens the tab's menu: no iOS callout, no text selection, no context menu */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .tab-button[aria-current='page'] {
   border-color: var(--c-accentLine);
   background: var(--c-accentSoft);
@@ -330,4 +336,92 @@
   margin: var(--sp-8) 0 0;
   font-size: var(--fs-small);
   color: var(--c-muted);
+}
+
+/* Save: the dot says there is something to save (the layout's dirty mark). */
+.save-button {
+  position: relative;
+}
+.dirty-dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: var(--status-dot);
+  height: var(--status-dot);
+  border-radius: 50%;
+  background: var(--c-accent);
+  border: 2px solid var(--c-white);
+  pointer-events: none;
+}
+
+/* The read-only banner, under the top bar. */
+.read-only-banner {
+  flex: none;
+  box-sizing: border-box;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  padding: var(--sp-4) var(--sp-8) var(--sp-4) var(--sp-14);
+  background: var(--c-selected);
+  border-bottom: 1px solid var(--c-selection);
+  font-size: var(--fs-body);
+}
+.banner-text {
+  flex: 1;
+  min-width: 0;
+}
+.banner-button {
+  flex: none;
+  height: var(--touch);
+  padding: 0 var(--sp-16);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Tab menu and add-tab menu. Fixed to the window so the tab list's own scrolling never clips them. */
+.popover-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+.popover {
+  position: fixed;
+  z-index: 31;
+  box-sizing: border-box;
+  padding: var(--sp-4);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  background: var(--c-white);
+  box-shadow: 0 8px 24px var(--c-shadow);
+}
+.popover-item {
+  width: 100%;
+  height: var(--touch);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  padding: 0 var(--sp-12);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-ink);
+  font-size: var(--fs-title);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.popover-item:active {
+  background: var(--c-accentSoft);
+}
+.popover-item[data-danger] {
+  color: var(--c-danger);
+}
+.popover-item:disabled {
+  opacity: 0.35;
+  cursor: default;
 }

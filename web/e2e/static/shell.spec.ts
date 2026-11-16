@@ -1,22 +1,16 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { fontSize } from '../../src/theme/tokens.ts'
+import { singleDocument } from '../support/scripted.ts'
 
 // The app shell against a scripted socket (no freeshape serve), at the iPad sizes.
-const tabs = [
-  { id: 'T1', kind: 'studio', name: 'Part Studio 1', state: 'ok', error: null, dirty: false, revision: 1 },
-  { id: 'T2', kind: 'assembly', name: 'Assembly 1', state: 'ok', error: null, dirty: false, revision: 1 },
-]
-
 async function open(page: Page, width: number, height: number) {
   await page.setViewportSize({ width, height })
-  await page.route('**/health', (route) => route.fulfill({ json: { ok: true, version: '1.2.3' } }))
-  await page.route('**/tabs/*/outputs', (route) => route.fulfill({ status: 404, body: '' }))
-  await page.routeWebSocket(/\/ws\?client=/, (ws) => {
-    ws.send(JSON.stringify({ type: 'hello', client: 'x', document: { id: 'd', name: 'Bracket' }, tabs }))
-  })
+  // a server over one Document: the client goes straight into it
+  await singleDocument().install(page)
   await page.goto('/')
   await expect(page.getByTestId('link-status')).toHaveText('Connected')
+  await expect(page.getByTestId('document-name')).toHaveText('Bracket')
 }
 
 const regionBox = async (page: Page, name: string) => {

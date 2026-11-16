@@ -1,0 +1,116 @@
+import type { TabInfo } from './connection'
+
+/** Who holds a Document's lock, as the server's routes and socket messages report it. */
+export interface Holder {
+  program: string
+  instance: string
+  heartbeat: number
+  stale: boolean
+}
+
+/** One row of GET /documents. `modified` is seconds since the epoch, or null when the folder cannot be read. */
+export interface DocumentRow {
+  id: string
+  name: string
+  modified: number | null
+  holder: Holder | null
+  open: boolean
+  missing: boolean
+}
+
+/** What opening a Document, or asking for its tabs, answers. */
+export interface DocumentReply {
+  document: { id: string; name: string }
+  tabs: TabInfo[]
+  read_only: boolean
+  holder: Holder | null
+}
+
+/** A server answer that was not a success: `status` is 0 when the server could not be reached at all. */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly body: Record<string, unknown> = {},
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+  /** The Document that is already open, from a 409 on open. */
+  get openDocument(): { id: string; name: string } | null {
+    const o = this.body.open
+    if (typeof o !== 'object' || o === null) return null
+    const { id, name } = o as { id?: unknown; name?: unknown }
+    return typeof id === 'string' && typeof name === 'string' ? { id, name } : null
+  }
+  /** The tabs that link to a tab, from a 409 on delete. */
+  get linkedBy(): Array<{ id: string; name: string }> {
+    const l = this.body.linked_by
+    if (!Array.isArray(l)) return []
+    return l.filter((x): x is { id: string; name: string } => typeof x?.id === 'string' && typeof x?.name === 'string')
+  }
+}
+
+const seg = encodeURIComponent
+const docPath = (doc: string): string => `/documents/${seg(doc)}`
+const tabPath = (doc: string, tab: string): string => `${docPath(doc)}/tabs/${seg(tab)}`
+
+async function request(method: string, path: string, init: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal } = {}): Promise<Response> {
+  let res: Response
+  try {
+    res = await fetch(path, {
+      method,
+      headers: { ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...init.headers },
+      body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+      signal: init.signal,
+    })
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') throw e
+    throw new ApiError(0, 'The server did not answer. Check the connection and try again.')
+  }
+  if (res.ok) return res
+  let body: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = await res.json()
+    if (typeof parsed === 'object' && parsed !== null) body = parsed as Record<string, unknown>
+  } catch {
+    // not JSON: the status text below has to do
+  }
+  throw new ApiError(res.status, typeof body.error === 'string' ? body.error : `The server answered ${res.status}.`, body)
+}
+
+async function json<T>(method: string, path: string, init?: Parameters<typeof request>[2]): Promise<T> {
+  return (await (await request(method, path, init)).json()) as T
+}
+
+export async function listDocuments(signal?: AbortSignal): Promise<DocumentRow[]> {
+  const out = await json<{ documents: DocumentRow[] }>('GET', '/documents', { signal })
+  return out.documents
+}
+
+export const createDocument = (name: string) => json<{ id: string; name: string }>('POST', '/documents', { body: { name } })
+export const openDocument = (doc: string) => json<DocumentReply>('POST', `${docPath(doc)}/open`, { body: {} })
+export const closeDocument = (doc: string) => json<{ closed: boolean }>('POST', `${docPath(doc)}/close`, { body: {} })
+export const takeOver = (doc: string) => json<{ read_only: boolean; holder: Holder | null }>('POST', `${docPath(doc)}/take-over`, { body: {} })
+export const fetchDocumentTabs = (doc: string) => json<DocumentReply>('GET', `${docPath(doc)}/tabs`)
+
+export const addTab = (doc: string, kind: 'studio' | 'assembly', name?: string) =>
+  json<{ tab: TabInfo; tabs: TabInfo[] }>('POST', `${docPath(doc)}/tabs`, { body: name === undefined ? { kind } : { kind, name } })
+export const renameTab = (doc: string, tab: string, name: string) =>
+  json<{ tab: TabInfo; tabs: TabInfo[] }>('POST', `${tabPath(doc, tab)}/rename`, { body: { name } })
+export const deleteTab = (doc: string, tab: string) => json<{ deleted: string; tabs: TabInfo[] }>('DELETE', tabPath(doc, tab))
+
+export const saveDocument = (doc: string, client: string) =>
+  json<{ saved: string[] }>('POST', `${docPath(doc)}/save`, { body: {}, headers: { 'X-Client-Id': client } })
+
+/** One edit of a tab, with the client that makes it and the revision it was based on. */
+export const postEdit = (doc: string, tab: string, edit: Record<string, unknown>, client: string, base: number | null) =>
+  json<{ rebuilt: string[] }>('POST', `${tabPath(doc, tab)}/edit`, {
+    body: edit,
+    headers: { 'X-Client-Id': client, ...(base === null ? {} : { 'X-Base-Revision': String(base) }) },
+  })
+
+/** The tab's outputs in the engine wire format. */
+export async function fetchOutputsBytes(doc: string, tab: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+  return (await request('GET', `${tabPath(doc, tab)}/outputs`, { signal })).arrayBuffer()
+}

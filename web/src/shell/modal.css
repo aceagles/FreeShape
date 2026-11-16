@@ -1,0 +1,102 @@
+/* The small dialogs: confirmations, messages and text prompts. Top half of the page, clear of the iPad keyboard. */
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 72px var(--sp-16) 0;
+  box-sizing: border-box;
+  background: rgba(31, 35, 40, 0.32);
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  color: var(--c-ink);
+}
+.modal {
+  width: min(440px, 100%);
+  box-sizing: border-box;
+  padding: var(--sp-16);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  background: var(--c-white);
+  box-shadow: 0 8px 24px var(--c-shadow);
+}
+.modal-title {
+  margin: 0 0 var(--sp-8);
+  font-size: var(--fs-title);
+  font-weight: 600;
+}
+.modal-message {
+  margin: 0 0 var(--sp-16);
+  color: var(--c-inkSoft);
+  line-height: 1.4;
+}
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-12);
+}
+.modal-label {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--c-muted);
+}
+/* 16 px: anything smaller makes iPadOS zoom the page when the field takes focus. */
+.modal-input {
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--touch);
+  padding: 0 var(--sp-12);
+  border: 2px solid var(--c-accent);
+  border-radius: var(--r-sm);
+  background: var(--c-accentField);
+  color: var(--c-ink);
+  font: inherit;
+  font-size: var(--fs-field);
+  font-weight: 500;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.modal-error {
+  margin: 0 0 var(--sp-12);
+  padding: var(--sp-8) var(--sp-12);
+  border-radius: var(--r-sm);
+  background: var(--c-dangerSoft);
+  color: var(--c-danger);
+}
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-8);
+}
+.modal-button {
+  min-width: 88px;
+  height: var(--touch);
+  padding: 0 var(--sp-16);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.modal-button[data-kind='primary'] {
+  border-color: var(--c-accentDark);
+  background: var(--c-accent);
+  color: var(--c-white);
+}
+.modal-button[data-kind='danger'] {
+  border-color: var(--c-danger);
+  background: var(--c-danger);
+  color: var(--c-white);
+}
+.modal-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}

@@ -8,7 +8,13 @@ test('the connection panel shows the state and round trips, and a dropped socket
   let first: { close(): void } | undefined
   let allowSecondHello!: () => void
   const secondHello = new Promise<void>((resolve) => (allowSecondHello = resolve))
+  // a server over one Document that is open: the client goes straight into it
   await page.route('**/health', (route) => route.fulfill({ json: { ok: true, version: '1.2.3' } }))
+  await page.route(/\/documents(\/|$)/, async (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/documents') return route.fulfill({ json: { documents: [{ id: 'd', name: 'Bracket', modified: 1, holder: null, open: true, missing: false }] } })
+    return route.fulfill({ json: { document: { id: 'd', name: 'Bracket' }, tabs: [], read_only: false, holder: null } })
+  })
   await page.routeWebSocket(/\/ws\?client=/, (ws) => {
     sockets.push(ws.url())
     const hello = JSON.stringify({ type: 'hello', client: 'x', document: { id: 'd', name: 'Bracket' }, tabs: [] })

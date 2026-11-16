@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ConnectionStore } from '../net/connection'
-import { ConnectionPanel, useConnection } from '../net/react'
+import { addTab, ApiError, closeDocument, deleteTab, fetchDocumentTabs, renameTab, saveDocument, takeOver } from '../net/api'
+import type { TabInfo } from '../net/connection'
+import { useConnection } from '../net/react'
 import { StudioViewport } from '../viewport/StudioViewport'
 import { DialogArea } from './DialogArea'
+import { explainError } from './errors'
 import { FeaturePanel } from './FeaturePanel'
+import { DebugPopover, useDebugPanel } from './LinkStatus'
+import { ConfirmDialog } from './Modal'
+import { ReadOnlyBanner } from './ReadOnlyBanner'
+import { holderPlace } from './holder'
+import { TextPrompt } from './TextPrompt'
 import { ShellContext } from './ShellContext'
 import type { ShellApi } from './ShellContext'
 import { ToolStrip } from './ToolStrip'
@@ -28,6 +36,14 @@ interface DialogState {
   content: ReactNode
 }
 
+/** The small dialog over the page, if one is open. */
+type Modal =
+  | { kind: 'rename'; tab: TabInfo }
+  | { kind: 'delete'; tab: TabInfo }
+  | { kind: 'leave' }
+  | { kind: 'takeover' }
+  | { kind: 'message'; title: string; text: string }
+
 declare global {
   interface Window {
     /** Hands tests (and the screenshot script) the shell's API; nothing in the client reads it. */
@@ -40,12 +56,14 @@ declare global {
  * (with the dialog area over it) beside the viewport. Regions carry the layout's `data-region` names.
  * The connection state in the top bar opens the debug panel (round trips) over the viewport.
  */
-export function Shell({ store, version }: { store: ConnectionStore; version?: string }) {
-  const { tabs } = useConnection(store)
+export function Shell({ store, documentId, version, onLeave }: { store: ConnectionStore; documentId: string; version?: string; onLeave: () => void }) {
+  const { tabs, document: doc, readOnly, holder, client } = useConnection(store)
   const [selected, setSelected] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [dialog, setDialog] = useState<DialogState | null>(null)
-  const [debugOpen, setDebugOpen] = useState(false)
+  const debug = useDebugPanel()
+  const [modal, setModal] = useState<Modal | null>(null)
+  const [saving, setSaving] = useState(false)
   const width = useWindowWidth()
 
   const currentTab = tabs.some((t) => t.id === selected) ? selected : (tabs[0]?.id ?? null)
@@ -70,18 +88,94 @@ export function Shell({ store, version }: { store: ConnectionStore; version?: st
       delete window.__freeshape
     }
   }, [api])
-  useEffect(() => {
-    if (!debugOpen) return
-    const on = (e: KeyboardEvent) => e.key === 'Escape' && setDebugOpen(false)
-    window.addEventListener('keydown', on)
-    return () => window.removeEventListener('keydown', on)
-  }, [debugOpen])
-  const toggleDebug = useCallback(() => setDebugOpen((o) => !o), [])
+
+  const name = doc?.name ?? 'This Document'
+  const dirty = !readOnly && tabs.some((t) => t.dirty)
+  const closeModal = useCallback(() => setModal(null), [])
+  const fail = (title: string, e: unknown) => setModal({ kind: 'message', title, text: explainError(e, name) })
+
+  const add = async (kind: 'studio' | 'assembly') => {
+    try {
+      const r = await addTab(documentId, kind)
+      store.setTabs(r.tabs)
+      setSelected(r.tab.id)
+    } catch (e) {
+      fail('Could not add the tab', e)
+    }
+  }
+  const rename = async (tab: TabInfo, newName: string): Promise<string | void> => {
+    try {
+      store.setTabs((await renameTab(documentId, tab.id, newName)).tabs)
+      setModal(null)
+    } catch (e) {
+      return explainError(e, name)
+    }
+  }
+  const remove = async (tab: TabInfo) => {
+    setModal(null)
+    try {
+      store.setTabs((await deleteTab(documentId, tab.id)).tabs)
+    } catch (e) {
+      fail(`Could not delete "${tab.name}"`, e)
+    }
+  }
+  /** Save, then take in the new dirty marks at once (the socket tells everyone else). */
+  const save = async (): Promise<boolean> => {
+    setSaving(true)
+    try {
+      await saveDocument(documentId, client)
+      store.setTabs((await fetchDocumentTabs(documentId)).tabs)
+      return true
+    } catch (e) {
+      fail('Could not save', e)
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }
+  /** Close the Document on the server and go home. A server over one Document keeps it open (409): leave anyway. */
+  const leave = async () => {
+    setModal(null)
+    try {
+      await closeDocument(documentId)
+    } catch (e) {
+      if (!(e instanceof ApiError && (e.status === 409 || e.status === 404))) {
+        fail('Could not close the Document', e)
+        return
+      }
+    }
+    onLeave()
+  }
+  const back = () => (dirty ? setModal({ kind: 'leave' }) : void leave())
+  const doTakeOver = async () => {
+    setModal(null)
+    try {
+      await takeOver(documentId)
+      store.watch(documentId, await fetchDocumentTabs(documentId))
+      store.reload()
+    } catch (e) {
+      fail('Could not take over', e)
+    }
+  }
 
   return (
     <ShellContext.Provider value={api}>
       <div className="shell" style={tokenVars()} data-testid="shell">
-        <TopBar store={store} currentTab={currentTab} onSelectTab={setSelected} debugOpen={debugOpen} onToggleDebug={toggleDebug} />
+        <TopBar
+          store={store}
+          currentTab={currentTab}
+          readOnly={readOnly}
+          saving={saving}
+          debugOpen={debug.open}
+          onSelectTab={setSelected}
+          onAddTab={(kind) => void add(kind)}
+          onRenameTab={(tab) => setModal({ kind: 'rename', tab })}
+          onDeleteTab={(tab) => setModal({ kind: 'delete', tab })}
+          onBack={back}
+          onSave={() => void save()}
+          onToggleDebug={debug.toggle}
+        />
+        {readOnly && <ReadOnlyBanner name={name} holder={holder} onTakeOver={() => setModal({ kind: 'takeover' })} />}
         <ToolStrip />
         <div className="shell-main">
           <div className="left-column" data-region="left-column" data-testid="left-column" style={{ width: column }}>
@@ -104,11 +198,53 @@ export function Shell({ store, version }: { store: ConnectionStore; version?: st
             <div className="chip-slot" data-testid="chip-slot" />
           </div>
         </div>
-        {debugOpen && (
-          <div className="debug-popover" data-testid="debug-panel">
-            <ConnectionPanel store={store} />
-            {version && <p className="debug-version" data-testid="version">Server version {version}</p>}
-          </div>
+        {debug.open && <DebugPopover store={store} version={version} />}
+        {modal?.kind === 'rename' && (
+          <TextPrompt
+            title="Rename tab"
+            label="Name"
+            initial={modal.tab.name}
+            confirmLabel="Rename"
+            onSubmit={(value) => rename(modal.tab, value)}
+            onCancel={closeModal}
+          />
+        )}
+        {modal?.kind === 'delete' && (
+          <ConfirmDialog
+            title={`Delete "${modal.tab.name}"?`}
+            message="The tab and everything in it is removed from the Document."
+            confirm={{ label: 'Delete', danger: true }}
+            onConfirm={() => void remove(modal.tab)}
+            onCancel={closeModal}
+          />
+        )}
+        {modal?.kind === 'leave' && (
+          <ConfirmDialog
+            title={`Save changes to "${name}"?`}
+            message="The Document has changes that are not saved yet."
+            confirm={{ label: 'Save' }}
+            alternative={{ label: 'Discard', danger: true, onClick: () => void leave() }}
+            cancelLabel="Stay"
+            onConfirm={() => {
+              setModal(null)
+              void save().then((ok) => {
+                if (ok) void leave()
+              })
+            }}
+            onCancel={closeModal}
+          />
+        )}
+        {modal?.kind === 'takeover' && (
+          <ConfirmDialog
+            title={`Take over "${name}"?`}
+            message={`${holderPlace(holder)[0]!.toUpperCase()}${holderPlace(holder).slice(1)} will lose the right to edit it, and what it has not saved is not kept here.`}
+            confirm={{ label: 'Take over', danger: true }}
+            onConfirm={() => void doTakeOver()}
+            onCancel={closeModal}
+          />
+        )}
+        {modal?.kind === 'message' && (
+          <ConfirmDialog title={modal.title} message={modal.text} confirm={{ label: 'OK' }} cancelLabel={null} onConfirm={closeModal} onCancel={closeModal} />
         )}
       </div>
     </ShellContext.Provider>

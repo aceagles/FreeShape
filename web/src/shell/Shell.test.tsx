@@ -29,7 +29,7 @@ function setup(width = 1024) {
   const sock = new Sock()
   const store = new ConnectionStore({ clientId: 'abcdefgh', url: 'ws://t/ws', createSocket: () => sock, visible: () => true, pingMs: 3_600_000, backoff: () => 3_600_000 })
   store.start()
-  render(<Shell store={store} />)
+  render(<Shell store={store} documentId="d" onLeave={() => {}} />)
   const say = (m: object) => act(() => sock.onmessage?.({ data: JSON.stringify(m) }))
   return { store, sock, say }
 }
@@ -111,9 +111,10 @@ it('names the Document, lists the tabs with the current one marked, and switches
   expect(screen.getByTestId('feature-panel').textContent).toContain('Assembly 1')
 })
 
-it('undo, redo and save are present and disabled', () => {
+it('undo and redo are present and disabled until slice 3; save and add tab are on', () => {
   setup()
-  for (const name of ['Undo', 'Redo', 'Save']) expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
+  for (const name of ['Undo', 'Redo']) expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
+  for (const name of ['Save', 'Add tab', 'Back to Documents']) expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false)
 })
 
 it('the connection state opens and closes the debug panel', () => {

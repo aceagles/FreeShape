@@ -16,6 +16,11 @@ export const paths = {
   tab: 'M4 6h16v12H4z M4 10h7',
   back: 'M15 5l-7 7 7 7',
   plus: 'M12 5v14 M5 12h14',
+  trash: 'M5 7h14 M9 7V4h6v3 M7 7l1 13h8l1-13',
+  assembly: 'M4 8l8-4 8 4-8 4z M4 8v8l8 4 8-4V8 M12 12v8',
+  document: 'M6 3h8l4 4v14H6z M14 3v4h4',
+  refresh: 'M20 11a8 8 0 1 0-2 6 M20 4v7h-7',
+  lock: 'M6 11h12v9H6z M8 11V8a4 4 0 0 1 8 0v3',
 } as const
 
 export function Icon({ d, px = size.icon, stroke = 'currentColor' }: { d: string; px?: number; stroke?: string }) {

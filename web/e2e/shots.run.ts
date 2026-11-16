@@ -20,7 +20,7 @@ const LABEL = 28
 const failures: string[] = []
 const written: string[] = []
 
-async function capture(browser: Browser, width: number, height: number, key: string, name: string, mock: string | null, steps: (typeof shots)[number]['steps']) {
+async function capture(browser: Browser, width: number, height: number, key: string, name: string, mock: string | null, steps: (typeof shots)[number]['steps'], after?: (typeof shots)[number]['after']) {
   const stem = `${name}-${width}x${height}`
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: true, deviceScaleFactor: 1, baseURL: base })
   try {
@@ -39,6 +39,7 @@ async function capture(browser: Browser, width: number, height: number, key: str
       return
     }
     const client = await page.screenshot()
+    await after?.(page).catch((e: Error) => console.log(`  restoring after ${stem}: ${e.message.split('\n')[0]}`))
     writeFileSync(resolve(out, `${stem}.client.png`), client)
     written.push(`${stem}.client.png`)
     for (const m of errors) console.log(`  page error in ${stem}: ${m}`)
@@ -74,7 +75,7 @@ try {
   for (const size of SIZES) {
     for (const s of shots) {
       if (only.length && !only.includes(s.name)) continue
-      await capture(browser, size.width, size.height, size.key, s.name, s.mock === undefined ? s.name : s.mock, s.steps)
+      await capture(browser, size.width, size.height, size.key, s.name, s.mock === undefined ? s.name : s.mock, s.steps, s.after)
     }
   }
 } finally {

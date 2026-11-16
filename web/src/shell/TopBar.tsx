@@ -1,44 +1,40 @@
-import type { ConnectionStore } from '../net/connection'
+import type { ConnectionStore, TabInfo } from '../net/connection'
 import { useConnection } from '../net/react'
 import { Icon, paths } from './icons'
-import { statusLabel, useLinkStatus } from './status'
+import { LinkStatusButton } from './LinkStatus'
+import { TabBar } from './TabBar'
 
 interface Props {
   store: ConnectionStore
   currentTab: string | null
-  onSelectTab: (id: string) => void
+  readOnly: boolean
+  saving: boolean
   debugOpen: boolean
+  onSelectTab: (id: string) => void
+  onAddTab: (kind: 'studio' | 'assembly') => void
+  onRenameTab: (tab: TabInfo) => void
+  onDeleteTab: (tab: TabInfo) => void
+  onBack: () => void
+  onSave: () => void
   onToggleDebug: () => void
 }
 
-/** The top bar: Document name, tab switcher, back and add tab, undo, redo and save (disabled until their cards), the connection state. */
-export function TopBar({ store, currentTab, onSelectTab, debugOpen, onToggleDebug }: Props) {
+/**
+ * The top bar: back to the home screen, the Document name, the tab switcher with add tab, undo and redo (disabled
+ * until slice 3), save with a dot while something is unsaved, and the connection state.
+ */
+export function TopBar({ store, currentTab, readOnly, saving, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onToggleDebug }: Props) {
   const { document, tabs } = useConnection(store)
-  const status = useLinkStatus(store)
+  const dirty = tabs.some((t) => t.dirty)
   return (
     <header className="top-bar" data-region="top-bar">
-      <button type="button" className="icon-button" aria-label="Back to Documents" disabled>
+      <button type="button" className="icon-button" aria-label="Back to Documents" onClick={onBack}>
         <Icon d={paths.back} />
       </button>
       <div className="top-bar-name" data-testid="document-name">
         {document?.name ?? 'FreeShape'}
       </div>
-      <nav className="top-bar-tabs" aria-label="Tabs">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className="tab-button"
-            aria-current={t.id === currentTab ? 'page' : undefined}
-            onClick={() => onSelectTab(t.id)}
-          >
-            {t.name}
-          </button>
-        ))}
-        <button type="button" className="icon-button" aria-label="Add tab" disabled>
-          <Icon d={paths.plus} />
-        </button>
-      </nav>
+      <TabBar tabs={tabs} currentTab={currentTab} readOnly={readOnly} onSelect={onSelectTab} onAdd={onAddTab} onRename={onRenameTab} onDelete={onDeleteTab} />
       <div className="top-bar-gap" />
       <button type="button" className="icon-button" aria-label="Undo" disabled>
         <Icon d={paths.undo} />
@@ -46,21 +42,19 @@ export function TopBar({ store, currentTab, onSelectTab, debugOpen, onToggleDebu
       <button type="button" className="icon-button" aria-label="Redo" disabled>
         <Icon d={paths.redo} />
       </button>
-      <button type="button" className="icon-button" aria-label="Save" disabled>
-        <Icon d={paths.save} />
-      </button>
       <button
         type="button"
-        className="link-status"
-        data-status={status}
-        data-testid="link-status"
-        aria-label={`${statusLabel[status]}, connection details`}
-        aria-expanded={debugOpen}
-        onClick={onToggleDebug}
+        className="icon-button save-button"
+        aria-label={dirty ? 'Save, unsaved changes' : 'Save'}
+        aria-busy={saving}
+        data-dirty={dirty ? '' : undefined}
+        disabled={readOnly || saving}
+        onClick={onSave}
       >
-        <span className="link-dot" />
-        <span>{statusLabel[status]}</span>
+        <Icon d={paths.save} />
+        {dirty && <span className="dirty-dot" data-testid="dirty-dot" />}
       </button>
+      <LinkStatusButton store={store} open={debugOpen} onToggle={onToggleDebug} />
     </header>
   )
 }

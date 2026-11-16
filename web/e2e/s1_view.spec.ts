@@ -78,9 +78,10 @@ test('an edit posted to the server reaches the page without a reload', async ({ 
   })
   const before = await readViewport(page)
   expect(before.revision).not.toBeNull()
-  const tab = (await (await request.get('/tabs')).json()).tabs[0].id as string
+  const doc = (await (await request.get('/documents')).json()).documents[0].id as string
+  const tab = (await (await request.get(`/documents/${doc}/tabs`)).json()).tabs[0].id as string
   try {
-    const res = await request.post(`/tabs/${tab}/edit`, { data: { ...EDIT, value: 7.0 } })
+    const res = await request.post(`/documents/${doc}/tabs/${tab}/edit`, { data: { ...EDIT, value: 7.0 } })
     expect(res.status(), await res.text()).toBe(200)
     await expect.poll(async () => (await readViewport(page)).revision, { timeout: 30_000 }).toBeGreaterThan(before.revision!)
     const after = await readViewport(page)
@@ -89,7 +90,7 @@ test('an edit posted to the server reaches the page without a reload', async ({ 
     expect(after.frames).toBeGreaterThan(before.frames)
     expect(await page.evaluate(() => (window as unknown as { __stillHere?: boolean }).__stillHere), 'the page was not reloaded').toBe(true)
   } finally {
-    await request.post(`/tabs/${tab}/edit`, { data: { ...EDIT, value: ORIGINAL_DIAMETER } })
+    await request.post(`/documents/${doc}/tabs/${tab}/edit`, { data: { ...EDIT, value: ORIGINAL_DIAMETER } })
   }
 })
 

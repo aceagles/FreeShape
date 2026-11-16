@@ -23,6 +23,9 @@ from .numparse import parse_number, fmt, has_vars
 from .viewport import Pick
 from ..picking import make_item, region_touching  # noqa: F401 -- region_touching: re-exported, tests import it here
 from ..dialog_schema import (  # noqa: F401 -- moved to a Qt-free module (I5.1); tests and plugins import them here
+    apply_preselection,
+    on_field_set,
+    connector_stamp,
     OP_LABELS,
     SURFACE_OP_LABELS,
     CREATE_LABELS,
@@ -112,6 +115,21 @@ def pick_to_item(vp, pick: Pick, want: set, state=None):
     return make_item(getattr(vp, "part_shapes", {}), sketches, pick.kind, pick.key, want,
                      (lambda pid: state.named(pid)) if state is not None else None,
                      getattr(state, "engine_names", None))
+
+
+class _PickState:
+    """What `dialog_schema.apply_preselection` reads, for the desktop: the shapes and sketches the viewport shows,
+    and everything else (parts, vars, named, engine_names) from the model state under the dialog."""
+
+    def __init__(self, vp, base_state):
+        self.part_shapes = getattr(vp, "part_shapes", {})
+        self.sketches = {}
+        for sfid, sr, _ in getattr(vp, "sketches", ()):
+            self.sketches.setdefault(sfid, sr)
+        self._base = base_state
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
 
 
 def item_label(doc, item):
@@ -1851,51 +1869,24 @@ class FeatureDialog(_ResizableFrame):
 
     def _stamp_connector(self, item, pick, click, snap):
         """Store click, snap and the frame's X reference (the run rebuilds the frame from them)."""
-        p = self.feature["params"]
-        kind, ref = item
-        try:
-            pid, sub = F.resolve(self.base_state, ref, kind)
-            shape = self.base_state.parts[pid].shape
-            subs = K.faces(shape) if kind == "face" else K.edges(shape)
-            index = next(i for i, s in enumerate(subs) if s.IsSame(sub))
-            named = self.base_state.named(pid)
-            st = None
-            if snap is not None:
-                vshape = self.main.viewport.part_shapes.get(pick.key[0], shape)
-                edge_ref = None
-                if snap.get("edge") is not None:
-                    edge_ref = AS._ref_signature(vshape, "edge", snap["edge"], named)
-                    nm = ((getattr(self.base_state, "engine_names", None) or {}).get(pick.key[0]) or {}) \
-                        .get("edge", {}).get(snap["edge"] + 1)
-                    if nm:
-                        edge_ref["name"] = nm
-                st = {"type": snap["type"], "p": [float(a) for a in snap["p"]], "edge_ref": edge_ref}
-                fr = AS.snap_frame(shape, kind, index, st, named)
-            else:
-                fr = AS.connector_frame(shape, kind, index, click)
-            p["click"] = [float(a) for a in click] if click is not None else None
-            p["snap"] = st
-            p["x_ref"] = AS.connector_x_ref(fr)
-        except Exception:       # the preview shows why the connector is red; the picked reference is kept
-            p["click"], p["snap"], p["x_ref"] = None, None, None
+        self.feature["params"].update(connector_stamp(
+            self.base_state, item, click, snap, self.main.viewport.part_shapes, pick.key[0]))
         self.schedule_preview()
 
     def _apply_preselection(self, picks):
-        for pk in picks:
-            if self._pick_sketch(pk):
-                break
-        used = set()
-        for key, fld in self.fields.items():
-            for i, pk in enumerate(picks):
-                if i in used or (not fld.multi and fld.items) or fld.number:
-                    continue
-                item = pick_to_item(self.main.viewport, pk, fld.want, self.base_state)
-                if item is None:
-                    continue
-                used.add(i)
-                fld.toggle(item)
-                if self.ftype == "mate_connector":
-                    self._stamp_connector(item, pk, None, None)
+        got = apply_preselection(self.ftype, self._field_values(), picks,
+                                 _PickState(self.main.viewport, self.base_state), self.feature["params"])
+        for key, items in got.fields.items():
+            if key in self.fields and not key.endswith("_numbers"):
+                self.fields[key].items = items
+        fid = got.params.get("sketch")
+        if fid is not None and getattr(self, "_sketch_cb", None) is not None:
+            self._sketch_cb.setCurrentIndex(self._sketch_cb.findData(fid))          # -> _choose_sketch
+        self._fields_changed()
+        stamp = {k: v for k, v in got.params.items() if k != "sketch"}
+        if stamp:
+            self.feature["params"].update(stamp)
+            self.schedule_preview()
         self.main.viewport.clear_selection()
 
     def _default_rib_part(self):
@@ -1940,45 +1931,19 @@ class FeatureDialog(_ResizableFrame):
 
     def _set(self, key, value):
         p = self.feature["params"]
-        p[key] = value
-        if key == "type" and self.ftype in ("mirror", "linear_pattern", "circular_pattern"):
-            fk = "features" if value == "features" else "parts"
-            if fk in self.fields:
-                QTimer.singleShot(0, lambda fk=fk: self.activate(self.fields[fk]))
-        if key == "end" and self.ftype in ("extrude", "revolve"):
-            # choosing an "Up to …" end makes its pick box the active one, so the next click fills it
-            fk = {"up_to_face": "upto_face", "up_to_vertex": "upto_vertex", "up_to_part": "upto_part"}.get(value)
-            if fk in self.fields:
-                QTimer.singleShot(0, lambda fk=fk: self.activate(self.fields[fk]))
-        if key == "creation" and self.ftype in ("extrude", "revolve", "sweep", "loft") and value == "surface" \
-                and p.get("op", "add") not in ("new", "add"):
-            p["op"] = "add"                    # Remove and Intersect are not available for surfaces
-        if key == "creation" and self.ftype == "loft" and value == "surface" and "curves" in self.fields:
-            QTimer.singleShot(0, lambda: self.activate(self.fields["curves"]))
-        if key == "creation" and self.ftype in ("extrude", "revolve", "sweep") and value == "thin":
-            for k, v in (("thickness1", 1.0), ("thickness2", 0.0)):       # not in default_params (goldens go through it)
-                if k not in p:
-                    p[k] = v
-                if k in self.widgets:
-                    self.widgets[k].setText(_show(p[k]))
-            QTimer.singleShot(0, lambda: self.activate(self.fields["curves"]))      # a thin wall is drawn as curves
-        if key == "control" and self.ftype == "sweep" and value == "lock" and "lock_dir" in self.fields:
-            QTimer.singleShot(0, lambda: self.activate(self.fields["lock_dir"]))      # the direction is picked next
-        if key == "draft" and value and self.ftype == "extrude" and not p.get("draft_angle"):
-            p["draft_angle"] = 5.0           # not in default_params (goldens are built through it), so seed it here
-            if "draft_angle" in self.widgets:
-                self.widgets["draft_angle"].setText(_show(5.0))
-        if key in ("axis_std", "dir_std", "dir2_std") and value:
-            # choosing a world axis replaces a picked axis
-            fk = {"axis_std": "axis_sel", "dir_std": "dir_sel", "dir2_std": "dir2_sel"}[key]
-            if fk in self.fields:
-                self.fields[fk].items = []
-        fields = self._field_values()
-        fields_to_params(self.ftype, fields, p)
-        if key == "guides_on" and value and "guides" in self.fields:
-            QTimer.singleShot(0, lambda: self.activate(self.fields["guides"]))
-        if key == "fillet_type" and value == "variable" and "vertices" in self.fields:
-            QTimer.singleShot(0, lambda: self.activate(self.fields["vertices"]))
+        before = dict(p)
+        got = on_field_set(self.ftype, key, value, self._field_values(), p)
+        p.clear()
+        p.update(got.params)
+        for k in ("thickness1", "thickness2", "draft_angle"):      # seeded by the change: show them
+            if k in self.widgets and p.get(k) != before.get(k):
+                self.widgets[k].setText(_show(p[k]))
+        for k, items in got.fields.items():
+            if k in self.fields and self.fields[k].items != items:
+                self.fields[k].items = items
+        if got.active in self.fields:
+            fld = self.fields[got.active]
+            QTimer.singleShot(0, lambda: self.activate(fld))
         self._sync_visibility()
         self.schedule_preview()
 

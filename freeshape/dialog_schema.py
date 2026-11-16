@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from typing import NamedTuple
+
+from . import assembly as AS
 from . import features as F
 from . import kernel as K
+from .picking import make_item
 from .expr import fmt
 
 OP_LABELS = [("new", "New"), ("add", "Add"), ("remove", "Remove"), ("intersect", "Intersect")]
@@ -996,3 +1000,182 @@ def custom_feature_types():
     """The feature types in SCHEMAS with at least one hand-built row (a row the schema cannot describe fully)."""
     return sorted(t for t, rows in SCHEMAS.items()
                   if any(r["t"] not in STANDARD_KINDS and r["t"] not in SIMPLE_KINDS for r in rows))
+
+
+# ---------------------------------------------------------------------- behaviour (I5.2)
+# What a dialog does with the picks it was started with and when a field changes. FeatureDialog calls these and
+# keeps only its widgets; the Browser client's server session calls the same functions.
+
+def _sel_specs(ftype, params):
+    """The selection rows of the dialog for `params`, in dialog order."""
+    return [s for s in _schema_for(ftype, params or {}) if s["t"] == "sel"]
+
+
+def _pick_parts(pk):
+    """(kind, key) of a pick: a viewport Pick (`.kind`, `.key`) or a plain (kind, key) pair."""
+    return (pk.kind, pk.key) if hasattr(pk, "kind") else (pk[0], pk[1])
+
+
+def _toggle(items, item, multi):
+    """`items` after a click on `item`: an item already listed goes, otherwise it is added (it replaces the list
+    in a single-pick field). A face's "edges" item toggles each of its edges."""
+    items = list(items)
+    if item[0] == "edges":
+        for r in item[1]:
+            items = _toggle(items, ("edge", r), multi)
+        return items
+    for i, ex in enumerate(items):
+        if _same(ex, item):
+            items.pop(i)
+            return items
+    if not multi:
+        items = []
+    items.append(item)
+    return items
+
+
+def connector_stamp(state, item, click=None, snap=None, part_shapes=None, pick_part=None):
+    """The params that make a Mate connector's frame rebuildable from `item` (a face or edge item): click, snap and
+    the frame's X reference. `state` needs .parts ({id: part with .shape}), .named(pid) and .engine_names;
+    `part_shapes` ({id: shape}, default the parts' own) is where the picked element lives and `pick_part` its part
+    id: the viewport shows a part's shape that need not be the object `state` holds. If the frame cannot be built,
+    all three are None (the preview shows why; the picked reference stays)."""
+    kind, ref = item
+    try:
+        pid, sub = F.resolve(state, ref, kind)
+        shape = state.parts[pid].shape
+        subs = K.faces(shape) if kind == "face" else K.edges(shape)
+        index = next(i for i, s in enumerate(subs) if s.IsSame(sub))
+        named = state.named(pid)
+        st = None
+        if snap is not None:
+            vshape = (part_shapes or {}).get(pick_part, shape)
+            edge_ref = None
+            if snap.get("edge") is not None:
+                edge_ref = AS._ref_signature(vshape, "edge", snap["edge"], named)
+                nm = ((getattr(state, "engine_names", None) or {}).get(pick_part) or {}) \
+                    .get("edge", {}).get(snap["edge"] + 1)
+                if nm:
+                    edge_ref["name"] = nm
+            st = {"type": snap["type"], "p": [float(a) for a in snap["p"]], "edge_ref": edge_ref}
+            fr = AS.snap_frame(shape, kind, index, st, named)
+        else:
+            fr = AS.connector_frame(shape, kind, index, click)
+        return {"click": [float(a) for a in click] if click is not None else None, "snap": st,
+                "x_ref": AS.connector_x_ref(fr)}
+    except Exception:
+        return {"click": None, "snap": None, "x_ref": None}
+
+
+class Preselected(NamedTuple):
+    fields: dict        # {field key: [item, ...]}: `fields` with the picks added
+    params: dict        # params to set besides the fields: "sketch" (a picked sketch), a Mate connector's stamp
+
+
+def apply_preselection(ftype, fields, picks, state, params=None):
+    """Seed a new feature's selection fields from the picks its tool was started with.
+
+    `fields`: {key: [item, ...]} as params_to_fields gives them (not changed). `picks`: viewport Picks or
+    (kind, key) pairs, in selection order; keys are the viewport's: (part id, 0-based face / edge index in
+    kernel.faces / kernel.edges order), (sketch id, region index), ... `params` is the feature's params (it
+    chooses the front-door schema; default {}).
+
+    `state` carries what the picks refer to: `part_shapes` {part id: shape} and `sketches` {sketch id:
+    SketchResult} (what picking.make_item reads), `named(pid)` and `engine_names` (as for make_item; engine_names
+    may be missing or None), and for a Mate connector also `parts` ({id: part with .shape}). It is the viewport's
+    contents on the desktop and the worker's document state on the server.
+
+    Each pick goes to the first field that still takes it and wants its kind (a full single-pick field and a
+    field with a number box take none). A pick on a sketch's region or curve also chooses the sketch of a
+    feature with a "sketch_choice" row, if that sketch has a point or a circle. Returns Preselected(fields, params)."""
+    picks = list(picks)
+    out = {k: list(v) for k, v in fields.items()}
+    extra: dict = {}
+    schema = _schema_for(ftype, params or {})
+    for row in schema:
+        if row["t"] != "sketch_choice":
+            continue
+        for pk in picks:
+            kind, key = _pick_parts(pk)
+            sr = state.sketches.get(key[0]) if kind in ("region", "sketch_line") else None
+            if sr is not None and any(e["type"] in ("point", "circle") for e in sr.sketch.entities.values()):
+                extra[row["key"]] = key[0]
+                break
+        break
+    named = state.named if callable(getattr(state, "named", None)) else None
+    used = set()
+    for spec in (s for s in schema if s["t"] == "sel"):
+        k = spec["key"]
+        if k not in out:
+            continue
+        for i, pk in enumerate(picks):
+            if i in used or (not spec.get("multi", True) and out[k]) or spec.get("number"):
+                continue
+            kind, key = _pick_parts(pk)
+            item = make_item(state.part_shapes, state.sketches, kind, key, set(spec["want"]), named,
+                             getattr(state, "engine_names", None))
+            if item is None:
+                continue
+            used.add(i)
+            out[k] = _toggle(out[k], item, spec.get("multi", True))
+            if ftype == "mate_connector":
+                extra.update(connector_stamp(state, item, None, None, state.part_shapes, key[0]))
+    return Preselected(out, extra)
+
+
+class FieldSet(NamedTuple):
+    fields: dict            # the fields after the change
+    active: object          # key of the field to make the one clicks go to, or None to leave it
+    params: dict            # the params after the change, side effects included
+
+
+_UPTO_FIELD = {"up_to_face": "upto_face", "up_to_vertex": "upto_vertex", "up_to_part": "upto_part"}
+_STD_AXIS_FIELD = {"axis_std": "axis_sel", "dir_std": "dir_sel", "dir2_std": "dir2_sel"}
+
+
+def on_field_set(ftype, key, value, fields, params=None):
+    """What setting the param `key` to `value` does besides storing it. `fields`: {key: [item, ...]} (plus
+    {key_numbers: numbers} for a field with a number box), as the dialog holds them; `params`: the feature's
+    params before the change (not changed). Returns FieldSet(fields, active, params):
+
+    - a world axis (axis_std, dir_std, dir2_std) empties the picked-axis field it replaces;
+    - Surface drops an Extrude / Revolve / Sweep / Loft operation that surfaces lack (Remove, Intersect: Add);
+      Thin seeds its wall thicknesses and the draft switch seeds the draft angle (not in default_params);
+    - the field returned as `active` is the one the next click should fill: an "Up to ..." end's pick field, the
+      features or parts field of a Mirror / pattern, the curves of a Thin or surface Loft, a Sweep's lock
+      direction, a Loft's guides, a variable Fillet's vertices; None when nothing changes the active field;
+    - the params are the fields' params again (fields_to_params), which is why they are returned."""
+    p = dict(params or {})
+    out = {k: list(v) for k, v in fields.items()}
+    active = None
+    p[key] = value
+    if key == "type" and ftype in ("mirror", "linear_pattern", "circular_pattern"):
+        fk = "features" if value == "features" else "parts"
+        if fk in out:
+            active = fk
+    if key == "end" and ftype in ("extrude", "revolve"):
+        fk = _UPTO_FIELD.get(value)
+        if fk in out:
+            active = fk
+    if key == "creation" and ftype in ("extrude", "revolve", "sweep", "loft") and value == "surface" \
+            and p.get("op", "add") not in ("new", "add"):
+        p["op"] = "add"
+    if key == "creation" and ftype == "loft" and value == "surface" and "curves" in out:
+        active = "curves"
+    if key == "creation" and ftype in ("extrude", "revolve", "sweep") and value == "thin":
+        for k, v in (("thickness1", 1.0), ("thickness2", 0.0)):
+            p.setdefault(k, v)
+        if "curves" in out:
+            active = "curves"
+    if key == "control" and ftype == "sweep" and value == "lock" and "lock_dir" in out:
+        active = "lock_dir"
+    if key == "draft" and value and ftype == "extrude" and not p.get("draft_angle"):
+        p["draft_angle"] = 5.0
+    if key in _STD_AXIS_FIELD and value and _STD_AXIS_FIELD[key] in out:
+        out[_STD_AXIS_FIELD[key]] = []
+    fields_to_params(ftype, out, p)
+    if key == "guides_on" and value and "guides" in out:
+        active = "guides"
+    if key == "fillet_type" and value == "variable" and "vertices" in out:
+        active = "vertices"
+    return FieldSet(out, active, p)

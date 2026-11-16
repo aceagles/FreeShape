@@ -200,7 +200,7 @@ def test_a_body_that_is_not_step_or_brep_is_415_and_nothing_changes(root, tmp_pa
     for body in (b"hello", b"", b"{\"op\": \"undo\"}", b"\x00" * 100, b"PK\x03\x04" + b"x" * 50):
         status, reply = _post(r, doc_id, body, name="x.step")
         assert status == 415, (body, status, reply)
-    status, reply = _post(r, doc_id, _box_bytes(tmp_path), ctype="application/json", name="x.step")
+    status, reply = _post(r, doc_id, _box_bytes(tmp_path), ctype="text/plain", name="x.step")    # I11.2: JSON is {root, entry}
     assert status == 415
     assert r.ok("GET", f"/documents/{doc_id}/tabs") == before
 

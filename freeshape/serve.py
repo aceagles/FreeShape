@@ -37,7 +37,12 @@ Routes (an exact table; no part of a request is ever joined to a file path):
                                 "items": [item, ...]}, one item per pick, in order (I4.3; see "Refs" below)
     POST /documents/<id>/tabs/<tab>/import[?name=<file>&new_tab=1]  body: the STEP or BREP bytes (application/octet-stream,
                                 up to MAX_UPLOAD, this route only); one add_feature of an import feature (I11.1); reply
-                                {"document", "tab", "feature", "parts", "rebuilt", "tabs"}; 415 not STEP/BREP, 413, 423
+                                {"document", "tab", "feature", "parts", "rebuilt", "tabs"}; 415 not STEP/BREP, 413, 423;
+                                or the body {"root", "entry"} (application/json): the entry of a file root (I11.2)
+    GET  /files                                the file roots: {"roots": [{"name", "files", "max_upload"}]} (I11.2; see
+                                "File roots" below)
+    GET  /files/<root>[?dir=<folder>&q=<words>&offset=&limit=]  one folder of the root, or the search results
+    POST /files/<root>/rescan                  rebuild the root's index; reply {"root", "files"}
     POST /documents/<id>/tabs/<tab>/features/<fid>/dialog        open a feature dialog (I5.3; see "Dialogs" below)
     POST /documents/<id>/tabs/<tab>/features/dialog              open a dialog for a NEW feature (I6.1; "Dialogs")
     GET  /documents/<id>/tabs/<tab>/features/types[?picks=<JSON>]  feature types, label, standard, can_start (I6.1)
@@ -346,6 +351,21 @@ written into the Document's autosave (I2.6) before the session is dropped: the t
 feature (an existing one with the session's params, a new one added at the rollback bar), the open session is not
 changed, and recover brings it back as an unsaved edit. It stays in every later autosave of that Document while it is
 open on this server.
+
+File roots (I11.2). `--file-root NAME=PATH` (repeatable; NAME is 1 to 32 of a-z 0-9 -; PATH an existing folder) names a
+read-only folder of STEP files; see freeshape/file_roots.py. Nothing writes into a root, a request value is never joined
+to a path (`dir` is looked up in the index's folders, files are reached by opaque entry ids) and symlinks are left out.
+  GET /files             {"roots": [{"name", "files", "max_upload"}]}; builds each root's index on first use, off the loop
+  GET /files/<root>      {"root", "dir", "q", "dirs": [{"name", "path", "files"}], "entries": [{"id", "name", "file",
+                         "path", "size", "description", "tags", "licence", "authors", "url"}], "total", "offset",
+                         "limit"}. `dir` is a folder path from a "dirs" item ("" or absent: the root; 404 for any other
+                         value); `q` searches by name, tags and path (below `dir` when given; "dirs" is then empty);
+                         offset (0 or more) and limit (1 to 500, default 200; more is cut to 500) page "entries".
+                         "licence", "authors" and "url" are as the root's manifest.csv wrote them, or null.
+  POST /files/<root>/rescan  body {}; rebuilds the index; {"root", "files"}
+  POST .../tabs/<tab>/import with {"root", "entry"}: the entry's file is read through the index (409 if it is no longer a
+                         regular file inside the root, 413 over MAX_UPLOAD, 404 for an unknown root or entry) and imported
+                         as an upload named after the file; `new_tab` works as for an upload.
 """
 from __future__ import annotations
 
@@ -364,6 +384,7 @@ from pathlib import Path
 
 from . import autosave as AS
 from . import doc_lock
+from . import file_roots as FR
 
 BIND_HOST = "127.0.0.1"
 MAX_BODY = 1024 * 1024
@@ -751,6 +772,7 @@ class _Open:
 MAX_UPLOAD = 64 * 1024 * 1024   # the body limit of POST .../import alone (the component library's largest file is 52 MB)
 UPLOAD_DEADLINE = 120.0         # seconds for the whole body of that upload
 _IMPORT_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/import$")
+_FILES_PATH = re.compile(r"^/files(?:/([a-z0-9-]{1,32})(/rescan)?)?\Z")       # I11.2
 
 
 class _Server:
@@ -767,9 +789,14 @@ class _Server:
     def __init__(self, session=None, port=0, allow_origins=(), client_ttl=CLIENT_TTL, client_expired=None,
                  registry=None, root=None, folder=None, lock_program=None, data_dir=None,
                  autosave_interval=AUTOSAVE_INTERVAL, autosave_burst=AUTOSAVE_BURST,
-                 lock_timeout=doc_lock.DEFAULT_TIMEOUT):
+                 lock_timeout=doc_lock.DEFAULT_TIMEOUT, file_roots=()):
         from .session import SessionError
         self.session_error = SessionError
+        self.file_roots = {}                                     # I11.2: name -> FileRoot, read-only, named at start
+        for name, path in file_roots:
+            if name in self.file_roots:
+                raise ValueError(f"file root {name!r} is named twice")
+            self.file_roots[name] = FR.FileRoot(name, path)
         self.registry = registry
         self.root = os.path.realpath(root) if root is not None else None
         self.lock_program = lock_program
@@ -1235,6 +1262,10 @@ class _Server:
         m = _IMPORT_PATH.match(path)
         if m is not None:
             return "import", m.group(1), m.group(2), "POST"  # the body is the file's bytes, not JSON
+        m = _FILES_PATH.match(path)
+        if m is not None:
+            return "files." + ("rescan" if m.group(2) else "root" if m.group(1) else "list"), None, None, \
+                "POST" if m.group(2) else "GET"
         m = _DIALOG_PATH.match(path)
         if m is not None:
             verb = "open" if m.group(4) else ("new" if m.group(5) == "dialog" else m.group(5) or m.group(7))
@@ -1365,6 +1396,8 @@ class _Server:
             return self._json(200, {"documents": await self._off_loop(self._list_documents)})
         if route == "documents.create":
             return await self._create_document(body)
+        if route.startswith("files."):
+            return await self._files(route[6:], body, request)
         d = None
         if doc_id is None:                                       # an old route: it means the single Document
             d = self._single
@@ -1741,20 +1774,29 @@ class _Server:
         with ISO-10303-21; (STEP) or DBRep_DrawableShape (BREP); 413 over MAX_UPLOAD, from the Content-Length, before
         any of it is read; 423 on a read-only Document. `name` is shown only (see `step_import.clean_file_name`)."""
         from . import step_import
-        if (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower() != "application/octet-stream":
-            return self._fail(415, "Content-Type must be application/octet-stream")
+        ctype = (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        by_ref = ctype == "application/json"                         # I11.2: {root, entry} instead of the bytes
+        if ctype != "application/octet-stream" and not by_ref:
+            return self._fail(415, "Content-Type must be application/octet-stream or application/json")
         new_tab = request.query.get("new_tab", "0")
         if new_tab not in ("0", "1"):
             return self._fail(400, "new_tab must be 1 or 0")
-        raw = request.headers.get("Content-Length")
-        if request.headers.get("Transfer-Encoding") is not None or raw is None:
-            return self._fail(411, "Content-Length is required")
-        raw = raw.strip()
-        if not raw.isascii() or not raw.isdigit():
-            return self._fail(400, "Content-Length is not a number")
-        n = int(raw)
-        if n > MAX_UPLOAD:
-            return self._fail(413, f"body over {MAX_UPLOAD} bytes")
+        if by_ref:
+            ref = await self._file_ref(request)
+            if not isinstance(ref, tuple):
+                return ref                                           # the refusal response
+            root, eid = ref
+            n = 0
+        else:
+            raw = request.headers.get("Content-Length")
+            if request.headers.get("Transfer-Encoding") is not None or raw is None:
+                return self._fail(411, "Content-Length is required")
+            raw = raw.strip()
+            if not raw.isascii() or not raw.isdigit():
+                return self._fail(400, "Content-Length is not a number")
+            n = int(raw)
+            if n > MAX_UPLOAD:
+                return self._fail(413, f"body over {MAX_UPLOAD} bytes")
 
         def check():                                                 # refused before the body is read
             d.check_writable()
@@ -1762,16 +1804,23 @@ class _Server:
         kind = await self._in_session(d, check)
         if new_tab == "0" and kind != "studio":
             return self._fail(400, "the tab is not a Part Studio")
-        try:
-            data = await asyncio.wait_for(request.content.readexactly(n), UPLOAD_DEADLINE) if n else b""
-        except asyncio.TimeoutError:
-            return self._fail(408, "request body too slow")
-        except asyncio.IncompleteReadError:
-            return self._fail(400, "body shorter than Content-Length")
+        name = request.query.get("name")
+        if by_ref:
+            try:
+                name, data = await self._off_loop(root.read, eid, MAX_UPLOAD)
+            except FR.FileRootError as e:
+                return self._fail(e.status, str(e))
+        else:
+            try:
+                data = await asyncio.wait_for(request.content.readexactly(n), UPLOAD_DEADLINE) if n else b""
+            except asyncio.TimeoutError:
+                return self._fail(408, "request body too slow")
+            except asyncio.IncompleteReadError:
+                return self._fail(400, "body shorter than Content-Length")
         fmt = step_import.sniff(data)
         if fmt is None:
             return self._fail(415, "the body is not a STEP (ISO-10303-21;) or BREP (DBRep_DrawableShape) file")
-        fname = step_import.clean_file_name(request.query.get("name"), fmt)
+        fname = step_import.clean_file_name(name, fmt)
         client, _ = self._edit_meta(request.headers.get("X-Client-Id"), None)
         if new_tab == "1":
             if len(d.tab_ids) >= MAX_TABS:
@@ -1790,6 +1839,66 @@ class _Server:
             "document": d.id, "tab": next(t for t in tabs if t["id"] == tab), "rebuilt": rebuilt, "tabs": tabs,
             "feature": None if made is None else {"id": made.id, "name": made.name, "error": made.error},
             "parts": [{"id": p.id, "name": p.name} for p in after.parts if p.id not in held]})
+
+    # ------------------------------------------------------------------ file roots (I11.2)
+    def _file_root(self, name):
+        """The configured root `name` (the path regex already limited it to the name alphabet), or None."""
+        return self.file_roots.get(name)
+
+    async def _file_ref(self, request):
+        """The `(FileRoot, entry id)` of an import body {"root", "entry"}, or the refusal response: 400 for a body
+        that is not that shape, 404 for a root nothing configured. The entry id is checked when it is read."""
+        body = await self._body(request)
+        if not isinstance(body, dict):
+            return body
+        name, eid = body.get("root"), body.get("entry")
+        if not isinstance(name, str) or not isinstance(eid, str):
+            return self._fail(400, 'the body must be {"root": name, "entry": id}')
+        root = self._file_root(name)
+        if root is None:
+            return self._fail(404, "not found")
+        return root, eid
+
+    @staticmethod
+    def _page_number(request, key, default, low, high):
+        """An integer query value in `low`..`high` (a larger one is cut to `high`), or None when it is not a number."""
+        raw = request.query.get(key)
+        if raw is None:
+            return default
+        if not raw.isascii() or not raw.isdigit() or len(raw) > 9:
+            return None
+        n = int(raw)
+        return None if n < low else min(n, high)
+
+    async def _files(self, verb, body, request):
+        """GET /files, GET /files/<root>, POST /files/<root>/rescan. Index work runs on the session pool."""
+        if verb == "list":
+            roots = []
+            for r in self.file_roots.values():
+                index = await self._off_loop(r.index)
+                roots.append({"name": r.name, "files": len(index.items), "max_upload": MAX_UPLOAD})
+            return self._json(200, {"roots": roots})
+        root = self._file_root(_FILES_PATH.match(request.raw_path.split("?", 1)[0]).group(1))
+        if root is None:
+            return self._fail(404, "not found")
+        if verb == "rescan":
+            index = await self._off_loop(root.rescan)
+            return self._json(200, {"root": root.name, "files": len(index.items)})
+        offset = self._page_number(request, "offset", 0, 0, 10 ** 9)
+        limit = self._page_number(request, "limit", FR.DEFAULT_LIMIT, 1, FR.MAX_LIMIT)
+        if offset is None or limit is None:
+            return self._fail(400, f"offset must be 0 or more and limit 1 to {FR.MAX_LIMIT}")
+        folder, q = request.query.get("dir", ""), request.query.get("q", "")
+        if len(q) > 200:
+            return self._fail(400, "q is too long")
+        index = await self._off_loop(root.index)
+        if q.strip():
+            reply = await self._off_loop(index.search, q, folder, offset, limit)
+        else:
+            reply = await self._off_loop(index.listing, folder, offset, limit)
+        if reply is None:
+            return self._fail(404, "not found")                  # `dir` is no folder of the index
+        return self._json(200, {"root": root.name, "q": q, **reply, "offset": offset, "limit": limit})
 
     # ------------------------------------------------------------------ feature dialogs (I5.3)
     def _dialog_client(self, request):
@@ -2591,8 +2700,9 @@ class _Server:
 
 def make_server(session=None, port=0, allow_origins=(), client_ttl=CLIENT_TTL, client_expired=None, *,
                 registry=None, root=None, folder=None, lock_program=None, data_dir=None,
-                autosave_interval=AUTOSAVE_INTERVAL, autosave_burst=AUTOSAVE_BURST, lock_timeout=doc_lock.DEFAULT_TIMEOUT):
-    """A server on 127.0.0.1:`port` (bound, not yet serving). Over `session`: a single Document (the old routes
+                autosave_interval=AUTOSAVE_INTERVAL, autosave_burst=AUTOSAVE_BURST, lock_timeout=doc_lock.DEFAULT_TIMEOUT, file_roots=()):
+    """A server on 127.0.0.1:`port` (bound, not yet serving). `file_roots` is a list of (name, folder) pairs, the
+    read-only roots of GET /files (I11.2). Over `session`: a single Document (the old routes
     alias it); `folder` and `lock_program` (the CLI passes "browser") make it take the Document lock, so an
     in-process server given neither has no lock file. Over `registry` and `root` instead: a Documents root, where
     Documents are created under `root` and opened by id. Callers run `serve_forever` (it blocks) and, at the end,
@@ -2601,7 +2711,7 @@ def make_server(session=None, port=0, allow_origins=(), client_ttl=CLIENT_TTL, c
     autosave timers in seconds, `lock_timeout` the age at which a heartbeat is stale; tests drive `autosave_now()`,
     `expire_idle_now()` and `refresh_locks_now()` instead of waiting for them."""
     return _Server(session, port, allow_origins, client_ttl, client_expired, registry, root, folder, lock_program,
-                   data_dir, autosave_interval, autosave_burst, lock_timeout)
+                   data_dir, autosave_interval, autosave_burst, lock_timeout, file_roots)
 
 
 def close_all(server, session=None, wait=10.0):
@@ -2647,7 +2757,20 @@ def main(argv=None):
                     help="seconds between autosaves of an open Document that changed (default 30)")
     ap.add_argument("--lock-timeout", type=float, default=doc_lock.DEFAULT_TIMEOUT, metavar="SECONDS",
                     help="age of a Document lock's heartbeat after which it is stale (default 60)")
+    ap.add_argument("--file-root", action="append", default=[], metavar="NAME=PATH",
+                    help="offer a read-only folder of STEP files to the client's file explorer (repeatable; NAME is "
+                         "a-z, 0-9 and -, up to 32 characters)")
     args = ap.parse_args(argv)
+    file_roots = []
+    for value in args.file_root:
+        try:
+            file_roots.append(FR.parse_spec(value))
+        except ValueError as e:
+            print(f"freeshape serve: refusing --file-root {_clean(value, 120)!r}: {e}.", file=sys.stderr)
+            return 2
+    if len({n for n, _ in file_roots}) != len(file_roots):
+        print("freeshape serve: --file-root names must be different.", file=sys.stderr)
+        return 2
     if not args.autosave_interval > 0 or not args.lock_timeout > 0:
         print("freeshape serve: --autosave-interval and --lock-timeout must be more than 0.", file=sys.stderr)
         return 2
@@ -2687,7 +2810,8 @@ def main(argv=None):
             print(f"freeshape serve: {problem}", file=sys.stderr)
             return 1
         extra = {"registry": registry, "root": args.document}
-    extra.update(data_dir=data, autosave_interval=args.autosave_interval, lock_timeout=args.lock_timeout)
+    extra.update(data_dir=data, autosave_interval=args.autosave_interval, lock_timeout=args.lock_timeout,
+                 file_roots=file_roots)
     try:
         server = make_server(session, args.port, args.allow_origin, args.client_expiry, **extra)
     except OSError as e:

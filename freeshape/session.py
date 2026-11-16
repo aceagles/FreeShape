@@ -155,6 +155,7 @@ class FeatureDialog:
         self.texts = {}                                    # key -> text of a number field, as typed
         self.errors = {}                                   # key -> why the last input to it was refused
         self.specs = {s["key"]: s for s in DSC._schema_for(self.type, p) if s.get("key")}
+        self.preview = None      # the newest preview answered (I5.4): {"n", "data": wire bytes or None, "error"}
 
     # ---------------------------------------------------------------- reading
     def description(self):
@@ -502,6 +503,18 @@ class DocumentSession:
         except EngineError as e:
             raise SessionError(f"tab {tab!r}: {e}") from e
         return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"))
+
+    def preview_dialog(self, dialog):
+        """Ask the engine for a preview of `dialog`'s feature as it would be accepted now (I5.4): (n, Future of the
+        engine's preview answer, see contract.Engine.preview). A query: nothing changes. Raises SessionError when
+        the tab cannot take the request (gone, not open, a worker that cannot be restarted)."""
+        self._need_open(dialog.tab)
+        feature = dialog.result()
+        try:
+            return self._retry(dialog.tab, lambda: self._eng.submit_preview(dialog.tab, dialog.fid, feature["type"],
+                                                                             feature["params"]))
+        except EngineError as e:
+            raise SessionError(f"tab {dialog.tab!r}: {e}") from e
 
     def outputs_wire(self, tab):
         """`outputs(tab)` as engine wire bytes (freeshape.engine.wire), what a browser client decodes."""

@@ -390,6 +390,29 @@ class Engine(abc.ABC):
         its type starts with (a dialog fills in the ones an older feature lacks)}. EngineError for an unknown feature or
         a tab that is not a Part Studio."""
 
+    def preview(self, tab, feature, type, params) -> dict:
+        """What a Part Studio would look like with a feature's proposed parameters (I5.4), for an open dialog. A
+        QUERY, like `refs`: the committed model, the revision, the undo stack and the saved data are untouched, and
+        no tab that consumes this one is rebuilt. `feature` is the id of the stored feature being edited (the model
+        is rebuilt from the state before it, with `params` in its place, and stops there, as the desktop's dialog
+        preview does), or None for a new feature of `type` (added where a new feature goes, the rollback bar). For an
+        existing feature `type` must be its stored type. Returns
+            {"preview": n, the tab's preview number (1, 2, ... per tab, in the order the requests were made),
+             "feature": the feature id (None for a new one), "ok": bool,
+             "outputs": a StudioOutputs of the previewed model (its revision, features, can_undo and can_redo are
+                        the committed tab's; `errors` holds the previewed feature's error, if any), or None,
+             "error": None, or a message naming the feature when it cannot build ("Extrude 1: ..."),
+             "superseded": True only on a request a newer one replaced before it started (no outputs then)}.
+        A preview that cannot build is an answer with "ok": False, not an exception. EngineError for an unknown
+        feature, a type that does not match, or a tab that is not a Part Studio."""
+        return self.submit_preview(tab, feature, type, params)[1].result()
+
+    @abc.abstractmethod
+    def submit_preview(self, tab, feature, type, params) -> tuple:
+        """`preview` without waiting: (n, Future of the answer). The process executor keeps at most one preview of a
+        tab waiting behind the one its worker has: a newer request supersedes a waiting one, whose Future then
+        answers {"preview": its n, "superseded": True, "ok": False, "outputs": None, ...}."""
+
     # ------------------------------------------------------------------ the Link graph
     def rebuild_dependents(self, tab) -> list:
         """Rebuild the tabs that consume `tab`, each once, after the tabs they consume, and only those whose

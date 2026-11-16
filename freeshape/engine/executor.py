@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 import re
+from concurrent.futures import Future
 from types import SimpleNamespace
 
 import numpy as np
@@ -184,6 +186,9 @@ class _Tab:
     def feature_info(self, fid):
         raise EngineError(f"only a Part Studio has features (this tab is a {self.kind})")
 
+    def preview(self, fid, ftype, params):
+        raise EngineError(f"only a Part Studio has a feature preview (this tab is a {self.kind})")
+
 
 def apply_part_override(doc, edit):
     """The `set_part_override` edit on a Part Studio Document: a part's name / color (None puts it back) and
@@ -221,6 +226,7 @@ def apply_part_override(doc, edit):
 class StudioTab(_Tab):
     kind = "studio"
     OPS = STUDIO_OPS
+    previews = 0             # previews built on this tab (I5.4): a test counts the rebuilds a run of requests made
 
     def _refs(self):
         return [f for f in self.doc.features if links.feature_source(f) is not None and not f.get("suppressed")]
@@ -390,8 +396,45 @@ class StudioTab(_Tab):
 
     def outputs(self):
         self.sync()
+        return self._outputs_of(self.doc.state, dict(self.doc.errors), getattr(self.doc, "error_refs", {}))
+
+    def preview(self, fid, ftype, params):
+        """`Engine.preview` without its number: the model rebuilt with the proposed params (PartStudioDoc.preview,
+        the desktop dialog's replay). Reads only: the features, revision, undo stack and built state stay as they
+        are (compute only adds to the doc's rebuild cache). A failure is an answer, never an exception."""
+        self.sync()
+        doc = self.doc
+        if fid is None:
+            if not isinstance(ftype, str) or not ftype:
+                raise EngineError("preview: a new feature needs its type")
+            index = doc.insert_index()
+            used = {f["id"] for f in doc.features}
+            new_id = next(f"P{n}" for n in itertools.count(1) if f"P{n}" not in used)
+            feat = {"id": new_id, "type": ftype, "name": doc.next_name(ftype), "suppressed": False}
+        else:
+            stored = self._feature(fid)
+            if ftype is not None and ftype != stored["type"]:
+                raise EngineError(f"preview: feature {fid!r} is a {stored['type']}, not a {ftype}")
+            index = doc.features.index(stored)
+            feat = {k: v for k, v in stored.items() if k != "params"}
+        if not isinstance(params, dict):
+            raise EngineError("preview: params must be a dict")
+        feat = copy.deepcopy(feat)
+        feat["params"] = copy.deepcopy(params)
+        name = str(feat.get("name") or feat["type"])
+        self.previews += 1
+        try:
+            st, err = doc.preview(feat, index)
+            errors = {feat["id"]: str(err)} if err else {}
+            refs = {feat["id"]: doc._error_refs[feat["id"]]} if err and feat["id"] in getattr(doc, "_error_refs", {}) \
+                else {}
+            out = self._outputs_of(st, errors, refs)
+        except Exception as e:                       # noqa: BLE001  (a preview never takes the worker down)
+            return {"feature": fid, "ok": False, "outputs": None, "error": f"{name}: {type(e).__name__}: {e}"}
+        return {"feature": fid, "ok": not err, "outputs": out, "error": f"{name}: {err}" if err else None}
+
+    def _outputs_of(self, st, errors, error_refs):
         doc, enc = self.doc, self.engine.encoder
-        st = doc.state
         for p in st.parts.values():     # I3.7: hand each part its element-name map (encode.element_names reads it)
             if getattr(p, "named", None) is None:
                 p.named = st.named(p.id)
@@ -408,9 +451,9 @@ class StudioTab(_Tab):
         axes = {str(fid): plain(dict(ax)) for fid, ax in getattr(st, "axes", {}).items()}
         features, folders, rollback = feature_list(doc)
         return StudioOutputs(tab=self.tab, kind=self.kind, name=str(doc.name), revision=self.revision,
-                             errors=plain(dict(doc.errors)), consumes=self.consumes, parts=parts, context=context,
+                             errors=plain(dict(errors)), consumes=self.consumes, parts=parts, context=context,
                              sketches=sketches, connectors=connectors, variables=plain(dict(st.vars)),
-                             planes=planes, axes=axes, error_refs=plain(dict(getattr(doc, "error_refs", {}))),
+                             planes=planes, axes=axes, error_refs=plain(dict(error_refs)),
                              features=features, folders=folders, rollback=rollback,
                              can_undo=bool(doc.can_undo()), can_redo=bool(doc.can_redo()))
 
@@ -833,3 +876,12 @@ class InProcessEngine(Engine):
 
     def feature(self, tab, feature):
         return self._get(tab).feature_info(feature)
+
+    def submit_preview(self, tab, feature, type, params):
+        """Built here and now (the in-process executor has no queue to supersede in)."""
+        t = self._get(tab)
+        got = t.preview(feature, type, params)
+        t.preview_count = n = getattr(t, "preview_count", 0) + 1
+        fut = Future()
+        fut.set_result({"preview": n, **got})
+        return n, fut

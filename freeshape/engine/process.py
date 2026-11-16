@@ -27,7 +27,8 @@ spare worker is kept warm (`Spares`): a pool already started, its initializer ru
 no tab. Opening or restarting a tab takes the spare and starts the next one in the background.
 
 Threads: call the engine from one thread. `submit` returns a Future that completes on the pool's own thread;
-that callback only updates the tab's own record.
+that callback only updates the tab's own record. A preview that waited behind another (`_queue_preview`) is
+handed to the worker from that thread, with no inputs: the engine's thread sent them ahead of it.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ import multiprocessing
 import multiprocessing.connection
 import os
 import threading
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import CancelledError, Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
 from .. import blobstore
@@ -123,6 +124,9 @@ class _Tab:
         self.open_name = None    # the name open_tab_data was given (None: the data's own)
         self.lookup = None       # the blob lookup open_tab_data was given
         self.blobs = {}          # {key: bytes} the worker holds: sent from `lookup`, or returned by it (`tab_data`)
+        self.previews = 0        # preview numbers handed out (I5.4)
+        self.preview_busy = False    # a preview is with the worker (submitted to its pool, not yet answered)
+        self.preview_wait = None     # (arg, Future) of the one preview waiting behind it, or None
         self.lock = threading.Lock()
 
     def take_meta(self, meta):
@@ -152,6 +156,21 @@ def _file_sources(kind, d, path):
                 src["path"] = cand
         out.append(src)
     return out
+
+
+def _superseded(arg):
+    """The answer of a preview a newer request replaced before it started."""
+    return {"preview": arg["number"], "feature": arg["feature"], "ok": False, "outputs": None, "error": None,
+            "superseded": True}
+
+
+def _answer(out, result=None, error=None):
+    """Settle a preview's Future, unless its waiter has cancelled it already."""
+    if out.set_running_or_notify_cancel():
+        if error is not None:
+            out.set_exception(error)
+        else:
+            out.set_result(result)
 
 
 def _wait_exit(proc, timeout):
@@ -225,6 +244,8 @@ class ProcessEngine(Engine):
             raise
 
     def _submit(self, t, op, arg=None, seen=(), blobs=None):
+        if op == "preview":
+            return self._queue_preview(t, arg)
         self._check_alive(t)
         upstream, key = self._upstream(t, seen)
         self._record_inputs(t, upstream)
@@ -238,6 +259,71 @@ class ProcessEngine(Engine):
 
     def _call(self, t, op, arg=None, seen=()):
         return self._wait(t, self._submit(t, op, arg, seen))
+
+    # ------------------------------------------------------------------ previews (I5.4)
+    def _queue_preview(self, t, arg):
+        """The queue rule for previews. A tab has at most one preview with its worker and one waiting behind it:
+        a request while the worker has one becomes the waiting one, and supersedes the one that was waiting (it
+        never started; its Future answers `superseded`). The waiting one goes to the worker when the one before it
+        answers. So requests made faster than the worker builds cost at most two rebuilds per burst, and the
+        newest is always built. Returns a Future of the answer."""
+        self._check_alive(t)
+        upstream, key = self._upstream(t)
+        self._record_inputs(t, upstream)
+        if key != t.sent:
+            # the inputs as they are now go to the worker first, so a waiting preview can be sent with none (it
+            # runs after every call made before it, on the inputs the last of them handed over)
+            try:
+                t.pool.submit(W.call, "meta", None, upstream, key)
+            except BrokenProcessPool as e:
+                self._died(t, e)
+                raise TabErrored(t.tab, t.error) from e
+            t.sent = key
+        out = Future()
+        with t.lock:
+            busy = t.preview_busy
+            if busy:
+                old, t.preview_wait = t.preview_wait, (arg, out)
+            else:
+                t.preview_busy = True
+        if busy:
+            if old is not None:
+                _answer(old[1], _superseded(old[0]))
+            return out
+        self._send_preview(t, arg, out)
+        return out
+
+    def _send_preview(self, t, arg, out):
+        """Hand one preview to the worker; its answer goes to `out` and then the waiting one, if any, follows.
+        Runs on the engine's thread for the first and on the pool's thread for each that waited."""
+        try:
+            if t.pool is None:
+                raise EngineError(f"tab {t.tab!r} is closed")
+            if t.error is not None:
+                raise TabErrored(t.tab, t.error)
+            fut = t.pool.submit(W.call, "preview", arg)
+        except BaseException as e:      # noqa: BLE001 -- answered through `out`
+            fut = Future()
+            fut.set_exception(e)
+        fut.add_done_callback(lambda f: self._preview_done(t, f, out))
+
+    def _preview_done(self, t, fut, out):
+        err = None
+        try:
+            got = fut.result()
+        except BrokenProcessPool as e:
+            self._died(t, e)
+            err = TabErrored(t.tab, t.error)
+        except CancelledError:
+            err = EngineError(f"tab {t.tab!r} closed before its preview ran")
+        except BaseException as e:      # noqa: BLE001 -- handed to the caller
+            err = e
+        with t.lock:
+            nxt, t.preview_wait = t.preview_wait, None
+            t.preview_busy = nxt is not None
+        _answer(out, got if err is None else None, err)
+        if nxt is not None:
+            self._send_preview(t, *nxt)
 
     # ------------------------------------------------------------------ the Link graph
     def use_document(self, document_id, registry=None):
@@ -517,6 +603,19 @@ class ProcessEngine(Engine):
     def feature(self, tab, feature):
         """One stored feature and the studio's variables (contract.Engine.feature). A query."""
         return self._call(self._get(tab), "feature", feature)
+
+    def submit_preview(self, tab, feature, type, params):
+        """The model with a feature's proposed params, built by the tab's worker (contract.Engine.preview). A query:
+        no edit is logged, no revision moves and nothing is rebuilt. Returns (n, Future); see `_queue_preview` for
+        how a newer request supersedes one that has not started."""
+        t = self._get(tab)
+        if t.kind != "studio":
+            raise EngineError(f"only a Part Studio has a feature preview (this tab is a {t.kind})")
+        with t.lock:
+            t.previews += 1
+            n = t.previews
+        arg = {"feature": feature, "type": type, "params": copy.deepcopy(params), "number": n}
+        return n, self._submit(t, "preview", arg)
 
     # ------------------------------------------------------------------ crashes
     def errored(self, tab):

@@ -36,6 +36,7 @@ Routes (an exact table; no part of a request is ever joined to a file path):
                                 "items": [item, ...]}, one item per pick, in order (I4.3; see "Refs" below)
     POST /documents/<id>/tabs/<tab>/features/<fid>/dialog        open a feature dialog (I5.3; see "Dialogs" below)
     POST /documents/<id>/tabs/<tab>/dialog/<did>/update|accept|cancel
+    GET  /documents/<id>/tabs/<tab>/dialog/<did>/preview         the dialog's newest preview (I5.4), wire format
     POST /documents/<id>/save                  body: {} ; reply {"saved": [ids]}
     GET  /ws?client=<id>[&document=<id>]       the live channel (WebSocket, JSON text messages; `_Server._socket`)
   On a server over one Document folder the old un-prefixed routes stay as aliases for that Document:
@@ -105,6 +106,22 @@ At most MAX_DIALOGS (8) per client and MAX_DIALOGS_TOTAL (256) in all (409). Bod
           closes the dialog, 200 {"rebuilt", "revision"}, and the `changed` push every edit makes. 423 on a read-only
           Document; a refusal by the engine is a 400 and leaves the dialog open.
   cancel  POST .../dialog/<did>/cancel  body {}; closes it, changes nothing, 200 {"cancelled": true}.
+  preview (I5.4) Each update also asks the engine for a preview (contract.Engine.preview: the model rebuilt from the
+          state before the feature with the dialog's params, stopping there; a query, so no revision, undo step,
+          dirty flag or saved byte changes) and the update reply carries its number, "preview": n (null when it
+          could not be asked for). When it is ready the server sends, to the sockets of the client that owns the
+          dialog and are subscribed to its Document, and to no other socket,
+            {"type": "preview", "document", "tab", "dialog": did, "feature": fid, "preview": n, "revision": the
+             committed revision, "ok": bool, "outputs": bool, "error": null or a message naming the feature}
+          and the client fetches the model with
+            GET .../dialog/<did>/preview   (X-Client-Id as for every dialog route) 200 the previewed StudioOutputs in
+                the engine wire format, exactly as GET .../tabs/<tab>/outputs sends a tab's (the same decoder reads
+                it), with header X-Preview: n; 404 when the dialog has no preview with a model.
+          `ok` false with `outputs` true: the feature failed, and the model is the one before it. The server keeps
+          only the newest preview per dialog; an update made while a preview is building supersedes any update's
+          preview still waiting to start (the engine's queue rule), so a fast run of updates sends a `preview` for
+          the first and the last, not for each. Accept and cancel discard the preview, and one that finishes after
+          them is dropped.
 
 The live channel (I1.5). `GET /ws?client=<id>` (the id is 8..64 of letters, digits, `_`, `-`; the server makes one
 when it is missing) upgrades after the same Host and Origin checks as every route. `&document=<id>` subscribes to
@@ -179,7 +196,7 @@ _DOC_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})"
 _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POST", "tabs": "GET", "recover": "POST",
               "discard-autosave": "POST"}
 _DIALOG_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})"
-                          r"(?:/features/([A-Za-z0-9_.-]{1,64})/(dialog)|/dialog/([0-9a-f]{16})/(update|accept|cancel))$")
+                          r"(?:/features/([A-Za-z0-9_.-]{1,64})/(dialog)|/dialog/([0-9a-f]{16})/(update|accept|cancel|preview))$")
 MAX_DIALOGS = 8                 # open dialogs one client may hold
 MAX_DIALOGS_TOTAL = 256         # and all clients together
 _FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
@@ -1002,7 +1019,8 @@ class _Server:
             return "documents", None, None, None             # GET lists, POST creates
         m = _DIALOG_PATH.match(path)
         if m is not None:
-            return "dialog." + ("open" if m.group(4) else m.group(6)), m.group(1), m.group(2), "POST"
+            verb = "open" if m.group(4) else m.group(6)
+            return "dialog." + verb, m.group(1), m.group(2), "GET" if verb == "preview" else "POST"
         m = _DOC_PATH.match(path)
         if m is not None:
             doc_id, verb, tab, edge = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -1497,7 +1515,7 @@ class _Server:
         """The dialog routes; see "Dialogs" in the module docstring."""
         client = self._dialog_client(request)
         match = _DIALOG_PATH.match(request.raw_path.split("?", 1)[0])
-        extra = sorted(str(k) for k in body if not (verb == "update" and k == "values"))
+        extra = sorted(str(k) for k in (body or {}) if not (verb == "update" and k == "values"))
         if extra:
             return self._fail(400, f"{extra[0][:40]}: unknown field")
         if verb == "open":
@@ -1506,21 +1524,74 @@ class _Server:
         hit = None if table is None else table.get(match.group(5))
         if hit is None or hit[0] != d.id or hit[1].tab != tab:
             return self._fail(404, "not found")                  # another client's dialog is not found either
-        dialog = hit[1]
+        dialog, did = hit[1], match.group(5)
+        if verb == "preview":
+            got = dialog.preview
+            if got is None or got["data"] is None:
+                return self._fail(404, "no preview")
+            return self._send(200, got["data"], "application/octet-stream", [("X-Preview", str(got["n"]))])
         if verb == "cancel":
-            table.pop(match.group(5), None)
+            table.pop(did, None)
+            dialog.preview = None                                # the preview goes with the dialog
             return self._json(200, {"cancelled": True})
         if verb == "update":
             def work():
                 parsed = dialog.check(body.get("values"))
                 errors, active = dialog.apply(parsed)
-                return errors, active, self._dialog_view(dialog)
-            errors, active, view = await self._in_session(d, work)
-            return self._json(200, {**view, "active": active, "errors": errors})
+                try:
+                    n, fut = d.session.preview_dialog(dialog)
+                except self.session_error as e:                  # a preview that cannot be asked for: say why
+                    n, fut = None, e
+                return errors, active, self._dialog_view(dialog), n, fut
+            errors, active, view, n, fut = await self._in_session(d, work)
+            self._spawn(self._deliver_preview(d, tab, did, dialog, client, n, fut))
+            return self._json(200, {**view, "active": active, "errors": errors, "preview": n})
         feature = await self._in_session(d, dialog.result)       # accept
         rebuilt = await self._edit(d, tab, {"op": "replace_feature", "feature": feature}, client, None)
-        table.pop(match.group(5), None)
+        table.pop(did, None)
+        dialog.preview = None
         return self._json(200, {"rebuilt": rebuilt, "revision": d.revisions.get(tab)})
+
+    async def _deliver_preview(self, d, tab, did, dialog, client, n, fut):
+        """Wait for preview `n` of a dialog, keep it on the dialog and tell the client that owns the dialog, on its
+        own sockets only. A preview a newer one superseded is dropped, and so is any preview of a dialog that has
+        been accepted or cancelled (or whose Document closed) by the time it is ready."""
+        from .engine import wire
+        if isinstance(fut, Exception):
+            got = {"preview": n, "ok": False, "outputs": None, "error": f"{dialog.feature.get('name')}: {fut}"}
+        else:
+            try:
+                got = await asyncio.wrap_future(fut)
+            except Exception as e:                               # noqa: BLE001  (a worker that stopped, ...)
+                got = {"preview": n, "ok": False, "outputs": None, "error": f"{dialog.feature.get('name')}: {e}"}
+        if got.get("superseded") or not self._dialog_alive(client, did, dialog, d):
+            return
+        data = None
+        if got.get("outputs") is not None:
+            data = await self._off_loop(wire.to_wire, got["outputs"])
+        if not self._dialog_alive(client, did, dialog, d):
+            return
+        if dialog.preview is not None and n is not None and dialog.preview["n"] is not None \
+                and dialog.preview["n"] > n:
+            return                                               # an older answer after a newer one: not shown
+        error = got.get("error")
+        dialog.preview = {"n": n, "data": data, "error": error}
+        message = {"type": "preview", "document": d.id, "tab": tab, "dialog": did, "feature": dialog.fid,
+                   "preview": n, "revision": d.revisions.get(tab), "ok": bool(got.get("ok")),
+                   "outputs": data is not None, "error": error}
+        text = json.dumps(message)
+        for ws, owner in list(self._sockets.items()):
+            if owner == client and d.id in self._subs.get(ws, ()):
+                try:
+                    await asyncio.wait_for(ws.send_str(text), WS_SEND_TIMEOUT)
+                except Exception:                                # noqa: BLE001
+                    await ws.close()
+
+    def _dialog_alive(self, client, did, dialog, d):
+        """Is `dialog` still open as `did` of `client` on the open Document `d`?"""
+        table = self._client_dialogs(client)
+        hit = None if table is None else table.get(did)
+        return hit is not None and hit[1] is dialog and self.docs.get(d.id) is d
 
     @staticmethod
     def _dialog_view(dialog):

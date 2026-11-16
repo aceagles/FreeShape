@@ -342,6 +342,9 @@ class _Worker:
             return self.engine.refs(self.tab, arg)
         if op == "feature":                       # a query: one stored feature and the variables, changes nothing
             return self.engine.feature(self.tab, arg)
+        if op == "preview":                       # a query: the model with proposed params, changes nothing (I5.4)
+            got = self.engine._get(self.tab).preview(arg["feature"], arg["type"], arg["params"])
+            return {"preview": arg["number"], **got}
         if op == "data":
             return self.data()
         raise EngineError(f"unknown worker call {op!r}")

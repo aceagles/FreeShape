@@ -417,3 +417,110 @@ def test_the_feature_request_is_a_query_on_both_executors(tmp_path):
         finally:
             eng.close()
             P.SPARES.clear()
+
+
+# ---------------------------------------------------------------------- the preview (I5.4)
+
+async def _next_of(ws, kind):
+    """The next message of type `kind` on `ws`, skipping the others (hello, tabs)."""
+    while True:
+        msg = json.loads((await asyncio.wait_for(ws.receive(), 60)).data)
+        if msg["type"] == kind:
+            return msg
+
+
+def _preview_volume(r, doc_id, did, client=A):
+    status, body = r.request("GET", _path(doc_id, did, "preview"), client=client)
+    assert status == 200, body
+    out = wire.from_wire(body)
+    return round(sum(K.volume(K.shape_from_brep(p.brep)) for p in out.parts), 3), out
+
+
+def test_after_an_update_the_opening_socket_gets_the_preview_and_another_does_not(root):
+    r, doc_id, folder = _open(root)
+    committed, rev = _volume(r, doc_id), _revision(r, doc_id)
+    loop_run = lambda *a: asyncio.get_running_loop().run_in_executor(None, *a)      # noqa: E731
+
+    async def go():
+        async with aiohttp.ClientSession() as s:
+            # B first: if the server ever sent B the preview, B would have it before A has its own
+            async with s.ws_connect(f"{r.base}/ws?client={B}&document={doc_id}") as wb, \
+                    s.ws_connect(f"{r.base}/ws?client={A}&document={doc_id}") as wa:
+                await _next_of(wb, "hello")
+                await _next_of(wa, "hello")
+                did = (await loop_run(_dlg, r, doc_id))["dialog"]
+                got = await loop_run(_update, r, doc_id, did, {"depth": 80})
+                assert got["preview"] == 1
+                msg = await _next_of(wa, "preview")
+                assert msg == {"type": "preview", "document": doc_id, "tab": "T1", "dialog": did, "feature": "F2",
+                               "preview": 1, "revision": rev, "ok": True, "outputs": True, "error": None}
+                await wb.send_json({"type": "ping", "t": 1})
+                assert json.loads((await asyncio.wait_for(wb.receive(), 60)).data) == {"type": "pong", "t": 1}
+                # a preview that cannot build reaches A with the feature's name, and B still hears nothing
+                bad = await loop_run(_update, r, doc_id, did, {"end": "up_to_face"})
+                msg = await _next_of(wa, "preview")
+                assert msg["preview"] == bad["preview"] == 2
+                assert msg["ok"] is False and msg["error"].startswith("Extrude 1: ")
+                await wb.send_json({"type": "ping", "t": 2})
+                assert json.loads((await asyncio.wait_for(wb.receive(), 60)).data) == {"type": "pong", "t": 2}
+                return did
+    did = asyncio.run(asyncio.wait_for(go(), 120))
+    assert _volume(r, doc_id) == committed and _revision(r, doc_id) == rev       # nothing was committed
+    assert r.request("GET", _path(doc_id, did, "preview"), client=B)[0] == 404   # another client's dialog
+    assert r.server.docs[doc_id].session.has_unsaved() is False
+
+
+def test_the_preview_route_sends_the_previewed_model_and_cancel_and_accept_discard_it(root):
+    r, doc_id, _ = _open(root)
+    rev = _revision(r, doc_id)
+    loop_run = lambda *a: asyncio.get_running_loop().run_in_executor(None, *a)      # noqa: E731
+
+    async def go():
+        async with aiohttp.ClientSession() as s:
+            async with s.ws_connect(f"{r.base}/ws?client={A}&document={doc_id}") as ws:
+                await _next_of(ws, "hello")
+                did = (await loop_run(_dlg, r, doc_id))["dialog"]
+                assert (await loop_run(r.request, "GET", _path(doc_id, did, "preview")))[0] == 404   # none yet
+                assert (await loop_run(r.request, "POST", _path(doc_id, did, "preview"), {}))[0] == 405
+                await loop_run(_update, r, doc_id, did, {"depth": 40})
+                assert (await _next_of(ws, "preview"))["preview"] == 1
+                once = await loop_run(_preview_volume, r, doc_id, did)
+                await loop_run(_update, r, doc_id, did, {"depth": 80})
+                assert (await _next_of(ws, "preview"))["preview"] == 2
+                twice = await loop_run(_preview_volume, r, doc_id, did)
+                assert twice[0] == pytest.approx(2 * once[0], rel=1e-6) and twice[1].revision == rev
+                r.ok("POST", _path(doc_id, did, "cancel"), {})
+                assert (await loop_run(r.request, "GET", _path(doc_id, did, "preview")))[0] == 404
+                # accept: the preview goes with the dialog, and the committed model is the accepted one
+                did = (await loop_run(_dlg, r, doc_id))["dialog"]
+                await loop_run(_update, r, doc_id, did, {"depth": 60})
+                await _next_of(ws, "preview")
+                await loop_run(r.ok, "POST", _path(doc_id, did, "accept"), {})
+                assert (await loop_run(r.request, "GET", _path(doc_id, did, "preview")))[0] == 404
+    asyncio.run(asyncio.wait_for(go(), 120))
+    assert _revision(r, doc_id) == rev + 1
+
+
+def test_a_preview_that_finishes_after_cancel_is_dropped(root, tmp_path):
+    from test_engine_preview import _hold
+    r, doc_id, _ = _open(root)
+    loop_run = lambda *a: asyncio.get_running_loop().run_in_executor(None, *a)      # noqa: E731
+    gate = str(tmp_path / "go")
+
+    async def go():
+        async with aiohttp.ClientSession() as s:
+            async with s.ws_connect(f"{r.base}/ws?client={A}&document={doc_id}") as ws:
+                await _next_of(ws, "hello")
+                first = (await loop_run(_dlg, r, doc_id))["dialog"]
+                second = (await loop_run(_dlg, r, doc_id))["dialog"]        # opened now: open asks the worker
+                dialog = r.server.clients.get(A).data["dialogs"][first][1]
+                held = r.server.docs[doc_id].session._eng._get("T1").pool.submit(_hold, gate)
+                assert (await loop_run(_update, r, doc_id, first, {"depth": 80}))["preview"] == 1
+                await loop_run(r.ok, "POST", _path(doc_id, first, "cancel"), {})
+                assert (await loop_run(_update, r, doc_id, second, {"depth": 70}))["preview"] == 2
+                open(gate, "w").close()
+                assert await loop_run(held.result, 120) is True
+                msg = await _next_of(ws, "preview")              # preview 1 was built, then dropped: never sent
+                assert msg["dialog"] == second and msg["preview"] == 2
+                assert dialog.preview is None
+    asyncio.run(asyncio.wait_for(go(), 120))

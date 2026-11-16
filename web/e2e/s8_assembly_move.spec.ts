@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { openApp } from './support/app.ts'
 import { closeAll, idOf } from './support/docs.ts'
-import { openAssemblyTab, readAssembly, settledAssembly } from './support/assembly.ts'
+import { gizmoOf, openAssemblyTab, readAssembly, settledAssembly } from './support/assembly.ts'
 import { sendPointer } from './support/pointer.ts'
 import type { PointerKind } from './support/pointer.ts'
 
@@ -30,12 +30,12 @@ async function selectLeaf(page: Page) {
 
 test('a free leaf shows its gizmo and a fixed instance shows none', async ({ page }) => {
   await selectLeaf(page)
-  const shape = (await readAssembly(page)).gizmo!
+  const shape = await gizmoOf(page)
   expect(shape.instance).toBe(LEAF)
   expect(shape.axes.filter((a) => a.move && a.turn).length).toBeGreaterThanOrEqual(2)
   await page.locator('.instance-row[data-fixed] [data-instance]').first().click()
   await expect(page.getByTestId('gizmo')).toHaveCount(0)
-  expect((await readAssembly(page)).gizmo).toBeNull()
+  await expect.poll(async () => (await readAssembly(page)).gizmo).toBeNull()
 })
 
 for (const kind of ['touch', 'pen'] as PointerKind[]) {
@@ -46,7 +46,7 @@ for (const kind of ['touch', 'pen'] as PointerKind[]) {
     const base = (await readAssembly(page)).placements['I1']!
     let turned = false
     for (const axis of [2]) { // the pin stands along the leaf's own Z, so that ring turns it
-      const g = (await readAssembly(page)).gizmo!
+      const g = await gizmoOf(page)
       const a = g.axes[axis]!
       if (!a.turn) continue
       const o = g.origin
@@ -93,7 +93,7 @@ for (const kind of ['touch', 'pen'] as PointerKind[]) {
 test('the pad types an exact angle on the value label', async ({ page }) => {
   await selectLeaf(page)
   const before = await pose(page)
-  const g = (await readAssembly(page)).gizmo!
+  const g = await gizmoOf(page)
   const o = g.origin
   {
     const a = g.axes[2]! // the pin stands along the leaf's own Z

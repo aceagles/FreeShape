@@ -68,7 +68,11 @@ export class AssemblyController implements NavHost {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' })
     this.renderer.setClearColor(viewportBackground(), 1)
     this.pointer = new PointerModule(canvas, this)
-    this.gizmo = new GizmoController(this.view, selection, onGizmo)
+    // the DOM overlay and the test hook change together: report as soon as the shape does, not on the next frame
+    this.gizmo = new GizmoController(this.view, selection, (shape) => {
+      onGizmo(shape)
+      this.report()
+    })
     this.pointer.setHandleHandler(this.gizmo)
     wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
     this.unsubscribe = selection.subscribe(() => {

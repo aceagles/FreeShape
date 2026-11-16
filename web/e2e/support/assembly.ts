@@ -1,3 +1,4 @@
+import { expect } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import type { AssemblyReport } from '../../src/assembly/controller.ts'
 
@@ -23,4 +24,10 @@ export async function openAssemblyTab(page: Page, drawn = 1): Promise<AssemblyRe
 export async function settledAssembly(page: Page): Promise<AssemblyReport> {
   await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))
   return readAssembly(page)
+}
+
+/** The gizmo the hook reports, once it is there (or, with `absent`, once it is gone): never a one-shot read after a UI change. */
+export async function gizmoOf(page: Page): Promise<NonNullable<AssemblyReport['gizmo']>> {
+  await expect.poll(async () => (await readAssembly(page)).gizmo !== null).toBe(true)
+  return (await readAssembly(page)).gizmo!
 }

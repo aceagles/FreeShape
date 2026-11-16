@@ -10,7 +10,7 @@ import { canvasCentre, fingerDrag, fingerTap, sendPointer, twoFingers } from './
 import type { PointerStep } from './support/pointer.ts'
 import { openNewSketch, openSketchFeature, screenOf, settledSketch } from './support/sketch.ts'
 import { settled } from './support/viewport.ts'
-import { openAssemblyTab, readAssembly, settledAssembly } from './support/assembly.ts'
+import { gizmoOf, openAssemblyTab, readAssembly, settledAssembly } from './support/assembly.ts'
 
 /**
  * The states `sh scripts/web/shots.sh` captures: a name and the steps that reach the state from a fresh page.
@@ -71,7 +71,7 @@ export const SIZES = [
 /** Swings the finger `radians` about the gizmo's origin from the ring on the leaf's own Z (the pin's axis), then waits until the view shows the leaf turned; `release` lifts the finger, else it stays down. */
 async function turnRing(page: Page, radians: number, release: boolean): Promise<void> {
   const before = (await readAssembly(page)).placements['I2']!
-  const g = (await readAssembly(page)).gizmo!
+  const g = await gizmoOf(page)
   const a = g.axes[2]!
   if (!a.turn) throw new Error('the pin ring has no handle')
   const dx = a.turn.x - g.origin.x

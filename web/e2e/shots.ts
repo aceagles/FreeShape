@@ -1955,7 +1955,85 @@ export const shots: ShotState[] = [
       await settledAssembly(page)
     },
   },
+  {
+    // I11.14: the Export dialog set to save into a server folder (Tablet mode): the Destination row and the File name row
+    name: 'export-save',
+    mock: 'dialog',
+    steps: async (page) => {
+      await mockExportRoot(page, false)
+      await openApp(page)
+      await partRow(page, /./).first().click()
+      await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('radio', { name: 'STL' }).click()
+      await page.getByRole('radio', { name: 'Save to shared' }).click()
+      await settled(page)
+    },
+  },
+  {
+    // I11.14: the folder already holds that name: the Replace question over the dialog (Tablet mode)
+    name: 'export-replace',
+    mock: 'dialog',
+    steps: async (page) => {
+      await mockExportRoot(page, true)
+      await openApp(page)
+      await partRow(page, /./).first().click()
+      await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('radio', { name: 'STL' }).click()
+      await page.getByRole('radio', { name: 'Save to shared' }).click()
+      await page.getByRole('button', { name: 'Save to shared', exact: true }).click()
+      await page.getByRole('dialog', { name: 'Replace file?' }).waitFor()
+      await settled(page)
+    },
+  },
+  {
+    // I11.14: the same in Desktop mode, the name typed inline with its extension after it
+    name: 'desktop-export-save',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await mockExportRoot(page, false)
+      await openApp(page)
+      await partRow(page, /./).first().click()
+      await openDesktopSave(page)
+      await settled(page)
+    },
+  },
+  {
+    // I11.14: the Replace question in Desktop mode
+    name: 'desktop-export-replace',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await mockExportRoot(page, true)
+      await openApp(page)
+      await partRow(page, /./).first().click()
+      await openDesktopSave(page)
+      await page.getByRole('dialog', { name: 'Export' }).getByRole('button', { name: 'Save to shared', exact: true }).click()
+      await page.getByRole('dialog', { name: 'Replace file?' }).waitFor()
+      await settled(page)
+    },
+  },
 ]
+
+/** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */
+async function mockExportRoot(page: Page, taken: boolean): Promise<void> {
+  await page.route('**/files', (route) => route.fulfill({ json: { roots: [], export_roots: [{ name: 'shared', max_bytes: 268435456 }] } }))
+  await page.route('**/tabs/*/export', (route) =>
+    route.request().method() === 'POST'
+      ? route.fulfill(taken ? { status: 409, json: { error: 'exists', name: 'Bracket.stl' } } : { status: 201, json: { root: 'shared', name: 'Bracket.stl', bytes: 1, replaced: false, skipped: [] } })
+      : route.fallback(),
+  )
+}
+
+/** I11.14: Document > Export STL, Destination set to Save to shared. */
+async function openDesktopSave(page: Page): Promise<void> {
+  await page.locator('[data-region="top-bar"]').getByRole('button', { name: 'Document', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Export STL…' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Export' })
+  await dialog.getByRole('button', { name: /^Destination/ }).click()
+  await page.getByRole('menuitemcheckbox', { name: 'Save to shared' }).click()
+  await dialog.getByRole('textbox', { name: 'File name' }).waitFor()
+}
 
 /** I9.9: drag a selection box with the mouse from above left of the bracket to below its middle; `release` lets the button go. */
 async function mouseBox(page: Page, release: boolean): Promise<void> {

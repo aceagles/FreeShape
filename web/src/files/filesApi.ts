@@ -1,4 +1,4 @@
-import { request, tabPath } from '../net/api'
+import { ApiError, json, request, tabPath } from '../net/api'
 
 /** The STL resolution presets of the desktop's STL dialog (freeshape/export_options.py PRESETS), then Custom. */
 export type ExportPreset = 'coarse' | 'medium' | 'fine' | 'custom'
@@ -36,8 +36,24 @@ export interface ExportOptions {
   ascii?: boolean
 }
 
-/** Where an export goes. I11.14 adds a server folder ({ kind: 'root', root }) beside the download. */
-export type ExportDestination = { kind: 'download' }
+/** An export root the server lists (GET /files, I11.13): a folder an export can be saved into. */
+export interface ExportRoot {
+  name: string
+  max_bytes: number
+}
+
+/** The export roots the server was started with; none when it has none or cannot be asked. */
+export async function fetchExportRoots(): Promise<ExportRoot[]> {
+  try {
+    const r = await json<{ export_roots?: ExportRoot[] }>('GET', '/files')
+    return Array.isArray(r.export_roots) ? r.export_roots.filter((x) => typeof x?.name === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/** Where an export goes: the browser's download, or a file saved into a server folder (`replace` lets it take the place of one of that name). */
+export type ExportDestination = { kind: 'download' } | { kind: 'root'; root: string; name: string; replace?: boolean }
 
 export interface ExportResult {
   /** The file's name, as the server gave it. */
@@ -45,6 +61,14 @@ export interface ExportResult {
   bytes: number
   /** Names of surface bodies an STL left out. */
   skipped: string[]
+  /** The export root it was saved into; absent for a download. */
+  root?: string
+}
+
+/** The server's refusal of a save because the name is taken (409 `exists`), with the name it is taken under; else null. */
+export function existingName(e: unknown): string | null {
+  if (!(e instanceof ApiError) || e.status !== 409 || e.body.error !== 'exists') return null
+  return typeof e.body.name === 'string' ? e.body.name : ''
 }
 
 const rad = (deg: number): number => Math.round(((deg * Math.PI) / 180) * 1e5) / 1e5
@@ -63,6 +87,23 @@ export function exportQuery(o: ExportOptions): string {
     q.push(`ascii=${o.ascii === true ? 1 : 0}`)
   }
   return q.join('&')
+}
+
+/** The body of the save route (POST .../export, I11.13) for these options. */
+function saveBody(o: ExportOptions, to: { root: string; name: string; replace?: boolean }): Record<string, unknown> {
+  const body: Record<string, unknown> = { root: to.root, name: to.name, format: o.format }
+  if (o.parts !== undefined && o.parts.length > 0) body.parts = [...o.parts]
+  if (o.format === 'stl') {
+    const preset = o.preset ?? 'fine'
+    body.preset = preset
+    if (preset === 'custom') {
+      if (o.defl !== undefined) body.defl = o.defl
+      if (o.angleDeg !== undefined) body.angle = rad(o.angleDeg)
+    }
+    body.ascii = o.ascii === true
+  }
+  if (to.replace === true) body.replace = true
+  return body
 }
 
 /** The file name a Content-Disposition header gives (`filename*` first, then `filename`), or null. */
@@ -108,8 +149,9 @@ export function saveBlob(blob: Blob, name: string): void {
 }
 
 /**
- * Exports a tab as it is now (the route GET .../tabs/<tab>/export, I11.3) to `to`. The one place an export is requested:
- * a download hands the file to the browser, and the result carries the surface bodies the STL left out. A refusal is an ApiError.
+ * Exports a tab as it is now to `to`. The one place an export is requested: a download (GET .../tabs/<tab>/export, I11.3)
+ * hands the file to the browser; a root (POST the same path, I11.13) saves it in that server folder under the name the server
+ * returns. The result carries the surface bodies the STL left out. A refusal is an ApiError (see `existingName`).
  */
 export async function exportTab(doc: string, tab: string, options: ExportOptions, to: ExportDestination = { kind: 'download' }): Promise<ExportResult> {
   switch (to.kind) {
@@ -119,6 +161,11 @@ export async function exportTab(doc: string, tab: string, options: ExportOptions
       const name = dispositionName(res.headers.get('Content-Disposition')) ?? `export.${options.format}`
       saveBlob(blob, name)
       return { name, bytes: blob.size, skipped: skippedNames(res.headers.get('X-FreeShape-Skipped')) }
+    }
+    case 'root': {
+      const res = await request('POST', `${tabPath(doc, tab)}/export`, { body: saveBody(options, to) })
+      const r = (await res.json()) as { root?: string; name?: string; bytes?: number; skipped?: string[] }
+      return { name: r.name ?? to.name, bytes: r.bytes ?? 0, skipped: Array.isArray(r.skipped) ? r.skipped : [], root: r.root ?? to.root }
     }
   }
 }

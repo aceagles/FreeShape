@@ -8,6 +8,7 @@ import { PadDemo, padResult } from '../pad/PadDemo'
 import type { PadDemoOptions, PadResult } from '../pad/PadDemo'
 import { FeatureDialog } from '../dialog/FeatureDialog'
 import { ExportDialog } from '../files/ExportDialog'
+import { SavedNote } from '../files/SavedNote'
 import type { ExportFormat, ExportResult } from '../files/filesApi'
 import type { PreviewState } from '../dialog/useFeatureDialog'
 import { AssemblyPanel } from '../assembly/AssemblyPanel'
@@ -152,6 +153,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const [dialog, setDialog] = useState<DialogState | null>(null)
   // the Export dialog (card I11.9): over the panel like a feature dialog; `format` is the one a menu item names
   const [exporting, setExporting] = useState<{ tab: string; format?: ExportFormat } | null>(null)
+  // where a saved export went (I11.14): a note until it is dismissed or the next export
+  const [savedNote, setSavedNote] = useState<string | null>(null)
+  const dismissSaved = useCallback(() => setSavedNote(null), [])
   // the feature dialog open over the panel (the dialog area is its own: it carries Cancel and Accept), and the preview it drew
   const [editing, setEditing] = useState<{ tab: string; id: string; name: string; create?: { type: string; picks: Pick[] } } | null>(null)
   const [preview, setPreview] = useState<(PreviewState & { feature: string }) | null>(null)
@@ -478,6 +482,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const selectedParts = tabKind === 'studio' && studio !== null ? [...new Set(picked.items.flatMap((i) => (i.kind === 'part' && i.part !== null ? [i.part] : [])))].flatMap((id) => studio.parts.filter((p) => p.id === id).map((p) => ({ id, name: p.name }))) : []
   const finishExport = (r: ExportResult | null) => {
     setExporting(null)
+    setSavedNote(r !== null && r.root !== undefined ? `Saved ${r.name} to ${r.root}` : null)
     if (r !== null && r.skipped.length > 0) failText('Surface bodies left out', `${r.name} was saved without ${r.skipped.join(', ')}: an STL holds solid bodies only, and ${r.skipped.length === 1 ? 'this one is a surface' : 'these are surfaces'}.`)
   }
   // the Desktop feature toolbar's buttons that are not features: the ones the client has; the rest are disabled there
@@ -622,6 +627,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           menu={{ commands, state: menuState }}
           narrow={width < NARROW_BELOW}
         />
+        {savedNote !== null && <SavedNote text={savedNote} onDismiss={dismissSaved} />}
         {readOnly && <ReadOnlyBanner name={name} holder={holder} onTakeOver={() => setModal({ kind: 'takeover' })} />}
         {sketchHere && desktop ? (
           <DesktopToolbar strip="sketch" layout={DESKTOP_SKETCH_TOOLBAR} stateOf={() => 'ok'} commands={sketchCommands} onStart={() => {}} />
@@ -736,6 +742,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 documentId={doc.id}
                 tab={exporting.tab}
                 tabKind={tabKind}
+                tabName={tabs.find((t) => t.id === exporting.tab)?.name ?? ''}
                 format={exporting.format}
                 selected={selectedParts}
                 partCount={studio?.parts.length ?? 0}

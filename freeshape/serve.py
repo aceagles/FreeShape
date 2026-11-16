@@ -362,6 +362,27 @@ dimension as its "expr", as the desktop does.
                 edge that is neither straight nor circular on the plane is an error. An edge already in the sketch is
                 not added again (no step; "construction" given sets the flag of the one there). made {"entity": id
                 (a point id for an edge seen end-on), "points": [its point ids], "reused": bool}.
+Mirror and patterns (I14.1). The desktop's three copy tools (sketch_ops.mirror, linear_pattern, circular_pattern); each
+answers sketch.changed with "made" and is one undo step; nothing is stored but the copies (no mirror or pattern object).
+Ids are entity ids (a point id is refused); a count, spacing or angle is a number or an expression (not kept); every
+refusal is the error message naming the field, and the sketch, its status and both stacks are as they were.
+  sketch.mirror {"type": "sketch.mirror", "ids": [entity id, ...], "line": a line's id that is not in ids,
+                "preview"?: bool}  copies linked by one symmetric constraint per point pair naming the line, equal for
+                circles; points on the line are shared. made {"entities": [the new ids]}.
+  sketch.linear_pattern {"type": "sketch.linear_pattern", "ids", "line": the direction line, "at": [u, v] (the tapped
+                point: the copies go towards its side of the line), "count"?: 2 to 500, default 3, "spacing"?: default
+                1.25 times the selection's extent along the direction, at least "floor" (0 if left out), zero and
+                negative allowed, "floor"?: number, "preview"?}  count - 1 plain copies keeping the shape constraints
+                among the copied items. made {"entities", "count", "spacing", "direction": [du, dv]}.
+  sketch.circular_pattern {"type": "sketch.circular_pattern", "ids", "centre": [u, v] or {"at", "point"} (that point's
+                position is used, not a link), "count"?: 2 to 500, default 6, "angle"?: degrees, default 360, zero and
+                negative allowed, "preview"?}  360 divides by the count, any other angle by count - 1. made
+                {"entities", "count", "angle", "centre": [u, v]}.
+  "preview": true runs the same call on a copy of the sketch and answers {"type": "sketch.previewed", "for": the message
+                type, "made": as above, "outlines": [[[u, v], ...], ...]} (Sketch.polylines(eid, 24) of each new entity
+                in made.entities order; text gives one per glyph outline); no step, no revision change, no broadcast.
+                The same message without preview makes the same entity ids. Refused during a drag like the steps.
+Limits: count at most 500, and the copies must fit 5000 points and entities (an error naming "count").
 When the client's registry entry expires, or the Document closes or the server stops gracefully, an unfinished sketch is
 written into the Document's autosave (I2.6) before the session is dropped: the tab's autosaved data holds the sketch
 feature (an existing one with the session's params, a new one added at the rollback bar), the open session is not
@@ -2584,6 +2605,9 @@ class _Server:
                       "sketch.fits": {"selection"}, "sketch.dimension": {"picks", "pos", "kind", "value"},
                       "sketch.dimension.set": {"constraint", "value", "pos"}, "sketch.fillet": {"point", "radius"},
                       "sketch.trim": {"entity", "at"}, "sketch.use_edge": {"pick", "construction"},
+                      "sketch.mirror": {"ids", "line", "preview"},
+                      "sketch.linear_pattern": {"ids", "line", "at", "count", "spacing", "floor", "preview"},
+                      "sketch.circular_pattern": {"ids", "centre", "count", "angle", "preview"},
                       "sketch.drag.begin": {"point", "entity", "at"},
                       "sketch.drag.move": {"at", "t"}, "sketch.drag.end": {"cancel"}}
 
@@ -2656,6 +2680,10 @@ class _Server:
                     made = sk.trim(body)
                 elif kind == "sketch.use_edge":
                     made = sk.use_edge(body, got)
+                elif kind in ("sketch.mirror", "sketch.linear_pattern", "sketch.circular_pattern"):
+                    made = getattr(sk, kind[7:])(body)
+                    if body.get("preview"):                      # nothing changed: only this client is answered
+                        return {"type": "sketch.previewed", "for": kind, **made}
                 elif kind == "sketch.unconstrain":
                     sk.unconstrain(body)
                 elif kind == "sketch.delete":

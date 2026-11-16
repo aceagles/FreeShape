@@ -789,6 +789,22 @@ def extent_along(sk: Sketch, ids, d):
     return (max(vals) - min(vals)) if vals else 0.0
 
 
+def pattern_direction(sk: Sketch, ids, line: str, uv):
+    """The direction of a linear pattern: the picked line's p2 - p1, turned towards the side `uv` was clicked on
+    (away from the middle of the selection), not the way the line happened to be drawn."""
+    e = sk.entities[line]
+    d = sk.P(e["p2"]) - sk.P(e["p1"])
+    pts = np.vstack([o for i in ids for o in sk.polylines(i, 16)])
+    if d @ (np.asarray(uv, float) - pts.mean(axis=0)) < 0:
+        d = -d
+    return d
+
+
+def pattern_spacing(sk: Sketch, ids, d, floor: float):
+    """The spacing a linear pattern opens with: 1.25 times the selection's extent along `d`, at least `floor`."""
+    return round(max(extent_along(sk, ids, d) * 1.25, floor), 3)
+
+
 # --------------------------------------------------------------------------- used (projected) model edges
 # The Qt-free half of the sketcher's Use tool (I7.1). The desktop's Sketcher and the engine's `project_edge`
 # request both go through these, so an edge is brought into a sketch the same way in both.

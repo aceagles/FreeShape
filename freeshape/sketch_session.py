@@ -35,6 +35,7 @@ MAX_CONSTRAINTS = 5000          # constraints one sketch may hold through a sess
 MAX_STEP_CONSTRAINTS = 64       # constraints one add message may attach
 MAX_EXPR = 200                  # characters of an expression a dimension or fillet may take
 MAX_IDS = 1000                  # ids one delete or construction message may name
+MAX_PATTERN_COUNT = 500         # instances one linear or circular pattern may make (the desktop has no limit)
 MAX_COORD = 1e9                 # largest absolute coordinate a pick may give (mm)
 
 SHAPES = {                      # shape -> number of picks, in the order the desktop's tool is clicked
@@ -206,17 +207,19 @@ class SketchSession:
         self.redo_stack.clear()
         return out
 
-    def _check_size(self):
-        if len(self.sk.points) + len(self.sk.entities) > MAX_ITEMS:
+    def _check_size(self, sk=None):
+        sk = self.sk if sk is None else sk
+        if len(sk.points) + len(sk.entities) > MAX_ITEMS:
             raise SketchError(f"a sketch edited here holds at most {MAX_ITEMS} points and entities")
-        if len(self.sk.constraints) > MAX_CONSTRAINTS:
+        if len(sk.constraints) > MAX_CONSTRAINTS:
             raise SketchError(f"a sketch edited here holds at most {MAX_CONSTRAINTS} constraints")
 
-    def _check_finite(self):
-        for pid, p in self.sk.points.items():
+    def _check_finite(self, sk=None):
+        sk = self.sk if sk is None else sk
+        for pid, p in sk.points.items():
             if not all(math.isfinite(float(x)) for x in p):
                 raise SketchError("the solve did not converge to a finite position")
-        for e in self.sk.entities.values():
+        for e in sk.entities.values():
             if "r" in e and not math.isfinite(float(e["r"])):
                 raise SketchError("the solve did not converge to a finite radius")
 
@@ -691,6 +694,121 @@ class SketchSession:
             self.undo_stack.pop()
             self.redo_stack[:] = redo
         return out
+
+    # ------------------------------------------------------------------ mirror and patterns (I14.1)
+    def _copy_ids(self, body):
+        """The entity ids a mirror or pattern copies: a list of 1 to MAX_IDS ids, each an entity of the sketch
+        (a point id is refused: the desktop copies only the entities of its selection)."""
+        ids = _ids(body.get("ids"), "ids")
+        for i, x in enumerate(ids):
+            if x not in self.sk.entities:
+                raise SketchError(f"ids[{i}]: no such entity in the sketch")
+        return ids
+
+    def _copy_line(self, body, ids, what):
+        """The mirror or direction line: a line of the sketch that is not one of `ids`, with a length."""
+        lid = body.get("line")
+        e = self.sk.entities.get(lid) if isinstance(lid, str) else None
+        if e is None or e["type"] != "line":
+            raise SketchError(f"line: must be the id of a line of the sketch to {what}")
+        if lid in ids:
+            raise SketchError(f"line: the line to {what} is one of the ids to copy")
+        if float(np.linalg.norm(self.sk.P(e["p1"]) - self.sk.P(e["p2"]))) < 1e-9:
+            raise SketchError("line: the line has no length")
+        return lid
+
+    def _copy_count(self, body, default):
+        v = self._number(body.get("count", default), "count", positive=False)
+        n = int(round(v))
+        if not 2 <= n <= MAX_PATTERN_COUNT:
+            raise SketchError(f"count: must be a whole number from 2 to {MAX_PATTERN_COUNT}")
+        return n
+
+    def _copy_room(self, ids, copies):
+        """Refuse, before anything is copied, a pattern whose copies would not fit MAX_ITEMS."""
+        pts = {p for i in ids for p in self.sk.entity_points(i)}
+        if len(self.sk.points) + len(self.sk.entities) + copies * (len(ids) + len(pts)) > MAX_ITEMS:
+            raise SketchError(f"count: the copies would make the sketch hold more than {MAX_ITEMS} points and "
+                              "entities")
+
+    def _copy_run(self, body, build):
+        """Run `build(sk)` (which makes the copies on `sk` and returns the `made` dict) as one step, or, when
+        body["preview"] is true, on a copy of the sketch: then nothing of the session changes (no step, no status,
+        neither stack) and the answer is {"made", "outlines"}, the outline of each new entity (Sketch.polylines(eid, 24),
+        sketch coordinates; text gives one per glyph outline), in the order of made["entities"]. Ids are the sketch's
+        next free numbers either way, so a preview names the entities the real call makes."""
+        preview = body.get("preview", False)
+        if not isinstance(preview, bool):
+            raise SketchError("preview: must be true or false")
+        if not preview:
+            def change():
+                self.sk = Sketch.from_dict(self.sk.to_dict())      # next free numbers, as the preview has them
+                return build(self.sk)
+            return self._step(change)
+        self._not_dragging()
+        work = self.sk.copy()
+        try:
+            made = build(work)
+            self._check_size(work)
+            work.solve()
+            self._check_finite(work)
+            outlines = [[[float(x), float(y)] for x, y in line] for eid in made["entities"]
+                        for line in work.polylines(eid, 24)]
+        except SketchError:
+            raise
+        except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, ArithmeticError) as e:
+            raise SketchError(str(e) if isinstance(e, ValueError) and str(e) else
+                              f"the change could not be made ({type(e).__name__})") from None
+        return {"made": made, "outlines": outlines}
+
+    def mirror(self, body):
+        """{"ids": [entity id, ...], "line": a line's id, "preview"?: bool}: mirror the entities about the line
+        (sketch_ops.mirror: linked to their sources by symmetric constraints, equal for circles, points on the line
+        shared), as one step. Returns made {"entities": [the new ids]}; with preview true {"made", "outlines"} and
+        nothing changes."""
+        _only(body, {"ids", "line", "preview"}, "mirror")
+        ids = self._copy_ids(body)
+        line = self._copy_line(body, ids, "mirror about")
+        return self._copy_run(body, lambda sk: {"entities": OPS.mirror(sk, ids, line)})
+
+    def linear_pattern(self, body):
+        """{"ids": [...], "line": the direction line, "at": [u, v] the tapped point (it picks the side of the line the
+        copies go towards: sketch_ops.pattern_direction), "count"?: whole number or expression (default 3, 2 to
+        MAX_PATTERN_COUNT), "spacing"?: number or expression (default sketch_ops.pattern_spacing with `floor`;
+        zero and negative are accepted), "floor"?: number (default 0), "preview"?: bool}: count - 1 plain copies of
+        the entities, spacing apart along the direction (sketch_ops.linear_pattern), as one step. Returns made
+        {"entities", "count", "spacing", "direction": [du, dv]}; with preview {"made", "outlines"}."""
+        _only(body, {"ids", "line", "at", "count", "spacing", "floor", "preview"}, "linear_pattern")
+        ids = self._copy_ids(body)
+        line = self._copy_line(body, ids, "pattern along")
+        uv = _uv(body.get("at"), "at")
+        n = self._copy_count(body, 3)
+        floor = self._number(body.get("floor", 0), "floor", positive=False)
+        if floor < 0:
+            raise SketchError("floor: must be 0 or more")
+        d = OPS.pattern_direction(self.sk, ids, line, uv)
+        spacing = self._number(body["spacing"], "spacing", positive=False) if "spacing" in body \
+            else OPS.pattern_spacing(self.sk, ids, d, floor)
+        self._copy_room(ids, n - 1)
+        direction = [float(d[0]), float(d[1])]
+        return self._copy_run(body, lambda sk: {"entities": OPS.linear_pattern(sk, ids, d, n, spacing),
+                                                "count": n, "spacing": float(spacing), "direction": direction})
+
+    def circular_pattern(self, body):
+        """{"ids": [...], "centre": [u, v] or {"at": [u, v], "point": id} (the point's position is used: a position,
+        not a link), "count"?: (default 6, 2 to MAX_PATTERN_COUNT), "angle"?: degrees, a number or expression
+        (default 360; zero and negative are accepted), "preview"?: bool}: count - 1 plain copies turned about the
+        centre (sketch_ops.circular_pattern: 360 divides by the count, any other angle by the count less one), as one
+        step. Returns made {"entities", "count", "angle", "centre": [u, v]}; with preview {"made", "outlines"}."""
+        _only(body, {"ids", "centre", "count", "angle", "preview"}, "circular_pattern")
+        ids = self._copy_ids(body)
+        uv, pid = self._parse_pick(body.get("centre"), "centre")
+        centre = [float(v) for v in self.sk.P(pid)] if pid is not None else uv
+        n = self._copy_count(body, 6)
+        angle = self._number(body.get("angle", 360.0), "angle", angle=True, positive=False)
+        self._copy_room(ids, n - 1)
+        return self._copy_run(body, lambda sk: {"entities": OPS.circular_pattern(sk, ids, centre, n, angle),
+                                                "count": n, "angle": float(angle), "centre": centre})
 
     # ------------------------------------------------------------------ undo
     def undo(self):

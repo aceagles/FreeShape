@@ -1651,13 +1651,10 @@ class Sketcher:
                     self.set_tool("select")
                     return True
                 e_ = sk.entities[axis]
-                d = sk.P(e_["p2"]) - sk.P(e_["p1"])
                 # copies go towards the side you clicked on (away from the selection), not the
                 # way the line happened to be drawn
-                pts = np.vstack([o for i in sel for o in sk.polylines(i, 16)])
-                if d @ (uv - pts.mean(axis=0)) < 0:
-                    d = -d
-                vals = {"count": 3, "spacing": round(max(OPS.extent_along(sk, sel, d) * 1.25, self._nice(vp, 40)), 3)}
+                d = OPS.pattern_direction(sk, sel, axis, uv)
+                vals = {"count": 3, "spacing": OPS.pattern_spacing(sk, sel, d, self._nice(vp, 40))}
                 run = lambda: OPS.linear_pattern(self.sk, sel, d, vals["count"], vals["spacing"])
                 anchor = sk.P(e_["p2"])
                 self._prompt(vp, anchor, "Number of instances", 3, lambda v: (vals.update(count=int(round(v))), run()),

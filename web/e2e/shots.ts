@@ -39,6 +39,22 @@ async function padKeys(page: Page, ...names: string[]): Promise<void> {
   for (const n of names) await page.getByTestId('pad').getByRole('button', { name: n, exact: true }).click()
 }
 
+/** Double tap the bracket's Fillet 1, tap its first selection field, and wait until the view picks for it. */
+async function openFilletField(page: Page): Promise<void> {
+  await openApp(page)
+  await featureRow(page, 'Fillet 1').dblclick()
+  const field = page.locator('[data-testid^="sel-"]').first()
+  await field.getByTestId('sel-chip').first().waitFor()
+  await field.getByRole('button', { name: /Tap, then pick/ }).click()
+  await page.locator('[data-testid^="sel-"][data-active]').first().waitFor()
+  await settled(page)
+}
+async function penPickEdge(page: Page): Promise<void> {
+  const spot = await edgeSpot(page, page.request, 'pen')
+  await sendPointer(page, [{ phase: 'down', kind: 'pen', id: 7, x: spot.x, y: spot.y }])
+  await sendPointer(page, [{ phase: 'up', kind: 'pen', id: 7, x: spot.x, y: spot.y, pressure: 0 }])
+}
+
 /** Sizes of the screen, as the layout has them (key = the mock's size key). */
 export const SIZES = [
   { key: '1024', width: 1024, height: 768 },
@@ -137,6 +153,31 @@ export const shots: ShotState[] = [
       await padKeys(page, '5', '0', 'Enter')
       await page.waitForFunction(() => (window.__freeshapeViewport?.preview ?? 0) >= 1)
       await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'fillet-dialog-field',
+    mock: 'dialog', // the bracket's Fillet 1 with its edge field active: chips with a remove button each, Multi on and no Clear in the view's chip, the field's edges highlighted
+    steps: async (page) => {
+      await openFilletField(page)
+      const before = (await page.evaluate(() => window.__freeshapeViewport?.preview ?? 0)) as number
+      await penPickEdge(page)
+      await page.waitForFunction((n) => (window.__freeshapeViewport?.preview ?? 0) > n, before)
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    name: 'fillet-dialog-refused',
+    mock: 'dialog', // a pick the server refuses (here the refs route is made to answer with its own wording): the reason under the field, nothing added
+    steps: async (page) => {
+      await page.route('**/refs', (route) =>
+        route.fulfill({ json: { document: 'x', tab: 'T1', revision: 1, items: [{ ok: false, code: 'wrong_kind', reason: 'A vertex cannot be used here; an edge is needed' }] } }),
+      )
+      await openFilletField(page)
+      await penPickEdge(page)
+      await page.locator('.dlg-message').waitFor()
     },
     after: closeAllDiscard,
   },

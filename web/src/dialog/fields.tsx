@@ -4,6 +4,7 @@ import { usePadEditor } from '../pad/usePadEditor'
 import { Icon, paths } from '../shell/icons'
 import type { FieldSpec, FieldValue, SelItem } from './dialogApi'
 import { isSegmented, labelOf, numberText } from './schema'
+import { countOf } from './selectionFields'
 
 /** A row's label, and under it the row, its message and its info text. */
 function Row({ label, active, children, message, info }: { label?: string; active?: boolean; children: React.ReactNode; message?: string | null; info?: string | null }) {
@@ -162,14 +163,57 @@ export function CheckRow({ spec, on, onToggle }: { spec: FieldSpec; on: boolean;
   )
 }
 
-/** A selection row: read-only in this card. It names what the feature holds and says how many; picking is a later card. */
-export function SelectionRow({ spec, items }: { spec: FieldSpec; items: readonly SelItem[] }) {
-  const names = items.map((i) => (i.name ? i.name : (i.kind ?? 'item')))
+export const NUMBER_PER_ITEM_TEXT = 'A number for each item can only be set on the desktop for now.'
+
+/**
+ * A selection row (card I5.7). The field shows its items as chips, each with its name and a remove button, and the count
+ * ("1 item", as in the layout). Tapping the field makes it the active one: the view picks for it and the field is drawn
+ * with the accent border of the layout's active number. A field with a number per item is read-only and says so.
+ */
+export function SelectionRow({
+  spec,
+  items,
+  label,
+  active,
+  readOnly,
+  message,
+  onActivate,
+  onRemove,
+}: {
+  spec: FieldSpec
+  items: readonly SelItem[]
+  /** What a chip says for each item. */
+  label: (item: SelItem) => string
+  active: boolean
+  readOnly: boolean
+  message: string | null
+  onActivate: () => void
+  onRemove: (index: number) => void
+}) {
+  const name = labelOf(spec)
+  const hint = readOnly ? NUMBER_PER_ITEM_TEXT : (spec.tip ?? null)
   return (
-    <Row label={labelOf(spec)} info={spec.tip ?? null}>
-      <div className="dlg-field dlg-field-readonly" data-empty={items.length === 0 ? '' : undefined}>
-        <span className="dlg-sel-names">{items.length === 0 ? 'Nothing selected' : names.join(', ')}</span>
-        {items.length > 0 && <span className="dlg-sel-count">{items.length === 1 ? '1 item' : `${items.length} items`}</span>}
+    <Row label={name} active={active} message={message} info={hint}>
+      <div className="dlg-sel" role="group" aria-label={name} data-active={active ? '' : undefined} data-readonly={readOnly ? '' : undefined} data-empty={items.length === 0 ? '' : undefined} data-testid={`sel-${spec.key}`}>
+        <div className="dlg-chips">
+          {items.map((item, i) => {
+            const text = label(item)
+            return (
+              <span key={`${i}:${text}`} className="dlg-chip" data-testid="sel-chip">
+                <span className="dlg-chip-name">{text}</span>
+                {!readOnly && (
+                  <button type="button" className="dlg-chip-x" aria-label={`Remove ${text}`} onClick={() => onRemove(i)}>
+                    <Icon d={paths.close} px={16} sw={2} />
+                  </button>
+                )}
+              </span>
+            )
+          })}
+        </div>
+        <button type="button" className="dlg-sel-tap" disabled={readOnly} aria-pressed={active} aria-label={`${name}, ${countOf(items.length)}. ${active ? 'Picking in the view: tap to stop' : 'Tap, then pick in the view'}`} onClick={onActivate}>
+          <span className="dlg-sel-hint">{items.length === 0 ? (active ? 'Pick in the view' : 'Nothing selected') : active ? 'Picking in the view' : ''}</span>
+          {items.length > 0 && <span className="dlg-sel-count">{countOf(items.length)}</span>}
+        </button>
       </div>
     </Row>
   )

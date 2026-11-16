@@ -1,9 +1,13 @@
 import { useState } from 'react'
 import type { ConnectionStore } from '../net/connection'
+import type { SelectionStore } from '../selection/store'
+import type { StudioOutputs } from '../wire'
 import { DialogArea } from '../shell/DialogArea'
 import { Icon, paths } from '../shell/icons'
 import { CheckRow, ChoiceRow, FlipButton, InfoRow, NumberRow, SelectionRow, TextRow } from './fields'
 import { visibleRows } from './schema'
+import { itemLabel } from './selectionFields'
+import { isReadOnlyField, useSelectionFields } from './useSelectionFields'
 import { useFeatureDialog } from './useFeatureDialog'
 import type { PreviewState } from './useFeatureDialog'
 import './dialog.css'
@@ -18,18 +22,37 @@ export interface FeatureDialogProps {
   feature: { id: string; name: string }
   /** The variable names in scope for the pad's # key, without the "#". */
   variables: readonly string[]
+  /** The view's selection: while the dialog is open its picks go to the active selection field (see useSelectionFields). */
+  selection: SelectionStore
+  /** The model the view draws (the preview while there is one): the names of a field's items are matched against it to highlight them, and a sketch region is named from it. */
+  outputs: StudioOutputs | null
+  /** The committed model, which is what the refs route resolves a pick against. */
+  committed: StudioOutputs | null
   onPreview: (p: PreviewState | null) => void
   onDone: (result: { accepted: boolean; revision: number | null }) => void
 }
 
 /**
  * The dialog of one feature, in the dialog area over the feature panel, drawn from the description the server gives:
- * a number is a field that opens the pad, a choice segmented buttons or a list, a check a switch, a selection row is
- * read-only. Cancel and Accept are in the header. A change is sent as one dialog update and the view draws the preview
+ * a number is a field that opens the pad, a choice segmented buttons or a list, a check a switch, a selection row shows its items as chips
+ * and, once tapped, takes the picks of the view. Cancel and Accept are in the header. A change is sent as one dialog update and the view draws the preview
  * the server pushes back (see useFeatureDialog and the Shell).
  */
-export function FeatureDialog({ store, documentId, documentName, tab, feature, variables, onPreview, onDone }: FeatureDialogProps) {
+export function FeatureDialog({ store, documentId, documentName, tab, feature, variables, selection, outputs, committed, onPreview, onDone }: FeatureDialogProps) {
   const dlg = useFeatureDialog({ store, documentId, documentName, tab, feature: feature.id, onPreview, onDone })
+  const sel = useSelectionFields({
+    selection,
+    outputs,
+    committed,
+    documentId,
+    documentName,
+    tab,
+    specs: dlg.view?.description.fields ?? null,
+    fields: dlg.view?.fields ?? {},
+    sent: dlg.sent,
+    serverActive: dlg.view?.active ?? null,
+    set: dlg.set,
+  })
   // the number on the pad: the first number of the dialog opens with it, as in the layout; a tap on another moves it
   const [padKey, setPadKey] = useState<string | null | undefined>(undefined)
   const description = dlg.view?.description ?? null
@@ -110,7 +133,19 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, v
                 return <CheckRow key={`${key}:${i}`} spec={spec} on={on} onToggle={() => dlg.set({ [key]: !on })} />
               }
               case 'sel':
-                return <SelectionRow key={`${key}:${i}`} spec={spec} items={dlg.view?.fields[key] ?? []} />
+                return (
+                  <SelectionRow
+                    key={`${key}:${i}`}
+                    spec={spec}
+                    items={sel.items(key)}
+                    label={(item) => itemLabel(item, outputs, committed)}
+                    active={sel.activeKey === key}
+                    readOnly={isReadOnlyField(spec)}
+                    message={sel.refusal?.key === key ? sel.refusal.text : null}
+                    onActivate={() => sel.activate(key)}
+                    onRemove={(n) => sel.remove(key, n)}
+                  />
+                )
               case 'info':
                 return <InfoRow key={`${key}:${i}`} text={spec.text ?? ''} />
               case 'text':

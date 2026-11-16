@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test'
 import { openApp } from './support/app.ts'
 import { closeAll, idOf } from './support/docs.ts'
 import { featureRow } from './support/features.ts'
+import { edgeSpot } from './support/pick.ts'
+import { sendPointer } from './support/pointer.ts'
 import { readViewport } from './support/viewport.ts'
 
 // Slice S5, the feature dialog (card I5.6), in the real client against `freeshape serve`: a double tap on the bracket's
@@ -78,4 +80,43 @@ test('the row menu has Edit, and a refused number shows its message under the fi
   // the field shows what was typed, marked invalid; the server keeps the last good depth for the preview
   await expect(page.locator('.dlg-field[data-invalid]')).toBeVisible()
   await header(page, 'Cancel').click()
+})
+
+test('Fillet 1: tap the edge field, pick another edge with the pen, see its chip and a preview, and Accept commits it', async ({ page, request }) => {
+  await openApp(page)
+  await featureRow(page, 'Fillet 1').dblclick()
+  await expect(page.getByRole('dialog', { name: 'Fillet 1' })).toBeVisible()
+  const field = page.locator('[data-testid^="sel-"]').first()
+  const chips = field.getByTestId('sel-chip')
+  await expect(chips.first()).toBeVisible()
+  const rev = (await readViewport(page)).revision!
+  const had = await chips.allTextContents()
+  // tapping the field makes it the active one: the view now picks edges for it
+  await field.getByRole('button', { name: /Tap, then pick/ }).click()
+  await expect(field).toHaveAttribute('data-active', '')
+  expect((await readViewport(page)).selection.multi).toBe(true)
+  const spot = await edgeSpot(page, request, 'pen')
+  const before = (await readViewport(page)).preview ?? 0
+  const penPick = async () => {
+    await sendPointer(page, [{ phase: 'down', kind: 'pen', id: 7, x: spot.x, y: spot.y }])
+    await sendPointer(page, [{ phase: 'up', kind: 'pen', id: 7, x: spot.x, y: spot.y, pressure: 0 }])
+  }
+  await penPick()
+  // a pick of an edge the field already holds takes it out: pick again and it is back
+  if (had.includes(spot.name)) {
+    await expect(chips).toHaveCount(had.length - 1)
+    await penPick()
+  }
+  await expect(chips).toHaveCount(had.includes(spot.name) ? had.length : had.length + 1)
+  // chips read "Edge 7 of Part 1", never the encoded Element name
+  for (const t of await chips.allTextContents()) expect(t).toMatch(/^(Edge \d+ of .+|Edge)$/)
+  // the pick went to the field, not to the general selection: the chip of the view counts the field's items
+  await page.waitForFunction((n) => (window.__freeshapeViewport?.preview ?? 0) > n, before)
+  expect((await readViewport(page)).tintedFeature).not.toBeNull()
+  expect(await revisionOnServer(page)).toBe(rev)
+  await header(page, 'Accept').click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await page.waitForFunction((r) => (window.__freeshapeViewport?.revision ?? 0) > r && window.__freeshapeViewport?.preview === null, rev)
+  // the general selection is as it was before the dialog: nothing
+  expect((await readViewport(page)).selection.count).toBe(0)
 })

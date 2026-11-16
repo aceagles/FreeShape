@@ -53,6 +53,8 @@ export interface SelectionState {
   readonly multi: boolean
   /** Counts the changes of the items, so a reader can tell that the selection moved since it looked. */
   readonly revision: number
+  /** A dialog's selection field is active (card I5.7): picks go to the field, and the chip hides Clear. */
+  readonly field: boolean
 }
 
 const SINGULAR: Record<PickKind, string> = { face: 'face', edge: 'edge', vertex: 'vertex', part: 'part', plane: 'plane', axis: 'axis' }
@@ -75,7 +77,10 @@ export class SelectionStore {
   private userMulti = false
   private dialogMulti = false
   private revision = 0
-  private state: SelectionState = { items: [], multi: false, revision: 0 }
+  private state: SelectionState = { items: [], multi: false, revision: 0, field: false }
+  /** The general selection as it was when a dialog took the view over (card I5.7), or null when no dialog has. */
+  private saved: readonly SelectionItem[] | null = null
+  private picker: ((item: SelectionItem | null) => void) | null = null
   private readonly listeners = new Set<Listener>()
   private filter: PickFilter | undefined = undefined
 
@@ -134,6 +139,13 @@ export class SelectionStore {
    * empty space does nothing. The Aim ends with it.
    */
   commit(item: SelectionItem | null): void {
+    if (this.saved !== null) {
+      // a dialog has the view: the pick goes to its field (or nowhere), never to the general selection
+      this.aimedItem = null
+      this.picker?.(item)
+      this.publish(false)
+      return
+    }
     const was = this.items
     let next: readonly SelectionItem[] = was
     if (this.multi) {
@@ -141,6 +153,35 @@ export class SelectionStore {
     } else if (item === null) next = []
     else next = was.length === 1 && was[0]!.id === item.id ? [] : [item]
     this.setItems(next, true)
+  }
+
+  /**
+   * A feature dialog opens (card I5.7): the general selection is put aside and the view shows what the dialog says
+   * (`set`). While it is open `commit` calls the active field's picker instead of changing the items.
+   */
+  enterDialog(): void {
+    if (this.saved !== null) return
+    this.saved = this.items
+    this.setItems([], true)
+  }
+
+  /** The dialog is over: the general selection is as it was, and the filter, the field's Multi and the picker are gone. */
+  leaveDialog(): void {
+    if (this.saved === null) return
+    const back = this.saved
+    this.saved = null
+    this.picker = null
+    this.filter = undefined
+    this.dialogMulti = false
+    this.setItems(back, true)
+    this.publish(false)
+  }
+
+  /** The dialog's active selection field, or null when none is active: what a Commit goes to while a dialog is open. */
+  setFieldPicker(picker: ((item: SelectionItem | null) => void) | null): void {
+    if (picker === this.picker) return
+    this.picker = picker
+    this.publish(false)
   }
 
   /** Replace the selection (the Parts list selects one part). */
@@ -218,7 +259,8 @@ export class SelectionStore {
   private publish(itemsChanged: boolean): void {
     const multi = this.multi
     if (itemsChanged) this.revision++
-    if (itemsChanged || multi !== this.state.multi) this.state = { items: this.items, multi, revision: this.revision }
+    const field = this.picker !== null
+    if (itemsChanged || multi !== this.state.multi || field !== this.state.field) this.state = { items: this.items, multi, revision: this.revision, field }
     for (const l of [...this.listeners]) l()
   }
 }

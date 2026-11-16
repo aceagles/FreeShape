@@ -76,6 +76,9 @@
   font-weight: 600;
   color: var(--c-muted);
 }
+.dlg-label[data-active] {
+  color: var(--c-accentDark);
+}
 .dlg-field {
   box-sizing: border-box;
   width: 100%;
@@ -96,21 +99,96 @@
 .dlg-field[data-invalid] {
   border-color: var(--c-danger);
 }
-.dlg-field-readonly {
-  cursor: default;
+/* A selection field: chips with a remove button each, and a row under them that makes the field the active one. */
+.dlg-sel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+}
+.dlg-sel[data-active] {
+  border: 2px solid var(--c-accent);
+  background: var(--c-accentField);
+}
+.dlg-sel[data-readonly] {
   background: var(--c-surface);
 }
-.dlg-field-readonly[data-empty] {
-  color: var(--c-muted);
+.dlg-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  max-height: 148px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
-.dlg-sel-names {
+.dlg-chips:not(:empty) {
+  padding: var(--sp-8) var(--sp-8) 0;
+}
+.dlg-chip {
   min-width: 0;
+  max-width: 100%;
+  height: 36px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--c-accentLine);
+  border-radius: 18px;
+  background: var(--c-accentSoft);
+  color: var(--c-ink);
+}
+.dlg-sel[data-readonly] .dlg-chip {
+  background: var(--c-white);
+  border-color: var(--c-line);
+}
+.dlg-chip-name {
+  min-width: 0;
+  padding: 0 var(--sp-12);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.dlg-chip-x {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: -1px -1px -1px -6px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--c-inkSoft);
+  cursor: pointer;
+}
+.dlg-sel-tap {
+  width: 100%;
+  min-height: var(--touch);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  padding: 0 var(--sp-12);
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dlg-sel-tap:disabled {
+  cursor: default;
+}
+.dlg-sel[data-active] .dlg-sel-hint {
+  color: var(--c-accentDark);
+  font-weight: 500;
+}
 .dlg-sel-count {
   flex: none;
+  margin-left: auto;
   font-size: var(--fs-small);
   color: var(--c-muted);
 }
@@ -264,4 +342,8 @@
 }
 .dlg-switch[aria-checked='true'] .dlg-thumb {
   transform: translateX(16px);
+}
+/* with chips above it the tap row is a footer: the count and the picking hint, shorter than a field */
+.dlg-sel:not([data-empty]) .dlg-sel-tap {
+  min-height: 34px;
 }

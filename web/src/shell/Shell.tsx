@@ -305,6 +305,9 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
                 tab={editingHere.tab}
                 feature={editingHere}
                 variables={variables}
+                selection={selection}
+                outputs={showPreview ? preview.outputs : studio}
+                committed={studio}
                 onPreview={(p) => setPreview(p === null ? null : { ...p, feature: editingHere.id })}
                 onDone={endEdit}
               />

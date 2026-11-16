@@ -74,3 +74,20 @@
   gap: 2px;
   margin-left: 8px;
 }
+/* A text button at the right end (the sketch row's Finish sketch): the desktop's accent fill, white 600 text. */
+.tb-button.tb-text {
+  width: auto;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.tb-button.tb-accent {
+  background: var(--c-accent);
+  color: #fff;
+}
+.tb-button.tb-accent:hover:not(:disabled) {
+  background: var(--c-accent);
+  filter: brightness(0.9);
+}

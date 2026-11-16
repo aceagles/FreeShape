@@ -27,6 +27,8 @@ export interface DesktopToolbarProps {
   busy?: boolean
   /** A feature tool starts: the same call as a tablet strip button's. */
   onStart: (id: string) => void
+  /** Which row this is, for `data-strip` (default the feature row). */
+  strip?: 'feature' | 'sketch'
 }
 
 /**
@@ -36,7 +38,7 @@ export interface DesktopToolbarProps {
  * (it starts nothing until the selection fits), desktop and off are disabled with "Desktop only for now". A command
  * button is disabled with the same note unless the shell supplies it.
  */
-export function DesktopToolbar({ layout, stateOf, commands, busy, onStart }: DesktopToolbarProps) {
+export function DesktopToolbar({ layout, stateOf, commands, busy, onStart, strip = 'feature' }: DesktopToolbarProps) {
   const button = (e: Exclude<DesktopEntry, { kind: 'separator' }>) => {
     const id = e.tool.id
     const tip = desktopTip(e)
@@ -48,7 +50,7 @@ export function DesktopToolbar({ layout, stateOf, commands, busy, onStart }: Des
         <button
           key={id}
           type="button"
-          className="tb-button"
+          className={e.text !== undefined ? `tb-button tb-text${e.accent ? ' tb-accent' : ''}` : 'tb-button'}
           data-tool={id}
           data-state={has ? (on ? 'ok' : 'off') : 'desktop'}
           aria-label={e.tool.label}
@@ -57,7 +59,7 @@ export function DesktopToolbar({ layout, stateOf, commands, busy, onStart }: Des
           disabled={!on}
           onClick={() => cmd?.run()}
         >
-          <ToolIcon name={e.tool.icon} px={TOOLBAR_BUTTON} />
+          {e.text !== undefined ? e.text : <ToolIcon name={e.tool.icon} px={TOOLBAR_BUTTON} />}
         </button>
       )
     }
@@ -83,7 +85,7 @@ export function DesktopToolbar({ layout, stateOf, commands, busy, onStart }: Des
   const draw = (entries: readonly DesktopEntry[], at: string) =>
     entries.map((e, i) => (e.kind === 'separator' ? <span key={`${at}${i}`} className="tb-rule" role="separator" aria-orientation="vertical" /> : button(e)))
   return (
-    <div className="desktop-toolbar" data-region="tool-strip" data-strip="feature" role="toolbar" aria-label="Tools">
+    <div className="desktop-toolbar" data-region="tool-strip" data-strip={strip} role="toolbar" aria-label="Tools">
       {/* the left part scrolls when the window is narrower than the row (the desktop clips it); the right end stays */}
       <div
         className="tb-scroll"

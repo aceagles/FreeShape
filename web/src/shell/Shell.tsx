@@ -41,7 +41,7 @@ import { ConstraintStore, isConstrainTool } from '../sketch/constraints'
 import type { SketchTarget } from '../sketch/store'
 import { DiscardSketch, PlaneChooser } from '../sketch/StartDialogs'
 import { startSketch } from '../sketch/start'
-import { runSketchTool, SKETCH_STRIP, sketchToolState, stripActive } from '../sketch/strip'
+import { DESKTOP_SKETCH_TOOLBAR, runSketchTool, SKETCH_STRIP, sketchRowCommands, sketchToolState, stripActive } from '../sketch/strip'
 import { StudioViewport } from '../viewport/StudioViewport'
 import type { PreviewLook } from '../viewport/controller'
 import type { StudioOutputs } from '../wire'
@@ -445,7 +445,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   }, [])
   // what the Desktop menus can run now; an item with no command here is shown disabled ("Desktop only for now")
   const currentInfo = tabs.find((t) => t.id === currentTab) ?? null
-  const menuState: MenuState = { readOnly, tabKind }
+  const menuState: MenuState = { readOnly, tabKind, sketchOpen: sketchHere }
   const canUndo = studio?.canUndo === true && !edits.busy && !editingHere && !sketch.open
   const canRedo = studio?.canRedo === true && !edits.busy && !editingHere && !sketch.open
   // Undo and Redo, one each for the top bar, the Desktop toolbar and Ctrl+Z / Ctrl+Y: the open sketch's, else the Part Studio's
@@ -458,7 +458,28 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     fit: { run: () => void runViewCommand('fit') },
     iso: { run: () => void runViewCommand('iso') },
   }
+  // the Desktop sketch toolbar: what a tool button does is what the tablet strip's does (a Constrain tool is tool-first)
+  const askCancelSketch = () => (sketch.view?.canUndo ? setModal({ kind: 'discard' }) : sketchStore.cancel())
+  const sketchCommands = sketchRowCommands({
+    active: constraintState.picking ?? (dimensionOn ? 'dimension' : sketch.tool === 'dimension' ? 'select' : sketch.tool),
+    drawing: sketch.drawing > 0,
+    canUndo: undoCmd.enabled,
+    canRedo: redoCmd.enabled,
+    onTool: (id) => {
+      if (isConstrainTool(id) && constraints.getState().picking === id) return constraints.leave()
+      sketchStore.chooseTool(isConstrainTool(id) ? 'select' : id)
+      if (isConstrainTool(id)) constraints.choose(id)
+    },
+    onUndo: undoCmd.run,
+    onRedo: redoCmd.run,
+    onDelete: () => runSketchTool(sketchStore, 'delete'),
+    onConstruct: () => runSketchTool(sketchStore, 'construct'),
+    onNormalTo: () => sketchStore.normalTo(),
+    onFit: () => void runViewCommand('fit'),
+    onFinish: () => sketchStore.commit(),
+  })
   const commands: Commands = {
+    'document.cancelSketch': askCancelSketch,
     'document.newStudio': () => void add('studio'),
     'document.newAssembly': () => void add('assembly'),
     // the client has no open and closed tabs: closing a tab takes it out of the Document, so it asks as Delete does
@@ -538,7 +559,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           narrow={width < NARROW_BELOW}
         />
         {readOnly && <ReadOnlyBanner name={name} holder={holder} onTakeOver={() => setModal({ kind: 'takeover' })} />}
-        {sketchHere ? (
+        {sketchHere && desktop ? (
+          <DesktopToolbar strip="sketch" layout={DESKTOP_SKETCH_TOOLBAR} stateOf={() => 'ok'} commands={sketchCommands} onStart={() => {}} />
+        ) : sketchHere ? (
           <ToolStrip
             strip="sketch"
             defs={SKETCH_STRIP}

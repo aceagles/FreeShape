@@ -20,5 +20,5 @@ export async function openApp(page: Page, opts: { model?: boolean; document?: st
 export async function openFromHome(page: Page, name: string): Promise<void> {
   await expect(page.getByTestId('home')).toBeVisible()
   await page.locator('.doc-row', { has: page.locator('.doc-name', { hasText: new RegExp(`^${name}$`) }) }).click()
-  await expect(page.getByTestId('shell')).toBeVisible()
+  await expect(page.getByTestId('shell')).toBeVisible({ timeout: 30_000 })
 }

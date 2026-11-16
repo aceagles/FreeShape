@@ -1592,6 +1592,40 @@ export const shots: ShotState[] = [
       await featureRow(page, 'Extrude 1').hover()
     },
   },
+  {
+    // I9.4: the Desktop sketch toolbar on a new sketch on Top, Select on, beside the desktop's sketch state
+    name: 'desktop-sketch-toolbar',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I9.4: Line on (pressed) with a chain half drawn by mouse clicks
+    name: 'desktop-sketch-line',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      await page.locator('[data-strip="sketch"]').getByRole('button', { name: 'Line', exact: true }).click()
+      const a = await screenFor(page, -30, -10)
+      const b = await screenFor(page, 20, 15)
+      for (const p of [a, b]) {
+        await sendPointer(page, [
+          { phase: 'move', kind: 'mouse', id: 20, ...p },
+          { phase: 'down', kind: 'mouse', id: 20, ...p, button: 0 },
+          { phase: 'up', kind: 'mouse', id: 20, ...p, button: 0 },
+        ])
+      }
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 1)
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** Listen for the open sketch's data (call before it opens); `lineWith(type)` is the first line a constraint of that type holds. */

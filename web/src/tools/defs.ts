@@ -98,9 +98,10 @@ export const toolIds = (defs: readonly StripDef[]): string[] => defs.flatMap((d)
  * One button of the desktop row. `kind: 'feature'` starts the feature type `tool.id` and takes its state from the types
  * route; `kind: 'command'` is any other button (the shell supplies the ones the client can do, the rest are disabled).
  * `tip` replaces the tool's label in the tooltip where the desktop words it differently; `key` is the desktop's shortcut.
+ * `text` makes a command a text button (the sketch row's Finish sketch) and `accent` fills it with the accent colour.
  */
 export type DesktopEntry =
-  | { kind: 'feature' | 'command'; tool: ToolDef; key?: string; tip?: string }
+  | { kind: 'feature' | 'command'; tool: ToolDef; key?: string; tip?: string; text?: string; accent?: boolean }
   | { kind: 'separator' }
 
 /** A desktop toolbar: the buttons from the left, and the ones kept at the right end. */

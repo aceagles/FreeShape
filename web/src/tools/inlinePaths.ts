@@ -29,4 +29,17 @@ export const inlinePaths: Readonly<Record<string, string>> = {
   corner_fillet: 'M5 19v-8a6 6 0 0 1 6-6h8',
   use_edge: 'M4 20h16 M7 20V9l5-5 5 5v11 M12 12v8',
   point_on: 'M4 18L20 6 M12 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0-4 0',
+  // the desktop sketch row's tools with no exported icon (card I9.4)
+  center_rectangle: 'M4 6h16v12H4z M12 12m-1 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0',
+  polygon: 'M12 3l8 6-3 10H7L4 9z',
+  arc3: 'M4 18A14 14 0 0 1 18 4 M4 18m-1 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0 M18 4m-1 0a1 1 0 1 0 2 0a1 1 0 1 0-2 0',
+  arc_center: 'M5 19A14 14 0 0 1 19 5 M5 19h4 M5 19v-4',
+  spline: 'M3 17c4-12 7 2 11-6s4-4 7-6',
+  ellipse: 'M12 12m-9 0a9 5 0 1 0 18 0a9 5 0 1 0-18 0',
+  text: 'M5 6h14 M12 6v13 M9 19h6',
+  construction: 'M4 20l3-3 M10 14l4-4 M17 7l3-3',
+  offset: 'M4 18a12 12 0 0 1 12-12 M8 20a12 12 0 0 1 12-12',
+  slot: 'M8 7h8a5 5 0 0 1 0 10H8a5 5 0 0 1 0-10z',
+  extend: 'M4 18h10 M17 18h3 M14 18V6',
+  normal_to: 'M3 18l6-8h12l-6 8z M12 13V3 M9 6l3-3 3 3',
 }

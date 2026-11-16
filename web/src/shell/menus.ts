@@ -15,6 +15,8 @@ export interface MenuState {
   readOnly: boolean
   /** The kind of the tab on screen (studio, assembly, ...), or null with no tab. */
   tabKind: string | null
+  /** A sketch is open on the tab on screen. */
+  sketchOpen?: boolean
 }
 
 export interface MenuItem {
@@ -60,6 +62,7 @@ export const documentMenu: readonly MenuEntry[] = [
   { command: 'document.addFiles', label: 'Add files to Document…' },
   { command: 'document.recent', label: 'Open recent', submenu: true },
   { command: 'document.closeTab', label: 'Close tab', chord: chordFor('document.closeTab'), enabled: (s) => !s.readOnly && s.tabKind !== null },
+  { command: 'document.cancelSketch', label: 'Cancel sketch', enabled: (s) => s.sketchOpen === true },
   SEP,
   { command: 'document.save', label: 'Save', chord: chordFor('document.save'), enabled: editable },
   { command: 'document.saveAs', label: 'Save as…', chord: chordFor('document.saveAs') },

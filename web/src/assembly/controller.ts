@@ -14,7 +14,10 @@ import type { ElementPick } from '../viewport/pick'
 import { AssemblyPickIndex } from './pick'
 import { buildAssemblyScene, EMPTY_ASSEMBLY_STATS } from './scene'
 import type { AssemblyScene, AssemblyStats } from './scene'
-import { reconcileAssembly } from './select'
+import { assemblyBoxHits, reconcileAssembly } from './select'
+import { MouseOverlay } from '../selection/mouseOverlay'
+import type { BoxDrag } from '../input/pointer'
+import type { SelectionItem } from '../selection/store'
 import { GizmoController, livePose } from './gizmo'
 import type { DragSender, GizmoShape, LiveDrag } from './gizmo'
 
@@ -76,6 +79,8 @@ export class AssemblyController implements NavHost {
   readonly pointer: PointerModule
   readonly gizmo: GizmoController
   private readonly unsubscribe: () => void
+  /** Desktop mode (I9.9): the selection box and the count badge over the view. */
+  private readonly overlay: MouseOverlay
 
   constructor(
     readonly canvas: HTMLCanvasElement,
@@ -102,12 +107,31 @@ export class AssemblyController implements NavHost {
       live,
     )
     this.pointer.setHandleHandler(this.gizmo)
-    wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
+    this.overlay = new MouseOverlay(canvas.parentElement ?? document.body)
+    this.pointer.setCursorHandler((p) => this.overlay.cursor(p))
+    // a press on a gizmo handle is the handle's (the pointer module asks it first): it moves the instance and draws no box
+    wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter), {
+      hits: (b) => this.boxHits(b),
+      draw: (b) => this.overlay.showBox(b),
+    })
     this.unsubscribe = selection.subscribe(() => {
+      this.overlay.setCount(selection.getState().items.length)
       this.gizmo.refresh()
       this.drawLook()
     })
     this.report()
+  }
+
+  /** Desktop or Tablet mode (I9.9): in Desktop mode the mouse toggles on a click, draws a selection box and shows the count badge. */
+  setDesktop(on: boolean): void {
+    if (this.disposed) return
+    this.pointer.setDesktop(on)
+    this.overlay.setEnabled(on)
+  }
+
+  /** The instances a released selection box takes, from where they are drawn now (see assemblyBoxHits). */
+  boxHits(b: BoxDrag): SelectionItem[] {
+    return this.latest && this.built ? assemblyBoxHits(this.latest, this.built.objects, this.view, b) : []
   }
 
   private drawLook(): void {
@@ -334,6 +358,7 @@ export class AssemblyController implements NavHost {
     this.unsubscribe()
     this.pointer.setHandleHandler(null)
     this.pointer.dispose()
+    this.overlay.dispose()
     if (this.pending) cancelAnimationFrame(this.pending)
     this.drop()
     this.renderer.dispose()

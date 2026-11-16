@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import { Icon, paths } from './icons'
-import { DESKTOP_ONLY, isRunnable, isWired } from './menus'
+import { commandOf, DESKTOP_ONLY, isRunnable, isWired } from './menus'
 import type { Commands, MenuEntry, MenuItem, MenuState } from './menus'
 
 interface Props {
@@ -31,6 +31,8 @@ export function MenuButton({ label, entries, commands, state, placement = 'below
   const [open, setOpen] = useState(false)
   // keyboard use shows the focused item; a mouse does not (the pointer shows its own)
   const [kbd, setKbd] = useState(false)
+  // the submenu opened below its item (View > Mouse style), by command
+  const [expanded, setExpanded] = useState<string | null>(null)
   const [at, setAt] = useState<{ left: number; top?: number; bottom?: number } | null>(null)
   const root = useRef<HTMLDivElement>(null)
   const button = useRef<HTMLButtonElement>(null)
@@ -39,6 +41,7 @@ export function MenuButton({ label, entries, commands, state, placement = 'below
   const close = (refocus = false) => {
     setOpen(false)
     setKbd(false)
+    setExpanded(null)
     if (refocus) button.current?.focus()
   }
 
@@ -106,8 +109,9 @@ export function MenuButton({ label, entries, commands, state, placement = 'below
   }
 
   const run = (item: MenuItem) => {
+    if (item.items) return setExpanded(expanded === item.command ? null : item.command)
     close(true)
-    commands[item.command]?.()
+    commandOf(item, commands)?.()
   }
 
   return (
@@ -131,7 +135,7 @@ export function MenuButton({ label, entries, commands, state, placement = 'below
             e.kind === 'separator' ? (
               <div key={`s${i}`} className="menu-separator" role="separator" />
             ) : (
-              <MenuRow key={e.command} item={e} on={isRunnable(e, commands, state)} wired={isWired(e, commands)} onRun={() => run(e)} />
+              <MenuGroup key={e.command} item={e} open={expanded === e.command} commands={commands} state={state} run={run} />
             ),
           )}
         </div>
@@ -140,14 +144,35 @@ export function MenuButton({ label, entries, commands, state, placement = 'below
   )
 }
 
-function MenuRow({ item, on, wired, onRun }: { item: MenuItem; on: boolean; wired: boolean; onRun: () => void }) {
+/** An item, and below it, when it is open, its submenu's items (indented). */
+function MenuGroup({ item, open, commands, state, run }: { item: MenuItem; open: boolean; commands: Commands; state: MenuState; run: (item: MenuItem) => void }) {
+  const row = <MenuRow item={item} on={isRunnable(item, commands, state)} wired={isWired(item, commands)} expanded={item.items ? open : undefined} onRun={() => run(item)} />
+  if (!item.items || !open) return row
+  return (
+    <>
+      {row}
+      {item.items.map((s, i) =>
+        s.kind === 'separator' ? (
+          <div key={`s${i}`} className="menu-separator" role="separator" />
+        ) : (
+          <MenuRow key={s.command} item={s} sub on={isRunnable(s, commands, state)} wired={isWired(s, commands)} onRun={() => run(s)} />
+        ),
+      )}
+    </>
+  )
+}
+
+function MenuRow({ item, on, wired, onRun, sub, expanded }: { item: MenuItem; on: boolean; wired: boolean; onRun: () => void; sub?: boolean; expanded?: boolean }) {
   return (
     <button
       type="button"
       role={item.check ? 'menuitemcheckbox' : 'menuitem'}
       aria-checked={item.check ? item.checked === true : undefined}
       aria-haspopup={item.submenu ? 'menu' : undefined}
-      className="menu-item"
+      aria-expanded={expanded}
+      className={sub ? 'menu-item menu-subitem' : 'menu-item'}
+      // a submenu's items sit one mark's width in from their item
+      style={sub ? { paddingLeft: 24 } : undefined}
       data-command={item.command}
       disabled={!on}
       title={wired ? undefined : DESKTOP_ONLY}
@@ -157,7 +182,11 @@ function MenuRow({ item, on, wired, onRun }: { item: MenuItem; on: boolean; wire
       <span className="menu-mark">{item.check && item.checked && <Icon d={paths.check} px={14} sw={2.2} />}</span>
       <span className="menu-label">{item.label}</span>
       {item.chord && <span className="menu-chord">{item.chord}</span>}
-      {item.submenu && <Icon d={paths.chevronRight} px={14} />}
+      {item.submenu && (
+        <span className="menu-chevron" style={{ display: 'flex', transform: expanded ? 'rotate(90deg)' : undefined }}>
+          <Icon d={paths.chevronRight} px={14} />
+        </span>
+      )}
     </button>
   )
 }

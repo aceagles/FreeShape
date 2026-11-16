@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useShell } from '../shell/ShellContext'
+import { useMode } from '../shell/mode'
 import type { SelectionStore } from '../selection/store'
 import type { AssemblyOutputs } from '../wire'
 import { ViewCube } from '../viewport/ViewCube'
@@ -52,6 +53,12 @@ export function AssemblyViewport({ outputs, selection, drag }: { outputs: Assemb
   useEffect(() => {
     controller.current?.setDragSender(drag ?? null)
   }, [drag, failed])
+
+  // Desktop mode (I9.9): the mouse selects as on the desktop (click toggles, box select, count badge)
+  const desktop = useMode() === 'desktop'
+  useEffect(() => {
+    controller.current?.setDesktop(desktop)
+  }, [desktop, selection, failed])
 
   const { openDialog, closeDialog } = shell
   const typeValue = useCallback(() => {

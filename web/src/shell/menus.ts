@@ -31,6 +31,8 @@ export interface MenuItem {
   checked?: boolean
   /** Opens a submenu on the desktop. */
   submenu?: boolean
+  /** The submenu's entries, when the client has them: the item then opens them (below it) instead of running a command. */
+  items?: readonly MenuEntry[]
   /** Whether the item is on now, when its command is wired. Default: on. */
   enabled?: (state: MenuState) => boolean
 }
@@ -96,6 +98,25 @@ export const STANDARD_VIEW_ITEMS = [
   ['iso', 'Isometric'],
 ] as const
 
+/** The desktop's mouse styles (freeshape/ui/navstyles.py `STYLES`), in its order. The client navigates Onshape style only (I9.9). */
+export const MOUSE_STYLES = [
+  ['onshape', 'Onshape'],
+  ['touchpad', 'Touchpad'],
+  ['cad', 'CAD (FreeCAD)'],
+  ['gesture', 'Gesture (FreeCAD)'],
+  ['blender', 'Blender'],
+  ['solidworks', 'SolidWorks'],
+  ['openinventor', 'OpenInventor (FreeCAD)'],
+  ['revit', 'Revit'],
+  ['openscad', 'OpenSCAD'],
+] as const
+
+/** View > Mouse style: every desktop style listed, Onshape checked and the only one that can be chosen. */
+export const mouseStyleMenu: readonly MenuEntry[] = MOUSE_STYLES.map(([id, label]): MenuItem => ({ command: `view.mouse.${id}`, label, check: true, checked: id === 'onshape' }))
+
+/** Commands the menus answer themselves, with nothing of the shell's behind them: Onshape is the mouse style already. */
+export const MENU_COMMANDS: Commands = { 'view.mouse.onshape': () => {} }
+
 /** View (mainwindow.py, the View menu). */
 export const viewMenu: readonly MenuEntry[] = [
   ...STANDARD_VIEW_ITEMS.map(([name, label]): MenuItem => ({ command: `view.${name}`, label, chord: chordFor(`view.${name}`), enabled: hasView })),
@@ -107,7 +128,7 @@ export const viewMenu: readonly MenuEntry[] = [
   { command: 'view.shiny', label: 'Shiny surfaces', check: true, checked: false },
   { command: 'view.through', label: 'Select through context', check: true, checked: false },
   { command: 'view.rotate', label: 'Rotate around', submenu: true },
-  { command: 'view.mouse', label: 'Mouse style', submenu: true },
+  { command: 'view.mouse', label: 'Mouse style', submenu: true, items: mouseStyleMenu },
   { command: 'view.zoomSpeed', label: 'Zoom speed', submenu: true },
   SEP,
   { command: 'view.theme', label: 'Theme', submenu: true },
@@ -140,8 +161,11 @@ export const MENU_BAR: readonly { id: string; label: string; entries: readonly M
   { id: 'select', label: 'Select', entries: selectMenu },
 ]
 
-/** Whether the client can do the item at all now (its command is supplied). */
-export const isWired = (item: MenuItem, commands: Commands): boolean => commands[item.command] !== undefined
+/** What runs an item: the shell's command, else one the menus answer themselves (MENU_COMMANDS); undefined when there is none. */
+export const commandOf = (item: MenuItem, commands: Commands): (() => void) | undefined => commands[item.command] ?? MENU_COMMANDS[item.command]
+
+/** Whether the client can do the item at all now (its command is supplied, or it opens a submenu the client has). */
+export const isWired = (item: MenuItem, commands: Commands): boolean => item.items !== undefined || commandOf(item, commands) !== undefined
 
 /** Whether the item can be run now: wired, and its enabled rule holds. */
 export const isRunnable = (item: MenuItem, commands: Commands, state: MenuState): boolean => isWired(item, commands) && (item.enabled?.(state) ?? true)

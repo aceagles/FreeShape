@@ -4,7 +4,10 @@ import { ManipulatorLayer } from '../dialog/manipulator'
 import { PointerModule } from '../input/pointer'
 import type { NavHost } from '../input/pointer'
 import { wireSelection } from '../selection/aimCommit'
+import type { BoxSource } from '../selection/aimCommit'
+import { MouseOverlay } from '../selection/mouseOverlay'
 import type { SelectionItem, SelectionStore } from '../selection/store'
+import { BOX_KINDS, studioBoxHits } from './boxSelect'
 import type { StudioOutputs } from '../wire'
 import { SketchMode } from '../sketch/mode'
 import type { SketchReport } from '../sketch/mode'
@@ -42,6 +45,8 @@ export interface ViewportReport extends SceneStats {
   sketch: SketchReport | null
   /** Test hook: what a pointer of this kind would pick at a view position (CSS pixels from the top left), null for nothing. */
   pickAt(x: number, y: number, pointer: PickPointer, filter?: readonly PickKind[]): PickHit | null
+  /** Test hook (I9.9): what a selection box dragged from (x0, y0) to (x1, y1) would take, with the selection's filter. */
+  boxHits(x0: number, y0: number, x1: number, y1: number): SelectionItemReport[]
 }
 
 /** An item of the selection as the test hook reports it. */
@@ -172,6 +177,9 @@ export class ViewportController implements NavHost {
   /** The outputs drawn now (what N reads a face's or plane's normal from). */
   private outputs: StudioOutputs | null = null
   private readonly unsubscribe: () => void
+  /** Desktop mode (I9.9): the box and the count badge drawn over the view, and the box's source for the selection. */
+  private readonly overlay: MouseOverlay
+  private readonly box: BoxSource
 
   /** Throws when the browser cannot create a WebGL context. The viewport draws and picks for `selection`. */
   constructor(
@@ -182,11 +190,30 @@ export class ViewportController implements NavHost {
     this.renderer.setClearColor(viewportBackground(), 1)
     this.pointer = new PointerModule(canvas, this)
     this.manipulators = new ManipulatorLayer(canvas.parentElement ?? document.body, this.view, () => this.requestRender())
+    this.overlay = new MouseOverlay(canvas.parentElement ?? document.body)
+    this.box = { hits: (b, filter) => this.boxHits(b, filter), draw: (b) => this.overlay.showBox(b) }
+    this.pointer.setCursorHandler((p) => this.overlay.cursor(p))
     this.pointer.setHandleHandler(this.manipulators)
-    wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
+    wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter), this.box)
     // the store tells us once per real change: an Aim move that lands on the same item never gets here
     this.unsubscribe = selection.subscribe(() => this.drawLook())
     this.report()
+  }
+
+  /** Desktop or Tablet mode (I9.9): in Desktop mode the mouse toggles on a click, draws a selection box and shows the count badge. */
+  setDesktop(on: boolean): void {
+    if (this.disposed) return
+    this.pointer.setDesktop(on)
+    this.overlay.setEnabled(on && this.sketchMode === null)
+  }
+
+  /**
+   * The items a released selection box takes (I9.9), worked out here from what is drawn (see boxSelect.ts): the drawn
+   * parts' faces, edges and vertices and the shown sketches' regions, as `filter` allows (else the desktop's defaults).
+   */
+  boxHits(b: { x0: number; y0: number; x1: number; y1: number }, filter?: SelectionStore['pickFilter']): SelectionItem[] {
+    if (!this.outputs || !this.picker) return []
+    return studioBoxHits(this.outputs, new Set(this.picker.partIds), this.view, b, filter ?? BOX_KINDS)
   }
 
   /**
@@ -214,14 +241,17 @@ export class ViewportController implements NavHost {
           overlayParent: this.canvas.parentElement ?? document.body,
           requestRender: () => this.requestRender(),
           modelBounds: () => (this.built?.hasModel ? this.built.bounds : null),
+          drawBox: (b) => this.overlay.showBox(b),
         },
         store,
       )
     } else {
-      wireSelection(this.pointer, this.selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter))
+      wireSelection(this.pointer, this.selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter), this.box)
       // the sketch's Drag handles gave up the hook: the drag arrows of a preview take it back
       this.pointer.setHandleHandler(this.manipulators)
     }
+    // the desktop shows no count badge in a sketch
+    this.overlay.setEnabled(this.pointer.desktop && this.sketchMode === null)
     if (this.built) this.seeThrough(this.built.root, store !== null)
     this.report()
     this.requestRender()
@@ -238,6 +268,7 @@ export class ViewportController implements NavHost {
   private drawLook(): void {
     if (this.disposed) return
     const state = this.selection.getState()
+    this.overlay.setCount(state.items.length)
     const first = this.built?.setLook(state.items, this.selection.getAimed()) ?? null
     this.highlighted = first
     this.looks++
@@ -465,6 +496,7 @@ export class ViewportController implements NavHost {
       },
       sketch: this.sketchMode?.report() ?? null,
       pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
+      boxHits: (x0, y0, x1, y1) => this.boxHits({ x0, y0, x1, y1 }, this.selection.pickFilter).map(reportItem),
     }
   }
 
@@ -475,6 +507,7 @@ export class ViewportController implements NavHost {
     this.unsubscribe()
     this.pointer.dispose()
     this.manipulators.dispose()
+    this.overlay.dispose()
     if (this.pending) cancelAnimationFrame(this.pending)
     if (this.built) {
       this.scene.remove(this.built.root)

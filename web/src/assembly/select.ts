@@ -1,5 +1,9 @@
+import type { Object3D } from 'three'
+import type { BoxDrag } from '../input/pointer'
 import type { SelectionItem, SelectionStore } from '../selection/store'
 import { idOfItem } from '../selection/store'
+import { isCrossing, normRect, pointsInRect, projectPoints, trianglesSelected } from '../viewport/boxSelect'
+import type { ViewCamera } from '../viewport/camera'
 import type { AssemblyOutputs, ElementKind, Part } from '../wire'
 
 /** A whole instance, as the instance list selects it. `part` is the part's hash, as in a pick. */
@@ -12,6 +16,25 @@ export const instanceItem = (instance: string, part: string | null): SelectionIt
   key: null,
   instance,
 })
+
+/**
+ * The instances a selection box takes in an Assembly (I9.9): each drawn instance whose part's triangles, where the view
+ * draws them now, lie wholly inside the box, or (dragged right to left) touch it. `objects` are the drawn instances (an
+ * instance the eye hides is not there); their matrices are where they are drawn, a drag in progress included.
+ */
+export function assemblyBoxHits(outputs: AssemblyOutputs, objects: ReadonlyMap<string, Pick<Object3D, 'matrix'>>, view: ViewCamera, box: BoxDrag): SelectionItem[] {
+  const r = normRect(box)
+  const crossing = isCrossing(box)
+  const out: SelectionItem[] = []
+  for (const inst of outputs.instances) {
+    const obj = objects.get(inst.id)
+    const mesh = inst.part === null ? undefined : outputs.parts[inst.part]?.mesh
+    if (!obj || !mesh) continue
+    const S = projectPoints(view, mesh.positions, obj.matrix.elements)
+    if (trianglesSelected(S, mesh.indices, 0, mesh.indices.length / 3, pointsInRect(S, r), r, crossing)) out.push(instanceItem(inst.id, inst.part))
+  }
+  return out
+}
 
 /** The instance selected when exactly one instance has anything selected on it, or null. */
 export function selectedInstance(items: readonly SelectionItem[]): string | null {

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { useMode } from '../shell/mode'
 import { selectionText, statusText } from './store'
 import type { SketchStore } from './store'
 import '../selection/selection.css'
@@ -10,6 +11,8 @@ import './sketch.css'
  */
 export function SketchChip({ store }: { store: SketchStore }) {
   const s = useSyncExternalStore(store.subscribe, store.getState)
+  // Desktop mode has no Multi: a click adds to the selection there (I9.9)
+  const tablet = useMode() === 'tablet'
   if (!s.open || !s.view) return null
   const empty = s.selected.length === 0
   const status = statusText(s.view)
@@ -20,9 +23,11 @@ export function SketchChip({ store }: { store: SketchStore }) {
           <span className="selection-chip-swatch" aria-hidden="true" />
           <span data-testid="selection-count">{selectionText(s.selected)}</span>
         </span>
-        <button type="button" className="selection-chip-multi" aria-pressed={s.multi} data-testid="selection-multi" onClick={() => store.setMulti(!s.multi)}>
-          Multi
-        </button>
+        {tablet && (
+          <button type="button" className="selection-chip-multi" aria-pressed={s.multi} data-testid="selection-multi" onClick={() => store.setMulti(!s.multi)}>
+            Multi
+          </button>
+        )}
         <button type="button" className="selection-chip-clear" data-testid="selection-clear" disabled={empty} onClick={() => store.clearSelection()}>
           Clear
         </button>

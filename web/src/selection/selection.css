@@ -63,3 +63,39 @@
   color: var(--c-muted);
   opacity: 0.55;
 }
+
+/* Desktop mode (I9.9): the mouse's selection box, as the desktop's boxsel.draw_box: left to right blue and solid (what is
+   wholly inside), right to left green and dashed (what it crosses), filled at 15%. */
+.select-box {
+  position: absolute;
+  z-index: 3;
+  box-sizing: border-box;
+  border: 1.3px solid rgb(31 111 209);
+  background: rgb(31 111 209 / 15%);
+  pointer-events: none;
+}
+.select-box[data-crossing] {
+  border: 1.3px dashed rgb(46 160 67);
+  background: rgb(46 160 67 / 15%);
+}
+.select-box[hidden],
+.select-count-badge[hidden] {
+  display: none;
+}
+/* The count beside the cursor when more than one item is selected (the desktop's count_badge). */
+.select-count-badge {
+  position: absolute;
+  z-index: 3;
+  min-width: 18px;
+  box-sizing: border-box;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #e8891c;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+  white-space: nowrap;
+}

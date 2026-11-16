@@ -1,4 +1,4 @@
-import type { PenHandler, PenPoint, PointerModule } from '../input/pointer'
+import type { BoxDrag, PenHandler, PenPoint, PointerModule } from '../input/pointer'
 import type { Bounds, ViewCamera } from '../viewport/camera'
 import type { PickPointer } from '../viewport/pick'
 import { applyLive, PointerDrag } from './drag'
@@ -6,7 +6,7 @@ import { drawSketch } from './draw'
 import type { SketchDrawing } from './draw'
 import { handleSpots, SketchHandles } from './handle'
 import type { HandleSpot } from './handle'
-import { isMovable } from './select'
+import { boxSelection, clickSelection, isMovable, sketchBoxHits } from './select'
 import { uvToView, viewToUv } from './frame'
 import { fitSketchView } from './band'
 import { layoutSketch } from './layout'
@@ -33,6 +33,8 @@ export interface SketchHost {
   requestRender(): void
   /** The model's box, for an empty sketch that has nothing to fit to; null when nothing is drawn. */
   modelBounds(): Bounds | null
+  /** Draw the mouse's selection box (Desktop mode, I9.9), or none with null; without it the sketch draws no box. */
+  drawBox?(box: BoxDrag | null): void
 }
 
 /** What `window.__freeshapeViewport.sketch` reports: the state of sketch mode, for tests that look at the page from outside. */
@@ -170,7 +172,10 @@ export class SketchMode {
         if (kind === 'mouse' && this.penDrag.release(pt.x, pt.y)) return
         if (kind === 'mouse') this.store.aim(itemAt(pt.x, pt.y, kind))
         const hit = this.store.getState().aimed
-        if (!this.store.commitTools(hit, this.uvAt(pt.x, pt.y), kind, this.mmPerPx())) this.store.select(hit)
+        if (this.store.commitTools(hit, this.uvAt(pt.x, pt.y), kind, this.mmPerPx())) {
+          // the tool took it
+        } else if (kind === 'mouse' && p.desktop) this.store.setSelection(clickSelection(this.store.getState().selected, hit, pt.shift === true || pt.ctrl === true))
+        else this.store.select(hit)
         if (kind === 'pen') this.store.aim(null)
         this.store.setPreview(null)
       },
@@ -185,7 +190,7 @@ export class SketchMode {
       },
     })
     p.setPenHandler(this.draw.wrap('pen', picking('pen')))
-    p.setMouseHandler(this.draw.wrap('mouse', picking('mouse')))
+    p.setMouseHandler({ ...this.draw.wrap('mouse', picking('mouse')), ...this.boxing() })
     p.setHoldHandler(this.menu)
     // a Drag handle takes a press before the pen's Aim and the finger's navigation
     p.setHandleHandler(this.handles)
@@ -210,6 +215,29 @@ export class SketchMode {
         this.before = null
       },
     })
+  }
+
+  /**
+   * Desktop mode's selection box in the sketch (I9.9): a left drag that did not start on a movable item, with Select the
+   * tool (no drawing tool, Dimension or edit tool on), draws a box; its release selects the entities it takes.
+   */
+  private boxing(): Pick<PenHandler, 'boxStart' | 'boxMove' | 'boxEnd' | 'boxCancel'> {
+    const draw = this.host.drawBox
+    if (!draw) return {}
+    return {
+      boxStart: () => {
+        if (!this.selecting || this.penDrag.armed || !this.layout) return false
+        this.store.aim(null)
+        return true
+      },
+      boxMove: (b) => draw(b),
+      boxEnd: (b, additive) => {
+        draw(null)
+        if (!this.layout) return
+        this.store.setSelection(boxSelection(this.store.getState().selected, sketchBoxHits(this.layout, b), additive))
+      },
+      boxCancel: () => draw(null),
+    }
   }
 
   /** The sketch point under a view position, or null. */

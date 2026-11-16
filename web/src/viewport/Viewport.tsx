@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { SelectionStore } from '../selection/store'
+import { useMode } from '../shell/mode'
 import type { SketchStore } from '../sketch/store'
 import type { StudioOutputs } from '../wire'
 import { ViewportController } from './controller'
@@ -70,6 +71,12 @@ export function Viewport({
     if (outputs) controller.current?.setOutputs(outputs, previewNumber === null ? null : { number: previewNumber, feature: previewFeature!, ghost: previewGhost })
     else controller.current?.clear(message === null ? null : tabKind)
   }, [outputs, previewNumber, previewFeature, previewGhost, message, tabKind, failed])
+
+  // Desktop mode (I9.9): the mouse selects as on the desktop (click toggles, box select, count badge)
+  const desktop = useMode() === 'desktop'
+  useEffect(() => {
+    controller.current?.setDesktop(desktop)
+  }, [desktop, store, failed])
 
   // sketch mode follows the store that has the sketch open (after the controller exists: the effect above runs first)
   useEffect(() => {

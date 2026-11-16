@@ -1694,7 +1694,48 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I9.9: a selection box being dragged left to right over the left of the bracket (the button still held)
+    name: 'desktop-box-select',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      await mouseBox(page, false)
+    },
+  },
+  {
+    // I9.9: several items selected by a box, the count beside the cursor
+    name: 'desktop-multi-select',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      await mouseBox(page, true)
+      await page.getByTestId('select-count-badge').waitFor()
+      await settled(page)
+    },
+  },
 ]
+
+/** I9.9: drag a selection box with the mouse from above left of the bracket to below its middle; `release` lets the button go. */
+async function mouseBox(page: Page, release: boolean): Promise<void> {
+  const cam = (await settled(page)).camera
+  const on = await page.evaluate((c) => {
+    const out: { x: number; y: number }[] = []
+    for (let y = 8; y < c.height - 8; y += 10) for (let x = 8; x < c.width - 8; x += 10) if (window.__freeshapeViewport!.pickAt(x, y, 'mouse', ['face', 'edge'])) out.push({ x, y })
+    return out
+  }, cam)
+  const [x0, y0, x1, y1] = [Math.min(...on.map((s) => s.x)), Math.min(...on.map((s) => s.y)), Math.max(...on.map((s) => s.x)), Math.max(...on.map((s) => s.y))]
+  const canvas = (await page.locator('.viewport-canvas').boundingBox())!
+  await page.mouse.move(canvas.x + x0 - 12, canvas.y + y0 - 12)
+  await page.mouse.down()
+  await page.mouse.move(canvas.x + (x0 + x1) / 2, canvas.y + y1 + 12, { steps: 8 })
+  if (!release) return page.getByTestId('select-box').waitFor()
+  await page.mouse.up()
+  // the pointer rests a little off the box's corner, where the count shows beside it
+  await page.mouse.move(canvas.x + (x0 + x1) / 2 + 20, canvas.y + y1 - 20)
+}
 
 /** Listen for the open sketch's data (call before it opens); `lineWith(type)` is the first line a constraint of that type holds. */
 function sketchData(page: Page) {

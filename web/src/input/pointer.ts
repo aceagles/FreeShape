@@ -19,7 +19,22 @@ export interface PenPoint {
   y: number
   pressure: number
   pointerId: number
+  /** Shift was held (read from the pointer event; Desktop mode: a click or box adds, a manipulator drag does not snap). */
+  shift?: boolean
+  /** Ctrl (or Cmd) was held. */
+  ctrl?: boolean
 }
+
+/** A selection box being dragged with the mouse (Desktop mode): from the press (`x0`, `y0`) to the pointer now, CSS pixels from the view's top left. */
+export interface BoxDrag {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+/** A left drag in Desktop mode turns into a selection box once it has moved more than this (|dx| + |dy|, pixels; the desktop's `_moved`). */
+export const BOX_SLOP = 3
 
 /**
  * What a later card does with the pen: it Aims while the pen is down and Commits on release. The pointer module
@@ -33,6 +48,16 @@ export interface PenHandler {
   cancel(): void
   /** The mouse's right button was pressed and released without moving (a right click, not an orbit); only the mouse handler is asked. */
   secondary?(p: PenPoint): void
+  /**
+   * Desktop mode, the mouse only: the left button went down and has moved past BOX_SLOP. Return true to draw a selection
+   * box (the module then sends `boxMove` for every move and `boxEnd` or `boxCancel`, and no more `aim` or `commit` for this
+   * press); false, or no method, keeps the press an Aim that Commits on release, as before.
+   */
+  boxStart?(p: PenPoint): boolean
+  boxMove?(box: BoxDrag): void
+  /** The button was released: select what the box holds; `additive` when Shift or Ctrl was held at the release. */
+  boxEnd?(box: BoxDrag, additive: boolean): void
+  boxCancel?(): void
 }
 
 /**
@@ -141,6 +166,11 @@ export class PointerModule {
   private held: number | null = null
   /** Presses that closed an open hold: they do nothing else. */
   private readonly swallowed = new Set<number>()
+  /** Desktop mode (I9.9): a left drag of the mouse may draw a selection box. Pen, finger and Tablet mode are unchanged by it. */
+  private desktopMode = false
+  /** The mouse's left press in Desktop mode: where it went down, whether it became a box, or was refused one. */
+  private leftPress: { x: number; y: number; box: boolean; refused: boolean } | null = null
+  private cursorAt: ((p: { x: number; y: number } | null) => void) | null = null
 
   constructor(
     private readonly el: HTMLElement,
@@ -167,6 +197,23 @@ export class PointerModule {
   /** A Drag handle takes a press (pen, finger or mouse left button) before selection and navigation. */
   setHandleHandler(handler: HandleHandler | null): void {
     this.handle = handler
+  }
+
+  /** Desktop mode: a mouse left drag can draw a selection box, and the mouse handler reads `desktop` to toggle on a click. */
+  setDesktop(on: boolean): void {
+    if (on === this.desktopMode) return
+    this.desktopMode = on
+    if (!on && this.leftPress?.box) this.mousePick?.boxCancel?.()
+    this.leftPress = null
+  }
+
+  get desktop(): boolean {
+    return this.desktopMode
+  }
+
+  /** Told where the mouse is over the view (CSS pixels from its top left) on every move, and null when it leaves: the count badge follows it. */
+  setCursorHandler(handler: ((p: { x: number; y: number } | null) => void) | null): void {
+    this.cursorAt = handler
   }
 
   /**
@@ -232,7 +279,13 @@ export class PointerModule {
 
   private penPoint(e: PointerEvent): PenPoint {
     const p = this.local(e)
-    return { x: p.x, y: p.y, pressure: e.pressure, pointerId: e.pointerId }
+    const pt: PenPoint = { x: p.x, y: p.y, pressure: e.pressure, pointerId: e.pointerId }
+    // the mouse carries the keys held with it (Desktop mode); pen and finger points are as they always were
+    if (e.pointerType === 'mouse') {
+      pt.shift = e.shiftKey
+      pt.ctrl = e.ctrlKey || e.metaKey
+    }
+    return pt
   }
 
   private capture(id: number): void {
@@ -271,6 +324,7 @@ export class PointerModule {
       if (this.mouseId !== null || this.mouseSelectId !== null) return
       if (e.button === 0) {
         this.mouseSelectId = e.pointerId
+        this.leftPress = this.desktopMode ? { x: p.x, y: p.y, box: false, refused: false } : null
         this.mousePick?.press?.(this.penPoint(e))
         this.mousePick?.aim(this.penPoint(e))
         return
@@ -338,7 +392,9 @@ export class PointerModule {
     const p = this.local(e)
     const m = this.mode
     if (e.pointerType === 'mouse') {
-      if (this.mouseSelectId === e.pointerId) this.mousePick?.aim(this.penPoint(e))
+      this.cursorAt?.(p)
+      if (this.mouseSelectId === e.pointerId && this.leftPress) this.leftDrag(this.leftPress, this.penPoint(e))
+      else if (this.mouseSelectId === e.pointerId) this.mousePick?.aim(this.penPoint(e))
       else if (this.mouseId === null && this.mouseSelectId === null) this.mousePick?.aim(this.penPoint(e)) // hover
       else if (this.mouseId === e.pointerId) this.drag(m, p)
       return
@@ -349,6 +405,16 @@ export class PointerModule {
       this.tapping = null
     if (m.kind === 'orbit') this.drag(m, p)
     else if (m.kind === 'two') this.twoFingers(m)
+  }
+
+  /** Desktop mode, the left button held: an Aim until it has moved past BOX_SLOP, then a box if the handler takes one. */
+  private leftDrag(press: NonNullable<PointerModule['leftPress']>, p: PenPoint): void {
+    if (!press.box && !press.refused && Math.abs(p.x - press.x) + Math.abs(p.y - press.y) > BOX_SLOP) {
+      if (this.mousePick?.boxStart?.(p)) press.box = true
+      else press.refused = true
+    }
+    if (press.box) this.mousePick?.boxMove?.({ x0: press.x, y0: press.y, x1: p.x, y1: p.y })
+    else this.mousePick?.aim(p)
   }
 
   private drag(m: Mode, p: Touch): void {
@@ -407,7 +473,11 @@ export class PointerModule {
     if (e.pointerType === 'mouse') {
       if (this.mouseSelectId === e.pointerId) {
         this.mouseSelectId = null
-        this.mousePick?.commit(this.penPoint(e))
+        const press = this.leftPress
+        this.leftPress = null
+        const pt = this.penPoint(e)
+        if (press?.box) this.mousePick?.boxEnd?.({ x0: press.x, y0: press.y, x1: pt.x, y1: pt.y }, pt.shift === true || pt.ctrl === true)
+        else this.mousePick?.commit(pt)
         return
       }
       if (this.mouseId !== e.pointerId) return
@@ -473,6 +543,9 @@ export class PointerModule {
     if (e.pointerType === 'mouse') {
       if (this.mouseSelectId === e.pointerId) {
         this.mouseSelectId = null
+        const press = this.leftPress
+        this.leftPress = null
+        if (press?.box) this.mousePick?.boxCancel?.()
         this.mousePick?.cancel()
       }
       if (this.mouseId === e.pointerId) {
@@ -489,7 +562,9 @@ export class PointerModule {
 
   /** The mouse leaves the view: nothing is under it any more. */
   private readonly onLeave = (e: PointerEvent): void => {
-    if (e.pointerType === 'mouse' && this.mouseSelectId === null && this.mouseId === null) this.mousePick?.cancel()
+    if (e.pointerType !== 'mouse') return
+    this.cursorAt?.(null)
+    if (this.mouseSelectId === null && this.mouseId === null) this.mousePick?.cancel()
   }
 
   private readonly onWheel = (e: WheelEvent): void => {

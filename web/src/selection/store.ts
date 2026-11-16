@@ -156,6 +156,38 @@ export class SelectionStore {
   }
 
   /**
+   * A mouse click in Desktop mode (I9.9, the desktop's `click_pick`): an item toggles in the selection and the rest stays;
+   * empty space clears it unless `additive` (Shift or Ctrl held). While a dialog has the view the click goes to its field,
+   * as `commit` sends it. The Aim ends with it.
+   */
+  click(item: SelectionItem | null, additive: boolean): void {
+    if (this.saved !== null) return this.commit(item)
+    const was = this.items
+    if (item === null) this.setItems(additive ? was : [], true)
+    else this.setItems(was.some((i) => i.id === item.id) ? was.filter((i) => i.id !== item.id) : [...was, item], true)
+  }
+
+  /**
+   * A selection box was released (I9.9, the desktop's `_box_select`): `found` replaces the selection, or with `additive`
+   * is added to it (what is already selected stays selected, in its place).
+   */
+  addBox(found: readonly SelectionItem[], additive: boolean): void {
+    const next = additive ? [...this.items] : []
+    const ids = new Set(next.map((i) => i.id))
+    for (const it of found) {
+      if (ids.has(it.id)) continue
+      ids.add(it.id)
+      next.push(it)
+    }
+    this.setItems(next, true)
+  }
+
+  /** A feature dialog has the view: picks go to its field (no selection box is drawn then, as on the desktop). */
+  get dialogOpen(): boolean {
+    return this.saved !== null
+  }
+
+  /**
    * A feature dialog opens (card I5.7): the general selection is put aside and the view shows what the dialog says
    * (`set`). While it is open `commit` calls the active field's picker instead of changing the items.
    */

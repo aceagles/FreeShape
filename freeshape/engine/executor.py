@@ -724,7 +724,17 @@ class AssemblyTab(_ConsumerTab):
             key = None
             if p is not None:
                 po = enc.part(p)
-                parts.setdefault(po.hash, po)
+                if po.hash not in parts:
+                    # the part's Element names, as the Part Studio it links to has them (a STEP part has none)
+                    src = inst.get("source") or {}
+                    named = getattr(p, "named", None)
+                    # a worker's parts carry the names the parent sent (worker._part); in this process the studio hands
+                    # them out only once it has produced its own outputs, so ask it
+                    if named is None and not hasattr(self.engine, "upstream") \
+                            and src.get("kind") not in ("step", "standard") and not A.is_sketch_source(src):
+                        named = self.engine.inputs.named(src)
+                    po.names = element_names(SimpleNamespace(named=named, shape=p.shape))
+                    parts[po.hash] = po
                 key = po.hash
             instances.append(InstanceOut(
                 id=str(inst["id"]), name=str(inst.get("name", "")), part=key,

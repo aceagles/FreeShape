@@ -2,12 +2,15 @@ import { decodeWire, intKeyMap, isDataclass, isNdArray } from './decode'
 import type { DataclassNode, NdArray, WireInput } from './decode'
 import { WireError } from './errors'
 import type {
+  AssemblyOutputs,
   AxisOut,
   ElementKind,
   ElementNames,
   FeatureEntry,
   FolderEntry,
+  InstanceEntry,
   MateConnector,
+  MateEntry,
   Part,
   PartMesh,
   PlaneOut,
@@ -239,6 +242,48 @@ function studio(f: Fields, common: Common): StudioOutputs {
   }
 }
 
+function instance(x: unknown, where: string): InstanceEntry {
+  const f = dc(x, 'InstanceOut', where)
+  const part = f['part']
+  const rows = list(f['T'], `${where}.T`).map((r, i) => numbers(r, `${where}.T[${i}]`))
+  if (rows.length !== 4 || rows.some((r) => r.length !== 4)) fail(`${where}.T: expected a 4 x 4 matrix`)
+  return {
+    id: str(f['id'], `${where}.id`),
+    name: str(f['name'], `${where}.name`),
+    part: part === null || part === undefined ? null : str(part, `${where}.part`),
+    T: rows,
+    hidden: bool(f['hidden'], `${where}.hidden`),
+    fixed: bool(f['fixed'], `${where}.fixed`),
+    color: numbers(f['color'], `${where}.color`),
+  }
+}
+
+function mate(x: unknown, where: string): MateEntry {
+  const f = dc(x, 'MateOut', where)
+  return {
+    id: str(f['id'], `${where}.id`),
+    name: str(f['name'], `${where}.name`),
+    type: str(f['type'], `${where}.type`),
+    suppressed: bool(f['suppressed'], `${where}.suppressed`),
+    a: str(dc(f['a'], 'ConnectorOut', `${where}.a`)['instance'], `${where}.a.instance`),
+    b: str(dc(f['b'], 'ConnectorOut', `${where}.b`)['instance'], `${where}.b.instance`),
+  }
+}
+
+function assembly(f: Fields, common: Common): AssemblyOutputs {
+  const w = 'AssemblyOutputs'
+  const parts: Record<string, Part> = {}
+  for (const [k, v] of Object.entries(record(f['parts'], `${w}.parts`))) parts[k] = part(v, `${w}.parts.${k}`)
+  return {
+    kind: 'assembly',
+    ...common,
+    parts,
+    instances: list(f['instances'], `${w}.instances`).map((e, i) => instance(e, `${w}.instances[${i}]`)),
+    mates: list(f['mates'], `${w}.mates`).map((e, i) => mate(e, `${w}.mates[${i}]`)),
+    dof: f['dof'] === undefined ? 0 : num(f['dof'], `${w}.dof`),
+  }
+}
+
 type Common = Pick<StudioOutputs, 'tab' | 'name' | 'revision' | 'errors' | 'consumes'>
 
 function recordOfLists(x: unknown): Record<string, readonly unknown[]> {
@@ -263,6 +308,7 @@ export function decodeOutputs(input: WireInput): TabOutputs {
     consumes: strings(f['consumes'], 'consumes'),
   }
   if (cls === 'StudioOutputs') return studio(f, common)
+  if (cls === 'AssemblyOutputs') return assembly(f, common)
   return { kind: str(f['kind'], 'kind'), ...common }
 }
 

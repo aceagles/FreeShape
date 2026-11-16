@@ -8,6 +8,7 @@ import { edgeSpot, faceSpots, planeSpot, vertexSpot } from './support/pick.ts'
 import type { Spot } from './support/pick.ts'
 import { canvasCentre, fingerDrag, sendPointer, twoFingers } from './support/pointer.ts'
 import { settled } from './support/viewport.ts'
+import { openAssemblyTab, settledAssembly } from './support/assembly.ts'
 
 /**
  * The states `sh scripts/web/shots.sh` captures: a name and the steps that reach the state from a fresh page.
@@ -661,6 +662,80 @@ export const shots: ShotState[] = [
       await page.getByRole('dialog', { name: /Recover unsaved changes/ }).waitFor()
     },
     after: async (page) => discardAutosaveOf(page.request, 'Bracket'),
+  },
+  {
+    name: 'assembly-hinge',
+    mock: 'browsing', // the layout has no Assembly state: its panel, rows, eye and view cube are the browsing state's
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await settledAssembly(page)
+    },
+  },
+  {
+    name: 'assembly-instance-selected',
+    mock: 'browsing', // an instance selected in the list: its row tinted, Delete under it, the instance tinted in the view
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-instance="I2"]').click()
+      await page.locator('.instance-delete').waitFor()
+      await settledAssembly(page)
+    },
+  },
+  {
+    name: 'assembly-instance-hidden',
+    mock: 'browsing', // one instance hidden: its row greyed with a struck eye, and it is gone from the view
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-instance-eye="I2"]').click()
+      await page.waitForFunction(() => window.__freeshapeAssembly?.drawn === 2)
+      await settledAssembly(page)
+    },
+  },
+  {
+    name: 'assembly-instance-fixed',
+    mock: 'browsing', // one instance fixed: the lock toggle pressed on its row
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('.instance-row:not([data-fixed]) .instance-fixed').first().click()
+      await page.locator('.instance-row[data-fixed]').first().waitFor()
+      await settledAssembly(page)
+    },
+  },
+  {
+    name: 'assembly-face-picked',
+    mock: 'browsing', // a pen pick of a face of an instance: the face tinted, the chip says 1 face
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      const at = await page.evaluate(() => {
+        const v = window.__freeshapeAssembly!
+        const c = v.screenOf('I2')!
+        for (const [dx, dy] of [[0, 0], [6, 0], [-6, 0], [0, 6], [0, -6], [14, 10], [-14, -10]] as const) {
+          const hit = v.pickAt(c.x + dx, c.y + dy, 'mouse')
+          if (hit?.instance === 'I2' && hit.kind === 'face') return { x: c.x + dx, y: c.y + dy }
+        }
+        return null
+      })
+      if (at === null) throw new Error('no face of I2 under its middle')
+      const box = (await page.locator('[data-region="viewport"] canvas').first().boundingBox())!
+      await page.mouse.click(box.x + at.x, box.y + at.y)
+      await page.waitForFunction(() => document.querySelector('[data-testid="chip-slot"]')?.textContent?.includes('1 face'))
+      await settledAssembly(page)
+    },
+  },
+  {
+    name: 'assembly-panel-collapsed',
+    mock: 'collapsed',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.getByRole('button', { name: 'Collapse feature panel' }).click()
+      await settledAssembly(page)
+    },
   },
 ]
 

@@ -201,8 +201,54 @@ export interface OtherOutputs {
   readonly consumes: readonly string[]
 }
 
-export type TabOutputs = StudioOutputs | OtherOutputs
+/** One instance of an Assembly: a part under a placement (card I8.1). */
+export interface InstanceEntry {
+  readonly id: string
+  readonly name: string
+  /** Key into `AssemblyOutputs.parts` (the part's content hash); null when the instance has no part. */
+  readonly part: string | null
+  /** Placement, row-major 4 x 4 as the engine sends it (the last row is 0 0 0 1). */
+  readonly T: readonly (readonly number[])[]
+  readonly hidden: boolean
+  readonly fixed: boolean
+  /** r g b in 0..1. */
+  readonly color: readonly number[]
+}
+
+/** One mate of an Assembly, as the read-only list shows it. */
+export interface MateEntry {
+  readonly id: string
+  readonly name: string
+  readonly type: string
+  readonly suppressed: boolean
+  /** Ids of the two instances the mate joins (the connectors' `instance`). */
+  readonly a: string
+  readonly b: string
+}
+
+/** An Assembly's outputs. Indices in `parts` (Element names, faces, edges, vertices) are 0-based like a Part Studio's. */
+export interface AssemblyOutputs {
+  readonly kind: 'assembly'
+  readonly tab: string
+  readonly name: string
+  readonly revision: number
+  /** Instance or mate id (or "" for the tab) -> message. */
+  readonly errors: Readonly<Record<string, string>>
+  readonly consumes: readonly string[]
+  /** Content hash -> part, shared by every instance of one part. */
+  readonly parts: Readonly<Record<string, Part>>
+  readonly instances: readonly InstanceEntry[]
+  readonly mates: readonly MateEntry[]
+  /** Degrees of freedom left after solving. */
+  readonly dof: number
+}
+
+export type TabOutputs = StudioOutputs | AssemblyOutputs | OtherOutputs
 
 export function isStudio(o: TabOutputs): o is StudioOutputs {
   return o.kind === 'studio'
+}
+
+export function isAssembly(o: TabOutputs): o is AssemblyOutputs {
+  return o.kind === 'assembly' && 'instances' in o
 }

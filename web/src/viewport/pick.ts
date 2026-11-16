@@ -69,6 +69,8 @@ export interface ElementPick extends PickBase {
   readonly name: string | null
   /** Screen distance from the pointer in CSS pixels: how far an edge or vertex was; null for a face (the ray hit it). */
   readonly distancePx: number | null
+  /** Id of the Assembly instance the element is on (card I8.1); absent for a Part Studio, where `part` is the part's id. In an Assembly `part` is the part's hash. */
+  readonly instance?: string
 }
 
 /** A whole part (the filter asked for parts, not faces). */

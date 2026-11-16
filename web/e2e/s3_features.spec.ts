@@ -109,19 +109,18 @@ test('with every part hidden or failed the default planes keep their size instea
   expect(failed.planeHalf).toBe(before.planeHalf)
 })
 
-// The view shows only the tab on screen: an Assembly (not drawn yet) leaves it empty with a line saying so, and a new
+// The view shows only the tab on screen: an Assembly has a view of its own (card I8.1), and a new
 // empty Part Studio shows its own default planes, never another tab's parts.
 test('another kind of tab or a new Part Studio never shows the previous tab\'s parts; switching back draws them again', async ({ page }) => {
   await openApp(page, { document: 'Hinge' })
   const before = await seen(page)
   expect(before.parts).toBe(3)
   await page.locator('.tab-button[data-kind="assembly"]').click()
-  await expect.poll(async () => (await seen(page)).parts).toBe(0)
-  const asm = await readViewport(page)
-  console.log(`assembly tab: parts ${asm.parts} faces ${asm.faces} planes ${asm.planes} emptyKind ${asm.emptyKind} highlighted ${asm.highlightedPart}`)
-  expect([asm.faces, asm.planes, asm.visibleParts, asm.highlightedPart, asm.emptyKind]).toEqual([0, 0, 0, null, 'assembly'])
-  await expect(page.getByTestId('viewport-empty')).toHaveText('Assemblies are not drawn here yet.')
-  await expect(page.getByTestId('feature-panel')).toContainText('This tab has no feature list.')
+  // the Assembly tab has its own view and panel (card I8.1): the Part Studio's view is gone, so none of its parts is drawn
+  await expect.poll(() => page.evaluate(() => window.__freeshapeViewport === undefined)).toBe(true)
+  await expect(page.getByTestId('viewport-empty')).toHaveCount(0)
+  await expect(page.getByTestId('feature-panel')).toHaveCount(0)
+  await expect(page.getByTestId('assembly-panel')).toBeVisible()
   await page.locator('.tab-button[data-kind="studio"]').first().click()
   await expect.poll(async () => (await seen(page)).parts).toBe(3)
   const back = await readViewport(page)

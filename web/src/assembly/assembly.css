@@ -1,0 +1,55 @@
+/* The Assembly panel: the Parts list's rows (features.css) with a fixed toggle beside the eye, the Delete under the
+   selected instance, and the read-only mate rows. Sizes and colours are the layout's custom properties on .shell. */
+.instance-fixed[aria-pressed='true'] {
+  color: var(--c-accent);
+}
+.instance-row[data-fixed] .instance-fixed {
+  background: var(--c-accentSoft);
+}
+.instance-row[data-hidden] .instance-fixed {
+  opacity: 0.45;
+}
+.instance-actions {
+  display: flex;
+  padding: var(--sp-4) var(--sp-14) var(--sp-8);
+}
+.instance-delete {
+  box-sizing: border-box;
+  min-height: var(--touch);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: 0 var(--sp-14);
+  border: 1px solid var(--c-danger);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-danger);
+  font: inherit;
+  cursor: pointer;
+}
+.instance-delete:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.mate-row {
+  box-sizing: border-box;
+  min-height: var(--feature-row);
+  display: flex;
+  align-items: center;
+  padding: var(--sp-8) var(--sp-14);
+  color: var(--c-ink);
+}
+.mate-row[data-state='suppressed'] .row-name {
+  color: var(--c-muted);
+  text-decoration: line-through;
+}
+.mate-row[data-state='failed'] {
+  background: var(--c-dangerSoft);
+}
+.mate-row[data-state='failed'] .row-name,
+.mate-error {
+  color: var(--c-danger);
+}
+.assembly-error {
+  color: var(--c-danger);
+}

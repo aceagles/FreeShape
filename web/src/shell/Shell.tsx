@@ -8,6 +8,10 @@ import { PadDemo, padResult } from '../pad/PadDemo'
 import type { PadDemoOptions, PadResult } from '../pad/PadDemo'
 import { FeatureDialog } from '../dialog/FeatureDialog'
 import type { PreviewState } from '../dialog/useFeatureDialog'
+import { AssemblyPanel } from '../assembly/AssemblyPanel'
+import { AssemblyViewport } from '../assembly/AssemblyViewport'
+import { instanceItem, selectedInstance } from '../assembly/select'
+import { useAssembly } from '../assembly/useAssembly'
 import { FeaturePanel } from '../features/FeaturePanel'
 import { useFeatureEdits } from '../features/useFeatureEdits'
 import { useStudioOutputs } from '../features/studioOutputs'
@@ -176,6 +180,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   }, [])
   const showPreview = preview !== null && (editingHere !== null || (holdUntil !== null && (studio?.revision ?? 0) < holdUntil))
   const variables = useMemo(() => Object.keys(studio?.variables ?? {}).map((n) => n.replace(/^#/, '')), [studio])
+  const assembly = useAssembly({ store, tab: currentTab, tabKind, readOnly, documentName: name, onError: failText })
 
   const add = async (kind: 'studio' | 'assembly') => {
     try {
@@ -266,6 +271,17 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
         <ToolStrip />
         <div className="shell-main">
           <div className="left-column" data-region="left-column" data-testid="left-column" style={{ width: column }}>
+            {tabKind === 'assembly' ? (
+              <AssemblyPanel
+                collapsed={collapsed}
+                locked={dialog !== null}
+                outputs={assembly.outputs}
+                selected={selectedInstance(picked.items)}
+                edits={assembly.edits}
+                onSelect={(i) => selection.set([instanceItem(i.id, i.part)])}
+                onCollapsedChange={setCollapsed}
+              />
+            ) : (
             <FeaturePanel
               collapsed={collapsed}
               locked={dialog !== null || editingHere !== null}
@@ -279,6 +295,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
               onSelectPart={api.selectPart}
               onCollapsedChange={setCollapsed}
             />
+            )}
             {editingHere && doc && (
               <FeatureDialog
                 key={`${editingHere.tab}:${editingHere.id}`}
@@ -299,12 +316,16 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             )}
           </div>
           <div className="shell-viewport" data-region="viewport" data-testid="shell-viewport">
-            <StudioViewport
-              outputs={showPreview ? preview.outputs : studio}
-              preview={showPreview ? { number: preview.number, feature: preview.feature } : null}
-              selection={selection}
-              tabKind={tabKind}
-            />
+            {tabKind === 'assembly' ? (
+              <AssemblyViewport outputs={assembly.outputs} selection={selection} />
+            ) : (
+              <StudioViewport
+                outputs={showPreview ? preview.outputs : studio}
+                preview={showPreview ? { number: preview.number, feature: preview.feature } : null}
+                selection={selection}
+                tabKind={tabKind}
+              />
+            )}
             <div className="chip-slot" data-testid="chip-slot" data-region="selection-chip">
               <SelectionChip store={selection} />
             </div>

@@ -242,15 +242,17 @@ it('with the Document read-only every panel action is off: no menu, no handle, n
   expect(edits().length).toBe(0)
 })
 
-it('an Assembly tab has no feature list, and a payload from an older server says so', async () => {
+it('an Assembly tab has the Assembly panel instead of the feature list and the Part Studio is not drawn under it', async () => {
   await open('bracket')
   fireEvent.click(screen.getByRole('button', { name: 'Assembly 1' }))
-  expect(screen.getByTestId('feature-panel').textContent).toContain('This tab has no feature list.')
+  expect(screen.queryByTestId('feature-panel')).toBeNull()
+  expect(screen.getByTestId('assembly-panel')).toBeTruthy()
   expect((screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled).toBe(true)
-  // the view draws nothing of the Part Studio and says so; the view cube is not offered over an empty view
-  expect(screen.getByTestId('viewport-empty').textContent).toBe('Assemblies are not drawn here yet.')
-  expect(screen.queryByRole('button', { name: /View cube/ })).toBeNull()
+  // the view is the Assembly's own, with its view cube; the Part Studio's outputs are not drawn in it
+  expect(screen.queryByTestId('viewport-empty')).toBeNull()
+  expect(screen.getByRole('button', { name: /View cube/ })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'Part Studio 1' }))
+  expect(screen.queryByTestId('assembly-panel')).toBeNull()
   expect(screen.queryByTestId('viewport-empty')).toBeNull()
   expect(screen.getByRole('button', { name: /View cube/ })).toBeTruthy()
 })

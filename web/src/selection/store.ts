@@ -23,9 +23,13 @@ export interface SelectionItem {
   readonly name: string | null
   /** Feature id of a plane or axis (Top, Front, Right for the default planes); null otherwise. */
   readonly key: string | null
+  /** Id of the Assembly instance the item is on (card I8.1); absent in a Part Studio. `part` is then the part's hash. */
+  readonly instance?: string
 }
 
-export const idOfItem = (kind: PickKind, part: string | null, name: string | null, index: number, key: string | null): string => {
+export const idOfItem = (kind: PickKind, part: string | null, name: string | null, index: number, key: string | null, instance?: string): string => {
+  // in an Assembly two instances of one part have the same Element names: the instance tells them apart
+  if (instance !== undefined) return `${kind}|${instance}|${name ?? `#${index}`}`
   if (kind === 'part') return `part|${part}`
   if (kind === 'plane' || kind === 'axis') return `${kind}|${key}`
   return `${kind}|${part}|${name ?? `#${index}`}`
@@ -34,7 +38,9 @@ export const idOfItem = (kind: PickKind, part: string | null, name: string | nul
 /** The item a pick stands for. */
 export function itemOf(hit: PickHit): SelectionItem {
   const key = 'key' in hit ? hit.key : null
-  return { id: idOfItem(hit.kind, hit.part, hit.name, hit.index, key), kind: hit.kind, part: hit.part, index: hit.index, name: hit.name, key }
+  const instance = 'instance' in hit ? hit.instance : undefined
+  const item = { id: idOfItem(hit.kind, hit.part, hit.name, hit.index, key, instance), kind: hit.kind, part: hit.part, index: hit.index, name: hit.name, key }
+  return instance === undefined ? item : { ...item, instance }
 }
 
 /** A whole part, as the Parts list selects it. */

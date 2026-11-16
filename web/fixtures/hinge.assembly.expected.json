@@ -1,0 +1,124 @@
+{
+ "dof": 1,
+ "errors": {},
+ "instances": [
+  {
+   "T": [
+    [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     1.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "fixed": true,
+   "hidden": false,
+   "id": "I1",
+   "name": "Base plate <1>",
+   "part": "7ae45f07b8f6501d29db6c2f27a736a6e3c7b177ed0d10802846359fa6c69bee"
+  },
+  {
+   "T": [
+    [
+     1.0,
+     0.0,
+     0.0,
+     9.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0,
+     -46.0
+    ],
+    [
+     0.0,
+     0.0,
+     1.0,
+     10.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "fixed": false,
+   "hidden": false,
+   "id": "I2",
+   "name": "Arm <1>",
+   "part": "e524963fea592fd185ee34e6b51cdf878a590a291b8e69b8353ebf0ab6b035a8"
+  },
+  {
+   "T": [
+    [
+     1.0,
+     0.0,
+     0.0,
+     -65.0
+    ],
+    [
+     0.0,
+     1.0,
+     0.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     1.0,
+     0.0
+    ],
+    [
+     0.0,
+     0.0,
+     0.0,
+     1.0
+    ]
+   ],
+   "fixed": false,
+   "hidden": true,
+   "id": "I3",
+   "name": "Pin <1>",
+   "part": "d4cc67730adbaefc485fd60a125a5767b62d9f51e01a09534c98dbde1493de51"
+  }
+ ],
+ "mates": [
+  {
+   "a": "I1",
+   "b": "I3",
+   "id": "M4",
+   "name": "Fastened 1",
+   "suppressed": false,
+   "type": "fastened"
+  },
+  {
+   "a": "I1",
+   "b": "I2",
+   "id": "M5",
+   "name": "Revolute 1",
+   "suppressed": false,
+   "type": "revolute"
+  }
+ ],
+ "tab": "T2"
+}

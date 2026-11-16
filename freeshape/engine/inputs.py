@@ -121,6 +121,12 @@ class CrossTabInputs:
         with self._resolving(src):
             return self.resolver.resolve_drawing_source(src)
 
+    def named(self, src):
+        """The element map (naming.NamedShape) of the part `part(src)` returns, or None (a part that has none, a
+        Part Studio that is not open). Read for the Assembly's outputs only, which name what a pick hits (I8.1)."""
+        with self._resolving(src):
+            return self.resolver.resolve_named(src)
+
     def variables(self, src):
         """{name: value} of the Variable Studio tab a "variable_studio_ref" source names (by tab id, uid, then
         file path), live and unsaved; None if no tab matches. A PartStudioDoc.var_inputs callable. A pinned Version of

@@ -108,8 +108,8 @@ it('names the Document, lists the tabs with the current one marked, and switches
   act(() => second.click())
   expect(second.getAttribute('aria-current')).toBe('page')
   expect(first.getAttribute('aria-current')).toBeNull()
-  // the panel lists the open tab's features; an Assembly has none yet
-  expect(screen.getByTestId('feature-panel').textContent).toContain('no feature list')
+  // the panel lists the open tab's features; an Assembly has its own panel (its outputs have not arrived here)
+  expect(screen.getByTestId('assembly-panel').textContent).toContain('Loading the Assembly')
 })
 
 it('undo and redo are present and disabled while the tab has nothing to undo or redo; save and add tab are on', () => {

@@ -75,7 +75,6 @@ export const BINDINGS: readonly Binding[] = [
   { chord: 'F', command: 'view.fit', label: 'Zoom to fit', where: VIEWS },
   ...STANDARD_VIEWS.map(([name, label], i): Binding => ({ chord: `Shift+${i + 1}`, command: `view.${name}`, label, where: VIEWS })),
   { chord: 'Ctrl+Shift+X', command: 'view.section', label: 'Section view', where: VIEWS, shownOnly: true },
-  { chord: 'P', command: 'view.planes', label: 'Show planes', where: VIEWS, shownOnly: true },
   { chord: 'ArrowLeft', command: 'view.turnLeft', label: 'Turn the view 15°', where: VIEWS },
   { chord: 'ArrowRight', command: 'view.turnRight', label: 'Turn the view 15°', where: VIEWS },
   { chord: 'ArrowUp', command: 'view.turnUp', label: 'Turn the view 15°', where: VIEWS },
@@ -84,6 +83,17 @@ export const BINDINGS: readonly Binding[] = [
   { chord: 'Ctrl+Shift+ArrowRight', command: 'view.panRight', label: 'Pan a tenth of the view', where: VIEWS },
   { chord: 'Ctrl+Shift+ArrowUp', command: 'view.panUp', label: 'Pan a tenth of the view', where: VIEWS },
   { chord: 'Ctrl+Shift+ArrowDown', command: 'view.panDown', label: 'Pan a tenth of the view', where: VIEWS },
+
+  // the visibility keys (card I9.8; mainwindow.py VIS_KEYS). Each calls the one command the View menu calls where it has an item.
+  { chord: 'P', command: 'view.planes', label: 'Show planes', where: ['studio'] },
+  { chord: 'Shift+P', command: 'view.construction', label: 'Planes, axes and mate connectors', where: VIEWS },
+  { chord: 'Y', command: 'view.hide', label: 'Hide the selected parts', where: VIEWS },
+  { chord: 'Shift+Y', command: 'view.showAll', label: 'Show all parts', where: VIEWS },
+  { chord: 'Shift+I', command: 'view.isolate', label: 'Isolate the selected parts', where: VIEWS },
+  { chord: 'Shift+T', command: 'view.transparent', label: 'Make the selected parts transparent', where: VIEWS },
+  { chord: 'K', command: 'view.connectors', label: 'Mate connectors', where: VIEWS },
+  { chord: 'J', command: 'view.mates', label: 'Mates', where: VIEWS },
+  { chord: 'Shift+H', command: 'view.sketches', label: 'Sketches', where: VIEWS },
 
   { chord: 'Space', command: 'select.clear', label: 'Clear the selection', where: ['studio', 'sketch', 'assembly'] },
   { chord: 'Delete', command: 'delete', label: 'Delete', where: ['studio', 'sketch', 'assembly'] },

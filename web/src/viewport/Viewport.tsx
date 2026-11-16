@@ -8,6 +8,7 @@ import type { PreviewLook } from './controller'
 import { ViewCube } from './ViewCube'
 import { registerView } from './viewCommands'
 import { notDrawnText } from './notDrawn'
+import type { ViewState } from './visibility'
 import './viewport.css'
 
 /**
@@ -20,6 +21,7 @@ export function Viewport({
   tabKind = 'studio',
   preview = null,
   sketch = null,
+  visibility,
 }: {
   outputs: StudioOutputs | null
   selection?: SelectionStore
@@ -27,6 +29,8 @@ export function Viewport({
   preview?: PreviewLook | null
   /** The open sketch (I7.7), drawn over the model while it is open in this view. */
   sketch?: SketchStore | null
+  /** The tab's visibility settings (P, Shift+P, Shift+I, Shift+T), card I9.8. */
+  visibility?: ViewState
 }) {
   // a viewport mounted on its own keeps its own selection; the shell passes the one it shares with the chip and the Parts list
   const [own] = useState(() => new SelectionStore())
@@ -66,6 +70,11 @@ export function Viewport({
       controller.current = null
     }
   }, [store])
+
+  // before the outputs: the first model is drawn by these settings
+  useEffect(() => {
+    if (visibility) controller.current?.setVisibility(visibility)
+  }, [visibility, store, failed])
 
   useEffect(() => {
     if (outputs) controller.current?.setOutputs(outputs, previewNumber === null ? null : { number: previewNumber, feature: previewFeature!, ghost: previewGhost })

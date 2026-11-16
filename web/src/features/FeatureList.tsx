@@ -20,6 +20,8 @@ interface Props {
   edits: FeatureEdits
   onEdit?: (feature: FeatureEntry) => void
   onSelect: (id: string) => void
+  /** Desktop mode: the Origin rows (Top, Front, Right) with their eyes, as the desktop's list has them; absent in Tablet mode. */
+  origin?: { hidden: ReadonlySet<string>; toggle: (name: string) => void }
 }
 
 type Dialog = { kind: 'rename' | 'delete'; feature: FeatureEntry }
@@ -106,6 +108,34 @@ function FeatureButton({ feature, index, indent, selected, rolledBack, slot, can
   )
 }
 
+const ORIGIN_PLANES = ['Top', 'Front', 'Right'] as const
+
+/** One of the default planes: a row with an eye. Their state is the tab's view state (viewport/visibility.ts), not the server's. */
+function OriginRow({ name, hidden, onEye }: { name: string; hidden: boolean; onEye: () => void }) {
+  const { eye, bind } = useRowEye(hidden)
+  return (
+    <li {...bind} className="feature-eyed" data-origin-row={name} data-hidden={hidden ? '' : undefined}>
+      <span className="panel-row" data-origin={name}>
+        <Icon d={featureIcon('plane')} px={size.iconSmall} stroke="var(--c-inkSoft)" />
+        <span className="row-text">
+          <span className="row-name">{name}</span>
+        </span>
+      </span>
+      <button
+        type="button"
+        className="icon-button feature-eye"
+        aria-label={`${hidden ? 'Show' : 'Hide'} ${name} plane`}
+        title={`${hidden ? 'Show' : 'Hide'} ${name}`}
+        data-origin-eye={name}
+        data-eye={eye}
+        onClick={onEye}
+      >
+        <Icon d={hidden ? paths.eyeOff : paths.eye} px={size.iconSmall} />
+      </button>
+    </li>
+  )
+}
+
 function FolderButton({ row, rolledBack, slot, onToggle }: { row: Extract<Row, { kind: 'folder' }>; rolledBack: boolean; slot: number; onToggle: () => void }) {
   const { folder, open } = row
   const failed = !open && folder.failed > 0
@@ -147,7 +177,7 @@ interface Drag {
  * (Rename, Hide or Show for a sketch, plane or axis, Suppress or Unsuppress, Delete, Roll to here); the eye at the right of such a row does the same as Hide or Show. The bar moves only by its Drag handle, and one set_rollback
  * is sent when the handle is released. Delete asks first; Rename asks for the new name.
  */
-export function FeatureList({ outputs, selected, edits, onEdit, onSelect }: Props) {
+export function FeatureList({ outputs, selected, edits, onEdit, onSelect, origin }: Props) {
   const [menu, setMenu] = useState<{ feature: FeatureEntry; index: number; anchor: Anchor } | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [openChoice, setOpenChoice] = useState<Record<string, boolean>>({})
@@ -249,6 +279,7 @@ export function FeatureList({ outputs, selected, edits, onEdit, onSelect }: Prop
   return (
     <>
       <ul ref={body} className="feature-list" aria-label="Features">
+        {origin && ORIGIN_PLANES.map((n) => <OriginRow key={`origin:${n}`} name={n} hidden={origin.hidden.has(n)} onEye={() => origin.toggle(n)} />)}
         {rows.map((row, at) => {
           const slot = slotBefore(row, rows, at)
           const rolledBack = (row.kind === 'folder' ? row.start : row.index) >= shownRollback

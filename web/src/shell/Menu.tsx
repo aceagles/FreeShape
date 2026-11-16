@@ -146,7 +146,7 @@ export function MenuButton({ label, entries, commands, state, placement = 'below
 
 /** An item, and below it, when it is open, its submenu's items (indented). */
 function MenuGroup({ item, open, commands, state, run }: { item: MenuItem; open: boolean; commands: Commands; state: MenuState; run: (item: MenuItem) => void }) {
-  const row = <MenuRow item={item} on={isRunnable(item, commands, state)} wired={isWired(item, commands)} expanded={item.items ? open : undefined} onRun={() => run(item)} />
+  const row = <MenuRow item={item} checked={checkedOf(item, state)} on={isRunnable(item, commands, state)} wired={isWired(item, commands)} expanded={item.items ? open : undefined} onRun={() => run(item)} />
   if (!item.items || !open) return row
   return (
     <>
@@ -155,19 +155,22 @@ function MenuGroup({ item, open, commands, state, run }: { item: MenuItem; open:
         s.kind === 'separator' ? (
           <div key={`s${i}`} className="menu-separator" role="separator" />
         ) : (
-          <MenuRow key={s.command} item={s} sub on={isRunnable(s, commands, state)} wired={isWired(s, commands)} onRun={() => run(s)} />
+          <MenuRow key={s.command} item={s} checked={checkedOf(s, state)} sub on={isRunnable(s, commands, state)} wired={isWired(s, commands)} onRun={() => run(s)} />
         ),
       )}
     </>
   )
 }
 
-function MenuRow({ item, on, wired, onRun, sub, expanded }: { item: MenuItem; on: boolean; wired: boolean; onRun: () => void; sub?: boolean; expanded?: boolean }) {
+/** A check item's mark: the state the shell keeps for its command, else the item's own. */
+const checkedOf = (item: MenuItem, state: MenuState): boolean => state.checks?.[item.command] ?? item.checked === true
+
+function MenuRow({ item, checked, on, wired, onRun, sub, expanded }: { item: MenuItem; checked: boolean; on: boolean; wired: boolean; onRun: () => void; sub?: boolean; expanded?: boolean }) {
   return (
     <button
       type="button"
       role={item.check ? 'menuitemcheckbox' : 'menuitem'}
-      aria-checked={item.check ? item.checked === true : undefined}
+      aria-checked={item.check ? checked : undefined}
       aria-haspopup={item.submenu ? 'menu' : undefined}
       aria-expanded={expanded}
       className={sub ? 'menu-item menu-subitem' : 'menu-item'}
@@ -179,7 +182,7 @@ function MenuRow({ item, on, wired, onRun, sub, expanded }: { item: MenuItem; on
       tabIndex={-1}
       onClick={onRun}
     >
-      <span className="menu-mark">{item.check && item.checked && <Icon d={paths.check} px={14} sw={2.2} />}</span>
+      <span className="menu-mark">{item.check && checked && <Icon d={paths.check} px={14} sw={2.2} />}</span>
       <span className="menu-label">{item.label}</span>
       {item.chord && <span className="menu-chord">{item.chord}</span>}
       {item.submenu && (

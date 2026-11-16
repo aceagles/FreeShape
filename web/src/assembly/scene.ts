@@ -27,9 +27,11 @@ export interface AssemblyStats {
   drawnIds: string[]
   /** Triangles over every drawn instance. */
   triangles: number
+  /** Instances drawn see-through by Shift+T. */
+  transparent: number
 }
 
-export const EMPTY_ASSEMBLY_STATS: AssemblyStats = { instances: 0, drawn: 0, hidden: 0, geometries: 0, drawnIds: [], triangles: 0 }
+export const EMPTY_ASSEMBLY_STATS: AssemblyStats = { instances: 0, drawn: 0, hidden: 0, geometries: 0, drawnIds: [], triangles: 0, transparent: 0 }
 
 export interface AssemblyScene {
   root: Group
@@ -127,7 +129,7 @@ function localCorners(mesh: PartMesh): [number, number, number][] {
  * each instance that is not hidden a Mesh and an edge-line object that share it and carry the instance's placement as their
  * matrix. Hidden instances have no object. Typed-array views of the response are used in place.
  */
-export function buildAssemblyScene(outputs: AssemblyOutputs): AssemblyScene {
+export function buildAssemblyScene(outputs: AssemblyOutputs, opts: { transparent?: ReadonlySet<string> } = {}): AssemblyScene {
   const root = new Group()
   root.name = 'assembly'
   const materials: Material[] = []
@@ -165,11 +167,14 @@ export function buildAssemblyScene(outputs: AssemblyOutputs): AssemblyScene {
     }
     const matrix = placement(inst)
     placed.set(inst.id, matrix)
-    const mat = shadedMaterial(rgb(inst.color.length >= 3 ? inst.color : sceneColor.part))
+    const seeThrough = opts.transparent?.has(inst.id) === true
+    const mat = shadedMaterial(rgb(inst.color.length >= 3 ? inst.color : sceneColor.part), seeThrough ? { alpha: sceneDraw.contextAlpha } : undefined)
+    if (seeThrough) stats.transparent++
     materials.push(mat)
     const m = new Mesh(shared.geometry, mat)
     m.matrixAutoUpdate = false
     m.matrix.copy(matrix)
+    if (seeThrough) m.renderOrder = 2
     m.userData['bvh'] = shared.bvh
     m.userData['instanceId'] = inst.id
     m.userData['partHash'] = inst.part

@@ -17,6 +17,8 @@ export interface MenuState {
   tabKind: string | null
   /** A sketch is open on the tab on screen. */
   sketchOpen?: boolean
+  /** The state of check items the client keeps itself, by command (View > Show planes): overrides the item's `checked`. */
+  checks?: Readonly<Record<string, boolean>>
 }
 
 export interface MenuItem {
@@ -123,8 +125,9 @@ export const viewMenu: readonly MenuEntry[] = [
   SEP,
   { command: 'view.section', label: 'Section view', chord: chordFor('view.section'), check: true, checked: false },
   { command: 'view.fit', label: 'Zoom to fit', chord: chordFor('view.fit'), enabled: hasView },
-  { command: 'view.planes', label: 'Show planes', chord: chordFor('view.planes'), check: true, checked: true },
-  { command: 'view.showAll', label: 'Show all parts' },
+  // the two the visibility keys share (card I9.8): P and Shift+Y; the tick of Show planes is `MenuState.checks`
+  { command: 'view.planes', label: 'Show planes', chord: chordFor('view.planes'), check: true, checked: true, enabled: (s) => s.tabKind === 'studio' },
+  { command: 'view.showAll', label: 'Show all parts', chord: chordFor('view.showAll'), enabled: hasView },
   { command: 'view.shiny', label: 'Shiny surfaces', check: true, checked: false },
   { command: 'view.through', label: 'Select through context', check: true, checked: false },
   { command: 'view.rotate', label: 'Rotate around', submenu: true },

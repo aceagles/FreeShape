@@ -20,6 +20,8 @@ import { PickIndex, rayPoint, viewRay } from './pick'
 import type { PickFilter, PickHit, PickKind, PickPointer } from './pick'
 import { tintFeature } from './previewTint'
 import { buildScene, DEFAULT_PLANES, EMPTY_STATS } from './scene'
+import { DEFAULT_VIEW, shapeStudio } from './visibility'
+import type { ViewState } from './visibility'
 import type { BuiltScene, SceneStats } from './scene'
 import { setSeeThrough } from './seeThrough'
 
@@ -180,6 +182,10 @@ export class ViewportController implements NavHost {
   /** Desktop mode (I9.9): the box and the count badge drawn over the view, and the box's source for the selection. */
   private readonly overlay: MouseOverlay
   private readonly box: BoxSource
+  /** The tab's visibility settings (P, Shift+P, Shift+I, Shift+T): what setOutputs draws by. */
+  private vis: ViewState = DEFAULT_VIEW
+  /** What setOutputs was last given, so a change of `vis` draws it again. */
+  private lastShown: { shown: StudioOutputs; preview: PreviewLook | null } | null = null
 
   /** Throws when the browser cannot create a WebGL context. The viewport draws and picks for `selection`. */
   constructor(
@@ -287,8 +293,10 @@ export class ViewportController implements NavHost {
   }
 
   /** Replace the drawn model with this studio. The first model is fitted; later ones keep the camera. */
-  setOutputs(shown: StudioOutputs, preview: PreviewLook | null = null): void {
+  setOutputs(given: StudioOutputs, preview: PreviewLook | null = null): void {
     if (this.disposed) return
+    this.lastShown = { shown: given, preview }
+    const shown = shapeStudio(given, this.vis)
     let outputs = shown
     this.previewNumber = preview?.number ?? null
     this.tinted = null
@@ -306,7 +314,7 @@ export class ViewportController implements NavHost {
       this.scene.remove(this.built.root)
       this.built.dispose()
     }
-    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, ghost })
+    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, ghost, hiddenPlanes: this.vis.hiddenPlanes, transparent: new Set(this.vis.transparent) })
     if (preview && ghost) this.tinted = { feature: preview.feature, parts: this.built.stats.ghostParts }
     this.scene.add(this.built.root)
     if (this.sketchMode) this.seeThrough(this.built.root, true)
@@ -318,6 +326,13 @@ export class ViewportController implements NavHost {
     this.emptyKind = null
     if (!this.fitted) this.fit()
     this.requestRender()
+  }
+
+  /** The tab's visibility settings changed (card I9.8): draw the model again by them. */
+  setVisibility(vis: ViewState): void {
+    if (this.disposed || vis === this.vis) return
+    this.vis = vis
+    if (this.lastShown) this.setOutputs(this.lastShown.shown, this.lastShown.preview)
   }
 
   /**
@@ -332,6 +347,7 @@ export class ViewportController implements NavHost {
       this.built = null
     }
     this.picker = null
+    this.lastShown = null
     this.highlighted = null
     this.planeHalf = null
     this.revision = null

@@ -3,6 +3,7 @@ import { useShell } from '../shell/ShellContext'
 import { useMode } from '../shell/mode'
 import type { SelectionStore } from '../selection/store'
 import type { AssemblyOutputs } from '../wire'
+import type { ViewState } from '../viewport/visibility'
 import { ViewCube } from '../viewport/ViewCube'
 import { registerView } from '../viewport/viewCommands'
 import '../viewport/viewport.css'
@@ -16,7 +17,7 @@ import type { DragSender } from './gizmo'
  * they change; `selection` is the store the view picks for and draws. The pointer module navigates and the view cube sets
  * the standard views, as in a Part Studio.
  */
-export function AssemblyViewport({ outputs, selection, drag }: { outputs: AssemblyOutputs | null; selection: SelectionStore; drag?: DragSender }) {
+export function AssemblyViewport({ outputs, selection, drag, visibility }: { outputs: AssemblyOutputs | null; selection: SelectionStore; drag?: DragSender; visibility?: ViewState }) {
   const shell = useShell()
   const [gizmo, setGizmo] = useState<GizmoShape | null>(null)
   const host = useRef<HTMLDivElement>(null)
@@ -71,6 +72,11 @@ export function AssemblyViewport({ outputs, selection, drag }: { outputs: Assemb
       <GizmoPad kind={r.kind} value={r.value} onApply={(total) => void c.gizmo.typed(total)} onClose={closeDialog} />,
     )
   }, [openDialog, closeDialog])
+
+  // before the outputs: the first model is drawn by these settings
+  useEffect(() => {
+    if (visibility) controller.current?.setVisibility(visibility)
+  }, [visibility, selection, failed])
 
   useEffect(() => {
     if (outputs) controller.current?.setOutputs(outputs)

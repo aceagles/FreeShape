@@ -62,6 +62,8 @@ import { Splitter } from './Splitter'
 import { isRunnable, MENU_BAR, STANDARD_VIEW_ITEMS } from './menus'
 import type { Commands, MenuItem, MenuState } from './menus'
 import { runViewCommand, viewOnScreen } from '../viewport/viewCommands'
+import { ViewVisibility } from '../viewport/visibility'
+import { anyPlaneShown, visibilityCommands } from './visibilityCommands'
 import { tokenVars } from './vars'
 import './shell.css'
 
@@ -375,6 +377,10 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   useEffect(() => dock.bind(api, variables))
   useEffect(() => editDock.bind(api, variables))
   const assembly = useAssembly({ store, tab: currentTab, tabKind, readOnly, documentName: name, onError: failText })
+  // the visibility keys (card I9.8): the View settings kept per tab here, the parts' and sketches' eyes kept on the server
+  const [visibility] = useState(() => new ViewVisibility())
+  const tabView = visibility.tab(`${doc?.id ?? ''}:${currentTab ?? ''}`)
+  const viewState = useSyncExternalStore(tabView.subscribe, tabView.getState)
 
   const add = async (kind: 'studio' | 'assembly') => {
     try {
@@ -447,7 +453,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   }, [])
   // what the Desktop menus can run now; an item with no command here is shown disabled ("Desktop only for now")
   const currentInfo = tabs.find((t) => t.id === currentTab) ?? null
-  const menuState: MenuState = { readOnly, tabKind, sketchOpen: sketchHere }
+  const menuState: MenuState = { readOnly, tabKind, sketchOpen: sketchHere, checks: { 'view.planes': anyPlaneShown(viewState, studio) } }
   const canUndo = studio?.canUndo === true && !edits.busy && !editingHere && !sketch.open
   const canRedo = studio?.canRedo === true && !edits.busy && !editingHere && !sketch.open
   // Undo and Redo, one each for the top bar, the Desktop toolbar and Ctrl+Z / Ctrl+Y: the open sketch's, else the Part Studio's
@@ -482,7 +488,22 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     onFit: () => void runViewCommand('fit'),
     onFinish: () => sketchStore.commit(),
   })
+  const visibilityKeys = visibilityCommands({
+    tabKind,
+    readOnly,
+    sketchOpen: sketchHere,
+    dialogOpen: editingHere !== null,
+    view: tabView,
+    selection,
+    studio,
+    assembly: assembly.outputs,
+    selectedFeature,
+    send: (edit) => (currentTab === null ? Promise.reject(new Error('no tab')) : store.edit(currentTab, edit)),
+    fail,
+  })
   const commands: Commands = {
+    'view.planes': () => void visibilityKeys['view.planes']!(),
+    'view.showAll': () => void visibilityKeys['view.showAll']!(),
     'document.cancelSketch': askCancelSketch,
     'document.newStudio': () => void add('studio'),
     'document.newAssembly': () => void add('assembly'),
@@ -534,6 +555,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         },
         clearFeature: () => setPickedFeature(null),
         view: viewOnScreen,
+        visibility: visibilityKeys,
       }),
     }
   })
@@ -635,6 +657,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
               onSelect={api.selectFeature}
               onSelectPart={api.selectPart}
               onCollapsedChange={setCollapsed}
+              origin={desktop ? { hidden: new Set(viewState.hiddenPlanes), toggle: tabView.toggleDefaultPlane } : undefined}
             />
             )}
             {editingHere && doc && (
@@ -666,7 +689,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           {/* data-dialog-base: the view draws an open dialog's base model, the one its picks resolve against (a test hook) */}
           <div className="shell-viewport" ref={setViewportEl} data-region="viewport" data-testid="shell-viewport" data-dialog-base={base !== null ? '' : undefined}>
             {tabKind === 'assembly' ? (
-              <AssemblyViewport outputs={assembly.outputs} selection={selection} drag={assembly.edits.drag} />
+              <AssemblyViewport outputs={assembly.outputs} selection={selection} drag={assembly.edits.drag} visibility={viewState} />
             ) : (
               <StudioViewport
                 outputs={drawn}
@@ -674,6 +697,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 selection={selection}
                 tabKind={tabKind}
                 sketch={sketchHere ? sketchStore : null}
+                visibility={viewState}
               />
             )}
             <div className="chip-slot" data-testid="chip-slot" data-region="selection-chip">

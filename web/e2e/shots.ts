@@ -1770,6 +1770,38 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I9.8: P has hidden every plane, then the Origin row's eye brought Front back alone; the View menu is open with Show planes ticked
+    name: 'desktop-planes-one',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      await page.keyboard.press('p')
+      await page.waitForFunction(() => window.__freeshapeViewport?.planes === 0)
+      await page.locator('[data-origin-eye="Front"]').click()
+      await page.waitForFunction(() => window.__freeshapeViewport?.planes === 1)
+      await page.getByRole('button', { name: 'View', exact: true }).click()
+      await settled(page)
+    },
+  },
+  {
+    // I9.8: Y with the pointer over the bracket and nothing selected hid it: the Parts list shows it hidden, the view is empty
+    name: 'desktop-part-hidden',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      const [spot] = await faceSpots(page, page.request, 'mouse')
+      const canvas = (await page.locator('.viewport-canvas').boundingBox())!
+      await page.mouse.move(canvas.x + spot!.x, canvas.y + spot!.y)
+      await page.waitForFunction(() => window.__freeshapeViewport?.selection.aimed != null)
+      await page.keyboard.press('y')
+      await page.waitForFunction(() => (window.__freeshapeViewport?.hiddenParts ?? 0) === 1)
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I9.9: drag a selection box with the mouse from above left of the bracket to below its middle; `release` lets the button go. */

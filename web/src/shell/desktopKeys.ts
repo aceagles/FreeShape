@@ -48,6 +48,8 @@ export interface DesktopKeyContext {
   clearFeature: () => void
   /** The 3D view on screen. */
   view: () => ViewHandler | null
+  /** The visibility keys' commands (shell/visibilityCommands.ts); each returns false when it does not act here. */
+  visibility: Record<string, () => boolean>
 }
 
 /** Space and Enter on a focused button press the button, as the browser does; the keymap leaves them to it. */
@@ -130,6 +132,8 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
     'view.panRight': pan(1, 0),
     'view.panUp': pan(0, -1),
     'view.panDown': pan(0, 1),
+    // P, Shift+P, Y, Shift+Y, Shift+I, Shift+T, K, J, Shift+H: the commands the View menu calls too (card I9.8)
+    ...c.visibility,
     'select.clear': () => {
       if (onButton()) return false
       if (sk !== null) sk.clearSelection()

@@ -278,8 +278,9 @@ export class PickIndex {
       const y = new Vector3().crossVectors(nv, xv).normalize()
       return { key, o: new Vector3(...o), x: xv, y, n: nv.clone().normalize() }
     }
-    for (const p of DEFAULT_PLANES) this.planes.push(frame(p.name, p.o, p.x, p.n))
+    // default planes that P switched off are not picked either
     const hid = eyeHidden(outputs)
+    for (const p of DEFAULT_PLANES) if (!(built.stats.hiddenDefaultPlanes ?? []).includes(p.name)) this.planes.push(frame(p.name, p.o, p.x, p.n))
     for (const [key, p] of Object.entries(outputs.planes)) if (!hid.has(key)) this.planes.push(frame(key, p.o, p.x, p.n))
     for (const [key, a] of Object.entries(outputs.axes)) {
       if (hid.has(key)) continue

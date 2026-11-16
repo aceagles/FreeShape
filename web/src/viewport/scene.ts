@@ -57,6 +57,10 @@ export interface SceneStats {
   sketchRegions: number
   /** Parts of a dialog's preview drawn as the translucent ghost over the model (see SceneOptions.ghost). */
   ghostParts: number
+  /** The default planes the tab's view state hides (not drawn, not picked); a plane a person made follows its eye. */
+  hiddenDefaultPlanes: string[]
+  /** Parts drawn see-through by Shift+T. */
+  transparentParts: number
 }
 
 /** What the hook says before any scene: nothing drawn. */
@@ -75,6 +79,8 @@ export const EMPTY_STATS: SceneStats = {
   axes: 0,
   sketchRegions: 0,
   ghostParts: 0,
+  hiddenDefaultPlanes: [],
+  transparentParts: 0,
 }
 
 export interface SceneOptions {
@@ -88,6 +94,10 @@ export interface SceneOptions {
    * open the drawn outputs are the model the dialog picks against, and the ghost only shows what the feature would make.
    */
   ghost?: StudioOutputs | null
+  /** Default planes not to draw (by name). The studio's own planes follow their eyes. */
+  hiddenPlanes?: readonly string[]
+  /** Ids of parts drawn see-through, like a Context body (Shift+T). They are still picked as parts. */
+  transparent?: ReadonlySet<string>
 }
 
 /** How opaque the preview ghost is: the model under it still reads, and so does the shape of the result. */
@@ -423,7 +433,9 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   ] as const) {
     for (const part of list) {
       const mesh = part.mesh as PartMesh
-      const m = partGroup(part, mesh, translucent, materials)
+      const seeThrough = !translucent && opts.transparent?.has(part.id) === true
+      const m = partGroup(part, mesh, translucent || seeThrough, materials)
+      if (seeThrough) stats.transparentParts++
       geometries.push(m.geometry)
       root.add(m)
       const lines = edgeLines(part, mesh, materials, lineMats)
@@ -463,7 +475,8 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     sources.planes.set(key, g.userData['corners'] as Vector3[])
     planes.add(g)
   }
-  for (const p of DEFAULT_PLANES) addPlane(p.name, p)
+  stats.hiddenDefaultPlanes = [...(opts.hiddenPlanes ?? [])]
+  for (const p of DEFAULT_PLANES) if (!stats.hiddenDefaultPlanes.includes(p.name)) addPlane(p.name, p)
   for (const [key, p] of Object.entries(outputs.planes)) if (!hid.has(key)) addPlane(key, p)
   stats.planes = planes.children.length
   root.add(planes)

@@ -11,6 +11,8 @@ import { rayPoint, viewRay } from '../viewport/pick'
 import { panView, turnView } from '../viewport/controller'
 import type { PickFilter, PickPointer } from '../viewport/pick'
 import type { ElementPick } from '../viewport/pick'
+import { DEFAULT_VIEW, shapeAssembly } from '../viewport/visibility'
+import type { ViewState } from '../viewport/visibility'
 import { AssemblyPickIndex } from './pick'
 import { buildAssemblyScene, EMPTY_ASSEMBLY_STATS } from './scene'
 import type { AssemblyScene, AssemblyStats } from './scene'
@@ -62,6 +64,9 @@ export class AssemblyController implements NavHost {
   private picker: AssemblyPickIndex | null = null
   private revision: number | null = null
   private latest: AssemblyOutputs | null = null
+  /** The tab's visibility settings (Shift+I, Shift+T) and what setOutputs was last given, so a change draws it again. */
+  private vis: ViewState = DEFAULT_VIEW
+  private given: AssemblyOutputs | null = null
   private frames = 0
   private pending = 0
   private fitted = false
@@ -224,15 +229,17 @@ export class AssemblyController implements NavHost {
   }
 
   /** Replace the drawn model with this Assembly. The first model is fitted; later ones keep the camera. */
-  setOutputs(outputs: AssemblyOutputs): void {
+  setOutputs(sent: AssemblyOutputs): void {
     if (this.disposed) return
+    this.given = sent
+    const outputs = shapeAssembly(sent, this.vis)
     reconcileAssembly(this.selection, outputs)
     this.drop()
     // outputs that arrive once a drag is done are newer than anything its replies said
     if (!this.dragging) this.solved.clear()
     this.latest = outputs
     this.gizmo.setOutputs(outputs)
-    this.built = buildAssemblyScene(outputs)
+    this.built = buildAssemblyScene(outputs, { transparent: new Set(this.vis.transparent) })
     this.scene.add(this.built.root)
     if (this.dragging) this.placeOverrides()
     this.picker = new AssemblyPickIndex(outputs, this.built)
@@ -242,9 +249,17 @@ export class AssemblyController implements NavHost {
     this.requestRender()
   }
 
+  /** The tab's visibility settings changed (card I9.8): draw the Assembly again by them. */
+  setVisibility(vis: ViewState): void {
+    if (this.disposed || vis === this.vis) return
+    this.vis = vis
+    if (this.given) this.setOutputs(this.given)
+  }
+
   /** Draw nothing (the outputs have not arrived, or the tab changed). The next outputs are fitted afresh. */
   clear(): void {
     if (this.disposed) return
+    this.given = null
     this.drop()
     this.gizmo.setOutputs(null)
     this.latest = null

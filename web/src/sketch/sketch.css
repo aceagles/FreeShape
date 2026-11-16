@@ -123,7 +123,7 @@
   top: calc(100% + var(--sp-8));
   left: 0;
   width: max-content;
-  max-width: min(420px, 60vw);
+  max-width: min(600px, 60vw);
   height: auto;
   min-height: 44px;
   padding-block: var(--sp-8);
@@ -136,7 +136,7 @@
   top: calc(100% + var(--sp-8));
   left: 0;
   width: max-content;
-  max-width: min(420px, 60vw);
+  max-width: min(600px, 60vw);
   box-sizing: border-box;
   padding: var(--sp-8) var(--sp-14);
   border: 1px solid var(--c-accentLine);

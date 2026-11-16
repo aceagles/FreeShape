@@ -10,6 +10,12 @@ export interface Bounds {
 export const FIT_MARGIN = 60
 /** Top margin of a fit: clears the view cube (12 px inset, 72 px square) by 12 px, so a fitted model never meets it. */
 export const FIT_MARGIN_TOP = 96
+/** The pixels a fit leaves empty at the top, the bottom and each side of the view. */
+export interface FitMargins {
+  top: number
+  bottom: number
+  side: number
+}
 /** The tightest a fit ever zooms: half the box is at least this many mm. */
 export const MIN_HALF = 2.5
 
@@ -200,8 +206,14 @@ export class ViewCamera {
     this.apply()
   }
 
-  /** Frame the box in the current view direction, leaving FIT_MARGIN pixels on each side (FIT_MARGIN_TOP at the top, clear of the view cube). */
-  fit(bounds: Bounds): void {
+  /**
+   * Frame the box in the current view direction, leaving FIT_MARGIN pixels on each side (FIT_MARGIN_TOP at the top, clear
+   * of the view cube). `margins` replaces those: a sketch leaves room for the chips and hints over its view (F10).
+   */
+  fit(bounds: Bounds, margins: Partial<FitMargins> = {}): void {
+    const top = margins.top ?? FIT_MARGIN_TOP
+    const bottom = margins.bottom ?? FIT_MARGIN
+    const side = margins.side ?? FIT_MARGIN
     const { lo, hi } = bounds
     const centre = new Vector3((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2)
     const { right, up } = this.axes()
@@ -224,11 +236,11 @@ export class ViewCamera {
     const wExt = Math.max(rMax - rMin, 1e-3)
     const hExt = Math.max(uMax - uMin, 1e-3)
     this.scale = Math.max(
-      wExt / Math.max(this.width - 2 * FIT_MARGIN, 50),
-      hExt / Math.max(this.height - FIT_MARGIN - FIT_MARGIN_TOP, 50),
+      wExt / Math.max(this.width - 2 * side, 50),
+      hExt / Math.max(this.height - bottom - top, 50),
     )
-    // The free area sits (FIT_MARGIN_TOP - FIT_MARGIN) / 2 px below the middle of the view: put the model there.
-    this.target.addScaledVector(up, ((FIT_MARGIN_TOP - FIT_MARGIN) / 2) * this.scale)
+    // The free area sits (top - bottom) / 2 px below the middle of the view: put the model there.
+    this.target.addScaledVector(up, ((top - bottom) / 2) * this.scale)
     const dx = hi[0] - lo[0]
     const dy = hi[1] - lo[1]
     const dz = hi[2] - lo[2]

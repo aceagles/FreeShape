@@ -8,6 +8,7 @@ import { handleSpots, SketchHandles } from './handle'
 import type { HandleSpot } from './handle'
 import { isMovable } from './select'
 import { uvToView, viewToUv } from './frame'
+import { fitSketchView } from './band'
 import { layoutSketch } from './layout'
 import type { ScreenLayout } from './layout'
 import { pickSketch } from './pick'
@@ -320,7 +321,8 @@ export class SketchMode {
       lo: [Math.min(...world.map((w) => w[0])), Math.min(...world.map((w) => w[1])), Math.min(...world.map((w) => w[2]))],
       hi: [Math.max(...world.map((w) => w[0])), Math.max(...world.map((w) => w[1])), Math.max(...world.map((w) => w[2]))],
     }
-    view.fit(box)
+    // the chips, the hints and the foot-of-view hint lie over the view: lay the sketch out clear of them (F10)
+    fitSketchView(view, box, f, drawSketch(s.sketch, s.status))
   }
 
   /** Draw the layer for the view as it is now. Called once per frame, before the canvas is drawn. */

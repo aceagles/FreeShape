@@ -26,8 +26,14 @@ export async function settledAssembly(page: Page): Promise<AssemblyReport> {
   return readAssembly(page)
 }
 
-/** The gizmo the hook reports, once it is there (or, with `absent`, once it is gone): never a one-shot read after a UI change. */
+/** The gizmo the hook reports once it is there: one read both checks and returns it, so a later read cannot find it gone. */
 export async function gizmoOf(page: Page): Promise<NonNullable<AssemblyReport['gizmo']>> {
-  await expect.poll(async () => (await readAssembly(page)).gizmo !== null).toBe(true)
-  return (await readAssembly(page)).gizmo!
+  let found: AssemblyReport['gizmo'] = null
+  await expect
+    .poll(async () => {
+      found = (await readAssembly(page)).gizmo
+      return found !== null
+    })
+    .toBe(true)
+  return found!
 }

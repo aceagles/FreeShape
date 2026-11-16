@@ -404,6 +404,60 @@ class SketchSession:
                 e["construction"] = (not e.get("construction", False)) if value is None else value
         return self._step(flip)
 
+    # ------------------------------------------------------------------ constraints (I7.5)
+    def constrain(self, body):
+        """{"tool": a name of OPS.FIT_TOOLS, "picks": [point or entity id, ...]}: what the desktop's constraint tool
+        makes of those picks (sketch_ops.constraints_for), as one step. A pick that is not a point or entity of the
+        sketch, or picks the tool cannot use, are a SketchError. If the solve cannot meet a new constraint (or the
+        sketch was solvable and no longer is) the sketch, its status and the undo and redo stacks are left as they
+        were. Returns {"accepted": bool, "made": [constraint ids] (those added), "conflicts": [constraint ids] (the
+        new ones the solve could not meet, when not accepted)}."""
+        _only(body, {"tool", "picks"}, "constrain")
+        tool = body.get("tool")
+        if tool not in OPS.FIT_TOOLS:
+            raise SketchError(f"constrain.tool: must be one of {', '.join(OPS.FIT_TOOLS)}")
+        picks = _ids(body.get("picks"), "constrain.picks")
+        for i, x in enumerate(picks):
+            if x not in self.sk.points and x not in self.sk.entities:
+                raise SketchError(f"constrain.picks[{i}]: no such point or entity in the sketch")
+        self._not_dragging()
+        made = OPS.constraints_for(self.sk, tool, picks)
+        if not made:
+            raise SketchError(f"constrain.picks: a {tool} constraint does not take these items")
+        before_ids = {c["id"] for c in self.sk.constraints}
+        before, status, redo = self.sk.to_dict(), self._status, list(self.redo_stack)
+        new = self._step(lambda: [c["id"] for c in OPS.apply_constraints(self.sk, tool, made)])
+        bad = [i for i in new if self._status["constraints"].get(i) == "conflicting"]
+        if bad or (status["ok"] and not self._status["ok"]):
+            self.sk = Sketch.from_dict(before)
+            self._status = status
+            self.undo_stack.pop()
+            self.redo_stack[:] = redo
+            return {"accepted": False, "made": [], "conflicts": bad}
+        return {"accepted": True, "made": [i for i in new if i not in before_ids], "conflicts": []}
+
+    def unconstrain(self, body):
+        """{"constraint": constraint id}: remove that one constraint (nothing else), as one step. (Not "id": a
+        message's own "id" is the request id the answer echoes.)"""
+        _only(body, {"constraint"}, "unconstrain")
+        self._not_dragging()
+        cid = body.get("constraint")
+        if not isinstance(cid, str) or not any(c["id"] == cid for c in self.sk.constraints):
+            raise SketchError("unconstrain.constraint: no such constraint in the sketch")
+        self._step(lambda: self.sk.delete([cid]))
+
+    def fits(self, body):
+        """{"selection": [point or entity id, ...]}: the constraint tools that take that selection
+        (sketch_ops.fits), in OPS.FIT_TOOLS order; nothing is changed."""
+        _only(body, {"selection"}, "fits")
+        sel = body.get("selection")
+        if not isinstance(sel, list) or len(sel) > MAX_IDS or not all(isinstance(x, str) for x in sel):
+            raise SketchError(f"fits.selection: must be a list of at most {MAX_IDS} ids")
+        for i, x in enumerate(sel):
+            if x not in self.sk.points and x not in self.sk.entities:
+                raise SketchError(f"fits.selection[{i}]: no such point or entity in the sketch")
+        return OPS.fits(self.sk, sel)
+
     # ------------------------------------------------------------------ undo
     def undo(self):
         self._not_dragging()

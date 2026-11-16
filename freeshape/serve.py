@@ -232,6 +232,19 @@ is one undo step. Other steps, undo, redo and commit are refused while one is op
   sketch.drag.end   {"type": "sketch.drag.end", "cancel"?: bool}  waits for the waiting move to be solved, then keeps
                 the last solved result as one undo step and answers sketch.changed (as the steps above); a drag
                 whose last move was held or left everything where it was, or that never moved, adds no step; `cancel` drops the result.
+  sketch.constrain {"type": "sketch.constrain", "tool", "picks": [point or entity id, ...]}  apply a constraint tool as
+                the desktop does, through freeshape.sketch_ops.constraints_for (I7.5). `tool` is one of coincident,
+                horizontal, vertical, parallel, perpendicular, tangent, equal, midpoint, concentric, symmetric, fix,
+                normal; picks are ids of the sketch's points and entities (not constraints), in the order clicked
+                (symmetric: the axis is the third). A tool that cannot use the picks is an error naming "picks". The
+                client never maps picks to constraint types itself. Answer {"type": "sketch.constrained",
+                "accepted": bool, "made": [new constraint ids], "conflicts": [new constraint ids the solve could not
+                meet], ...the fields of sketch.changed}. accepted false: the sketch, its status and the undo stack
+                are exactly as before (no step); accepted true: one undo step.
+  sketch.unconstrain {"type": "sketch.unconstrain", "constraint": constraint id}  remove that one constraint, one step
+                (the field is not "id": that stays the request id); answers sketch.changed.
+  sketch.fits   {"type": "sketch.fits", "selection": [point or entity id, ...]}  no change, allowed during a drag;
+                answers {"type": "sketch.fitted", "selection", "tools": [tool names that take it, in the order above]}.
 When the client's registry entry expires, or the Document closes or the server stops gracefully, an unfinished sketch is
 written into the Document's autosave (I2.6) before the session is dropped: the tab's autosaved data holds the sketch
 feature (an existing one with the session's params, a new one added at the rollback bar), the open session is not
@@ -2026,7 +2039,8 @@ class _Server:
                       "sketch.add": {"shape", "picks", "construction", "radius", "sweep", "constraints"},
                       "sketch.delete": {"ids"}, "sketch.construction": {"ids", "value"},
                       "sketch.undo": set(), "sketch.redo": set(), "sketch.state": set(), "sketch.commit": set(),
-                      "sketch.cancel": set(), "sketch.drag.begin": {"point", "entity", "at"},
+                      "sketch.cancel": set(), "sketch.constrain": {"tool", "picks"}, "sketch.unconstrain": {"constraint"},
+                      "sketch.fits": {"selection"}, "sketch.drag.begin": {"point", "entity", "at"},
                       "sketch.drag.move": {"at", "t"}, "sketch.drag.end": {"cancel"}}
 
     async def _sketch_do(self, client, kind, msg, doc_id, ws=None):
@@ -2066,8 +2080,15 @@ class _Server:
                 if sk.committing:
                     raise SketchError("the sketch is being committed")
                 made = None
+                if kind == "sketch.fits":
+                    return {"type": "sketch.fitted", "selection": body.get("selection"), "tools": sk.fits(body)}
+                if kind == "sketch.constrain":
+                    res = sk.constrain(body)
+                    return {"type": "sketch.constrained", **res, **sk.view()}
                 if kind == "sketch.add":
                     made = sk.add(body)
+                elif kind == "sketch.unconstrain":
+                    sk.unconstrain(body)
                 elif kind == "sketch.delete":
                     sk.delete(body)
                 elif kind == "sketch.construction":

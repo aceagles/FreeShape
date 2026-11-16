@@ -1124,86 +1124,8 @@ class Sketcher:
             if r is not None and r not in picks:
                 picks.append(r)
         dropped = len(picks) < len(raw)
-        types = [self._etype(p) for p in picks]
         sk = self.sk
-        curves = ("circle", "arc")
-        made = []
-        if tool == "fix" and picks:
-            for p in picks:
-                pts = [self._as_point(p)] if types[picks.index(p)] == "point" else sk.entity_points(p)
-                for pid in pts:
-                    if pid != ORIGIN:
-                        made.append(("fix", [pid], list(sk.points[pid])))
-                if p in sk.entities and sk.entities[p]["type"] == "circle":
-                    made.append(("radius", [p], sk.entities[p]["r"]))
-        elif tool in ("horizontal", "vertical") and picks and all(t == "line" for t in types):
-            for p in picks:                        # one or several lines: each one made horizontal / vertical
-                made.append((tool, [p], None))
-        elif len(picks) == 2:
-            a, b = picks
-            ta, tb = types
-            if tool == "coincident":
-                if ta == "point" and tb == "point":
-                    made.append(("coincident", [self._as_point(a), self._as_point(b)], None))
-                elif ta == "point" and tb in ("line",) + curves:
-                    made.append(("point_on", [self._as_point(a), b], None))
-                elif tb == "point" and ta in ("line",) + curves:
-                    made.append(("point_on", [self._as_point(b), a], None))
-                elif ta in curves and tb in curves:
-                    made.append(("concentric", [a, b], None))
-            elif tool in ("horizontal", "vertical") and ta == "point" and tb == "point":
-                made.append((tool, [self._as_point(a), self._as_point(b)], None))
-            elif tool in ("parallel", "perpendicular") and ta == "line" and tb == "line":
-                made.append((tool, [a, b], None))
-            elif tool == "equal" and ((ta == tb == "line") or (ta in curves and tb in curves)):
-                made.append(("equal", [a, b], None))
-            elif tool == "concentric" and ta in curves + ("point",) and tb in curves + ("point",):
-                made.append(("concentric", [a if ta in curves else self._as_point(a),
-                                            b if tb in curves else self._as_point(b)], None))
-            elif tool == "midpoint":
-                if ta == "point" and tb == "line":
-                    made.append(("midpoint", [self._as_point(a), b], None))
-                elif tb == "point" and ta == "line":
-                    made.append(("midpoint", [self._as_point(b), a], None))
-            elif tool == "tangent":
-                if (ta == "line" and tb in curves) or (tb == "line" and ta in curves) or (ta in curves and tb in curves):
-                    val = None
-                    if ta in curves and tb in curves:
-                        d = np.linalg.norm(sk.P(sk.entities[a]["c"]) - sk.P(sk.entities[b]["c"]))
-                        internal = d < max(sk.radius(a), sk.radius(b))
-                        val = -1.0 if internal else 1.0
-                    made.append(("tangent", [a, b], val))
-        if tool == "normal" and len(picks) == 2:
-            a, b = picks
-            ta, tb = types
-            if ta == "line" and tb in curves:
-                a, b = b, a
-            elif not (tb == "line" and ta in curves):
-                a = None
-            if a is not None:
-                # point-on-line residual on the curve's centre, flagged so the badge reads "normal"
-                made.append(("point_on", [sk.entities[a]["c"], b], None))
-        if tool == "symmetric" and len(picks) == 3:
-            lines_ = [p for p, t in zip(picks, types) if t == "line"]
-            axis = picks[2] if types[2] == "line" else (lines_[-1] if lines_ else None)
-            others = [(p, t) for p, t in zip(picks, types) if p != axis]
-            if axis and len(others) == 2:
-                (a, ta), (b, tb) = others
-                if ta == "point" and tb == "point":
-                    made.append(("symmetric", [self._as_point(a), self._as_point(b), axis], None))
-                elif ta in curves and tb in curves:
-                    made.append(("symmetric", [sk.entities[a]["c"], sk.entities[b]["c"], axis], None))
-                    made.append(("equal", [a, b], None))
-                elif ta == "line" and tb == "line":
-                    ea, eb = sk.entities[a], sk.entities[b]
-                    A0, A1 = sk.P(ax0 := sk.entities[axis]["p1"]), sk.P(sk.entities[axis]["p2"])
-                    d = (A1 - A0) / max(np.linalg.norm(A1 - A0), 1e-12)
-                    refl = lambda q: A0 + 2 * ((q - A0) @ d) * d - (q - A0)
-                    straight = np.linalg.norm(refl(sk.P(ea["p1"])) - sk.P(eb["p1"]))
-                    crossed = np.linalg.norm(refl(sk.P(ea["p1"])) - sk.P(eb["p2"]))
-                    q1, q2 = (eb["p1"], eb["p2"]) if straight <= crossed else (eb["p2"], eb["p1"])
-                    made.append(("symmetric", [ea["p1"], q1, axis], None))
-                    made.append(("symmetric", [ea["p2"], q2, axis], None))
+        made = OPS.constraints_for(sk, tool, picks)
         if not made:
             need = {"fix": 1, "symmetric": 3}.get(tool, 2)
             if dropped or len(picks) >= need:
@@ -1212,20 +1134,7 @@ class Sketcher:
                 self._prompt_label = "⚠ " + CONSTRAINT_TOOLS.get(tool, "Selection does not fit this constraint")
             return False
         self.push_undo()
-        for t, refs, val in made:
-            if t in ("horizontal", "vertical"):
-                # a line can't be both: horizontal replaces vertical and the other way round (otherwise the line
-                # shrinks to a dot), and asking again for what it already is changes nothing
-                pair = self._hv_pair(refs)
-                other = "vertical" if t == "horizontal" else "horizontal"
-                if any(c["type"] == t and self._hv_pair(c["refs"]) == pair for c in sk.constraints):
-                    continue
-                sk.constraints = [c for c in sk.constraints
-                                  if not (c["type"] == other and self._hv_pair(c["refs"]) == pair)]
-                self._swing_to(pair, t)
-            c = sk.add_constraint(t, *refs, value=val)
-            if tool == "normal":
-                c["normal"] = True
+        OPS.apply_constraints(sk, tool, made)
         self.changed(True)
         return True
 
@@ -1297,35 +1206,6 @@ class Sketcher:
     def _other_closed(self):
         self.hover = None
         self._popup = None
-
-    def _swing_to(self, pair, t):
-        """Turn two points about their midpoint so they line up horizontally / vertically, keeping their distance.
-        Without this a vertical line made horizontal is squashed to a dot (the smallest move that satisfies the
-        solver), instead of being turned."""
-        sk = self.sk
-        a, b = sorted(pair)
-        if ORIGIN in (a, b) or a not in sk.points or b not in sk.points:
-            return
-        A, B = sk.P(a), sk.P(b)
-        d = B - A
-        L = float(np.linalg.norm(d))
-        along = abs(d[0]) if t == "horizontal" else abs(d[1])
-        across = abs(d[1]) if t == "horizontal" else abs(d[0])
-        if L < 1e-9 or along >= across:
-            return                              # already more that way than the other: the solver just nudges it
-        m = (A + B) / 2
-        sgn = 1.0 if (d[1] if t == "horizontal" else d[0]) >= 0 else -1.0
-        half = np.array([sgn * L / 2, 0.0]) if t == "horizontal" else np.array([0.0, sgn * L / 2])
-        sk.points[a] = (m - half).tolist()
-        sk.points[b] = (m + half).tolist()
-
-    def _hv_pair(self, refs):
-        """The two points a horizontal / vertical constraint lines up (from a line, or two points), unordered."""
-        sk = self.sk
-        if len(refs) == 1 and refs[0] in sk.entities and sk.entities[refs[0]].get("type") == "line":
-            e = sk.entities[refs[0]]
-            return frozenset((e["p1"], e["p2"]))
-        return frozenset(refs[:2])
 
     # ------------------------------------------------------------------ drawing tools
     def _polygon_mode(self):

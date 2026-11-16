@@ -887,3 +887,220 @@ def add_projected_edge(sk: Sketch, got, cons):
         reused = used_line(sk, a, b)
         out = reused or add_used_line(sk, a, b, cons)
     return out, reused
+
+
+# --------------------------------------------------------------------------- constraint tools (I7.5)
+# One mapping from a constraint tool and the picked items to constraints, used by the desktop's Sketcher and by the
+# sketch session of `freeshape serve`. A client sends the tool and the picks; it never copies these rules.
+
+_CURVES = ("circle", "arc")
+
+# Which selections each tool takes, as the kinds of the picked items, in any order: "point", "line", "circle",
+# "arc"; "curve" stands for circle or arc, and a trailing "+" for one or more of that kind. Read off the branches of
+# constraints_for. Where the old card text and the code differed, the code is followed:
+#   horizontal / vertical also take several lines (each made so); concentric also takes a point with a curve and two
+#   points; there is no point_on tool (coincident makes it); symmetric also takes three lines (the third is the axis) and a circle with an arc; fix takes any items.
+FITS = {
+    "coincident": [("point", "point"), ("point", "line"), ("point", "curve"), ("curve", "curve")],
+    "horizontal": [("line+",), ("point", "point")],
+    "vertical": [("line+",), ("point", "point")],
+    "parallel": [("line", "line")],
+    "perpendicular": [("line", "line")],
+    "tangent": [("line", "curve"), ("curve", "curve")],
+    "equal": [("line", "line"), ("curve", "curve")],
+    "midpoint": [("point", "line")],
+    "concentric": [("curve", "curve"), ("point", "curve"), ("point", "point")],
+    "symmetric": [("point", "point", "line"), ("curve", "curve", "line"), ("line", "line", "line")],
+    "fix": [("any+",)],
+    "normal": [("line", "curve")],
+}
+FIT_TOOLS = tuple(FITS)
+
+
+def sketch_etype(sk: Sketch, i):
+    """The kind of item `i`: "point" (a point or a point entity), an entity's type, or None."""
+    if i in sk.points:
+        return "point"
+    if i in sk.entities:
+        return sk.entities[i]["type"]
+    return None
+
+
+def _as_point(sk: Sketch, i):
+    if i in sk.entities and sk.entities[i]["type"] == "point":
+        return sk.entities[i]["p"]
+    return i
+
+
+def _shape_fits(kinds, row):
+    """Does the multiset of `kinds` match `row` (see FITS)?"""
+    kinds = list(kinds)
+    if len(row) == 1 and row[0].endswith("+"):
+        base = row[0][:-1]
+        return bool(kinds) and all(base == "any" or k == base or (base == "curve" and k in _CURVES) for k in kinds)
+    if len(kinds) != len(row):
+        return False
+    rest = list(kinds)
+    for want in sorted(row, key=lambda w: w == "curve"):          # exact kinds first, then "curve"
+        for k in rest:
+            if k == want or (want == "curve" and k in _CURVES):
+                rest.remove(k)
+                break
+        else:
+            return False
+    return True
+
+
+def constraints_for(sk: Sketch, tool: str, picks) -> list:
+    """What the constraint `tool` makes of the picked items (point ids, entity ids), as a list of
+    (type, refs, value) to give to `apply_constraints`; empty when the picks do not fit the tool. Pure: `sk` is
+    only read. `picks` are already resolved to points and entities (the desktop resolves a picked constraint to
+    its point first), without repeats. The rules:
+      coincident   two points; a point and a line or curve is point_on; two curves are concentric
+      tangent      line and curve; two curves carry value 1 (external) or -1 (internal, centre distance < a radius)
+      fix          every point of the item at its place (not the origin), and a circle's radius
+      normal       point_on of the curve's centre on the line, flagged "normal" by `apply_constraints`
+      symmetric    the axis is the third pick (else the last line); two curves also become equal"""
+    picks = list(picks)
+    types = [sketch_etype(sk, p) for p in picks]
+    curves = _CURVES
+    made = []
+    if tool == "fix" and picks:
+        for p, t in zip(picks, types):
+            if t is None:
+                continue
+            for pid in ([_as_point(sk, p)] if t == "point" else sk.entity_points(p)):
+                if pid != ORIGIN:
+                    made.append(("fix", [pid], list(sk.points[pid])))
+            if p in sk.entities and sk.entities[p]["type"] == "circle":
+                made.append(("radius", [p], sk.entities[p]["r"]))
+    elif tool in ("horizontal", "vertical") and picks and all(t == "line" for t in types):
+        for p in picks:                        # one or several lines: each one made horizontal / vertical
+            made.append((tool, [p], None))
+    elif len(picks) == 2:
+        a, b = picks
+        ta, tb = types
+        if tool == "coincident":
+            if ta == "point" and tb == "point":
+                made.append(("coincident", [_as_point(sk, a), _as_point(sk, b)], None))
+            elif ta == "point" and tb in ("line",) + curves:
+                made.append(("point_on", [_as_point(sk, a), b], None))
+            elif tb == "point" and ta in ("line",) + curves:
+                made.append(("point_on", [_as_point(sk, b), a], None))
+            elif ta in curves and tb in curves:
+                made.append(("concentric", [a, b], None))
+        elif tool in ("horizontal", "vertical") and ta == "point" and tb == "point":
+            made.append((tool, [_as_point(sk, a), _as_point(sk, b)], None))
+        elif tool in ("parallel", "perpendicular") and ta == "line" and tb == "line":
+            made.append((tool, [a, b], None))
+        elif tool == "equal" and ((ta == tb == "line") or (ta in curves and tb in curves)):
+            made.append(("equal", [a, b], None))
+        elif tool == "concentric" and ta in curves + ("point",) and tb in curves + ("point",):
+            made.append(("concentric", [a if ta in curves else _as_point(sk, a),
+                                        b if tb in curves else _as_point(sk, b)], None))
+        elif tool == "midpoint":
+            if ta == "point" and tb == "line":
+                made.append(("midpoint", [_as_point(sk, a), b], None))
+            elif tb == "point" and ta == "line":
+                made.append(("midpoint", [_as_point(sk, b), a], None))
+        elif tool == "tangent":
+            if (ta == "line" and tb in curves) or (tb == "line" and ta in curves) or (ta in curves and tb in curves):
+                val = None
+                if ta in curves and tb in curves:
+                    d = np.linalg.norm(sk.P(sk.entities[a]["c"]) - sk.P(sk.entities[b]["c"]))
+                    internal = d < max(sk.radius(a), sk.radius(b))
+                    val = -1.0 if internal else 1.0
+                made.append(("tangent", [a, b], val))
+    if tool == "normal" and len(picks) == 2:
+        a, b = picks
+        ta, tb = types
+        if ta == "line" and tb in curves:
+            a, b = b, a
+        elif not (tb == "line" and ta in curves):
+            a = None
+        if a is not None:
+            # point-on-line residual on the curve's centre, flagged so the badge reads "normal"
+            made.append(("point_on", [sk.entities[a]["c"], b], None))
+    if tool == "symmetric" and len(picks) == 3:
+        lines_ = [p for p, t in zip(picks, types) if t == "line"]
+        axis = picks[2] if types[2] == "line" else (lines_[-1] if lines_ else None)
+        others = [(p, t) for p, t in zip(picks, types) if p != axis]
+        if axis and len(others) == 2:
+            (a, ta), (b, tb) = others
+            if ta == "point" and tb == "point":
+                made.append(("symmetric", [_as_point(sk, a), _as_point(sk, b), axis], None))
+            elif ta in curves and tb in curves:
+                made.append(("symmetric", [sk.entities[a]["c"], sk.entities[b]["c"], axis], None))
+                made.append(("equal", [a, b], None))
+            elif ta == "line" and tb == "line":
+                ea, eb = sk.entities[a], sk.entities[b]
+                A0, A1 = sk.P(sk.entities[axis]["p1"]), sk.P(sk.entities[axis]["p2"])
+                d = (A1 - A0) / max(np.linalg.norm(A1 - A0), 1e-12)
+                refl = lambda q: A0 + 2 * ((q - A0) @ d) * d - (q - A0)
+                straight = np.linalg.norm(refl(sk.P(ea["p1"])) - sk.P(eb["p1"]))
+                crossed = np.linalg.norm(refl(sk.P(ea["p1"])) - sk.P(eb["p2"]))
+                q1, q2 = (eb["p1"], eb["p2"]) if straight <= crossed else (eb["p2"], eb["p1"])
+                made.append(("symmetric", [ea["p1"], q1, axis], None))
+                made.append(("symmetric", [ea["p2"], q2, axis], None))
+    return made
+
+
+def fits(sk: Sketch, selection) -> list:
+    """The constraint tools (FIT_TOOLS order) that take this selection: its shape is a row of FITS and
+    `constraints_for` makes something of it."""
+    sel = list(dict.fromkeys(selection))
+    kinds = [sketch_etype(sk, p) for p in sel]
+    if not sel or None in kinds:
+        return []
+    return [t for t, rows in FITS.items()
+            if any(_shape_fits(kinds, r) for r in rows) and constraints_for(sk, t, sel)]
+
+
+def _hv_pair(sk: Sketch, refs):
+    """The two points a horizontal / vertical constraint lines up (from a line, or two points), unordered."""
+    if len(refs) == 1 and refs[0] in sk.entities and sk.entities[refs[0]].get("type") == "line":
+        e = sk.entities[refs[0]]
+        return frozenset((e["p1"], e["p2"]))
+    return frozenset(refs[:2])
+
+
+def _swing_to(sk: Sketch, pair, t):
+    """Turn two points about their midpoint so they line up horizontally / vertically, keeping their distance.
+    Without this a vertical line made horizontal is squashed to a dot (the smallest move that satisfies the
+    solver), instead of being turned."""
+    a, b = sorted(pair)
+    if ORIGIN in (a, b) or a not in sk.points or b not in sk.points:
+        return
+    A, B = sk.P(a), sk.P(b)
+    d = B - A
+    L = float(np.linalg.norm(d))
+    along = abs(d[0]) if t == "horizontal" else abs(d[1])
+    across = abs(d[1]) if t == "horizontal" else abs(d[0])
+    if L < 1e-9 or along >= across:
+        return                              # already more that way than the other: the solver just nudges it
+    m = (A + B) / 2
+    sgn = 1.0 if (d[1] if t == "horizontal" else d[0]) >= 0 else -1.0
+    half = np.array([sgn * L / 2, 0.0]) if t == "horizontal" else np.array([0.0, sgn * L / 2])
+    sk.points[a] = (m - half).tolist()
+    sk.points[b] = (m + half).tolist()
+
+
+def apply_constraints(sk: Sketch, tool: str, made) -> list:
+    """Add what `constraints_for` returned to `sk` (the caller solves). A line can't be both horizontal and
+    vertical: one replaces the other, and asking again for what it already is changes nothing. Returns the new
+    constraint dicts."""
+    out = []
+    for t, refs, val in made:
+        if t in ("horizontal", "vertical"):
+            pair = _hv_pair(sk, refs)
+            other = "vertical" if t == "horizontal" else "horizontal"
+            if any(c["type"] == t and _hv_pair(sk, c["refs"]) == pair for c in sk.constraints):
+                continue
+            sk.constraints = [c for c in sk.constraints
+                              if not (c["type"] == other and _hv_pair(sk, c["refs"]) == pair)]
+            _swing_to(sk, pair, t)
+        c = sk.add_constraint(t, *refs, value=val)
+        if tool == "normal":
+            c["normal"] = True
+        out.append(c)
+    return out

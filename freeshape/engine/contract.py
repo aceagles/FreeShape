@@ -413,6 +413,29 @@ class Engine(abc.ABC):
         tab waiting behind the one its worker has: a newer request supersedes a waiting one, whose Future then
         answers {"preview": its n, "superseded": True, "ok": False, "outputs": None, ...}."""
 
+    @abc.abstractmethod
+    def sketch_frame(self, tab, plane) -> dict:
+        """What a sketch session needs of a plane (I7.1). A QUERY, like `refs`: nothing changes. `plane` is a plane
+        reference as a sketch feature's `plane` param stores it ({"kind": "std", "name"}, {"kind": "plane", "fid"},
+        {"kind": "face", "face": a face reference}) or the id of an existing sketch feature (a string). Returns
+            {"origin": [x, y, z], "xdir", "ydir", "normal": the sketch plane's frame in world coordinates,
+             "edges": [{"pick": {"part", "kind": "edge", "index": 1-based, "want": ["edge"]}, a pick the refs route
+                        accepts, "points": [[u, v], ...] the edge as a polyline in sketch coordinates,
+                        "height": the largest distance of the edge from the plane, 0 for an edge lying in it}]},
+        for every non-seam edge of the committed model. EngineError, naming the face, for a face that is not
+        planar; EngineError for a reference that finds nothing, or a tab that is not a Part Studio."""
+
+    @abc.abstractmethod
+    def project_edge(self, tab, plane, pick) -> dict:
+        """One model edge as the sketch entity the desktop's Use tool adds (I7.1). A QUERY. `plane` as in
+        `sketch_frame`; `pick` a pick of kind "edge" (the refs route's format; `want` may be left out). Returns
+            {"kind": "line" | "circle" | "arc" | "point",
+             "entity": {"type": "line", "a", "b"} | {"type": "circle", "c", "r"} | {"type": "arc", "c", "p1", "p2"
+                        (counter-clockwise from p1 to p2)} | {"type": "point", "p"}, each with "fixed": True, in
+                        sketch coordinates,
+             "ref": the reference the entity stores as `src` so it follows the part, or None}.
+        EngineError for an edge that is neither straight nor circular on the plane; BadPick for a malformed pick."""
+
     # ------------------------------------------------------------------ the Link graph
     def rebuild_dependents(self, tab) -> list:
         """Rebuild the tabs that consume `tab`, each once, after the tabs they consume, and only those whose

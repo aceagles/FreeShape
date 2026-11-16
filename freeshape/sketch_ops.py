@@ -663,3 +663,103 @@ def extent_along(sk: Sketch, ids, d):
         if eid in sk.entities:
             vals += [float(p @ d) for p in sk.polyline(eid, 24)]
     return (max(vals) - min(vals)) if vals else 0.0
+
+
+# --------------------------------------------------------------------------- used (projected) model edges
+# The Qt-free half of the sketcher's Use tool (I7.1). The desktop's Sketcher and the engine's `project_edge`
+# request both go through these, so an edge is brought into a sketch the same way in both.
+
+def is_fixed(sk: Sketch, pid) -> bool:
+    return any(c["type"] == "fix" and c["refs"][0] == pid for c in sk.constraints)
+
+
+def used_line(sk: Sketch, a, b):
+    """The line already projected into the sketch from a part edge running a-b (both ends fixed there), or None."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    tol = 1e-6 * max(1.0, float(np.linalg.norm(b - a)))
+    for eid, e in sk.entities.items():
+        if e["type"] != "line":
+            continue
+        p, q = sk.P(e["p1"]), sk.P(e["p2"])
+        same = (np.linalg.norm(p - a) < tol and np.linalg.norm(q - b) < tol) or \
+               (np.linalg.norm(p - b) < tol and np.linalg.norm(q - a) < tol)
+        if same and is_fixed(sk, e["p1"]) and is_fixed(sk, e["p2"]):
+            return eid
+    return None
+
+
+def used_circle(sk: Sketch, c, r):
+    """The circle already projected from a part edge of centre c and radius r (centre fixed), or None."""
+    for eid, e in sk.entities.items():
+        if e["type"] == "circle" and abs(sk.radius(eid) - r) < 1e-6 * max(1.0, r) \
+                and np.linalg.norm(sk.P(e["c"]) - np.asarray(c, float)) < 1e-6 * max(1.0, r) \
+                and is_fixed(sk, e["c"]):
+            return eid
+    return None
+
+
+def add_used_line(sk: Sketch, a, b, cons) -> str:
+    pa, pb = sk.add_point(*a), sk.add_point(*b)
+    eid = sk.add_line(pa, pb, cons)
+    sk.add_constraint("fix", pa, value=[float(v) for v in a])
+    sk.add_constraint("fix", pb, value=[float(v) for v in b])
+    return eid
+
+
+def edge_src(state, pid, edge, shape):
+    """The reference a used edge stores so it follows the part (features.refresh_used_edges), or None when
+    the edge has no element name in the model before this sketch (`state`, None when unknown). It is kept only
+    when that name finds this same edge there: an edge of a later feature, or of a part with no names, stays
+    a frozen copy."""
+    if state is None:
+        return None
+    from . import features as F          # OCP: loaded only when an edge is used, so this module stays numpy-only
+    from . import kernel as K
+    try:
+        ref = F.make_ref(pid, edge, "edge", shape, state.named(pid))
+        if not ref.get("name"):
+            return None
+        _, found = F.resolve(state, ref, "edge")
+        a, b = K.edge_info(found), K.edge_info(edge)
+    except (K.KernelError, KeyError):
+        return None
+    tol = 1e-6 * max(1.0, float(a.get("len", 1.0)))
+    if a.get("type") != b.get("type") or abs(a["len"] - b["len"]) > tol \
+            or float(np.linalg.norm(np.asarray(a["c"], float) - np.asarray(b["c"], float))) > tol:
+        return None
+    return ref
+
+
+def add_projected_edge(sk: Sketch, got, cons):
+    """Add what `features.project_edge` returned (`got`, not None and not "curve") to the sketch as fixed
+    geometry. Returns (entity or point id, reused), `reused` being the id of the entity already projected from
+    the same edge (nothing is added then) or None."""
+    kind = got[0]
+    reused = None
+    if kind == "circle":
+        c, r = got[1], got[2]
+        reused = used_circle(sk, c, r)
+        if reused is not None:
+            out = reused
+        else:
+            pc = sk.add_point(*c)
+            sk.add_constraint("fix", pc, value=c.tolist())
+            out = sk.add_circle(pc, r, cons)
+            sk.add_constraint("radius", out, value=r)
+    elif kind == "arc":
+        c = got[1]                                         # partial circular edge: an arc
+        pc = sk.add_point(*c)
+        sk.add_constraint("fix", pc, value=c.tolist())
+        a, b = sk.add_point(*got[2]), sk.add_point(*got[3])
+        out = sk.add_arc(pc, a, b, cons)
+        for p_ in (a, b):
+            sk.add_constraint("fix", p_, value=list(sk.P(p_)))
+    elif kind == "point":
+        a = got[1]
+        out = sk.add_point(*a)                             # the edge points straight at you: a point
+        sk.add_constraint("fix", out, value=a.tolist())
+    else:
+        a, b = got[1], got[2]                              # a line between the outline's two extreme points
+        reused = used_line(sk, a, b)
+        out = reused or add_used_line(sk, a, b, cons)
+    return out, reused

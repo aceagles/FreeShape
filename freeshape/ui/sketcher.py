@@ -665,36 +665,14 @@ class Sketcher:
     def _used_line(self, a, b):
         """The line already projected into the sketch from a part edge running a-b (both ends fixed there), or
         None. Using or dimensioning to an edge twice returns this line instead of stacking a second one on it."""
-        sk = self.sk
-        a, b = np.asarray(a, float), np.asarray(b, float)
-        tol = 1e-6 * max(1.0, float(np.linalg.norm(b - a)))
-        for eid, e in sk.entities.items():
-            if e["type"] != "line":
-                continue
-            p, q = sk.P(e["p1"]), sk.P(e["p2"])
-            same = (np.linalg.norm(p - a) < tol and np.linalg.norm(q - b) < tol) or \
-                   (np.linalg.norm(p - b) < tol and np.linalg.norm(q - a) < tol)
-            if same and self._fixed(e["p1"]) and self._fixed(e["p2"]):
-                return eid
-        return None
+        return OPS.used_line(self.sk, a, b)
 
     def _used_circle(self, c, r):
         """The circle already projected from a part edge of centre c and radius r (centre fixed), or None."""
-        sk = self.sk
-        for eid, e in sk.entities.items():
-            if e["type"] == "circle" and abs(sk.radius(eid) - r) < 1e-6 * max(1.0, r) \
-                    and np.linalg.norm(sk.P(e["c"]) - np.asarray(c, float)) < 1e-6 * max(1.0, r) \
-                    and self._fixed(e["c"]):
-                return eid
-        return None
+        return OPS.used_circle(self.sk, c, r)
 
     def _add_used_line(self, a, b, cons):
-        sk = self.sk
-        pa, pb = sk.add_point(*a), sk.add_point(*b)
-        eid = sk.add_line(pa, pb, cons)
-        sk.add_constraint("fix", pa, value=[float(v) for v in a])
-        sk.add_constraint("fix", pb, value=[float(v) for v in b])
-        return eid
+        return OPS.add_used_line(self.sk, a, b, cons)
 
     def _source_point(self, ref):
         """The sketch point behind an inference source; a line midpoint gets a construction point."""
@@ -2167,25 +2145,8 @@ class Sketcher:
 
     # ------------------------------------------------------------------ use / trim
     def _edge_src(self, pid, ei, edge, shape):
-        """The reference a used edge stores so it follows the part (features.refresh_used_edges), or None when
-        the edge has no element name in the model before this sketch. It is kept only when that name finds
-        this same edge there: an edge of a later feature, or of a part with no names, stays a frozen copy."""
-        st = self.base_state
-        if st is None:
-            return None
-        try:
-            ref = F.make_ref(pid, edge, "edge", shape, st.named(pid))
-            if not ref.get("name"):
-                return None
-            _, found = F.resolve(st, ref, "edge")
-            a, b = K.edge_info(found), K.edge_info(edge)
-        except (K.KernelError, KeyError):
-            return None
-        tol = 1e-6 * max(1.0, float(a.get("len", 1.0)))
-        if a.get("type") != b.get("type") or abs(a["len"] - b["len"]) > tol \
-                or float(np.linalg.norm(np.asarray(a["c"], float) - np.asarray(b["c"], float))) > tol:
-            return None
-        return ref
+        """The reference a used edge stores (sketch_ops.edge_src), checked against the model before this sketch."""
+        return OPS.edge_src(self.base_state, pid, edge, shape)
 
     def _use_edge(self, vp, pk, construction=None, click=None, undo=True):
         """Project a part edge into the sketch as fixed geometry. Returns the entity (or point) id to use, or
@@ -2209,36 +2170,7 @@ class Sketcher:
             return None
         if undo:
             self.push_undo()
-        out = None
-        reused = None           # the entity already projected from this edge, when there is one
-        if kind == "circle":
-            c, r = got[1], got[2]
-            reused = self._used_circle(c, r)
-            if reused is not None:
-                out = reused
-            else:
-                pc = sk.add_point(*c)
-                sk.add_constraint("fix", pc, value=c.tolist())
-                out = sk.add_circle(pc, r, cons)
-                sk.add_constraint("radius", out, value=r)
-        elif kind == "arc":
-            # partial circular edge: an arc
-            c = got[1]
-            pc = sk.add_point(*c)
-            sk.add_constraint("fix", pc, value=c.tolist())
-            a, b = sk.add_point(*got[2]), sk.add_point(*got[3])
-            out = sk.add_arc(pc, a, b, cons)
-            for p_ in (a, b):
-                sk.add_constraint("fix", p_, value=list(sk.P(p_)))
-        elif kind == "point":
-            a = got[1]
-            out = sk.add_point(*a)                         # the edge points straight at you: a point
-            sk.add_constraint("fix", out, value=a.tolist())
-        else:
-            # anything whose outline on the sketch plane is straight: a line between its two extreme points
-            a, b = got[1], got[2]
-            reused = self._used_line(a, b)
-            out = reused or self._add_used_line(a, b, cons)
+        out, reused = OPS.add_projected_edge(sk, got, cons)    # reused: the entity already projected from this edge
         if reused is None and out in sk.entities:
             # remember which edge this came from, so the sketch projects it again when the part changes
             src = self._edge_src(pid, ei, edge, shape)

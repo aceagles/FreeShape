@@ -604,6 +604,14 @@ class ProcessEngine(Engine):
         """One stored feature and the studio's variables (contract.Engine.feature). A query."""
         return self._call(self._get(tab), "feature", feature)
 
+    def sketch_frame(self, tab, plane):
+        """A sketch plane's frame and the model edges, from the tab's worker (contract.Engine.sketch_frame). A query."""
+        return self._call(self._get(tab), "sketch_frame", plane)
+
+    def project_edge(self, tab, plane, pick):
+        """One model edge as a sketch entity, from the tab's worker (contract.Engine.project_edge). A query."""
+        return self._call(self._get(tab), "project_edge", {"plane": plane, "pick": pick})
+
     def submit_preview(self, tab, feature, type, params):
         """The model with a feature's proposed params, built by the tab's worker (contract.Engine.preview). A query:
         no edit is logged, no revision moves and nothing is rebuilt. Returns (n, Future); see `_queue_preview` for

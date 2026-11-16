@@ -33,6 +33,8 @@ from .linkgraph import live_package, package_digest, propagate
 from .. import blobstore
 from .. import kernel as K
 from .. import picking as PK
+from .. import sketch_ops as OPS
+from ..sketch import Sketch
 from .. import links
 from .. import tabkinds as TK
 
@@ -188,6 +190,12 @@ class _Tab:
 
     def preview(self, fid, ftype, params):
         raise EngineError(f"only a Part Studio has a feature preview (this tab is a {self.kind})")
+
+    def sketch_frame(self, plane):
+        raise EngineError(f"only a Part Studio has sketch planes (this tab is a {self.kind})")
+
+    def project_edge(self, plane, pick):
+        raise EngineError(f"only a Part Studio has edges to project (this tab is a {self.kind})")
 
 
 def apply_part_override(doc, edit):
@@ -397,6 +405,81 @@ class StudioTab(_Tab):
     def outputs(self):
         self.sync()
         return self._outputs_of(self.doc.state, dict(self.doc.errors), getattr(self.doc, "error_refs", {}))
+
+    # ------------------------------------------------------------------ the sketch session's queries (I7.1)
+    def _sketch_plane(self, plane):
+        """(the K.Plane, the model before the sketch) for `plane`: a plane reference dict (std / plane feature /
+        face, as a sketch feature's `plane` param stores it) or the id of a sketch feature. Reads only."""
+        self.sync()
+        if isinstance(plane, str):
+            f = self._feature(plane)
+            if f.get("type") != "sketch":
+                raise EngineError(f"feature {plane!r} is a {f.get('type')}, not a sketch")
+            sr = self.doc.state.sketches.get(plane)
+            if sr is None:
+                raise EngineError(f"sketch {plane!r} has no plane (it did not build)")
+            return sr.plane, self.doc.state_before(self.doc.features.index(f))
+        if not isinstance(plane, dict):
+            raise EngineError("plane: must be a plane reference (an object) or a sketch feature id (a string)")
+        try:
+            return F.resolve_plane(self.doc.state, plane), self.doc.state
+        except (K.KernelError, KeyError) as e:
+            if str(e) == "Face is not planar":
+                face = plane.get("face") or {}
+                raise EngineError(f"face {face.get('name') or '(unnamed)'} of part {face.get('part') or '?'} is "
+                                  f"not planar: a sketch needs a flat face") from None
+            raise EngineError(f"plane: {e}") from None
+
+    def sketch_frame(self, plane):
+        pl, _base = self._sketch_plane(plane)
+        edges = []
+        for pid, part in self.doc.state.parts.items():
+            seams = K.seam_edge_indices(part.shape)
+            for i, e in enumerate(K.edges(part.shape)):
+                if i in seams:
+                    continue
+                poly = np.asarray(K.discretize_edge(e), float)
+                if not len(poly):
+                    continue
+                d = (poly - pl.origin) @ pl.normal
+                edges.append({"pick": {"part": pid, "kind": "edge", "index": i + 1, "want": ["edge"]},
+                              "points": [list(pl.to_local(q)) for q in poly],
+                              "height": float(np.abs(d).max())})
+        return plain({"origin": pl.origin, "xdir": pl.xdir, "ydir": pl.ydir, "normal": pl.normal, "edges": edges})
+
+    def project_edge(self, plane, pick):
+        pl, base = self._sketch_plane(plane)
+        try:
+            pk = PK.parse_pick(0, {"want": ["edge"], **pick} if isinstance(pick, dict) else pick)
+        except ValueError as e:
+            raise BadPick(str(e)) from None
+        if pk["kind"] != "edge":
+            raise BadPick(f"picks[0].kind: project_edge takes an edge (got {pk['kind']})")
+        part = self.doc.state.parts.get(pk["part"])
+        if part is None:
+            raise BadPick(f"picks[0].part: no part {pk['part']!r} in this tab")
+        edges = K.edges(part.shape)
+        _need_index("picks[0]", f"part {pk['part']!r} has edges: it", len(edges), pk["index"])
+        edge = edges[pk["index"] - 1]
+        got = F.project_edge(pl, edge)
+        if got is None:
+            raise EngineError("that edge has no points to project")
+        if got[0] == "curve":
+            raise EngineError("Only straight or circular edges can be used here")
+        sk = Sketch()                      # a scratch sketch: the entity the desktop's Use tool would add
+        out, _ = OPS.add_projected_edge(sk, got, False)
+        if got[0] == "point":
+            ent = {"type": "point", "p": list(sk.P(out))}
+        else:
+            e = sk.entities[out]
+            if e["type"] == "line":
+                ent = {"type": "line", "a": list(sk.P(e["p1"])), "b": list(sk.P(e["p2"]))}
+            elif e["type"] == "circle":
+                ent = {"type": "circle", "c": list(sk.P(e["c"])), "r": sk.radius(out)}
+            else:
+                ent = {"type": "arc", "c": list(sk.P(e["c"])), "p1": list(sk.P(e["p1"])), "p2": list(sk.P(e["p2"]))}
+        src = OPS.edge_src(base, pk["part"], edge, part.shape)
+        return plain({"kind": got[0], "entity": dict(ent, fixed=True), "ref": src})
 
     def preview(self, fid, ftype, params):
         """`Engine.preview` without its number: the model rebuilt with the proposed params (PartStudioDoc.preview,
@@ -873,6 +956,12 @@ class InProcessEngine(Engine):
 
     def refs(self, tab, picks):
         return self._get(tab).refs(picks)
+
+    def sketch_frame(self, tab, plane):
+        return self._get(tab).sketch_frame(plane)
+
+    def project_edge(self, tab, plane, pick):
+        return self._get(tab).project_edge(plane, pick)
 
     def feature(self, tab, feature):
         return self._get(tab).feature_info(feature)

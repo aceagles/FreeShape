@@ -190,10 +190,23 @@ class FeatureDialog:
                 entry = {"value": value, "text": text}
                 if key in self.errors:
                     entry["error"] = self.errors[key]
+            elif kind == "choice":
+                entry = {"value": DSC._plain(self._choice_value(spec, raw))}
+            elif kind == "ops":
+                entry = {"value": DSC._plain(raw if raw is not None else spec.get("default"))}
             else:
                 entry = {"value": DSC._plain(raw)}
             out[key] = entry
         return out
+
+    @staticmethod
+    def _choice_value(spec, raw):
+        """What a choice row shows: the stored value if it is an option, else the first option (the desktop combo's
+        rule: a missing or unknown value picks index 0), so the row is never blank."""
+        options = spec.get("options") or []
+        if any(raw == v for v, _label in options):
+            return raw
+        return options[0][0] if options else raw
 
     def fields(self):
         out = {}

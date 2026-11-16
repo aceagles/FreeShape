@@ -121,7 +121,7 @@ export function ChoiceRow({ spec, value, error, onPick }: { spec: FieldSpec; val
       </Row>
     )
   }
-  const current = options.find(([v]) => v === value)
+  const current = options.find(([v]) => v === value) ?? options[0]     // an unknown value shows the first option, as the desktop combo does
   return (
     <Row label={label} message={error}>
       <button type="button" className="dlg-field dlg-field-choice" aria-haspopup="listbox" aria-expanded={open} aria-label={`${label}, ${current?.[1] ?? 'none'}`} onClick={() => setOpen(!open)}>

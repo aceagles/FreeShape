@@ -93,10 +93,12 @@ MAX_FOLDER = 80                 # longest folder name made from it
 _DOC_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _TAB_PATH = re.compile(r"^/tabs/([A-Za-z0-9_-]{1,64})/(outputs|mesh\.json|edit)$")
 _DOC_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})"
-                       r"(?:/(open|close|take-over|save|tabs)|/tabs/([A-Za-z0-9_-]{1,64})/(outputs|mesh\.json|edit))$")
+                       r"(?:/(open|close|take-over|save|tabs)"
+                       r"|/tabs/([A-Za-z0-9_-]{1,64})(?:/(outputs|mesh\.json|edit|rename))?)$")
 _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POST", "tabs": "GET"}
 _FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
-_EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST"}
+_EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST", "rename": "POST"}
+MAX_TABS = 200                  # tabs one Document may hold through POST /documents/<id>/tabs
 _CLIENT_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; "
                "img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; base-uri 'none'; "
                "form-action 'none'; frame-ancestors 'none'")
@@ -383,7 +385,7 @@ class _Open:
         self.read_only = file_lock is None and holder is not None
         self.lost = False                    # the lock was taken from us after we had it
         self.single = single                 # the one Document of a single-Document server (old routes alias it)
-        self.tab_ids = frozenset(t["id"] for t in session.tabs())     # the manifest is fixed for a session
+        self.tab_ids = frozenset(t["id"] for t in session.tabs())     # changes only through `refresh_tab_ids`
         self.revisions = {}                  # tab id -> last known revision (under `lock`)
         self.tabs_sig = None                 # last pushed tab states, to push `tabs` on change
         self.refresher = None                # the asyncio task that refreshes the lock file
@@ -391,6 +393,12 @@ class _Open:
     @property
     def name(self):
         return self.session.name
+
+    def refresh_tab_ids(self):
+        """Session lock held. Tab ids and revisions as the session now has them (after an add or a delete)."""
+        ids = frozenset(t["id"] for t in self.session.tabs())
+        self.revisions = {k: v for k, v in self.revisions.items() if k in ids}
+        self.tab_ids = ids
 
     def lock_state(self):
         """{"read_only", "holder"} for messages. Reads the lock file when the Document is read-only (blocking I/O:
@@ -676,6 +684,8 @@ class _Server:
         m = _DOC_PATH.match(path)
         if m is not None:
             doc_id, verb, tab, edge = m.group(1), m.group(2), m.group(3), m.group(4)
+            if tab is not None and edge is None:
+                return "tab", doc_id, tab, "DELETE"          # DELETE /documents/<id>/tabs/<tab>
             if edge is not None:
                 return edge, doc_id, tab, _EDGE_METHODS[edge]
             return verb, doc_id, None, _DOC_VERBS[verb]
@@ -692,7 +702,7 @@ class _Server:
         refused = check_host_origin(request.headers.get("Host"), request.headers.get("Origin"), self.hosts, self.origins)
         if refused is not None:
             return self._fail(*refused)
-        if method not in ("GET", "POST"):                         # PUT, DELETE, HEAD, OPTIONS, ... are refused
+        if method not in ("GET", "POST", "DELETE"):               # PUT, HEAD, OPTIONS, ... are refused
             return self._fail(405, "method not allowed", [("Allow", "GET, POST")])
         # the route comes from the raw request target, never from a decoded or normalised path
         path = request.raw_path.split("?", 1)[0]
@@ -709,6 +719,8 @@ class _Server:
             if route == "documents":
                 want = method if method in ("GET", "POST") else "GET"
                 route = "documents.list" if method == "GET" else "documents.create"
+            if route == "tabs" and method == "POST":               # POST adds a tab, GET lists them
+                route, want = "tabs.add", "POST"
             if tab is not None and doc_id is None:                # old route: the tab must exist, as it always did
                 one = self._single
                 if tab not in one.tab_ids:
@@ -725,6 +737,9 @@ class _Server:
             body = await self._body(request)
             if not isinstance(body, dict):
                 return body                                        # the refusal response
+        elif method == "DELETE" and (request.headers.get("Content-Length", "0").strip() != "0"
+                                     or request.headers.get("Transfer-Encoding") is not None):
+            return self._fail(400, "DELETE takes no body")
         return await self._route(route, doc_id, tab, body, request)
 
     async def _body(self, request):
@@ -809,8 +824,14 @@ class _Server:
             tabs = await self._in_session(d, d.session.tabs)
             return self._json(200, {"document": {"id": d.session.id, "name": d.session.name}, "tabs": tabs,
                                     **await self._off_loop(d.lock_state)})
+        if route == "tabs.add":
+            return await self._add_tab(d, body)
         if tab is not None and tab not in d.tab_ids:
             return self._fail(404, "not found")
+        if route == "rename":
+            return await self._rename_tab(d, tab, body)
+        if route == "tab":
+            return await self._delete_tab(d, tab)
         if route == "outputs":
             data = await self._in_session(d, lambda: d.session.outputs_wire(tab))
             return self._send(200, bytes(data), "application/octet-stream")
@@ -1038,6 +1059,64 @@ class _Server:
         await self._announce(d, {"type": "changed", "document": d.id, "client": client, "base": base,
                                  "rebuilt": rebuilt, "revisions": revisions, "saved": []}, tabs)
         return rebuilt
+
+    async def _tabs_changed(self, d, work):
+        """Run `work` (a tab-list change on the session) under the session lock after `check_writable`; refresh the
+        tab ids, push `tabs` to the Document's sockets; returns (work's result, the tab views)."""
+        def run():
+            d.check_writable()
+            out = work()
+            d.refresh_tab_ids()
+            return out, self._tab_view(d)
+        try:
+            out, tabs = await self._in_session(d, run)
+        except DocumentLocked:
+            if d.lost:
+                await self._announce_lock(d)
+            raise
+        d.tabs_sig = json.dumps([{k: v for k, v in t.items() if k != "revision"} for t in tabs], sort_keys=True)
+        await self._broadcast({"type": "tabs", "document": d.id, "tabs": tabs}, d)
+        return out, tabs
+
+    async def _add_tab(self, d, body):
+        """POST /documents/<id>/tabs {"kind": "studio" | "assembly", "name": optional}: 201 {"tab": <tab>, "tabs": [...]}."""
+        kind, name = body.get("kind"), body.get("name")
+        if kind not in ("studio", "assembly"):
+            return self._fail(400, "kind must be \"studio\" or \"assembly\"")
+        if name is not None:
+            check = self._check_name(name)
+            if check is not None:
+                return check
+        if len(d.tab_ids) >= MAX_TABS:
+            return self._fail(409, f"a Document holds at most {MAX_TABS} tabs")
+        tid, tabs = await self._tabs_changed(d, lambda: d.session.add_tab(kind, name))
+        return self._json(201, {"document": d.id, "tab": next(t for t in tabs if t["id"] == tid), "tabs": tabs})
+
+    async def _rename_tab(self, d, tab, body):
+        """POST /documents/<id>/tabs/<tab>/rename {"name": ...}: 200 {"tab": <tab>, "tabs": [...]}."""
+        check = self._check_name(body.get("name"))
+        if check is not None:
+            return check
+        _, tabs = await self._tabs_changed(d, lambda: d.session.rename_tab(tab, body["name"]))
+        return self._json(200, {"document": d.id, "tab": next(t for t in tabs if t["id"] == tab), "tabs": tabs})
+
+    async def _delete_tab(self, d, tab):
+        """DELETE /documents/<id>/tabs/<tab>: 200 {"deleted": id, "tabs": [...]}; 409 naming the tabs that link to it."""
+        from .session import TabLinked
+        try:
+            _, tabs = await self._tabs_changed(d, lambda: d.session.delete_tab(tab))
+        except TabLinked as e:
+            return self._fail(409, str(e), document=d.id, tab=e.tab, linked_by=e.linked_by)
+        return self._json(200, {"document": d.id, "deleted": tab, "tabs": tabs})
+
+    def _check_name(self, name):
+        """None if `name` is a valid tab name, else the 400 response."""
+        from .session import check_tab_name
+        try:
+            check_tab_name(name)
+        except self.session_error as e:
+            return self._fail(400, str(e))
+        return None
 
     async def _save(self, d, client):
         def work():

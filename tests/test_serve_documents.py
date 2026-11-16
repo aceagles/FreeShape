@@ -315,7 +315,7 @@ def test_the_new_routes_check_host_origin_body_type_and_size(root):
     assert r.request("POST", "/documents", raw=b'{"name": "' + b"a" * (SV.MAX_BODY + 1) + b'"}')[0] == 413
     assert r.request("PUT", "/documents")[0] == 405 and r.request("DELETE", f"/documents/{doc_id}/close")[0] == 405
     assert r.request("GET", f"/documents/{doc_id}/open")[0] == 405
-    assert r.request("POST", "/documents/" + doc_id + "/tabs")[0] == 405
+    assert r.request("PUT", "/documents/" + doc_id + "/tabs")[0] == 405
     assert os.listdir(r.root) == ["Bracket"]
 
 

@@ -31,8 +31,15 @@ worker, see `edit_timeout`). The result is the edited tab followed by `engine.re
 
 Saving. `save()` writes each open tab's `tab_data` through `store.write_tab`, stamped with `_tab_id` as
 `FolderDocument._tab_bytes` does (same JSON, indent 1), and the blobs the data names through `store.blobs(id)`.
-It does not rewrite the manifest or touch a tab that failed to open. An edit that was not saved is not in the
-store: a fresh session shows the old Document.
+It does not touch a tab that failed to open. An edit that was not saved is not in the store: a fresh session
+shows the old Document.
+
+Tabs (I2.4). `add_tab`, `rename_tab` and `delete_tab` change the tab list. The manifest is edited by a
+manifest-only `FolderDocument` (`_fd`, tabs with no loaded document) so the ids, file names and manifest bytes
+are the desktop's own. Nothing reaches the store until `save()`: it writes the new tabs' files, removes the files
+of deleted tabs, then rewrites the manifest (only when the tab list changed, so a save with no tab change leaves
+the manifest bytes alone). A deleted tab's worker ends at once; an added tab that is never saved leaves nothing
+on disk. `tabs_unsaved()` says whether the list has changes `save()` has not written.
 
 Threads. The session does no locking. Call it from one thread at a time: a caller with several threads (the
 serve routes of I5.4) must hold one lock around every call. The engine underneath is single-threaded by contract.
@@ -43,6 +50,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from concurrent.futures import TimeoutError as FutureTimeout
 
 from . import doc_folder as DF
@@ -55,11 +63,46 @@ from . import links
 from . import tabkinds as TK
 
 STATES = ("ok", "error", "crashed", "failed")
+NEW_KINDS = ("studio", "assembly")      # what `add_tab` makes
+MAX_TAB_NAME = 100                      # longest tab name `check_tab_name` accepts
+
+
+def check_tab_name(name):
+    """The tab name `name` as stored (stripped), or SessionError. Text of 1..MAX_TAB_NAME characters with no
+    control character. It is a label, never a file name: see `tab_file_stem`."""
+    if not isinstance(name, str):
+        raise SessionError("the tab name must be text")
+    text = name.strip()
+    if not text:
+        raise SessionError("the tab name is empty")
+    if len(text) > MAX_TAB_NAME:
+        raise SessionError(f"the tab name is longer than {MAX_TAB_NAME} characters")
+    if any(not c.isprintable() for c in text):
+        raise SessionError("the tab name may not contain a control character")
+    return text
+
+
+def tab_file_stem(name, fallback):
+    """The file name stem for a tab called `name`: only letters, digits, space, `-`, `_` and `.` survive (the rest
+    becomes `-`), runs collapse, leading and trailing `.`, `-` and space go, at most 60 characters; `fallback` when
+    nothing is left. Never holds a separator and never starts with a dot."""
+    out = "".join(c if (c.isalnum() or c in " _.-") else "-" for c in name)
+    stem = re.sub(r"-{2,}", "-", re.sub(r" {2,}", " ", out)).strip(".- ")[:60].strip(".- ")
+    return stem or fallback
 
 
 class SessionError(Exception):
     """A call on a session that cannot be done: an unknown tab, an edit the tab refuses, a tab that did not
     open. The message says which and why; the session stays usable."""
+
+
+class TabLinked(SessionError):
+    """`delete_tab` of a tab other tabs link to. `tab` is its id, `linked_by` is [{"id", "name"}]."""
+
+    def __init__(self, tab, linked_by):
+        self.tab, self.linked_by = tab, linked_by
+        names = ", ".join(f"{t['name']!r} ({t['id']})" for t in linked_by)
+        super().__init__(f"tab {tab!r} cannot be deleted: linked from {names}")
 
 
 class SaveRefused(SessionError, EngineError):
@@ -80,6 +123,10 @@ class DocumentSession:
         self._failed = {}                       # tab id -> why it did not open
         self._state = {}                        # tab id -> (state, first error message)
         self._edited = {}                       # tab id -> edits applied since the last save
+        self._renamed = set()                   # tab ids renamed here: their name is the manifest's, not the data's
+        self._added = set()                     # tab ids added here and not yet saved
+        self._deleted = []                      # [(tab id, file)] deleted here whose file save() removes
+        self._manifest_dirty = False            # the tab list changed since the last save
         self._closed = False
         self._eng = None
         manifest = self._read_manifest()
@@ -88,6 +135,7 @@ class DocumentSession:
         self._entries = [{"id": e["id"], "kind": e.get("kind"), "file": e.get("file"),
                           "name": e.get("name") or e.get("kind") or ""}
                          for e in manifest.get("tabs", [])]
+        self._fd = self._manifest_folder(manifest)
         self._eng = ProcessEngine(meshes=meshes, spares=spares)
         try:
             self._eng.use_document(self.id)
@@ -107,6 +155,21 @@ class DocumentSession:
             raise SessionError(f"the Document was saved with file version {data['version']}; this build reads "
                                f"up to {DF.FORMAT_VERSION}")
         return data
+
+    def _manifest_folder(self, manifest):
+        """A FolderDocument holding only the manifest (its tabs have no document): the one thing that adds a
+        tab id and a file name and writes document.json, as the desktop does."""
+        fd = DF.FolderDocument()
+        fd._store = self.store
+        fd.id, fd.name = manifest.get("id") or fd.id, manifest.get("name", fd.name)
+        fd.extra = {k: v for k, v in manifest.items() if k not in DF._MANIFEST_KEYS}
+        for entry in manifest.get("tabs", []):
+            tab = DF.Tab(entry["id"], entry.get("kind"), entry.get("file"),
+                         entry.get("name") or entry.get("kind") or "")
+            tab.extra = {k: v for k, v in entry.items() if k not in DF._TAB_KEYS}
+            fd.tabs.append(tab)
+        fd._counter = max([int("".join(c for c in t.id if c.isdigit()) or 0) for t in fd.tabs] + [0])
+        return fd
 
     def _open_all(self):
         raw = {}
@@ -185,7 +248,7 @@ class DocumentSession:
             tid = e["id"]
             state, err = self._tab_state(tid)
             name = e["name"]
-            if tid not in self._failed and self._eng is not None:
+            if tid not in self._failed and tid not in self._renamed and self._eng is not None:
                 try:
                     name = next(t[2] for t in self._eng.tabs() if t[0] == tid)
                 except StopIteration:
@@ -258,6 +321,10 @@ class DocumentSession:
         """Write every open tab through the store (with its blobs); returns the tab ids written. A tab that did
         not open is left as it is in the store."""
         self._need_alive()
+        live_files = {e["file"] for e in self._entries}
+        for tid, file in self._deleted:
+            if file not in live_files:               # a later tab may have taken the name
+                self.store.delete_tab(tid)
         written = []
         for e in self._entries:
             tid = e["id"]
@@ -266,10 +333,136 @@ class DocumentSession:
             data = self._retry(tid, lambda tid=tid: self._eng.tab_data(tid, blobs=self.store.blobs(tid)))
             d = json.loads(bytes(data).decode("utf-8"))
             d["_tab_id"] = tid
+            if tid in self._renamed and "name" in d:
+                d["name"] = e["name"]                # the file carries the name the manifest gives it
             self.store.write_tab(tid, json.dumps(d, indent=1).encode("utf-8"))
             self._edited[tid] = 0
             written.append(tid)
+        if self._manifest_dirty:
+            for tab in self._fd.tabs:                # the manifest's name of each tab is the session's
+                tab.name = next(e["name"] for e in self._entries if e["id"] == tab.id)
+            self._fd.save()                          # no tab has a document: this writes document.json only
+            self._manifest_dirty = False
+            self._added.clear()
+            self._deleted.clear()
         return written
+
+    def tabs_unsaved(self):
+        """True while the tab list (an added, renamed or deleted tab) has changes `save()` has not written."""
+        return self._manifest_dirty
+
+    # ------------------------------------------------------------------ the tab list
+    def add_tab(self, kind, name=None):
+        """A new, empty tab of `kind` ("studio" or "assembly"), opened in its own worker; returns its tab id. `name`
+        is checked by `check_tab_name`; None gives "Part Studio 2", "Assembly 1", ... The tab id and file name come
+        from the manifest folder (`new_tab_id`, `_unique_filename`), the file name from the name through
+        `tab_file_stem`, and no file name is one that is already in the folder. Nothing is written until `save()`."""
+        self._need_alive()
+        if kind not in NEW_KINDS:
+            raise SessionError(f"a new tab is one of {', '.join(NEW_KINDS)}, not {kind!r}")
+        label = TK.get(kind).label
+        if name is None:
+            taken = {e["name"] for e in self._entries}
+            n = 1
+            while f"{label} {n}" in taken:
+                n += 1
+            name = f"{label} {n}"
+        name = check_tab_name(name)
+        fd = self._fd
+        ext = TK.get(kind).ext
+        stem = tab_file_stem(name, label)
+        file = fd._unique_filename(stem, ext)
+        n = 2
+        while self.store.file_taken(file):
+            file = fd._unique_filename(f"{stem} {n}", ext)
+            n += 1
+        tid = fd.new_tab_id()
+        try:
+            self.store.place_tab(tid, file)          # the store checks the file name
+            self._eng.new_tab(kind, name, tab=tid, blobs=self.store.blobs(tid))
+        except Exception as ex:                      # noqa: BLE001
+            raise SessionError(f"could not add a {label}: {ex}") from ex
+        fd.tabs.append(DF.Tab(tid, kind, file, name))
+        self._entries.append({"id": tid, "kind": kind, "file": file, "name": name})
+        self._edited[tid] = 1                        # not saved yet
+        self._added.add(tid)
+        self._manifest_dirty = True
+        self._refresh_state(tid)
+        return tid
+
+    def rename_tab(self, tab, name):
+        """Give `tab` a new name (checked by `check_tab_name`). The file keeps its name: a tab is its id, not its
+        file. The tab counts as edited until `save()` writes the manifest and the file's own name field."""
+        self._need_open(tab)
+        name = check_tab_name(name)
+        entry = next(e for e in self._entries if e["id"] == tab)
+        if entry["name"] == name and tab in self._renamed:
+            return
+        entry["name"] = name
+        self._renamed.add(tab)
+        self._edited[tab] = self._edited.get(tab, 0) + 1
+        self._manifest_dirty = True
+
+    def linked_by(self, tab):
+        """[{"id", "name"}] of the other tabs that link to `tab`: an Assembly instance, a Drawing source, a Part
+        Studio's Variable Studio reference or Derived feature, a Context feature naming it. A tab that has edits
+        is read from the engine's Link graph; a tab with none is also read from its saved bytes, so a tab that
+        did not open still counts."""
+        self._need_alive()
+        mine = next((e for e in self._entries if e["id"] == tab), None)
+        if mine is None:
+            raise SessionError(f"no tab {tab!r} in this Document")
+        uid = None
+        try:
+            uid = read_data(mine["kind"], bytes(self.store.read_tab(tab))).get("uid") if self.store.has_tab(tab) else None
+        except Exception:                            # noqa: BLE001
+            uid = None
+        found = set(self._eng.links.graph.dependents(tab))
+        for e in self._entries:
+            other = e["id"]
+            if other == tab or other in found or self._edited.get(other, 0) > 0 or not self.store.has_tab(other):
+                continue
+            try:
+                d = read_data(e["kind"], bytes(self.store.read_tab(other)))
+            except Exception:                        # noqa: BLE001
+                continue
+            for s in links.tab_sources(e["kind"], d):
+                if s.get("document") or s.get("version"):
+                    continue
+                if s.get("tab") == tab or (s.get("tab") not in {x["id"] for x in self._entries} and uid
+                                           and s.get("uid") == uid):
+                    found.add(other)
+            for f in (d.get("features") or []) if e["kind"] == "studio" else ():
+                want = (f.get("params") or {}).get("assembly")
+                if want and want in (tab, uid):
+                    found.add(other)
+        return [{"id": e["id"], "name": e["name"]} for e in self._entries if e["id"] in found]
+
+    def delete_tab(self, tab):
+        """Remove `tab` and end its worker. A tab another tab links to is refused with a SessionError that names
+        it (`linked_by` is the list). The tab's file is removed, and document.json rewritten, by `save()`."""
+        self._need_alive()
+        if tab not in {e["id"] for e in self._entries}:
+            raise SessionError(f"no tab {tab!r} in this Document")
+        by = self.linked_by(tab)
+        if by:
+            raise TabLinked(tab, by)
+        entry = next(e for e in self._entries if e["id"] == tab)
+        if tab not in self._failed:
+            try:
+                self._eng.close_tab(tab)
+            except EngineError as ex:
+                raise SessionError(f"tab {tab!r}: {ex}") from ex
+        self._entries.remove(entry)
+        self._fd.tabs[:] = [t for t in self._fd.tabs if t.id != tab]
+        for table in (self._failed, self._state, self._edited):
+            table.pop(tab, None)
+        self._renamed.discard(tab)
+        if tab in self._added:                       # never saved: nothing to remove
+            self._added.discard(tab)
+        elif entry.get("file"):
+            self._deleted.append((tab, entry["file"]))
+        self._manifest_dirty = True
 
     # ------------------------------------------------------------------ end
     def pids(self):

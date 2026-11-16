@@ -19,6 +19,7 @@ import numpy as np
 
 from .. import assembly as A
 from .. import drawing as D
+from .. import features as F
 from ..document import PartStudioDoc
 from ..variable_studio import VariableStudioDoc
 from .contract import (ASSEMBLY_OPS, BadPick, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
@@ -179,6 +180,9 @@ class _Tab:
 
     def refs(self, picks):
         raise EngineError(f"only a Part Studio has elements to pick (this tab is a {self.kind})")
+
+    def feature_info(self, fid):
+        raise EngineError(f"only a Part Studio has features (this tab is a {self.kind})")
 
 
 def apply_part_override(doc, edit):
@@ -364,6 +368,17 @@ class StudioTab(_Tab):
             self.doc.python_builds.pop(fid, None)
         else:
             self.doc.python_builds[fid] = copy.deepcopy(build)
+
+    def feature_info(self, fid):
+        """`Engine.feature`: a copy of the stored feature, the variables defined before it and the defaults a
+        feature of its type has now (settings added since it was saved). Reads only: the Document is not changed."""
+        f = self._feature(fid)
+        base = self.doc.state_before(self.doc.features.index(f))
+        try:
+            defaults = plain(F.default_params(f["type"], base))
+        except Exception:                                     # noqa: BLE001  (as the desktop dialog: none then)
+            defaults = {}
+        return {"feature": copy.deepcopy(f), "variables": plain(dict(base.vars)), "defaults": defaults}
 
     def refs(self, picks):
         try:
@@ -815,3 +830,6 @@ class InProcessEngine(Engine):
 
     def refs(self, tab, picks):
         return self._get(tab).refs(picks)
+
+    def feature(self, tab, feature):
+        return self._get(tab).feature_info(feature)

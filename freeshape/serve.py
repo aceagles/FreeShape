@@ -34,6 +34,8 @@ Routes (an exact table; no part of a request is ever joined to a file path):
     POST /documents/<id>/tabs/<tab>/edit       body: a contract edit dict; reply {"rebuilt": [ids]}
     POST /documents/<id>/tabs/<tab>/refs       body: {"picks": [pick, ...]}; reply {"document", "tab", "revision",
                                 "items": [item, ...]}, one item per pick, in order (I4.3; see "Refs" below)
+    POST /documents/<id>/tabs/<tab>/features/<fid>/dialog        open a feature dialog (I5.3; see "Dialogs" below)
+    POST /documents/<id>/tabs/<tab>/dialog/<did>/update|accept|cancel
     POST /documents/<id>/save                  body: {} ; reply {"saved": [ids]}
     GET  /ws?client=<id>[&document=<id>]       the live channel (WebSocket, JSON text messages; `_Server._socket`)
   On a server over one Document folder the old un-prefixed routes stay as aliases for that Document:
@@ -74,6 +76,35 @@ Each item is either
          used here; an edge is needed"; a face is not one, it gives its edges),
          "not_flat" (a plane is wanted, the face is curved), "no_axis" (an axis is wanted, the face is not round),
          "no_region" (a sketch line that bounds no closed area), "nothing_here" (the right kind, but no item).
+
+Dialogs (I5.3, freeshape/session.py FeatureDialog, freeshape/dialog_schema.py). A feature dialog edits an existing
+feature of a Part Studio tab. Every dialog route needs X-Client-Id (a 400 without): the dialog belongs to that client
+and lives in its registry entry (made by the first dialog when the client has no socket yet), so it survives a
+reconnect, goes when the entry expires and when its Document closes, and any other client id gets a 404 for it.
+At most MAX_DIALOGS (8) per client and MAX_DIALOGS_TOTAL (256) in all (409). Bodies take no unknown field.
+  open    POST .../features/<fid>/dialog  body {}; 201 {"dialog": did, "document", "tab", "feature": fid, "name",
+          "revision", "description", "values", "fields", "active"}. Open is a query, so a read-only Document may open
+          one; accept is refused there (423, the dialog stays open).
+          description  freeshape.dialog_schema.describe(type, params): fields (key, kind, standard, visible, ...).
+          values       {key: {"value", "text", "error"?}} for the number, choice, ops, check and text rows; a number
+                       row's "value" is the evaluated number (or null), "text" what the person typed (or the stored
+                       expression), "error" the message of the last input the dialog refused.
+          fields       {key: [item]} for the selection rows; item = {"ok": true, "kind", "ref", "name"}, the refs
+                       route's item (name is the Element name the stored reference holds, null for a legacy one).
+          active       null on open.
+  update  POST .../dialog/<did>/update  body {"values": {key: value}} (1..64 keys). A number takes text or a number
+          and is evaluated by freeshape.expr (units, #variables, 1/2 in), the desktop's rule: an expression that names
+          a #variable is stored as text, else as the number; below `min`, or zero where `signed`, is refused. A choice
+          or ops value must be one of its options, a check a bool, a text row text, a selection row a list of
+          {"kind", "ref"} items (at most 200). Each change goes through on_field_set, then fields_to_params. Reply 200
+          {"description", "values", "fields", "active", "errors": {key: message}}: `active` is the field the change
+          named to fill next (end "Up to face" gives "upto_face"), else null; a refused number is in `errors`, its
+          last good value unchanged, the other keys of the call still applied. An unknown key or a value of the
+          wrong type is a 400 naming it and nothing is applied.
+  accept  POST .../dialog/<did>/accept  body {}; sends replace_feature (the desktop's accept: hole label, loft fold),
+          closes the dialog, 200 {"rebuilt", "revision"}, and the `changed` push every edit makes. 423 on a read-only
+          Document; a refusal by the engine is a 400 and leaves the dialog open.
+  cancel  POST .../dialog/<did>/cancel  body {}; closes it, changes nothing, 200 {"cancelled": true}.
 
 The live channel (I1.5). `GET /ws?client=<id>` (the id is 8..64 of letters, digits, `_`, `-`; the server makes one
 when it is missing) upgrades after the same Host and Origin checks as every route. `&document=<id>` subscribes to
@@ -147,6 +178,10 @@ _DOC_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})"
                        r"|/tabs/([A-Za-z0-9_-]{1,64})(?:/(outputs|mesh\.json|edit|rename|refs))?)$")
 _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POST", "tabs": "GET", "recover": "POST",
               "discard-autosave": "POST"}
+_DIALOG_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})"
+                          r"(?:/features/([A-Za-z0-9_.-]{1,64})/(dialog)|/dialog/([0-9a-f]{16})/(update|accept|cancel))$")
+MAX_DIALOGS = 8                 # open dialogs one client may hold
+MAX_DIALOGS_TOTAL = 256         # and all clients together
 _FIXED = {"/health": ("GET",), "/tabs": ("GET",), "/save": ("POST",)}
 _EDGE_METHODS = {"outputs": "GET", "mesh.json": "GET", "edit": "POST", "rename": "POST", "refs": "POST"}
 MAX_TABS = 200                  # tabs one Document may hold through POST /documents/<id>/tabs
@@ -965,6 +1000,9 @@ class _Server:
         single-Document server and carry doc_id None (the caller fills in the one Document)."""
         if path == "/documents":
             return "documents", None, None, None             # GET lists, POST creates
+        m = _DIALOG_PATH.match(path)
+        if m is not None:
+            return "dialog." + ("open" if m.group(4) else m.group(6)), m.group(1), m.group(2), "POST"
         m = _DOC_PATH.match(path)
         if m is not None:
             doc_id, verb, tab, edge = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -1120,6 +1158,8 @@ class _Server:
             return await self._rename_tab(d, tab, body)
         if route == "refs":
             return await self._refs(d, tab, body)
+        if route.startswith("dialog."):
+            return await self._dialog(d, tab, route[7:], body, request)
         if route == "tab":
             return await self._delete_tab(d, tab)
         if route == "outputs":
@@ -1271,6 +1311,7 @@ class _Server:
         self._stop_refresh(d)
         self._disarm_idle(d)
         self.docs.pop(d.id, None)
+        self.drop_dialogs(d.id)
         self._closing.add(d.id)
         message = {"type": "closed", "document": d.id}
         if reason is not None:
@@ -1427,6 +1468,79 @@ class _Server:
             return self._fail(400, str(e))
         items, revision = await self._in_session(d, lambda: (d.session.refs(tab, picks), d.revisions.get(tab)))
         return self._json(200, {"document": d.id, "tab": tab, "revision": revision, "items": items})
+
+    # ------------------------------------------------------------------ feature dialogs (I5.3)
+    def _dialog_client(self, request):
+        client = request.headers.get("X-Client-Id")
+        if client is None:
+            raise self.session_error("X-Client-Id is required: a dialog belongs to a client")
+        return self._edit_meta(client, None)[0]
+
+    def _client_dialogs(self, client, make=False):
+        """The client's {dialog id: (Document id, FeatureDialog)} table in its registry entry, or None. `make`: the
+        entry is created (and left to expire like any other) when the client has no socket yet."""
+        entry = self.clients.get(client)
+        if entry is None and make:
+            self.clients.attach(client)
+            self.clients.detach(client)                       # no socket: the expiry timer starts now
+            entry = self.clients.get(client)
+        return None if entry is None else entry.data.setdefault("dialogs", {})
+
+    def drop_dialogs(self, doc_id):
+        """Forget every client's dialogs on the Document `doc_id` (it closed)."""
+        for client in self.clients.ids():
+            table = (self.clients.get(client).data or {}).get("dialogs") or {}
+            for did in [k for k, (doc, _) in table.items() if doc == doc_id]:
+                del table[did]
+
+    async def _dialog(self, d, tab, verb, body, request):
+        """The dialog routes; see "Dialogs" in the module docstring."""
+        client = self._dialog_client(request)
+        match = _DIALOG_PATH.match(request.raw_path.split("?", 1)[0])
+        extra = sorted(str(k) for k in body if not (verb == "update" and k == "values"))
+        if extra:
+            return self._fail(400, f"{extra[0][:40]}: unknown field")
+        if verb == "open":
+            return await self._dialog_open(d, tab, match.group(3), client)
+        table = self._client_dialogs(client)
+        hit = None if table is None else table.get(match.group(5))
+        if hit is None or hit[0] != d.id or hit[1].tab != tab:
+            return self._fail(404, "not found")                  # another client's dialog is not found either
+        dialog = hit[1]
+        if verb == "cancel":
+            table.pop(match.group(5), None)
+            return self._json(200, {"cancelled": True})
+        if verb == "update":
+            def work():
+                parsed = dialog.check(body.get("values"))
+                errors, active = dialog.apply(parsed)
+                return errors, active, self._dialog_view(dialog)
+            errors, active, view = await self._in_session(d, work)
+            return self._json(200, {**view, "active": active, "errors": errors})
+        feature = await self._in_session(d, dialog.result)       # accept
+        rebuilt = await self._edit(d, tab, {"op": "replace_feature", "feature": feature}, client, None)
+        table.pop(match.group(5), None)
+        return self._json(200, {"rebuilt": rebuilt, "revision": d.revisions.get(tab)})
+
+    @staticmethod
+    def _dialog_view(dialog):
+        return {"description": dialog.description(), "values": dialog.values(), "fields": dialog.fields()}
+
+    async def _dialog_open(self, d, tab, fid, client):
+        import secrets
+        table = self._client_dialogs(client, make=True)
+        if len(table) >= MAX_DIALOGS:
+            return self._fail(409, f"a client may hold at most {MAX_DIALOGS} open dialogs")
+        if sum(len((self.clients.get(c).data.get("dialogs") or {})) for c in self.clients.ids()) >= MAX_DIALOGS_TOTAL:
+            return self._fail(409, "too many open dialogs")
+        def work():
+            dialog = d.session.open_dialog(tab, fid)
+            return dialog, self._dialog_view(dialog), d.revisions.get(tab)
+        dialog, view, revision = await self._in_session(d, work)
+        did = secrets.token_hex(8)
+        table[did] = (d.id, dialog)
+        return self._json(201, {"dialog": did, "document": d.id, "tab": tab, "feature": fid,
+                                "name": dialog.feature.get("name"), "revision": revision, **view, "active": None})
 
     async def _rename_tab(self, d, tab, body):
         """POST /documents/<id>/tabs/<tab>/rename {"name": ...}: 200 {"tab": <tab>, "tabs": [...]}."""

@@ -514,6 +514,10 @@ class ProcessEngine(Engine):
         logged, no revision moves and nothing is rebuilt."""
         return self._call(self._get(tab), "refs", picks)
 
+    def feature(self, tab, feature):
+        """One stored feature and the studio's variables (contract.Engine.feature). A query."""
+        return self._call(self._get(tab), "feature", feature)
+
     # ------------------------------------------------------------------ crashes
     def errored(self, tab):
         """Why the tab's worker stopped, or None while it is running."""

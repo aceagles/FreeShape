@@ -68,6 +68,10 @@ from .engine.contract import BadPick
 from .engine import wire
 from .engine.executor import read_data
 from . import links
+from . import dialog_schema as DSC
+from . import features as F
+from . import picking as PK
+from .expr import ExprError, fmt, has_vars, parse_number
 from . import tabkinds as TK
 from .docstore import ChainedBlobs, HeldBlobs
 
@@ -116,6 +120,200 @@ class TabLinked(SessionError):
 
 class SaveRefused(SessionError, EngineError):
     """A `save` edit sent to `submit_edit`: both a SessionError (serve answers 400) and an EngineError."""
+
+
+MAX_DIALOG_ITEMS = 200            # items one selection field of a dialog may hold
+MAX_DIALOG_TEXT = 500             # longest text a dialog's text or expression field takes
+
+
+class FeatureDialog:
+    """The state of one open feature dialog (I5.3): the feature's params, its selection fields and what the person
+    typed in each number field. It holds no shape and no engine call: the model is only needed to open it
+    (`DocumentSession.open_dialog`) and to accept it (the replace_feature edit). The server keeps it in the
+    client's registry entry. Call it from one thread at a time (the Document's session lock).
+
+    `values()` is the reading the client shows: {key: {"value", "text", "error"}} for a number field (`value` the
+    evaluated number or None, `text` what was typed or the stored expression, `error` the message of the last
+    rejected input, else absent) and {key: {"value"}} for the other single-value rows. `fields()` is {key: [item]}
+    for the selection rows; an item is {"ok": true, "kind", "ref", "name"}, as the refs route answers."""
+
+    def __init__(self, tab, feature, variables, defaults):
+        self.tab = tab
+        self.fid = feature["id"]
+        self.feature = feature
+        self.type = feature["type"]
+        self.variables = dict(variables)
+        p = self.feature.setdefault("params", {})
+        for k, v in (defaults or {}).items():             # settings added in later versions: the desktop's rule
+            p.setdefault(k, v)
+        if self.type == "loft":
+            DSC._loft_unfold(p)
+            if F.front_kind(self.feature):
+                p["guides_on"] = True
+        self.params = p
+        self.fields_ = DSC.params_to_fields(self.type, p)
+        self.texts = {}                                    # key -> text of a number field, as typed
+        self.errors = {}                                   # key -> why the last input to it was refused
+        self.specs = {s["key"]: s for s in DSC._schema_for(self.type, p) if s.get("key")}
+
+    # ---------------------------------------------------------------- reading
+    def description(self):
+        return DSC.describe(self.type, self.params)
+
+    def values(self):
+        out = {}
+        for key, spec in self.specs.items():
+            kind = spec["t"]
+            if kind not in ("num", "choice", "ops", "check", "text"):
+                continue
+            raw = self.params.get(key)
+            if kind == "num":
+                text = self.texts.get(key)
+                if text is None:
+                    text = "" if raw is None else (raw if isinstance(raw, str) else fmt(raw))
+                try:
+                    value = parse_number(raw, angle=spec.get("unit") == "deg", variables=self.variables) \
+                        if raw is not None else None
+                except (TypeError, ValueError):
+                    value = None
+                entry = {"value": value, "text": text}
+                if key in self.errors:
+                    entry["error"] = self.errors[key]
+            else:
+                entry = {"value": DSC._plain(raw)}
+            out[key] = entry
+        return out
+
+    def fields(self):
+        out = {}
+        for key, spec in self.specs.items():
+            if spec["t"] == "sel":
+                out[key] = [self._item(k, r) for k, r in self.fields_.get(key, [])]
+        return out
+
+    @staticmethod
+    def _item(kind, ref):
+        return {"ok": True, "kind": kind, "ref": PK.jsonable(ref), "name": PK.item_name((kind, ref))}
+
+    # ---------------------------------------------------------------- changing
+    def check(self, changes):
+        """Validate the shape of `changes` ({key: value}) without applying it: SessionError for an unknown or
+        hand-built key, a number-box row or a value of the wrong type. Returns {key: parsed}, a number field's
+        value being its text for now."""
+        if not isinstance(changes, dict) or not 1 <= len(changes) <= 64:
+            raise SessionError("values: must be an object of 1 to 64 field values")
+        out = {}
+        for key, value in changes.items():
+            at = f"values.{str(key)[:40]}"
+            spec = self.specs.get(key)
+            if spec is None:
+                raise SessionError(f"{at}: no such field")
+            kind = spec["t"]
+            if kind == "num":
+                if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+                    raise SessionError(f"{at}: a number field takes text or a number")
+                if isinstance(value, str) and len(value) > MAX_DIALOG_TEXT:
+                    raise SessionError(f"{at}: text over {MAX_DIALOG_TEXT} characters")
+            elif kind == "check":
+                if not isinstance(value, bool):
+                    raise SessionError(f"{at}: must be true or false")
+            elif kind in ("choice", "ops"):
+                if not any(value == o[0] and isinstance(value, bool) == isinstance(o[0], bool)
+                           for o in spec.get("options") or []):
+                    raise SessionError(f"{at}: not one of the options")
+            elif kind == "text":
+                if not isinstance(value, str) or len(value) > MAX_DIALOG_TEXT:
+                    raise SessionError(f"{at}: must be text of at most {MAX_DIALOG_TEXT} characters")
+            elif kind == "sel":
+                if spec.get("number"):
+                    raise SessionError(f"{at}: a field with a number per item cannot be set yet")
+                out[key] = self._items(at, value)
+                continue
+            else:
+                raise SessionError(f"{at}: this row cannot be set here")
+            out[key] = value
+        return out
+
+    @staticmethod
+    def _items(at, value):
+        if not isinstance(value, list) or len(value) > MAX_DIALOG_ITEMS:
+            raise SessionError(f"{at}: must be a list of at most {MAX_DIALOG_ITEMS} items")
+        items = []
+        for i, it in enumerate(value):
+            if not isinstance(it, dict) or set(it) - {"kind", "ref", "ok", "name"} or "kind" not in it \
+                    or "ref" not in it:
+                raise SessionError(f"{at}[{i}]: an item is {{\"kind\", \"ref\"}}")
+            if not isinstance(it["kind"], str) or not 1 <= len(it["kind"]) <= 20:
+                raise SessionError(f"{at}[{i}].kind: must be a short text")
+            items.append((it["kind"], it["ref"]))
+        return items
+
+    def apply(self, parsed):
+        """Apply what `check` returned, key by key. A number that does not read or is out of range is refused
+        with its message and the last good value stays. Returns (errors {key: message}, active field or None)."""
+        errors, active = {}, None
+        for key, value in parsed.items():
+            spec = self.specs[key]
+            self.errors.pop(key, None)
+            if spec["t"] == "sel":
+                self.fields_[key] = value
+                DSC.fields_to_params(self.type, self._field_dict(), self.params)
+                continue
+            if spec["t"] == "num":
+                try:
+                    value = self._number(spec, value)
+                except ExprError as e:
+                    errors[key] = self.errors[key] = str(e)
+                    continue
+            got = DSC.on_field_set(self.type, key, value, self._field_dict(), self.params)
+            self.params.clear()
+            self.params.update(got.params)
+            self.fields_ = got.fields
+            if got.active is not None:
+                active = got.active
+        return errors, active
+
+    def _field_dict(self):
+        return {k: list(v) for k, v in self.fields_.items()}
+
+    def _number(self, spec, raw):
+        """The value to store for a number field's input (the desktop's rule: an expression that names a
+        #variable stays text so it follows the variable; anything else is the number). Remembers the typed text."""
+        text = raw.strip() if isinstance(raw, str) else fmt(raw)
+        self.texts[spec["key"]] = text                     # what the person typed stays shown, good or not
+        v = parse_number(raw, angle=spec.get("unit") == "deg", variables=self.variables, strict=True)
+        if v != v or v in (float("inf"), float("-inf")):
+            raise ExprError("the value is not a finite number")
+        mn = spec.get("min")
+        if mn is not None and v < mn:
+            raise ExprError(f"the value must be at least {fmt(mn)}")
+        if spec.get("signed") and abs(v) < 1e-6:
+            raise ExprError("the value cannot be zero")
+        whole = spec["key"] in ("count", "count2") or bool(spec.get("int"))
+        if isinstance(raw, str) and has_vars(raw):
+            return text
+        return int(round(v)) if whole else v
+
+    # ---------------------------------------------------------------- accepting
+    def result(self):
+        """The feature dict to store when the dialog is accepted (the desktop's accept, minus the widgets)."""
+        f = {k: (dict(v) if k == "params" else v) for k, v in self.feature.items()}
+        p = f["params"] = {k: (list(v) if isinstance(v, list) else v) for k, v in self.params.items()}
+        if self.type == "loft":
+            DSC._loft_fold(p, strip=True)
+        if self.type == "hole":
+            try:
+                label = F.hole_dims(p)[3]
+                base = re.sub(r"\s*\(.*\)$", "", f["name"])
+                f["name"] = f"{base} ({label})"
+            except Exception:                              # noqa: BLE001
+                pass
+        if self.type == "variable":
+            name = str(p.get("name", "")).strip().lstrip("#")
+            p["name"] = name
+            if str(f["name"]).startswith(("Variable", "#")):
+                f["name"] = f"#{name} = {p.get('expr', '')}"
+        return f
 
 
 class DocumentSession:
@@ -294,6 +492,16 @@ class DocumentSession:
             raise SessionError(str(e)) from e
         except EngineError as e:
             raise SessionError(f"tab {tab!r}: {e}") from e
+
+    def open_dialog(self, tab, fid):
+        """A FeatureDialog on the stored feature `fid` of a Part Studio tab (the engine's `feature` query: nothing
+        changes). Raises SessionError for an unknown tab or feature or a tab that is not a Part Studio."""
+        self._need_open(tab)
+        try:
+            got = self._retry(tab, lambda: self._eng.feature(tab, fid))
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
+        return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"))
 
     def outputs_wire(self, tab):
         """`outputs(tab)` as engine wire bytes (freeshape.engine.wire), what a browser client decodes."""

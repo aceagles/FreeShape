@@ -340,6 +340,8 @@ class _Worker:
             return self.meta()
         if op == "refs":                          # a query: reads the tab as last built, changes nothing
             return self.engine.refs(self.tab, arg)
+        if op == "feature":                       # a query: one stored feature and the variables, changes nothing
+            return self.engine.feature(self.tab, arg)
         if op == "data":
             return self.data()
         raise EngineError(f"unknown worker call {op!r}")

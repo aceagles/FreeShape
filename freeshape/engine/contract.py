@@ -382,6 +382,14 @@ class Engine(abc.ABC):
         Returns one dict per pick, in order: {"ok": True, "kind": the item's kind, "ref": the reference as a
         feature's params store it, "name": its Element name or None} or {"ok": False, "code", "reason"}."""
 
+    @abc.abstractmethod
+    def feature(self, tab, feature) -> dict:
+        """One feature of a Part Studio as stored (I5.3), for a dialog that edits it. A QUERY, like `refs`: nothing
+        changes. Returns {"feature": a deep copy of the feature dict ("id", "type", "name", "params", ...),
+        "variables": {name: number}, the variables defined before the feature, "defaults": the params a new feature of
+        its type starts with (a dialog fills in the ones an older feature lacks)}. EngineError for an unknown feature or
+        a tab that is not a Part Studio."""
+
     # ------------------------------------------------------------------ the Link graph
     def rebuild_dependents(self, tab) -> list:
         """Rebuild the tabs that consume `tab`, each once, after the tabs they consume, and only those whose

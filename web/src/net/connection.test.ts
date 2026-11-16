@@ -69,6 +69,25 @@ it('connects to /ws with the client id and is connected after hello', () => {
   store.stop()
 })
 
+it('delivers the preview of a new feature, whose feature is null on the wire, with an empty feature id', () => {
+  const { store } = make()
+  const got: Array<{ dialog: string; feature: string; preview: number }> = []
+  store.onPreview((m) => got.push({ dialog: m.dialog, feature: m.feature, preview: m.preview }))
+  store.start()
+  const s = FakeSocket.all[0]!
+  s.open()
+  s.say(hello())
+  const base = { type: 'preview', document: 'd', tab: 'T1', dialog: 'did1', revision: 3, ok: true, outputs: true, error: null }
+  s.say({ ...base, feature: null, preview: 1 })
+  s.say({ ...base, feature: 'F2', preview: 2 })
+  s.say({ ...base, feature: 7, preview: 3 })
+  expect(got).toEqual([
+    { dialog: 'did1', feature: '', preview: 1 },
+    { dialog: 'did1', feature: 'F2', preview: 2 },
+  ])
+  store.stop()
+})
+
 it('reconnects after the socket closes and reports connected false in between', () => {
   const { store } = make()
   store.start()

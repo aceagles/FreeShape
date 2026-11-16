@@ -1224,6 +1224,63 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // a face picked with the pen, Extrude tapped on the strip: the create dialog holds the face, Depth is on the pad
+    name: 'create-extrude',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      const [spot] = await faceSpots(page, page.request, 'pen')
+      await penPick(page, spot!)
+      await startFromStrip(page, 'Create', /^Extrude/)
+      await page.getByTestId('pad').waitFor()
+      await page.locator('[data-dialog-base]').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // the same with the pad away: the new feature's preview carries the depth arrow with its Drag handle and label
+    name: 'create-extrude-arrow',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      const [spot] = await faceSpots(page, page.request, 'pen')
+      await penPick(page, spot!)
+      await startFromStrip(page, 'Create', /^Extrude/)
+      await padKeys(page, 'Enter')
+      await page.locator('.viewport-manipulators [data-part="label"]').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // an edge picked, Fillet tapped: the dialog holds the edge chip, the Type and Radius rows sit under the pad (at 1024)
+    name: 'create-fillet',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      const spot = await edgeSpot(page, page.request, 'pen')
+      await penPick(page, spot)
+      await startFromStrip(page, 'Modify', /^Fillet/)
+      await page.getByTestId('pad').waitFor()
+      await page.locator('[data-dialog-base]').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // Extrude tapped with nothing selected: the profile field asks for a pick
+    name: 'create-extrude-empty',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await startFromStrip(page, 'Create', /^Extrude/)
+      await page.getByTestId('pad').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** Listen for the open sketch's data (call before it opens); `lineWith(type)` is the first line a constraint of that type holds. */
@@ -1255,6 +1312,13 @@ async function pinTools(page: Page, tools: Array<[string, string]>): Promise<voi
     await page.getByRole('menu', { name: group }).getByRole('button', { name: `Pin ${tool}`, exact: true }).click()
     await page.getByTestId('strip-scrim').click({ position: { x: 5, y: 700 } })
   }
+}
+
+/** Open a group on the tool strip and tap a tool of its list. */
+async function startFromStrip(page: Page, group: string, tool: RegExp): Promise<void> {
+  await page.locator('.tool-strip').getByRole('button', { name: new RegExp(`^${group}`) }).click()
+  await page.getByRole('menu', { name: group }).getByRole('menuitem', { name: tool }).click()
+  await page.locator('[data-region="dialog"]').waitFor()
 }
 
 const penDown = (page: Page, at: Spot) => sendPointer(page, [{ phase: 'down', kind: 'pen', id: 10, ...at }])

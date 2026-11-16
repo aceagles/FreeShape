@@ -75,6 +75,7 @@ export interface PreviewMessage {
   document: string
   tab: string
   dialog: string
+  /** The edited feature's id; '' for a dialog of a new feature (the server sends null). */
   feature: string
   preview: number
   /** The committed revision the preview was built on. */
@@ -433,13 +434,13 @@ export class ConnectionStore {
 }
 
 function parsePreview(m: Record<string, unknown>): PreviewMessage | null {
-  if (typeof m.document !== 'string' || typeof m.tab !== 'string' || typeof m.dialog !== 'string' || typeof m.feature !== 'string') return null
+  if (typeof m.document !== 'string' || typeof m.tab !== 'string' || typeof m.dialog !== 'string' || (typeof m.feature !== 'string' && m.feature !== null)) return null
   if (typeof m.preview !== 'number' || typeof m.revision !== 'number') return null
   return {
     document: m.document,
     tab: m.tab,
     dialog: m.dialog,
-    feature: m.feature,
+    feature: typeof m.feature === 'string' ? m.feature : '', // null for a dialog of a new feature: the engine gives it an id at Accept
     preview: m.preview,
     revision: m.revision,
     ok: m.ok === true,

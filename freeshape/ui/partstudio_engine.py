@@ -42,6 +42,7 @@ from .. import tabkinds as TK
 from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
 from ..document import PartStudioDoc, config_row
+from ..sketch import Sketch
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
 _NO_CONFIGS = {"rows": [], "active": 0}
@@ -54,7 +55,6 @@ _LIGHT = ("variable", "sketch", "plane", "axis")        # feature types re-run o
 
 def _sketch_from_engine(fid, so):
     """A features.SketchResult from the engine's SketchOut: the solved sketch on the plane the engine built it on."""
-    from ..sketch import Sketch
     pl = so.plane
     plane = K.Plane(np.array(pl["origin"], float), np.array(pl["xdir"], float), np.array(pl["normal"], float))
     return F.sketch_result(fid, plane, Sketch.from_dict(so.sketch))

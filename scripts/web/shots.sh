@@ -15,6 +15,7 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 
 web_build
 web_serve
+web_browser_fonts
 cd "$ROOT/web" || exit 2
 rm -f shots/out/*.png
 node e2e/shots.run.ts "$@"

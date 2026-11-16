@@ -44,6 +44,15 @@ web_build() {
   rm -f "$log"
 }
 
+# The gate image keeps the browser's fonts out of /usr/share/fonts (Dockerfile.harness): point fontconfig at them for
+# the browser. Call it after web_serve, so the server's Python keeps the Python side's fonts.
+web_browser_fonts() {
+  if [ -f /opt/browser-fonts.conf ]; then
+    FONTCONFIG_FILE=/opt/browser-fonts.conf
+    export FONTCONFIG_FILE
+  fi
+}
+
 web_serve() {
   WEB_TMP=$(mktemp -d) || exit 2
   cp -R "$ROOT/examples/documents" "$WEB_TMP/documents" || exit 2

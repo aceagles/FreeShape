@@ -236,14 +236,36 @@ RUN set -eu; \
 # /home/agent/workspace and readable by any uid, because the gate container runs as the daemon's or the runner's uid
 # with HOME=/tmp. The Playwright CLI is fetched only to run the install, then dropped: the specs use the copy in
 # web/node_modules. `--with-deps` installs WebKit's system libraries (including Mesa software GL, which gives
-# WebGL with no GPU).
+# WebGL with no GPU) and a set of fonts. Those fonts are for WebKit only. OCCT (which draws sketch text) reads every
+# font under /usr/share/fonts, and the glyph outlines of sketch text, and so the desktop tests that pick over them,
+# change with the font it finds. So everything the install put under /usr/share/fonts except DejaVu (which
+# fonts-dejavu-core gave the Python side before this block) is moved to /opt/browser-fonts, and
+# /opt/browser-fonts.conf is the fontconfig file that adds it back: scripts/web/*.sh point WebKit at it with
+# FONTCONFIG_FILE. The Python tests keep the font situation they had without WebKit
+# (tests/test_web_playwright_version.py checks this).
 ARG PLAYWRIGHT_VERSION=1.64.1
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN set -eu; \
     apt-get update; \
     npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps webkit; \
     chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
-    rm -rf /var/lib/apt/lists/* /root/.npm
+    rm -rf /var/lib/apt/lists/* /root/.npm; \
+    mkdir -p /opt/browser-fonts/truetype; \
+    for d in /usr/share/fonts/*; do \
+      case "$d" in /usr/share/fonts/truetype) ;; *) mv "$d" /opt/browser-fonts/ ;; esac; \
+    done; \
+    for d in /usr/share/fonts/truetype/*; do \
+      case "$d" in /usr/share/fonts/truetype/dejavu) ;; *) mv "$d" /opt/browser-fonts/truetype/ ;; esac; \
+    done; \
+    printf '%s\n' \
+      '<?xml version="1.0"?>' \
+      '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' \
+      '<fontconfig>' \
+      '  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>' \
+      '  <dir>/opt/browser-fonts</dir>' \
+      '</fontconfig>' \
+      > /opt/browser-fonts.conf; \
+    chmod -R a+rX /opt/browser-fonts /opt/browser-fonts.conf
 
 USER agent
 WORKDIR /home/agent/workspace

@@ -28,6 +28,7 @@ fi
 
 web_build
 web_serve
+web_browser_fonts
 
 failed=0
 cd "$ROOT/web" || exit 2

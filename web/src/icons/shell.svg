@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="11.2889mm" height="11.2889mm"
+ viewBox="0 0 32 32"
+ xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.2" baseProfile="tiny">
+<title>shell</title>
+<defs>
+</defs>
+<g fill="none" stroke="black" stroke-width="1" fill-rule="evenodd" stroke-linecap="square" stroke-linejoin="bevel" >
+
+<g fill="#9fb2c9" fill-opacity="1" stroke="#3b4250" stroke-opacity="1" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" transform="matrix(1,0,0,1,0,0)"
+font-family="Sans Serif" font-size="9" font-weight="400" font-style="normal" 
+>
+<polygon fill-rule="evenodd" vector-effect="none" points="4,10 10,5 28,5 28,23 22,28 4,28 " />
+</g>
+
+<g fill="#eef3fa" fill-opacity="1" stroke="#3b4250" stroke-opacity="1" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" transform="matrix(1,0,0,1,0,0)"
+font-family="Sans Serif" font-size="9" font-weight="400" font-style="normal" 
+>
+<polygon fill-rule="evenodd" vector-effect="none" points="8,10 12,7 25,7 21,10 " />
+</g>
+
+<g fill="#c9d6e6" fill-opacity="1" stroke="#3b4250" stroke-opacity="1" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" transform="matrix(1,0,0,1,0,0)"
+font-family="Sans Serif" font-size="9" font-weight="400" font-style="normal" 
+>
+<rect x="4" y="10" width="18" height="18"/>
+</g>
+
+<g fill="#7d93ad" fill-opacity="1" stroke="#3b4250" stroke-opacity="1" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" transform="matrix(1,0,0,1,0,0)"
+font-family="Sans Serif" font-size="9" font-weight="400" font-style="normal" 
+>
+<polygon fill-rule="evenodd" vector-effect="none" points="7,10 10,8 23,8 19,10 " />
+</g>
+</g>
+</svg>

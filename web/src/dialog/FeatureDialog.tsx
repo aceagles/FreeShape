@@ -20,6 +20,8 @@ export interface FeatureDialogProps {
   documentName: string
   tab: string
   feature: { id: string; name: string }
+  /** Create a feature of this type (with these picks) instead of editing `feature`; its name is the type's label. */
+  create?: { type: string; picks: readonly unknown[] }
   /** The variable names in scope for the pad's # key, without the "#". */
   variables: readonly string[]
   /** The view's selection: while the dialog is open its picks go to the active selection field (see useSelectionFields). */
@@ -38,8 +40,8 @@ export interface FeatureDialogProps {
  * and, once tapped, takes the picks of the view. Cancel and Accept are in the header. A change is sent as one dialog update and the view draws the preview
  * the server pushes back (see useFeatureDialog and the Shell).
  */
-export function FeatureDialog({ store, documentId, documentName, tab, feature, variables, selection, outputs, committed, onPreview, onDone }: FeatureDialogProps) {
-  const dlg = useFeatureDialog({ store, documentId, documentName, tab, feature: feature.id, onPreview, onDone })
+export function FeatureDialog({ store, documentId, documentName, tab, feature, create, variables, selection, outputs, committed, onPreview, onDone }: FeatureDialogProps) {
+  const dlg = useFeatureDialog({ store, documentId, documentName, tab, feature: feature.id, create, onPreview, onDone })
   const sel = useSelectionFields({
     selection,
     outputs,

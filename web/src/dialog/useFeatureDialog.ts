@@ -4,7 +4,7 @@ import type { ConnectionStore, PreviewMessage } from '../net/connection'
 import { explainError } from '../shell/errors'
 import { decodeOutputs, isStudio } from '../wire'
 import type { StudioOutputs } from '../wire'
-import { acceptFeatureDialog, cancelFeatureDialog, fetchPreviewBytes, openFeatureDialog, updateFeatureDialog } from './dialogApi'
+import { acceptFeatureDialog, cancelFeatureDialog, fetchPreviewBytes, openCreateDialog, openFeatureDialog, updateFeatureDialog } from './dialogApi'
 import type { DialogView, OpenReply } from './dialogApi'
 
 /** The model a dialog's update produced, drawn in place of the committed one. */
@@ -41,6 +41,8 @@ interface Options {
   documentName: string
   tab: string
   feature: string
+  /** Open a dialog that creates a feature of this type with these picks, instead of editing `feature` (the Shell keys the dialog, so it never changes while open). */
+  create?: { type: string; picks: readonly unknown[] }
   /** The preview to draw, or null for the committed model again. */
   onPreview: (p: PreviewState | null) => void
   /** The dialog is over. `revision` is the revision an accept made (null for Cancel). */
@@ -52,7 +54,7 @@ interface Options {
  * follows the previews the server pushes for it, and ends it with Accept or Cancel. Leaving the screen with the dialog
  * still open cancels it on the server.
  */
-export function useFeatureDialog({ store, documentId, documentName, tab, feature, onPreview, onDone }: Options): FeatureDialogState {
+export function useFeatureDialog({ store, documentId, documentName, tab, feature, create, onPreview, onDone }: Options): FeatureDialogState {
   const [phase, setPhase] = useState<FeatureDialogState['phase']>('opening')
   const [failure, setFailure] = useState<string | null>(null)
   const [opened, setOpened] = useState<OpenReply | null>(null)
@@ -73,6 +75,7 @@ export function useFeatureDialog({ store, documentId, documentName, tab, feature
   const pending = useRef<Record<string, unknown>>({})
   const shown = useRef(0)
   const client = store.getState().client
+  const createWith = useRef(create)
 
   const onPreviewMessage = useCallback(
     async (m: PreviewMessage) => {
@@ -100,7 +103,9 @@ export function useFeatureDialog({ store, documentId, documentName, tab, feature
   useEffect(() => {
     let dead = false
     const stop = store.onPreview((m) => void onPreviewMessage(m))
-    openFeatureDialog(documentId, tab, feature, client).then(
+    const want = createWith.current
+    const opening = want ? openCreateDialog(documentId, tab, want.type, want.picks, client) : openFeatureDialog(documentId, tab, feature, client)
+    opening.then(
       (r) => {
         if (dead) {
           void cancelFeatureDialog(documentId, tab, r.dialog, client).catch(() => {})

@@ -1,0 +1,100 @@
+/* The tool strip's group lists and pins (the layout's flyout state). */
+.strip-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+}
+.strip-button[data-state='dimmed'],
+.strip-button[data-state='desktop'] {
+  opacity: 0.35;
+}
+.strip-button[data-state='dimmed'] {
+  cursor: default;
+}
+
+.group-list {
+  position: absolute;
+  top: calc(var(--tool-strip) - 1px);
+  z-index: 10;
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  background: var(--c-white);
+  box-shadow: 0 8px 24px rgba(31, 35, 40, 0.18);
+}
+.group-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-sm);
+}
+.group-row[data-aim] {
+  background: var(--c-accentSoft);
+}
+.group-tool {
+  flex: 1;
+  min-width: 0;
+  height: var(--group-row);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-12);
+  padding: 0 var(--sp-4) 0 var(--sp-12);
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-ink);
+  font: inherit;
+  font-size: var(--fs-title);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.group-row[data-state='dimmed'] .group-tool,
+.group-row[data-state='desktop'] .group-tool,
+.group-row[data-state='off'] .group-tool {
+  opacity: 0.4;
+}
+.group-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.group-note {
+  font-size: var(--fs-caption);
+  font-weight: 400;
+  color: var(--c-muted);
+}
+.pin-button {
+  width: var(--pin-button);
+  height: var(--pin-button);
+  flex: none;
+  margin-right: var(--sp-4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+}
+.pin-button[aria-pressed='true'] {
+  background: var(--c-accentPinned);
+  color: var(--c-accentDark);
+}
+.pin-button[data-dim] {
+  opacity: 0.35;
+}
+.group-full {
+  grid-column: 1 / -1;
+  padding: var(--sp-8) var(--sp-12);
+  font-size: var(--fs-caption);
+  color: var(--c-muted);
+}

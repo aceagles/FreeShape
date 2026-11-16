@@ -1,24 +1,23 @@
-import { Icon } from './icons'
+import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
-interface Props {
+interface Props extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children' | 'type'> {
   label: string
-  icon: string
+  icon: ReactNode
   /** A group button: it opens a list of tools and carries a corner mark. */
   group?: boolean
-  disabled?: boolean
   active?: boolean
   /** Start a new cluster: 10 px more space before the button, as in the layout. */
   gap?: boolean
   /** The first pinned tool: 18 px before it, as in the layout. */
   pinned?: boolean
-  onClick?: () => void
 }
 
 /**
  * A 72 x 56 button of the tool strip: icon over label. The group mark sits in the top right corner, above the label's
  * line and beside the icon, so a long label ("Constrain") cannot touch it; the label is clipped to the button's width.
+ * Any other button attribute (disabled, handlers, data-*) goes to the button.
  */
-export function StripButton({ label, icon, group, disabled, active, gap, pinned, onClick }: Props) {
+export function StripButton({ label, icon, group, active, gap, pinned, ...rest }: Props) {
   return (
     <button
       type="button"
@@ -27,10 +26,9 @@ export function StripButton({ label, icon, group, disabled, active, gap, pinned,
       data-gap={gap ? '' : undefined}
       data-pinned={pinned ? '' : undefined}
       aria-haspopup={group ? 'true' : undefined}
-      disabled={disabled}
-      onClick={onClick}
+      {...rest}
     >
-      <Icon d={icon} />
+      {icon}
       <span className="strip-label">{label}</span>
       {group && (
         <svg className="strip-mark" width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">

@@ -13,6 +13,8 @@ export function tokenVars(): CSSProperties {
   vars['--tool-strip'] = `${size.toolStrip}px`
   vars['--tool-w'] = `${size.toolButton.width}px`
   vars['--tool-h'] = `${size.toolButton.height}px`
+  vars['--group-row'] = `${size.groupRow}px`
+  vars['--pin-button'] = `${size.pinButton}px`
   vars['--panel-header'] = `${size.panelHeader}px`
   vars['--dialog-header'] = `${size.dialogHeader}px`
   vars['--feature-row'] = `${size.featureRow}px`

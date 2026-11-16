@@ -6,7 +6,7 @@ import { dragRollbackTo, featureMenu, featureRow, longPressFeature } from './sup
 import { partEye, partMenu, partRow, longPressPart } from './support/parts.ts'
 import { edgeSpot, faceSpots, planeSpot, vertexSpot } from './support/pick.ts'
 import type { Spot } from './support/pick.ts'
-import { canvasCentre, fingerDrag, sendPointer, twoFingers } from './support/pointer.ts'
+import { canvasCentre, fingerDrag, fingerTap, sendPointer, twoFingers } from './support/pointer.ts'
 import { settled } from './support/viewport.ts'
 import { openAssemblyTab, settledAssembly } from './support/assembly.ts'
 
@@ -778,7 +778,77 @@ export const shots: ShotState[] = [
       await settledAssembly(page)
     },
   },
+  {
+    // Fillet and Chamfer pinned; the strip with groups and pins, no list open
+    name: 'tools-pinned',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      await pinTools(page, [['Modify', 'Fillet'], ['Modify', 'Chamfer']])
+    },
+  },
+  {
+    // a press held on Modify with the pen over Chamfer: the row is lit, Fillet is pinned (the layout's flyout state)
+    name: 'tools-group-aim',
+    mock: 'flyout',
+    steps: async (page) => {
+      await openApp(page)
+      await pinTools(page, [['Modify', 'Fillet']])
+      const g = (await page.locator('.tool-strip').getByRole('button', { name: /^Modify/ }).boundingBox())!
+      await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2)
+      await page.mouse.down()
+      const row = page.getByRole('menu', { name: 'Modify' }).getByRole('menuitem', { name: /^Chamfer/ })
+      const c = (await row.boundingBox())!
+      await page.mouse.move(c.x + c.width / 2, c.y + c.height / 2, { steps: 4 })
+      await page.locator('.group-row[data-tool="chamfer"][data-aim]').waitFor()
+    },
+  },
+  {
+    // pins at the cap: the other pin buttons are dimmed and the list says the strip is full
+    name: 'tools-pins-full',
+    mock: 'flyout',
+    steps: async (page) => {
+      await openApp(page)
+      const large = (page.viewportSize()?.width ?? 1024) >= 1366
+      const all: Array<[string, string]> = [['Create', 'Extrude'], ['Create', 'Revolve'], ['Modify', 'Fillet'], ['Modify', 'Chamfer'], ['Modify', 'Shell'], ['Modify', 'Hole'], ['Create', 'Loft'], ['Modify', 'Draft'], ['Copy', 'Mirror'], ['Copy', 'Linear']]
+      await pinTools(page, all.slice(0, large ? 10 : 6))
+      await page.locator('.tool-strip').getByRole('button', { name: /^Modify/ }).click()
+      await page.getByTestId('strip-full').waitFor()
+    },
+  },
+  {
+    // a tool whose dialog needs a field the client cannot draw is dimmed, with its note (Hole and Fill here)
+    name: 'tools-desktop-only',
+    mock: 'flyout',
+    steps: async (page) => {
+      await openApp(page)
+      await page.locator('.tool-strip').getByRole('button', { name: /^Modify/ }).click()
+      await page.locator('.group-row[data-state="desktop"] .group-note').first().waitFor()
+    },
+  },
+  {
+    // a face selected: tools it cannot start are dimmed (the Copy list is open)
+    name: 'tools-selection',
+    mock: 'flyout',
+    steps: async (page) => {
+      await openApp(page)
+      const [spot] = await faceSpots(page, page.request, 'touch')
+      await fingerTap(page, spot!)
+      await page.getByTestId('selection-count').getByText('1 face').waitFor()
+      await page.locator('.tool-strip').getByRole('button', { name: /^Copy/ }).click()
+      await page.locator('.group-row[data-tool="mirror"]').waitFor()
+    },
+  },
 ]
+
+/** Pin tools through their rows' pin buttons: [group name, tool label] each; the strip is left with no list open. */
+async function pinTools(page: Page, tools: Array<[string, string]>): Promise<void> {
+  for (const [group, tool] of tools) {
+    await page.locator('.tool-strip').getByRole('button', { name: new RegExp(`^${group}`) }).click()
+    await page.getByRole('menu', { name: group }).getByRole('button', { name: `Pin ${tool}`, exact: true }).click()
+    await page.getByTestId('strip-scrim').click({ position: { x: 5, y: 700 } })
+  }
+}
 
 const penDown = (page: Page, at: Spot) => sendPointer(page, [{ phase: 'down', kind: 'pen', id: 10, ...at }])
 const penPick = async (page: Page, at: Spot) => {

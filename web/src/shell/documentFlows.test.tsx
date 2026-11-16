@@ -12,7 +12,7 @@ afterEach(() => {
 const T1 = tab('T1', 'studio', 'Part Studio 1')
 const T2 = tab('T2', 'assembly', 'Assembly 1')
 const hello = (tabs: object[]) => ({ type: 'hello', client: 'abcdefgh', document: { id: 'd', name: 'Bracket' }, tabs, read_only: false, holder: null })
-const writes = (calls: Call[]) => calls.filter((c) => c.method !== 'GET' || !c.url.endsWith('/outputs')).map((c) => `${c.method} ${c.url}`)
+const writes = (calls: Call[]) => calls.filter((c) => c.method !== 'GET' || !(c.url.endsWith('/outputs') || c.url.includes('/features/types'))).map((c) => `${c.method} ${c.url}`)
 
 function setup(answer: Parameters<typeof stubFetch>[0], tabs: object[] = [T1, T2]) {
   const calls = stubFetch(answer)

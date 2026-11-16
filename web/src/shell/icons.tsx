@@ -42,16 +42,18 @@ export const paths = {
   check: 'M5 12l5 5 9-10',
   flip: 'M8 20V5 M5 8l3-3 3 3 M16 4v15 M13 16l3 3 3-3',
   /** A drop, for the colour choice. */
+  /** The pin of a tool's row in a group list (filled when the tool is pinned). */
+  pin: 'M9 4h6l-1 6 3 3H7l3-3z M12 13v7',
   drop: 'M12 3c4 5 6 8 6 11a6 6 0 0 1-12 0c0-3 2-6 6-11z',
 } as const
 
-export function Icon({ d, px = size.icon, stroke = 'currentColor', sw = 1.8, round = true }: { d: string; px?: number; stroke?: string; sw?: number; round?: boolean }) {
+export function Icon({ d, px = size.icon, stroke = 'currentColor', sw = 1.8, round = true, fill = 'none' }: { d: string; px?: number; stroke?: string; sw?: number; round?: boolean; fill?: string }) {
   return (
     <svg
       width={px}
       height={px}
       viewBox="0 0 24 24"
-      fill="none"
+      fill={fill}
       stroke={stroke}
       strokeWidth={sw}
       strokeLinecap="round"

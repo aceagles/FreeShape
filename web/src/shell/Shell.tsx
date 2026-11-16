@@ -18,6 +18,11 @@ import { useStudioOutputs } from '../features/studioOutputs'
 import { SelectionChip } from '../selection/SelectionChip'
 import { partItem, SelectionStore } from '../selection/store'
 import { useSelection } from '../selection/useSelection'
+import { FEATURE_STRIP } from '../tools/defs'
+import { picksOf } from '../tools/picks'
+import type { Pick } from '../tools/picks'
+import { ToolStrip } from '../tools/ToolStrip'
+import { stateOf, useToolTypes } from '../tools/useToolTypes'
 import { StudioViewport } from '../viewport/StudioViewport'
 import { DialogArea } from './DialogArea'
 import { explainError } from './errors'
@@ -28,7 +33,6 @@ import { holderPlace } from './holder'
 import { TextPrompt } from './TextPrompt'
 import { ShellContext } from './ShellContext'
 import type { ShellApi } from './ShellContext'
-import { ToolStrip } from './ToolStrip'
 import { TopBar } from './TopBar'
 import { columnWidth } from './layout'
 import { tokenVars } from './vars'
@@ -85,7 +89,7 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
   const [collapsed, setCollapsed] = useState(false)
   const [dialog, setDialog] = useState<DialogState | null>(null)
   // the feature dialog open over the panel (the dialog area is its own: it carries Cancel and Accept), and the preview it drew
-  const [editing, setEditing] = useState<{ tab: string; id: string; name: string } | null>(null)
+  const [editing, setEditing] = useState<{ tab: string; id: string; name: string; create?: { type: string; picks: Pick[] } } | null>(null)
   const [preview, setPreview] = useState<(PreviewState & { feature: string }) | null>(null)
   // after Accept the preview stays drawn until the revision it made arrives, so the view does not flash the old model
   const [holdUntil, setHoldUntil] = useState<number | null>(null)
@@ -178,6 +182,21 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
     if (r.accepted && r.revision !== null) setHoldUntil(r.revision)
     else setPreview(null)
   }, [])
+  // what each tool can do with the selection, from the server; a tool tap opens the create dialog with the selection as picks
+  const picks = useMemo(() => picksOf(picked.items), [picked.items])
+  const toolTypes = useToolTypes(doc?.id ?? null, tabKind === 'studio' ? currentTab : null, studio?.revision ?? 0, picks, editing !== null || dialog !== null)
+  const startTool = useCallback(
+    (type: string) => {
+      if (currentTab === null || tabKind !== 'studio' || editing !== null || dialog !== null) return
+      setCollapsed(false)
+      setPreview(null)
+      setHoldUntil(null)
+      setEditing({ tab: currentTab, id: '', name: toolTypes?.get(type)?.label ?? type, create: { type, picks } })
+      // the tool took the selection; the dialog's active field takes the next picks
+      selection.clear()
+    },
+    [currentTab, tabKind, editing, dialog, toolTypes, picks, selection],
+  )
   const showPreview = preview !== null && (editingHere !== null || (holdUntil !== null && (studio?.revision ?? 0) < holdUntil))
   const variables = useMemo(() => Object.keys(studio?.variables ?? {}).map((n) => n.replace(/^#/, '')), [studio])
   const assembly = useAssembly({ store, tab: currentTab, tabKind, readOnly, documentName: name, onError: failText })
@@ -268,7 +287,14 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
           onToggleDebug={debug.toggle}
         />
         {readOnly && <ReadOnlyBanner name={name} holder={holder} onTakeOver={() => setModal({ kind: 'takeover' })} />}
-        <ToolStrip />
+        <ToolStrip
+          strip="feature"
+          defs={FEATURE_STRIP}
+          stateOf={(id) => stateOf(toolTypes, id)}
+          disabled={tabKind !== 'studio' || editing !== null || dialog !== null}
+          width={width}
+          onStart={startTool}
+        />
         <div className="shell-main">
           <div className="left-column" data-region="left-column" data-testid="left-column" style={{ width: column }}>
             {tabKind === 'assembly' ? (
@@ -298,12 +324,13 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
             )}
             {editingHere && doc && (
               <FeatureDialog
-                key={`${editingHere.tab}:${editingHere.id}`}
+                key={`${editingHere.tab}:${editingHere.create?.type ?? editingHere.id}`}
                 store={store}
                 documentId={doc.id}
                 documentName={name}
                 tab={editingHere.tab}
                 feature={editingHere}
+                create={editingHere.create}
                 variables={variables}
                 selection={selection}
                 outputs={showPreview ? preview.outputs : studio}

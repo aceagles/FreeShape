@@ -301,6 +301,17 @@ export function Shell({ store, documentId, version, onLeave }: { store: Connecti
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [currentTab, tabKind, readOnly, sketchStore, picked.items, selection, failText],
   )
+  // a sketch.open the server refuses leaves no sketch open, so the sketch chip that shows refusals is not there: say it here (F12)
+  useEffect(
+    () =>
+      sketchStore.subscribe(() => {
+        const s = sketchStore.getState()
+        if (s.open || s.opening || s.error === null) return
+        failText('Could not start the sketch', s.error)
+        sketchStore.clearError()
+      }),
+    [sketchStore, failText],
+  )
   const showPreview = preview !== null && (editingHere !== null || (holdUntil !== null && (studio?.revision ?? 0) < holdUntil))
   // while a dialog is open the view draws its base (what picks resolve against) and the preview as a ghost over it;
   // until the base has arrived, and after Accept, the preview itself is drawn as before

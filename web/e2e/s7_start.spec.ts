@@ -1,11 +1,12 @@
 import { expect, test } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { openApp } from './support/app.ts'
-import { closeAll } from './support/docs.ts'
+import { closeAll, idOf } from './support/docs.ts'
 import { featureMenu } from './support/features.ts'
+import { faceSpots } from './support/pick.ts'
 import type { Spot } from './support/pick.ts'
 import { chooseWithRing, place, regionSpot, screenFor } from './support/draw.ts'
-import { penStroke } from './support/pointer.ts'
+import { fingerTap, penStroke } from './support/pointer.ts'
 import { settledSketch } from './support/sketch.ts'
 import { readViewport, settled } from './support/viewport.ts'
 
@@ -112,3 +113,51 @@ test('with the Top plane selected, Sketch opens on it without asking', async ({ 
   const back = (await settled(page)).camera.back
   expect(Math.abs(back[2])).toBeGreaterThan(0.999)
 })
+
+// F12: on the iPad a flat face picked by finger or Pencil, then Sketch pressed the same way, opened no sketch (the client
+// wrapped the refs route's plane reference in a second one, the server refused it, and nothing was said)
+async function flatFaceSpot(page: Page, pointer: 'pen' | 'touch'): Promise<Spot> {
+  const doc = await idOf(page.request, 'Bracket')
+  const spots = await faceSpots(page, page.request, pointer)
+  for (const s of spots) {
+    const hit = await page.evaluate((s) => window.__freeshapeViewport!.pickAt(s.x, s.y, s.pointer), { ...s, pointer })
+    if (hit?.kind !== 'face') continue
+    const r = await page.request.post(`/documents/${doc}/tabs/T1/refs`, { data: { picks: [{ part: hit.part, kind: 'face', index: hit.index + 1, want: ['plane'] }] } })
+    const items = ((await r.json()) as { items: { ok: boolean }[] }).items
+    if (items[0]?.ok) return s
+  }
+  throw new Error('no flat face of the Bracket is in view')
+}
+
+/** A press on a button as the Pencil makes it: pointerdown and pointerup of kind pen, then the click the browser follows them with. */
+async function penPress(page: Page, selector: string): Promise<void> {
+  const box = (await page.locator(selector).first().boundingBox())!
+  await page.evaluate(
+    ({ selector, x, y }) => {
+      const el = document.querySelector(selector)!
+      const o = { bubbles: true, cancelable: true, composed: true, pointerId: 10, pointerType: 'pen', isPrimary: true, clientX: x, clientY: y, button: 0 }
+      el.dispatchEvent(new PointerEvent('pointerdown', { ...o, buttons: 1, pressure: 0.5 }))
+      el.dispatchEvent(new PointerEvent('pointerup', { ...o, buttons: 0, pressure: 0 }))
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y, detail: 1 }))
+    },
+    { selector, x: box.x + box.width / 2, y: box.y + box.height / 2 },
+  )
+}
+
+for (const input of ['finger', 'pen'] as const) {
+  test(`with a flat face picked by the ${input}, Sketch pressed by the ${input} opens on that face (F12)`, async ({ page }) => {
+    await openApp(page)
+    const at = await flatFaceSpot(page, input === 'finger' ? 'touch' : 'pen')
+    if (input === 'finger') await fingerTap(page, at)
+    else await penStroke(page, at, at)
+    await expect(page.getByTestId('selection-count')).toHaveText('1 face')
+    if (input === 'finger') await page.locator('[data-tool="sketch"]').tap()
+    else await penPress(page, '[data-tool="sketch"]')
+    await expect(page.locator('[data-strip="sketch"]')).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    // the view turns square to the face
+    await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.tilt ?? 1) < 1e-3)
+    await page.getByTestId('sketch-cancel').click()
+    await expect(page.locator('[data-strip="feature"]')).toBeVisible()
+  })
+}

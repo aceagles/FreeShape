@@ -80,12 +80,26 @@ it('with nothing selected, the Sketch tool asks for a plane and the default plan
 
 it('with a face selected, the Sketch tool asks the refs route for its plane and opens the sketch on it', async () => {
   const face = { part: 'F2/1', kind: 'face', index: 4, want: ['plane'] }
-  const ref = { kind: 'plane', face: { part: 'F2/1', name: 'Face4' } }
+  // the refs route's "plane" item for a planar face, as freeshape/picking.py makes it: already a whole plane reference
+  const ref = { kind: 'face', face: { part: 'F2/1', kind: 'face', name: 'Face4', type: 0 }, origin: [6, 0, 27], xdir: [0, 1, 0] }
   const { store, sock, calls } = await shell((c) => (c.url.endsWith('/tabs/T1/refs') ? { json: { items: [{ ok: true, kind: 'plane', ref, name: 'Face4' }] } } : undefined))
   act(() => window.__freeshape!.shell.selection.set([{ id: 'face|F2/1|Face4', kind: 'face', part: 'F2/1', index: 3, name: 'Face4', key: null }]))
   fireEvent.click(sketchTool())
-  await waitFor(() => expect(sock.sent.at(-1)).toEqual({ type: 'sketch.open', document: 'd', tab: 'T1', plane: { kind: 'face', face: ref } }))
+  // F12: the plane is that reference as it came, not wrapped in a second {kind: 'face', face: ...}
+  await waitFor(() => expect(sock.sent.at(-1)).toEqual({ type: 'sketch.open', document: 'd', tab: 'T1', plane: ref }))
   expect(calls.find((c) => c.url.endsWith('/tabs/T1/refs'))?.body).toEqual({ picks: [face] })
+  store.stop()
+})
+
+it('a sketch.open the server refuses is said on screen, not dropped (F12)', async () => {
+  const { store, sock } = await shell()
+  act(() => window.__freeshape!.shell.selection.set([planeItem('Top')]))
+  fireEvent.click(sketchTool())
+  expect(sock.sent.at(-1)).toMatchObject({ type: 'sketch.open' })
+  sock.say({ type: 'error', id: null, for: 'sketch.open', message: "tab 'T1': plane: 'type'" })
+  const box = await screen.findByRole('dialog', { name: 'Could not start the sketch' })
+  expect(box.textContent).toContain("plane: 'type'")
+  expect(document.querySelector('[data-strip="sketch"]')).toBeNull()
   store.stop()
 })
 

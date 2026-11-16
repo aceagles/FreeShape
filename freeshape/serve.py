@@ -196,8 +196,8 @@ and changes nothing; the socket stays open. A step that is refused leaves the sk
   sketch.open   {"type": "sketch.open", "document", "tab", "feature": id}  an existing sketch feature of a Part Studio, or
                 {"type": "sketch.open", "document", "tab", "plane": ref}   a new sketch on a plane reference, as a sketch's
                 "plane" param stores it: {"kind": "std", "name": "Top" | "Front" | "Right"}, {"kind": "plane", "fid"}
-                or {"kind": "face", "face": a face reference (the refs route's "plane" item)}; a face that is not
-                planar is an error naming it. Refused while this client has a sketch open, and past MAX_SKETCHES.
+                or {"kind": "face", "face", "origin", "xdir"}, which is the refs route's "plane" item for a face sent
+                as it is, not wrapped again; a face that is not planar is an error naming it. Refused while this client has a sketch open, and past MAX_SKETCHES.
                 Answer {"type": "sketch.opened", "document", "tab", "feature": id or null, "name", "plane", "sketch",
                 "status", "can_undo", "can_redo", "frame", "edges", "revision"}:
                   sketch   {"points": {id: [u, v]}, "entities": {id: entity}, "constraints": [constraint]}, the

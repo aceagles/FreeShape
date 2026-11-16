@@ -36,6 +36,8 @@ export async function startSketch(o: { store: SketchStore; document: string; tab
   const got = reply.items[0]
   if (got === undefined) return 'The server gave no answer for that face.'
   if (!got.ok) return got.reason
-  o.store.open({ document: o.document, tab: o.tab, plane: { kind: 'face', face: got.ref } })
+  // the refs route's "plane" item for a face is already the whole plane reference ({kind: 'face', face, origin, xdir});
+  // wrapping it again made the server read a plane reference as a face reference and refuse the open (F12)
+  o.store.open({ document: o.document, tab: o.tab, plane: got.ref as Record<string, unknown> })
   return null
 }

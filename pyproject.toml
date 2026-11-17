@@ -21,3 +21,8 @@ include = ["freeshape*"]
 [tool.setuptools.package-data]
 freeshape = ["assets/*", "static/app/**/*", "addons/**/*.csv", "addons/**/plugin.json", "addons/**/NOTICE.md", "addons/*/*.svg",
              "plugin_examples/*.py"]
+
+[tool.pytest.ini_options]
+# A test that is silent for this many seconds has every thread's stack printed (pytest's faulthandler plugin); the
+# run carries on. Without it a hung test prints nothing until the CI job limit kills the shard.
+faulthandler_timeout = 600

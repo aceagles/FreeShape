@@ -264,7 +264,9 @@ jobs:
     # the script builds the client again from the installed modules.
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Every slice runs in turn in this one job. With slices S1 to S14 it takes about 23 minutes (17 Nov); at the old
+    # limit of 20 the job was cancelled in slice S11 with every slice before it green.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:

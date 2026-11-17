@@ -57,7 +57,7 @@ def run(out_path, home_wait=0.0):
             w.open_any(path)                        # a Home card click; starts the clock again
             ui = timing.since_begin()
             settled = w.studio_engine.settle(300)
-            if not settled or w.folder is None or os.path.normpath(w.folder.path) != os.path.normpath(path):
+            if not settled or w.folder is None or not os.path.samefile(w.folder.path, path):
                 raise RuntimeError(f"{os.path.basename(path)} did not open (settled={settled})")
             times.append((ui, timing.since_begin()))
             w.show_home()

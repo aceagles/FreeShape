@@ -186,6 +186,7 @@ it('Desktop: an Assembly exports from the Document menu and the toolbar, and has
 it('Tablet: the top bar\'s Export opens the dialog over the left column; the Resolution is a row of buttons and Custom opens the pad', async () => {
   const { calls, store } = await open('tablet')
   fireEvent.click(screen.getByRole('button', { name: 'Export' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Export STEP / STL…' }))
   const d = dialog()
   expect(d.closest('[data-region="left-column"]')).not.toBeNull()
   fireEvent.click(within(d).getByRole('radio', { name: 'STL' }))
@@ -201,6 +202,7 @@ it('Tablet: the top bar\'s Export opens the dialog over the left column; the Res
 it('Tablet: the top bar\'s Export on an Assembly has no Parts row', async () => {
   const { store } = await open('tablet', 'assembly')
   fireEvent.click(screen.getByRole('button', { name: 'Export' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Export STEP / STL…' }))
   expect(within(dialog()).queryByText(/Parts/)).toBeNull()
   store.stop()
 })

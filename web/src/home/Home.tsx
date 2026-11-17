@@ -3,6 +3,8 @@ import { ApiError, closeDocument, createDocument, discardAutosave, listDocuments
 import type { DocumentReply, DocumentRow } from '../net/api'
 import type { ConnectionStore } from '../net/connection'
 import { Explorer } from '../files/Explorer'
+import { useArchiveOpen, useDocumentDownload } from '../files/ArchiveFlow'
+import { useConnection } from '../net/react'
 import { Icon, paths } from '../shell/icons'
 import { initialMode } from '../shell/mode'
 import { DebugPopover, LinkStatusButton, useDebugPanel } from '../shell/LinkStatus'
@@ -10,6 +12,7 @@ import { ConfirmDialog } from '../shell/Modal'
 import { TextPrompt } from '../shell/TextPrompt'
 import { tokenVars } from '../shell/vars'
 import { AutosaveDialog } from './AutosaveDialog'
+import { RowMenu } from './RowMenu'
 import { formatModified, recoverMark, rowStatus } from './format'
 import '../shell/shell.css'
 import './home.css'
@@ -53,6 +56,7 @@ export function Home({
   const [files, setFiles] = useState(false)
   const [uiMode] = useState(initialMode)
   const debug = useDebugPanel()
+  const { client } = useConnection(store)
 
   const load = useCallback(() => {
     listDocuments().then(
@@ -88,11 +92,20 @@ export function Home({
     }
   }
 
-  const pending = useRef(openNow)
+  // A Document to open as soon as the screen is up. It can arrive after the screen is: the server's "closed" message of the Document
+  // being left may take the app home before the close call's own answer brings `openNow`, so it is taken whenever it changes.
+  const taken = useRef<typeof openNow>(undefined)
   useEffect(() => {
-    const next = pending.current
-    pending.current = undefined
-    if (next !== undefined) void open(next)
+    if (openNow === undefined || taken.current === openNow) return
+    taken.current = openNow
+    void open(openNow)
+  })
+
+  // Download (.fsdoc) of a row, and Open file… (card I11.10): the new Document opens like a row tapped
+  const download = useDocumentDownload(client)
+  const openFile = useArchiveOpen((made) => {
+    load()
+    void open(made)
   })
 
   /** Recover or discard the autosave of the Document the dialog is about, then go in (or say why not). */
@@ -145,6 +158,12 @@ export function Home({
         <button type="button" className="icon-button" aria-label="Files" title="Files: browse the file roots" aria-pressed={files} onClick={() => setFiles((f) => !f)}>
           <Icon d={paths.folder} />
         </button>
+        {openFile.supported === true && (
+          <button type="button" className="header-button" title="Add a Document from a .fsdoc file on this device" disabled={busy !== null || openFile.busy} onClick={openFile.pick}>
+            <Icon d={paths.export} />
+            <span>Open file…</span>
+          </button>
+        )}
         <button type="button" className="icon-button" aria-label="Refresh the list" onClick={load}>
           <Icon d={paths.refresh} />
         </button>
@@ -181,13 +200,15 @@ export function Home({
                 const status = rowStatus(row)
                 const recover = recoverMark(row)
                 return (
-                  <li key={row.id}>
+                  <li key={row.id} className="doc-item">
                     <button type="button" className="doc-row" disabled={row.missing || busy !== null} aria-busy={busy === row.id} onClick={() => void open(row)}>
                       <span className="doc-tile">
                         <Icon d={paths.document} />
                       </span>
                       <span className="doc-text">
-                        <span className="doc-name">{row.name}</span>
+                        <span className="doc-name" id={`doc-name-${row.id}`}>
+                          {row.name}
+                        </span>
                         <span className="doc-meta">
                           {busy === row.id ? 'Opening' : formatModified(row.modified, now())}
                           {status?.readOnly && busy !== row.id ? ', opens read-only here' : ''}
@@ -208,6 +229,7 @@ export function Home({
                         </span>
                       )}
                     </button>
+                    {!row.missing && <RowMenu name={row.name} nameId={`doc-name-${row.id}`} disabled={busy !== null || download.busy} onDownload={() => download.start(row, status?.readOnly === true)} />}
                   </li>
                 )
               })}
@@ -220,6 +242,8 @@ export function Home({
           <Explorer mode="browse" placement="page" uiMode={uiMode} target={null} onOpenDocument={open} onImported={() => {}} onClose={() => setFiles(false)} now={now} />
         </div>
       )}
+      {download.element}
+      {openFile.element}
       {debug.open && <DebugPopover store={store} version={version} />}
       {modal?.kind === 'new' && (
         <TextPrompt title="New Document" label="Name" confirmLabel="Create" onSubmit={create} onCancel={() => setModal(null)} />

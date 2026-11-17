@@ -7,6 +7,7 @@ import { useConnection } from '../net/react'
 import { PadDemo, padResult } from '../pad/PadDemo'
 import type { PadDemoOptions, PadResult } from '../pad/PadDemo'
 import { FeatureDialog } from '../dialog/FeatureDialog'
+import { useArchiveOpen, useDocumentDownload } from '../files/ArchiveFlow'
 import { ExportDialog } from '../files/ExportDialog'
 import { Explorer } from '../files/Explorer'
 import type { ExplorerMode } from '../files/Explorer'
@@ -503,6 +504,11 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     onLeave(next)
   }
   const back = (next?: { id: string; name: string }) => (dirty ? setModal({ kind: 'leave', next }) : void leave(false, next))
+  // the Document as one .fsdoc file (card I11.10): Save Document archive…, Tablet's Download Document, and Open Document archive…, which
+  // leaves this Document for the new one as the file explorer's Documents root does (the unsaved-changes question included)
+  const archiveDownload = useDocumentDownload(client)
+  const archiveOpen = useArchiveOpen((made) => back({ id: made.id, name: made.name }), mode === 'desktop')
+  const downloadDocument = () => void archiveDownload.start({ id: documentId, name }, readOnly)
   const doTakeOver = async () => {
     setModal(null)
     try {
@@ -784,6 +790,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     // the client has no open and closed tabs: closing a tab takes it out of the Document, so it asks as Delete does
     'document.closeTab': () => currentInfo !== null && setModal({ kind: 'delete', tab: currentInfo }),
     'document.save': () => void save(),
+    'document.saveArchive': downloadDocument,
+    ...(archiveOpen.supported === true ? { 'document.openArchive': archiveOpen.pick } : {}),
     'document.shortcuts': () => setModal({ kind: 'shortcuts' }),
     'document.open': () => back(),
     'document.importNew': () => openExplorer('new'),
@@ -883,6 +891,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           onBack={() => back()}
           onSave={() => void save()}
           onExport={() => openExport()}
+          onDownload={downloadDocument}
           canExport={exportable}
           onToggleDebug={debug.toggle}
           menu={{ commands, state: menuState }}
@@ -1118,6 +1127,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
             onCancel={closeModal}
           />
         )}
+        {archiveDownload.element}
+        {archiveOpen.element}
         {modal?.kind === 'leave' && (
           <ConfirmDialog
             title={`Save changes to "${name}"?`}

@@ -51,6 +51,10 @@ export const paths = {
   /** Export: an arrow leaving a tray. */
   export: 'M12 15V3 M8 7l4-4 4 4 M5 13v7h14v-7',
   drop: 'M12 3c4 5 6 8 6 11a6 6 0 0 1-12 0c0-3 2-6 6-11z',
+  /** Download: an arrow into a tray. */
+  download: 'M12 3v12 M8 11l4 4 4-4 M5 13v7h14v-7',
+  /** A row's menu: three dots in a column. */
+  more: 'M12 5.5h.01 M12 12h.01 M12 18.5h.01',
 } as const
 
 export function Icon({ d, px = size.icon, stroke = 'currentColor', sw = 1.8, round = true, fill = 'none' }: { d: string; px?: number; stroke?: string; sw?: number; round?: boolean; fill?: string }) {

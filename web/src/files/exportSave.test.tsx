@@ -92,6 +92,7 @@ it('with no export root there is no Destination row and Export downloads as befo
 it('with one root the Destination row offers Download and Save to shared, and Download is chosen when nothing is stored', async () => {
   const { store } = await open('tablet', ROOTS)
   fireEvent.click(screen.getByRole('button', { name: 'Export' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Export STEP / STL…' }))
   const d = await within(dialog()).findByRole('radiogroup', { name: 'Destination' })
   expect(within(d).getByRole('radio', { name: 'Download' }).getAttribute('aria-checked')).toBe('true')
   expect(within(d).getByRole('radio', { name: 'Save to shared' }).getAttribute('aria-checked')).toBe('false')
@@ -137,6 +138,7 @@ it('the file name starts from the part\'s name when one part is selected, else t
 it('Tablet: the name opens the text prompt, and what is typed there is what is posted', async () => {
   const { calls, store } = await open('tablet', ROOTS)
   fireEvent.click(screen.getByRole('button', { name: 'Export' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Export STEP / STL…' }))
   fireEvent.click(await within(dialog()).findByRole('radio', { name: 'Save to shared' }))
   fireEvent.click(within(dialog()).getByRole('button', { name: /^File name, bracket\.step/ }))
   const prompt = screen.getByRole('dialog', { name: 'File name' })

@@ -147,7 +147,7 @@ describe('the Search tools palette in Desktop mode', () => {
     type('extrude')
     expect(within(screen.getByRole('option', { name: /^Extrude/ })).getByText('Shift+E')).toBeTruthy()
     type('save')
-    expect(screen.getByRole('option', { name: /^Save\b/ }).textContent).toContain('Ctrl+S')
+    expect(screen.getByRole('option', { name: /^Save(?! Document archive)\b/ }).textContent).toContain('Ctrl+S')
     type('xyzzy')
     expect(screen.getByTestId('palette-about').textContent).toContain('No tool found')
     store.stop()

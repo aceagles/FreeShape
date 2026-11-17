@@ -63,6 +63,7 @@ test.describe('Tablet mode', () => {
     await partRow(page, /./).first().click()
     await saveTwice(page, async () => {
       await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Export STEP / STL…' }).click()
       await dialog(page).getByRole('radio', { name: 'STL' }).click()
       await dialog(page).getByRole('radio', { name: 'Save to out' }).click()
       await dialog(page).getByRole('button', { name: 'Save to out', exact: true }).click()

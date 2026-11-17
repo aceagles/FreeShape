@@ -74,6 +74,8 @@ export class Scripted {
       const path = new URL(req.url()).pathname
       const method = req.method()
       const json = (status: number, body: object) => route.fulfill({ status, json: body })
+      // the client's one probe for a Documents root (card I11.10): an empty archive is refused, as a real root does; it is not a step of any flow, so it is not logged
+      if (path === '/documents/archive' && method === 'POST') return json(422, { error: 'not a zip file' })
       if (method !== 'GET') this.log.push(`${method} ${path}`)
       if (path === '/documents') {
         if (method === 'GET') {

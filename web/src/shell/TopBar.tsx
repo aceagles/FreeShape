@@ -1,6 +1,9 @@
 import type { ConnectionStore, TabInfo } from '../net/connection'
+import { useState } from 'react'
 import { useConnection } from '../net/react'
 import { Icon, paths } from './icons'
+import { anchorOf, Popover, PopoverItem } from './Popover'
+import type { Anchor } from './Popover'
 import { LinkStatusButton } from './LinkStatus'
 import { MenuButton } from './Menu'
 import { chordFor } from '../input/bindings'
@@ -19,6 +22,49 @@ function FullscreenButton() {
     <button type="button" className="icon-button fullscreen-button" aria-label={label} title={label} data-fullscreen={on ? '' : undefined} onClick={toggleFullscreen}>
       <Icon d={on ? paths.exitFullscreen : paths.fullscreen} />
     </button>
+  )
+}
+
+/**
+ * Tablet mode's Export button. With `onDownload` it opens a menu of Export STEP or STL (the dialog of I11.9, on while a tab can be
+ * exported) and Download Document (the whole Document as one .fsdoc, card I11.10); without it the button opens the dialog.
+ */
+function ExportButton({ canExport, onExport, onDownload }: { canExport: boolean; onExport: () => void; onDownload?: () => void }) {
+  const [anchor, setAnchor] = useState<Anchor | null>(null)
+  if (onDownload === undefined) {
+    return (
+      <button type="button" className="icon-button" aria-label="Export" title="Export STEP or STL" disabled={!canExport} onClick={onExport}>
+        <Icon d={paths.export} />
+      </button>
+    )
+  }
+  return (
+    <>
+      <button type="button" className="icon-button" aria-label="Export" title="Export STEP or STL, or download the Document" aria-haspopup="menu" aria-expanded={anchor !== null} onClick={(e) => setAnchor(anchorOf(e.currentTarget))}>
+        <Icon d={paths.export} />
+      </button>
+      {anchor !== null && (
+        <Popover anchor={anchor} label="Export menu" onClose={() => setAnchor(null)}>
+          <PopoverItem
+            label="Export STEP / STL…"
+            icon={<Icon d={paths.export} />}
+            disabled={!canExport}
+            onClick={() => {
+              setAnchor(null)
+              onExport()
+            }}
+          />
+          <PopoverItem
+            label="Download Document"
+            icon={<Icon d={paths.download} />}
+            onClick={() => {
+              setAnchor(null)
+              onDownload()
+            }}
+          />
+        </Popover>
+      )}
+    </>
   )
 }
 
@@ -42,6 +88,8 @@ interface Props {
   /** Tablet mode: the Export button's action, and whether the tab on screen can be exported. */
   onExport: () => void
   canExport: boolean
+  /** Tablet mode: Download Document, the Export menu's second item (card I11.10). Absent: the button opens the dialog as it did. */
+  onDownload?: () => void
   onToggleDebug: () => void
   /** Desktop mode: what the menus run, and what their enabled rules read. */
   menu: { commands: Commands; state: MenuState }
@@ -55,7 +103,7 @@ interface Props {
  * The top bar: back to the home screen, the Document name, the tab switcher with add tab, undo and redo (on while the current
  * Part Studio can undo or redo), save with a dot while something is unsaved, and the connection state.
  */
-export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, onUndo, onRedo, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onExport, canExport, onToggleDebug, menu, palette, narrow }: Props) {
+export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, onUndo, onRedo, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onExport, canExport, onDownload, onToggleDebug, menu, palette, narrow }: Props) {
   const { document, tabs } = useConnection(store)
   const mode = useMode()
   const setMode = useSetMode()
@@ -136,9 +184,7 @@ export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, 
       <TabBar tabs={tabs} currentTab={currentTab} readOnly={readOnly} onSelect={onSelectTab} onAdd={onAddTab} onRename={onRenameTab} onDelete={onDeleteTab} />
       <div className="top-bar-gap" />
       {undoRedoSave}
-      <button type="button" className="icon-button" aria-label="Export" title="Export STEP or STL" disabled={!canExport} onClick={onExport}>
-        <Icon d={paths.export} />
-      </button>
+      <ExportButton canExport={canExport} onExport={onExport} onDownload={onDownload} />
       {modeToggle}
       {fullscreen}
       <LinkStatusButton store={store} open={debugOpen} onToggle={onToggleDebug} />

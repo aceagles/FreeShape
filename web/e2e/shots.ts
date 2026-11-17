@@ -1893,6 +1893,7 @@ export const shots: ShotState[] = [
       await openApp(page)
       await partRow(page, /./).first().click()
       await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Export STEP / STL…' }).click()
       await page.getByRole('radio', { name: 'STL' }).click()
       await settled(page)
     },
@@ -1904,6 +1905,7 @@ export const shots: ShotState[] = [
     steps: async (page) => {
       await openApp(page)
       await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Export STEP / STL…' }).click()
       await page.getByRole('radio', { name: 'STL' }).click()
       await page.getByRole('radio', { name: 'Custom' }).click()
       await page.getByRole('button', { name: /^Deviation, / }).click()
@@ -1964,6 +1966,7 @@ export const shots: ShotState[] = [
       await openApp(page)
       await partRow(page, /./).first().click()
       await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Export STEP / STL…' }).click()
       await page.getByRole('radio', { name: 'STL' }).click()
       await page.getByRole('radio', { name: 'Save to shared' }).click()
       await settled(page)
@@ -1978,6 +1981,7 @@ export const shots: ShotState[] = [
       await openApp(page)
       await partRow(page, /./).first().click()
       await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Export STEP / STL…' }).click()
       await page.getByRole('radio', { name: 'STL' }).click()
       await page.getByRole('radio', { name: 'Save to shared' }).click()
       await page.getByRole('button', { name: 'Save to shared', exact: true }).click()
@@ -2557,6 +2561,66 @@ export const shots: ShotState[] = [
       })
       await page.getByRole('dialog', { name: 'Import' }).waitFor()
       await settled(page)
+    },
+  },
+  {
+    // I11.10: the home screen's row menu on the Bracket: Download (.fsdoc); the header has Open file... beside New Document
+    name: 'home-row-menu',
+    mock: null, // the layout has no home screen
+    steps: async (page) => {
+      await openHome(page)
+      await page.locator('li.doc-item', { has: page.locator('.doc-name', { hasText: /^Bracket$/ }) }).getByRole('button', { name: 'Document menu' }).click()
+      await page.getByRole('menu', { name: 'Bracket menu' }).waitFor()
+    },
+  },
+  {
+    // I11.10: Tablet mode's Export button is a menu: Export STEP or STL... and Download Document
+    name: 'export-menu',
+    mock: 'browsing', // the layout draws no Export menu; the top bar and panel are the browsing state's
+    steps: async (page) => {
+      await openApp(page)
+      await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('menu', { name: 'Export menu' }).waitFor()
+      await settled(page)
+    },
+  },
+  {
+    // I11.10: Download Document with a tab renamed and not saved: the server answers 409 and the client asks Save and download?
+    name: 'download-save-ask',
+    mock: 'browsing', // the layout draws no dialog of this kind
+    steps: async (page) => {
+      await openApp(page)
+      await renameFirstTab(page)
+      await page.getByTestId('dirty-dot').waitFor()
+      await page.getByRole('button', { name: 'Export', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Download Document' }).click()
+      await page.getByRole('dialog', { name: 'Save and download?' }).waitFor()
+      await settled(page)
+    },
+    after: restoreName,
+  },
+  {
+    // I11.10: Desktop mode's Document menu with Open Document archive... after Open Document folder... and Save Document archive... after Save as...
+    name: 'desktop-document-menu-archive',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      await page.locator('[data-region="top-bar"]').getByRole('button', { name: 'Document', exact: true }).click()
+      await page.getByRole('menuitem', { name: 'Open Document archive…' }).waitFor()
+      await page.locator('[role="menuitem"][data-command="document.openArchive"]:not([disabled])').waitFor()
+      await settled(page)
+    },
+  },
+  {
+    // I11.10: Desktop mode's home screen with the row menu open on the Bracket
+    name: 'desktop-home-row-menu',
+    mode: 'desktop',
+    desktop: 'desktop-studio', // the desktop's own home screen is not among the references: its main window is
+    steps: async (page) => {
+      await openHome(page)
+      await page.locator('li.doc-item', { has: page.locator('.doc-name', { hasText: /^Bracket$/ }) }).getByRole('button', { name: 'Document menu' }).click()
+      await page.getByRole('menu', { name: 'Bracket menu' }).waitFor()
     },
   },
 ]

@@ -17,6 +17,27 @@
   white-space: nowrap;
   cursor: pointer;
 }
+.header-button {
+  flex: none;
+  height: var(--touch);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: 0 var(--sp-14) 0 var(--sp-12);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-ink);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.header-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.header-button:not(:disabled):active {
+  background: var(--c-accentSoft);
+}
 .home-body {
   flex: 1;
   min-height: 0;
@@ -59,6 +80,24 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp-8);
+}
+.doc-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+.doc-item .doc-row {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.row-menu-button {
+  align-self: stretch;
+  height: auto;
+  min-height: 68px;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  background: var(--c-white);
 }
 .doc-row {
   width: 100%;

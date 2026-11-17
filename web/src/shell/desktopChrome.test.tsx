@@ -64,12 +64,12 @@ it('Desktop mode: the top bar has the three menu buttons and no tab bar; the tab
 it('the Document menu lists the desktop items in order; wired items run, others are disabled with the tooltip', () => {
   mount()
   act(() => screen.getByRole('button', { name: 'Document' }).click())
-  expect(menuNames().slice(0, 9)).toEqual(['New Part Studio', 'New Assembly', 'New Drawing…', 'Open…', 'New Document folder…', 'Open Document folder…', 'Add files to Document…', 'Open recent', 'Close tab'])
+  expect(menuNames().slice(0, 10)).toEqual(['New Part Studio', 'New Assembly', 'New Drawing…', 'Open…', 'New Document folder…', 'Open Document folder…', 'Open Document archive…', 'Add files to Document…', 'Open recent', 'Close tab'])
   expect(menuNames().length).toBe(documentMenu.filter((e) => e.kind !== 'separator').length)
   const drawing = screen.getByRole('menuitem', { name: 'New Drawing…' }) as HTMLButtonElement
   expect(drawing.disabled).toBe(true)
   expect(drawing.title).toBe(DESKTOP_ONLY)
-  expect((screen.getByRole('menuitem', { name: /^Save(?!\sas)/ }) as HTMLButtonElement).disabled).toBe(false)
+  expect((screen.getByRole('menuitem', { name: /^Save(?!\sas|\sDocument)/ }) as HTMLButtonElement).disabled).toBe(false)
 
   act(() => screen.getByRole('menuitem', { name: /^New Part Studio/ }).click())
   expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/documents/d/tabs'))).toBe(true)

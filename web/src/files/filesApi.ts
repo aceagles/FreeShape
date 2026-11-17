@@ -1,5 +1,7 @@
-import { ApiError, json, request, tabPath } from '../net/api'
+import { ApiError, docPath, json, request, tabPath } from '../net/api'
+import type { Holder } from '../net/api'
 import type { TabInfo } from '../net/connection'
+import { holderPlace } from '../shell/holder'
 import { UploadTooLarge, uploadFile } from '../net/upload'
 
 /** The STL resolution presets of the desktop's STL dialog (freeshape/export_options.py PRESETS), then Custom. */
@@ -288,6 +290,19 @@ export function saveBlob(blob: Blob, name: string): void {
 }
 
 /**
+ * The one download: GETs `path` (with `headers`, which a plain link cannot send), reads the answer into a Blob and hands it to the
+ * browser to save, under the name of the Content-Disposition header (else `fallbackName`). The whole file is held in memory until
+ * the browser has taken it, so a refusal can be read as the ApiError it is (a link to a refused download shows the person nothing).
+ */
+export async function downloadFile(path: string, fallbackName: string, headers?: Record<string, string>): Promise<{ name: string; bytes: number; headers: Headers }> {
+  const res = await request('GET', path, { headers })
+  const blob = await res.blob()
+  const name = dispositionName(res.headers.get('Content-Disposition')) ?? fallbackName
+  saveBlob(blob, name)
+  return { name, bytes: blob.size, headers: res.headers }
+}
+
+/**
  * Exports a tab as it is now to `to`. The one place an export is requested: a download (GET .../tabs/<tab>/export, I11.3)
  * hands the file to the browser; a root (POST the same path, I11.13) saves it in that server folder under the name the server
  * returns. The result carries the surface bodies the STL left out. A refusal is an ApiError (see `existingName`).
@@ -295,11 +310,8 @@ export function saveBlob(blob: Blob, name: string): void {
 export async function exportTab(doc: string, tab: string, options: ExportOptions, to: ExportDestination = { kind: 'download' }): Promise<ExportResult> {
   switch (to.kind) {
     case 'download': {
-      const res = await request('GET', `${tabPath(doc, tab)}/export?${exportQuery(options)}`)
-      const blob = await res.blob()
-      const name = dispositionName(res.headers.get('Content-Disposition')) ?? `export.${options.format}`
-      saveBlob(blob, name)
-      return { name, bytes: blob.size, skipped: skippedNames(res.headers.get('X-FreeShape-Skipped')) }
+      const got = await downloadFile(`${tabPath(doc, tab)}/export?${exportQuery(options)}`, `export.${options.format}`)
+      return { name: got.name, bytes: got.bytes, skipped: skippedNames(got.headers.get('X-FreeShape-Skipped')) }
     }
     case 'root': {
       const res = await request('POST', `${tabPath(doc, tab)}/export`, { body: saveBody(options, to) })
@@ -307,4 +319,84 @@ export async function exportTab(doc: string, tab: string, options: ExportOptions
       return { name: r.name ?? to.name, bytes: r.bytes ?? 0, skipped: Array.isArray(r.skipped) ? r.skipped : [], root: r.root ?? to.root }
     }
   }
+}
+
+// ---- the Document archive (I11.10; the routes of I11.5) -------------------------------------------------------------------------
+
+/** The extension of a Document archive, and the picker's `accept` for one. */
+export const ARCHIVE_EXTENSION = '.fsdoc'
+
+/** Downloads a Document as one `.fsdoc` (GET /documents/<id>/archive). With `save` the server saves it first, which it attributes to `client` (X-Client-Id). */
+export function downloadArchive(doc: string, o: { save?: boolean; client?: string } = {}): Promise<{ name: string; bytes: number }> {
+  const headers = o.save === true && o.client !== undefined ? { 'X-Client-Id': o.client } : undefined
+  return downloadFile(`${docPath(doc)}/archive${o.save === true ? '?save=1' : ''}`, 'document.fsdoc', headers)
+}
+
+/** Whether a refusal is the server saying the Document has unsaved edits (409 `unsaved`): ask, then download again with `save`. */
+export const isUnsaved = (e: unknown): boolean => e instanceof ApiError && e.status === 409 && e.body.error === 'unsaved'
+
+/** The holder a 423 names, or null. */
+function holderOf(e: ApiError): Holder | null {
+  const h = e.body.holder
+  return typeof h === 'object' && h !== null && typeof (h as { program?: unknown }).program === 'string' ? (h as Holder) : null
+}
+
+/** What to tell the person about a download that did not go through. */
+export function archiveDownloadFailure(e: unknown, name: string): string {
+  if (!(e instanceof ApiError)) return e instanceof Error ? e.message : 'Something went wrong.'
+  if (e.status === 423) return `"${name}" is being edited in ${holderPlace(holderOf(e))}, so it could not be saved first. Nothing was downloaded.`
+  if (e.status === 422) return `"${name}" cannot be packed: ${e.message}`
+  if (e.status === 404) return `"${name}" is not on the server any more.`
+  return e.message
+}
+
+/** What POST /documents/archive answers (201): the new Document. Its name is the one stored in the archive. */
+export interface ArchiveReply {
+  id: string
+  name: string
+}
+
+/** Uploads a `.fsdoc` (POST /documents/archive?name=<file name>, the file as the body) with progress; the server's refusals are an ApiError. The Document is not opened. */
+export async function uploadArchive(file: File, o: { onProgress?: (sent: number, total: number) => void; signal?: AbortSignal } = {}): Promise<ArchiveReply> {
+  return (await uploadFile(file, { url: '/documents/archive', query: { name: file.name }, ...o })) as ArchiveReply
+}
+
+/** What to tell the person about an archive that did not go through. */
+export function archiveUploadFailure(e: unknown, file: string): string {
+  if (!(e instanceof ApiError)) return e instanceof Error ? e.message : 'The file could not be opened.'
+  switch (e.status) {
+    case 422:
+      return `"${file}" is not a Document archive the server can open: ${e.message}`
+    case 413:
+      return `"${file}" is too large. ${e.message}`
+    case 408:
+      return `"${file}" arrived too slowly, so the server stopped waiting. Try again on a faster connection.`
+    case 507:
+      return `The server has no room for "${file}". ${e.message}`
+    default:
+      return e.message
+  }
+}
+
+let probe: Promise<boolean> | null = null
+/**
+ * Whether the server can open an archive, that is, serves a Documents root. Nothing in the replies says so (GET /documents lists one
+ * Document on a single-Document server too), but POST /documents/archive answers 404 there before it reads the body, and an empty body
+ * on a Documents root is a 422 that makes nothing. So one empty POST asks. A server that cannot be reached is taken as able: the
+ * upload then says why not. The answer is kept for the page's life.
+ */
+export function archiveUploadSupported(): Promise<boolean> {
+  probe ??= fetch('/documents/archive?name=probe', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' } }).then(
+    (r) => r.status !== 404,
+    () => true,
+  )
+  return probe
+}
+/** Forgets the answer of `archiveUploadSupported` (the tests'). */
+export function forgetArchiveProbe(): void {
+  probe = null
+}
+/** Records that an upload was answered 404: the server serves one Document. */
+export function noteArchiveUnsupported(): void {
+  probe = Promise.resolve(false)
 }

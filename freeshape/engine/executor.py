@@ -355,6 +355,7 @@ class StudioTab(_Tab):
         self.sync()
         doc, enc = self.doc, self.engine.encoder
         st = doc.state
+        enc.fit(self.engine.studio_part_count())     # I1.2: caches big enough that this model stays in them
         for p in st.parts.values():     # I3.7: hand each part its element-name map (encode.element_names reads it)
             if getattr(p, "named", None) is None:
                 p.named = st.named(p.id)
@@ -569,6 +570,11 @@ class InProcessEngine(Engine):
         self.by_tab_id = False         # a tab was opened by data with no path: tab-id sources match by id only
         self._tabs: dict[str, _Tab] = {}
         self._counter = 0
+
+    def studio_part_count(self):
+        """Parts in every Part Studio tab this engine holds: what the shared Encoder must keep (Encoder.fit)."""
+        return sum(len(getattr(t.doc.state, "parts", None) or ()) for t in self._tabs.values()
+                   if isinstance(t, StudioTab))
 
     def use_document(self, document_id, registry=None):
         """Say which Document the tabs belong to: a source naming another Document is then never matched to a

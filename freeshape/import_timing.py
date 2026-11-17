@@ -3,7 +3,9 @@
 Starts the real window with the engine on and imports each source into a new tab as File > Import does
 (`import_step_file`), waiting until the parts are drawn. A source is a STEP file's path or `synthetic:<n>`: an
 assembly written here of a few distinct parts (a many-faced screw, a board with holes) placed n times over, in
-sub-assemblies, the way a CAD export repeats its fasteners. One summary line per source goes to the out file:
+sub-assemblies, the way a CAD export repeats its fasteners. `synthetic:<n>:<d>` makes d distinct screws instead
+of 8 (`synthetic:600:600` has 602 distinct geometries, above the Encoder's old cache limit of 512). One summary
+line per source goes to the out file:
 
     RESULT synthetic:400 parts=440 total=12.3 longest_freeze=0.21 peak_mb=1830 window_peak_mb=950
 
@@ -13,7 +15,9 @@ held at once (sampled), `window_peak_mb` the window's own, `worker_peak_mb` the 
 `window_steady_mb` and `worker_steady_mb` are what the window and the tab's engine worker hold once the import has
 settled: the window keeps handling events for 30 s (FREESHAPE_STEADY_WAIT seconds, if set), then each process runs
 gc and memtrim.release_memory() and reads its own memory. Run with FREESHAPE_NO_MEMTRIM=1 to see them without the
-release. Used by the Windows test build on GitHub (.github/workflows/mac.yml); from source:
+release. `edit_s` is then the seconds from adding a datum plane to the model until the engine has sent the
+model back, as adding one by hand does. Used by the Windows test build on GitHub (.github/workflows/mac.yml);
+from source:
 python -m freeshape --import-timing out.txt synthetic:400
 """
 import math
@@ -149,9 +153,10 @@ class MemorySampler:
 
 # ---------------------------------------------------------------------------- a synthetic assembly
 
-def write_synthetic(path, copies):
-    """An assembly STEP like a CAD export: 8 screw variants (about 1000 faces each) and 2 boards with 100 holes,
-    in modules of a board and 10 screws, the modules placed until there are `copies` screws."""
+def write_synthetic(path, copies, distinct=8):
+    """An assembly STEP like a CAD export: `distinct` screw variants (about 1000 faces each) and 2 boards with 100
+    holes, in modules of a board and 10 screws, the modules placed until there are `copies` screws. There are 20
+    distinct modules, or as many as it takes to use every screw variant."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
@@ -174,7 +179,7 @@ def write_synthetic(path, copies):
             pol = BRepBuilderAPI_MakePolygon()
             for s in range(24):
                 a = 2 * math.pi * s / 24 + k * 0.13
-                pol.Add(gp_Pnt(r * math.cos(a), r * math.sin(a), (10 + v * 0.37) * k / 39))
+                pol.Add(gp_Pnt(r * math.cos(a), r * math.sin(a), (10 + (v % 40) * 0.37 + v // 40 * 0.011) * k / 39))
             pol.Close()
             ts.AddWire(pol.Wire())
         ts.Build()
@@ -202,14 +207,14 @@ def write_synthetic(path, copies):
     def named(label, name):
         TDataStd_Name.Set_s(label, TCollection_ExtendedString(name))
         return label
-    screws = [named(st.AddShape(screw(v), False), f"Screw {v}") for v in range(8)]
+    screws = [named(st.AddShape(screw(v), False), f"Screw {v}") for v in range(distinct)]
     boards = [named(st.AddShape(board(v), False), f"Board {v}") for v in range(2)]
     modules = []
-    for m in range(min(20, max(1, copies // 10))):
+    for m in range(min(max(20, math.ceil(distinct / 10)), max(1, copies // 10))):
         sub = named(st.NewShape(), f"Module {m}")
         st.AddComponent(sub, boards[m % 2], loc(0, 0, 0))
         for k in range(10):
-            st.AddComponent(sub, screws[(m * 10 + k) % 8], loc(5 + k * 9.5, 5, 0))
+            st.AddComponent(sub, screws[(m * 10 + k) % distinct], loc(5 + k * 9.5, 5, 0))
         modules.append(sub)
     top = named(st.NewShape(), "Top")
     for k in range(max(1, copies // 10)):
@@ -223,6 +228,15 @@ def write_synthetic(path, copies):
 
 
 # ---------------------------------------------------------------------------- the run
+
+def add_plane_s(w, timeout=600):
+    """(seconds, settled) to add a datum plane to the open Part Studio and get the model back from its engine:
+    with every part unchanged, the time to encode (or read from the Encoder's caches) and draw it again."""
+    t0 = time.monotonic()
+    w.doc.add_feature(w.doc.make_feature("plane"))
+    settled = w.studio_engine.settle(timeout) if w.studio_engine is not None else True
+    return time.monotonic() - t0, settled
+
 
 def run(out_path, *sources, steady_wait=None):
     import faulthandler
@@ -251,7 +265,9 @@ def run(out_path, *sources, steady_wait=None):
         try:
             path = src
             if src.startswith("synthetic:"):
-                path = write_synthetic(os.path.join(tmp, f"synthetic-{src[10:]}.step"), int(src[10:]))
+                copies, _, distinct = src[10:].partition(":")
+                distinct = int(distinct or 8)
+                path = write_synthetic(os.path.join(tmp, f"synthetic-{copies}-{distinct}.step"), int(copies), distinct)
             mb = os.path.getsize(path) / 1e6
             gaps = {"last": time.monotonic(), "max": 0.0}
 
@@ -279,11 +295,13 @@ def run(out_path, *sources, steady_wait=None):
             if w.studio_engine is not None and w.studio_engine.attached(w.doc):
                 worker_steady = w.studio_engine.in_engine(
                     w.doc, lambda eng, tab: eng.run_in_worker(tab, steady_mb))[1]
+            edit_s, edit_ok = add_plane_s(w)
+            settled = settled and edit_ok
             lines.append(f"RESULT {src} file_mb={mb:.1f} parts={n} total={total:.1f} "
                          f"longest_freeze={gaps['max']:.2f} peak_mb={mem.peak:.0f} "
                          f"window_peak_mb={mem.window_peak:.0f} worker_peak_mb={mem.other_peak:.0f} "
                          f"window_steady_mb={window_steady:.0f} worker_steady_mb={worker_steady:.0f} "
-                         f"settled={settled}" + (f" error={err}" if err else ""))
+                         f"edit_s={edit_s:.1f} settled={settled}" + (f" error={err}" if err else ""))
             ok = ok and settled and not err
         except Exception as e:      # noqa: BLE001
             import traceback

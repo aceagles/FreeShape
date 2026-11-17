@@ -91,3 +91,5 @@ def test_import_timing_reports_steady_memory(tmp_path, monkeypatch):
     assert set(nums) == {"window_steady_mb", "worker_steady_mb"}, text
     if sys.platform != "darwin":        # tree_mb reads /proc or the Windows process list; macOS has neither
         assert all(v > 0 and not math.isnan(v) for v in nums.values()), text
+    edit = re.findall(r"edit_s=(\S+)", text)
+    assert len(edit) == 1 and 0 < float(edit[0]) < 60, text

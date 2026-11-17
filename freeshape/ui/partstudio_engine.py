@@ -42,6 +42,7 @@ from .. import tabkinds as TK
 from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
 from ..document import PartStudioDoc, config_row
+from ..sketch import Sketch
 
 _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
 _NO_CONFIGS = {"rows": [], "active": 0}
@@ -51,6 +52,13 @@ _LIGHT = ("variable", "sketch", "plane", "axis")        # feature types re-run o
 
 
 # =========================================================================== pure helpers
+
+def _sketch_from_engine(fid, so):
+    """A features.SketchResult from the engine's SketchOut: the solved sketch on the plane the engine built it on."""
+    pl = so.plane
+    plane = K.Plane(np.array(pl["origin"], float), np.array(pl["xdir"], float), np.array(pl["normal"], float))
+    return F.sketch_result(fid, plane, Sketch.from_dict(so.sketch))
+
 
 def snapshot(doc):
     """What the engine needs of a Part Studio: its features and rollback bar, folders and part colours / names,
@@ -258,6 +266,7 @@ class _Result:
         self.connectors = list(getattr(out, "connectors", []))     # [MateConnectorOut]
         self.planes = dict(getattr(out, "planes", None) or {})     # plane feature id -> Plane.to_dict()
         self.axes = dict(getattr(out, "axes", None) or {})         # axis feature id -> {"o", "d", "span"}
+        self.sketches = {sk.id: sk for sk in getattr(out, "sketches", None) or ()}   # sketch feature id -> SketchOut
         self.error_refs = dict(getattr(out, "error_refs", None) or {})   # failed feature id -> refs to where
         self.rebuilt = []            # tab ids the engine rebuilt because this tab's output changed (Link graph)
         self.extra = []              # [(rec, _Result)] for the Part Studios among them
@@ -500,10 +509,12 @@ class StudioEngine(QObject):
         n = len(res.snap["features"]) if res.snap["rollback"] is None else min(res.snap["rollback"],
                                                                                  len(res.snap["features"]))
         row = config_row(res.snap.get("configs"))        # the variables the engine built with, not the raw ones
-        # Planes and axes come from the engine, which built each one against the model as it was at that feature.
-        # Re-running them here would resolve their faces and edges in the finished parts, where a later feature
-        # may have changed (and so renamed) the face: the plane or axis would then silently vanish.
+        # Planes, axes and sketches come from the engine, which built each one against the model as it was at that
+        # feature. Re-running them here would resolve their faces and edges in the finished parts, where a later
+        # feature may have changed (and so renamed) the face: the plane, axis or sketch would then silently vanish
+        # (a sketch on a face that was later chamfered could not be shown or highlighted).
         planes, axes = getattr(res, "planes", None) or {}, getattr(res, "axes", None) or {}
+        sketches = getattr(res, "sketches", None) or {}
         for f in res.snap["features"][:n]:
             f = PartStudioDoc._configured(f, row)
             if f["type"] in _LIGHT and not f.get("suppressed"):
@@ -515,6 +526,12 @@ class StudioEngine(QObject):
                     st.axes[f["id"]] = {"o": [float(x) for x in ax["o"]], "d": [float(x) for x in ax["d"]],
                                         "span": None if ax.get("span") is None else [float(x) for x in ax["span"]]}
                     continue
+                if f["type"] == "sketch" and f["id"] in sketches:
+                    try:
+                        st.sketches[f["id"]] = _sketch_from_engine(f["id"], sketches[f["id"]])
+                        continue
+                    except Exception:   # noqa: BLE001 -- fall back to running it here
+                        pass
                 try:
                     F.RUNNERS[f["type"]](st, F.prepare(f, st))
                 except Exception:       # noqa: BLE001 -- the engine's `errors` already say why it failed

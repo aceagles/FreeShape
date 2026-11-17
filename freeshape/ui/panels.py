@@ -242,6 +242,9 @@ class FeatureList(_EyeMixin, QListWidget):
         self.context_status = None       # callable(fid) -> status text of a Context feature (the main window sets it)
         self._folder_of = {}
         self._eye_setup()
+        # True from a press the eye or a folder's chevron took until its release: that press's moves and release
+        # stay away from QListWidget, which would otherwise drag-select from its last anchor (every row above)
+        self._press_taken = False
         # scroll position: kept across a refill, remembered per document across tab switches; a new document
         # opens scrolled to the bottom, where the newest features and the rollback bar are
         self._shown_doc = None           # weakref to the document the rows show
@@ -296,6 +299,9 @@ class FeatureList(_EyeMixin, QListWidget):
 
     def populate(self, doc, editing_id=None, marks=None):
         prev_doc = self._remember_scroll()
+        # a refill of the same document (an eye toggled, a rename, a rebuild) keeps the rows that were selected
+        keep = {(it.data(ROLE_KIND), it.data(ROLE_ID)) for it in self.selectedItems()
+                if it.data(ROLE_ID) is not None} if prev_doc is doc else set()
         self.blockSignals(True)
         self.clear()
         self._folder_of = {f["id"]: f.get("folder") for f in doc.features}
@@ -388,6 +394,11 @@ class FeatureList(_EyeMixin, QListWidget):
                 it.setHidden(True)
         if active >= len(doc.features):
             self._add_rollback()
+        if keep:
+            for i in range(self.count()):
+                it = self.item(i)
+                if (it.data(ROLE_KIND), it.data(ROLE_ID)) in keep:
+                    it.setSelected(True)
         self.blockSignals(False)
         self._restore_scroll(doc, prev_doc)
 
@@ -459,15 +470,27 @@ class FeatureList(_EyeMixin, QListWidget):
         pos = e.position().toPoint()
         it = self._eye_hit(pos) if e.button() == Qt.LeftButton else None
         if it is not None:
+            self._press_taken = True                 # the eye shows / hides; the selection is left as it was
             self.eyeClicked.emit(f"{it.data(ROLE_KIND)}:{it.data(ROLE_ID)}")
             e.accept()
             return
         it = self._chevron_hit(pos) if e.button() == Qt.LeftButton else None
         if it is not None:
+            self._press_taken = True
             self.folderToggled.emit(it.data(ROLE_ID))
             e.accept()
             return
+        self._press_taken = False
+        if self.itemAt(pos) is None and e.button() == Qt.LeftButton:
+            self.clearSelection()                    # a click on empty space below the rows clears the selection
         super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._press_taken:
+            self._press_taken = False
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e):
         pos = e.position().toPoint()
@@ -482,7 +505,8 @@ class FeatureList(_EyeMixin, QListWidget):
         super().mouseDoubleClickEvent(e)
 
     def mouseMoveEvent(self, e):
-        super().mouseMoveEvent(e)
+        if not (self._press_taken and e.buttons() & Qt.LeftButton):
+            super().mouseMoveEvent(e)
         self._eye_track(e.position().toPoint())
         if self.itemAt(e.position().toPoint()) is None and self._hover_fid is not None:
             self._hover_fid = None
@@ -568,17 +592,27 @@ class PartsList(_EyeMixin, QListWidget):
         self.customContextMenuRequested.connect(self._ctx)
         self.itemClicked.connect(lambda it: it.data(ROLE_ID) and self.partClicked.emit(it.data(ROLE_ID), False))
         self._eye_setup()
+        self._press_taken = False                    # as FeatureList: an eye press never drag-selects
 
     def mousePressEvent(self, e):
         it = self._eye_hit(e.position().toPoint()) if e.button() == Qt.LeftButton else None
+        self._press_taken = it is not None
         if it is not None:
             self.eyeClicked.emit(it.data(ROLE_ID))
             e.accept()
             return
         super().mousePressEvent(e)
 
+    def mouseReleaseEvent(self, e):
+        if self._press_taken:
+            self._press_taken = False
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
     def mouseMoveEvent(self, e):
-        super().mouseMoveEvent(e)
+        if not (self._press_taken and e.buttons() & Qt.LeftButton):
+            super().mouseMoveEvent(e)
         self._eye_track(e.position().toPoint())
 
     def leaveEvent(self, e):

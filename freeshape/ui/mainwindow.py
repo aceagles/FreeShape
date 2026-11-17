@@ -1708,6 +1708,7 @@ class MainWindow(QMainWindow):
         if self.sketcher:
             self.viewport.status_text = self.sketcher.hint()
             self.viewport.update()
+        self.viewport.refresh_cursor()
 
     def _set_offset_both(self, on):
         if self.sketcher:
@@ -1758,6 +1759,7 @@ class MainWindow(QMainWindow):
         self.sketcher = None
         vp = self.viewport
         vp.sketcher = None
+        vp.refresh_cursor()
         vp.pick_handler = None
         vp.select_filter = None
         vp.status_text = ""
@@ -3233,12 +3235,17 @@ class MainWindow(QMainWindow):
         if self.mode == "sketch":
             if self.sketcher:
                 self.sketcher.escape()
+                self.viewport.status_text = self.sketcher.hint()
                 self.viewport.update()
+                self.viewport.setFocus()     # a closed value box leaves the focus nowhere: tool keys go dead
             return
         if self.mode == "dialog":
             self.cancel_dialog()
         elif self.mode == "idle":
+            # everything selected goes in one press: the model and the feature and parts lists
             self.viewport.clear_selection()
+            self.left.features.clearSelection()
+            self.left.parts.clearSelection()
 
     def _delete_key(self):
         if self.is_dwg:

@@ -142,6 +142,8 @@ class Sketcher:
         self._dim_rects = {}
         self._glyph_rects = []
         self._editor: QLineEdit | None = None
+        self._editor_users = False   # the open box holds the user's own edit: Esc cancels just that
+        self._editor_finish = None
         self._drag = None
         self._box_start = None      # rubber-band selection: press point (screen) while dragging on empty space
         self._box = None
@@ -1019,19 +1021,22 @@ class Sketcher:
             self.temp = []
 
     def escape(self):
-        had_editor = self._editor is not None
+        """One Esc, as in Onshape, and never one that changes nothing you can see:
+        - a value the user is editing (a dimension opened with a double-click, or an offered box they have
+          typed into) is cancelled, and nothing else changes;
+        - otherwise a tool other than Select is left, together with what it had half drawn, its picks and any
+          box it offered (a spline keeps the points clicked so far; a live value prompt keeps its value);
+        - with Select active, the selection is cleared."""
+        if self._editor is not None and self._editor_users:
+            self._close_editor()
+            return
         self._end_editor()
         if self.tool == "spline" and len(self.temp) >= 2:
             self._finish_spline()             # Esc keeps the curve drawn so far, like the line chain
-            return
-        if self.temp or self.chain_anchor is not None or self.dim_first or self.cons_picks:
-            self._reset_tool_state()
-            self.selection = []
-        elif had_editor:
-            pass                      # first Esc just dismisses the dimension box
-        elif self.tool != "select":
-            self.set_tool("select")
+        if self.tool != "select":
+            self.set_tool("select")           # also drops the half-drawn shape, the picks and the selection
         else:
+            self._reset_tool_state()
             self.selection = []
 
     def key_press(self, vp, e) -> bool:
@@ -2193,6 +2198,7 @@ class Sketcher:
         ed.returnPressed.connect(lambda: finish(True))
         ed.editingFinished.connect(lambda: finish(False))
         self._editor = ed
+        self._editor_users = False
         self._editor_finish = lambda: finish(False)
         ed.show()
         ed.setFocus()
@@ -2260,11 +2266,17 @@ class Sketcher:
                 self._close_editor()
                 vp.update()
 
+        def typed(_t):
+            touched.append(True)
+            if self._editor is ed:
+                self._editor_users = True
+
         ed.tool_key = tool_key
-        ed.textEdited.connect(lambda _t: touched.append(True))     # typing only: not the value we set
+        ed.textEdited.connect(typed)     # typing only: not the value we set
         ed.returnPressed.connect(commit)
         ed.editingFinished.connect(dismiss)
         self._editor = ed
+        self._editor_users = False
         ed.show()
         ed.setFocus()
         ed.selectAll()
@@ -2329,6 +2341,7 @@ class Sketcher:
         ed.returnPressed.connect(commit)
         ed.editingFinished.connect(commit)
         self._editor = ed
+        self._editor_users = True
         ed.show()
         ed.setFocus()
 
@@ -2336,13 +2349,18 @@ class Sketcher:
         """Close any value box; a live prompt keeps the value it's showing."""
         fin = getattr(self, "_editor_finish", None)
         self._editor_finish = None
-        if fin is not None and self._editor is not None:
+        ed = self._editor
+        if fin is not None and ed is not None:
             fin()
-        else:
+        # a prompt closed with Enter leaves its finish behind, which then ignores the box open now: close that
+        # here, or it takes a second Esc. (_close_editor must not drop the finish itself: freeing the closures
+        # of a closed box at an arbitrary later moment crashed a later window's setFocus in the test suite.)
+        if ed is not None and self._editor is ed:
             self._close_editor()
 
     def _close_editor(self):
         ed = self._editor
+        self._editor_users = False
         if ed is not None:
             self._editor = None
             ed.hide()

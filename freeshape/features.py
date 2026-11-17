@@ -1939,15 +1939,19 @@ def run_sketch(state, f):
     # part edges used in the sketch are projected again from the model as it is now
     if refresh_used_edges(state, plane, sk) or driven:
         sk.solve()
+    state.sketches[f["id"]] = sketch_result(f["id"], plane, sk)
+
+
+def sketch_result(fid, plane, sk) -> SketchResult:
+    """The SketchResult of the solved sketch `sk` on `plane`: its region faces, their signatures and names."""
     regions, history, edges = K.sketch_regions(plane, sk.curves(), with_history=True)
     bb = K.bbox(K.compound(regions)) if regions else None
     try:
-        named = N.name_sketch(regions, history, edges, f["id"])
+        named = N.name_sketch(regions, history, edges, fid)
         names = [named.name_of(r) for r in regions]
     except N.NamingError:
         named, names = None, [None] * len(regions)     # unnameable ids: references fall back to signatures
-    state.sketches[f["id"]] = SketchResult(plane, sk, regions, [region_signature(r) for r in regions], bb,
-                                           named, names)
+    return SketchResult(plane, sk, regions, [region_signature(r) for r in regions], bb, named, names)
 
 
 def _profiles(state, p, fid=None, labels=None):

@@ -117,6 +117,12 @@ class CrossTabInputs:
         with self._resolving(src):
             return self.resolver.resolve_source(src)
 
+    def connectors(self, src):
+        """The mate connectors the Part Studio behind `src` publishes for its part, [{"id", "name", "frame"}] in the
+        part's coordinates, or None when it is not open (an AssemblyDoc.connector_resolver; card I10.3)."""
+        with self._resolving(src):
+            return self.resolver.resolve_connectors(src)
+
     def drawing_shape(self, src):
         with self._resolving(src):
             return self.resolver.resolve_drawing_source(src)

@@ -8,6 +8,8 @@ import type { RegionShape } from '../sketch/regions'
 import type { ViewCamera } from './camera'
 import { axisEnds, DEFAULT_PLANES, eyeHidden } from './scene'
 import type { BuiltScene } from './scene'
+import { pickTriad } from './connectors'
+import type { TriadSpec } from './connectors'
 
 /**
  * Picking: what is under a view position. A port of `Viewport.pick` in freeshape/ui/viewport.py (the desktop's order
@@ -20,7 +22,10 @@ import type { BuiltScene } from './scene'
  *   face, edge, vertex, part ........ here (part only when the filter has `part` and not `face`, as on the desktop)
  *   plane (default and the studio's), axis ... here
  *   region ......................... here (card I7.13): the regions of a sketch the eye shows, found on the sketch plane
- *   sketch_line, sketch_point, connector ... not here: the scene has nothing to hit for them; their kinds are not in `PickKind` yet.
+ *   connector ...................... here (card I10.3): a mate connector's triad, tried first (ahead of every face), as the
+ *                                    desktop's `pick` does; only when the filter names `connector` (the DEFAULT_KINDS leave it out: a
+ *                                    connector is picked as a field's value, never selected, in the desktop's own rule)
+ *   sketch_line, sketch_point ....... not here: the scene has nothing to hit for them; their kinds are not in `PickKind` yet.
  *
  * INDEX BASE. `index` is 0-based, as everywhere in the client (see wire/types.ts). Add 1 when it goes back to the
  * server. `name` is the Element name the outputs carry for it (null when the element has none), which needs no index.
@@ -30,7 +35,7 @@ import type { BuiltScene } from './scene'
  * the pointer are skipped.
  */
 
-export type PickKind = 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region'
+export type PickKind = 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region' | 'connector'
 
 /** `touch` is a finger (the Pointer Events name); the pointer module's pen and mouse use the same words. */
 export type PickPointer = 'pen' | 'touch' | 'mouse'
@@ -104,7 +109,28 @@ export interface RegionPick extends PickBase {
   readonly distancePx: null
 }
 
-export type PickHit = ElementPick | PartPick | DatumPick | RegionPick
+/**
+ * A mate connector's triad (card I10.3). `key` is the connector's id: the mate_connector feature's id in a Part Studio; in an
+ * Assembly the id of the connector the instance `instance` offers (what a mate end names). `point` is the triad's origin.
+ * `distancePx` is how far from the triad (its nearest arm) the pointer was.
+ */
+export interface ConnectorPick extends PickBase {
+  readonly kind: 'connector'
+  readonly part: null
+  readonly index: -1
+  readonly name: null
+  readonly key: string
+  readonly instance?: string
+  readonly distancePx: number
+}
+
+export type PickHit = ElementPick | PartPick | DatumPick | RegionPick | ConnectorPick
+
+/** The pick a triad stands for. */
+export function connectorHit(t: TriadSpec, distancePx: number): ConnectorPick {
+  const base = { kind: 'connector', part: null, index: -1, name: null, key: t.id, point: t.o, distancePx } as const
+  return t.instance === undefined ? base : { ...base, instance: t.instance }
+}
 
 export type PickFilter = ReadonlySet<PickKind> | readonly PickKind[]
 
@@ -210,7 +236,11 @@ export class PickIndex {
   private vertexScreen = new Float64Array(0)
   private edgeBox = new Float64Array(0)
 
-  constructor(outputs: StudioOutputs, built: Pick<BuiltScene, 'root' | 'stats'>) {
+  /** The mate connector triads drawn (card I10.3). */
+  private readonly triads: readonly TriadSpec[]
+
+  constructor(outputs: StudioOutputs, built: Pick<BuiltScene, 'root' | 'stats'> & Partial<Pick<BuiltScene, 'triads'>>) {
+    this.triads = built.triads ?? []
     const byId = new Map<string, Part>()
     const contextIds = new Set<string>()
     for (const p of outputs.parts) byId.set(p.id, p)
@@ -305,6 +335,11 @@ export class PickIndex {
    */
   pick(view: ViewCamera, x: number, y: number, pointer: PickPointer, filter?: PickFilter): PickHit | null {
     const allowed = new Set<PickKind>(filter ?? DEFAULT_KINDS)
+    // a triad is tried first, ahead of every face and edge behind it (the desktop's order)
+    if (allowed.has('connector')) {
+      const t = pickTriad(view, this.triads, x, y, pointer)
+      if (t) return connectorHit(t.spec, t.distancePx)
+    }
     this.project(view)
     if (this.parts.some((p) => p.context)) {
       const hit = this.pass(view, x, y, pointer, allowed, true)

@@ -38,3 +38,39 @@ export function bracketWithPart(change: { name?: string; color?: [number, number
   out.set(raw.subarray(8 + h), 8 + padded.length)
   return out.buffer
 }
+
+/** A mate connector of the bracket Part Studio as the outputs carry it (card I10.3): at `o`, z up and x along the x axis unless given. */
+export interface BracketConnector {
+  id: string
+  name: string
+  o: [number, number, number]
+  z?: [number, number, number]
+  x?: [number, number, number]
+}
+
+/**
+ * The bracket's bytes with these mate connectors (owned by the bracket's part), as the outputs of a studio with such
+ * features would carry them. The header is JSON: the empty connector list is replaced, and the padding kept to a multiple of 8.
+ */
+export function bracketWithConnectors(connectors: readonly BracketConnector[]): ArrayBuffer {
+  const { bytes, outputs } = fixture('bracket')
+  const raw = new Uint8Array(bytes)
+  const h = new DataView(bytes).getUint32(4, true)
+  const text = new TextDecoder().decode(raw.subarray(8, 8 + h)).trimEnd()
+  const old = '"connectors":[],'
+  if (!text.includes(old)) throw new Error('the bracket fixture does not look as bracketWithConnectors expects')
+  const node = (c: BracketConnector) => ({
+    $: 'dc',
+    t: 'MateConnectorOut',
+    f: { id: c.id, name: c.name, part: outputs.parts[0]!.id, frame: { o: c.o, z: c.z ?? [0, 0, 1], x: c.x ?? [1, 0, 0] }, hash: `h-${c.id}`, sketch: '' },
+  })
+  const patched = new TextEncoder().encode(text.replace(old, `"connectors":${JSON.stringify(connectors.map(node))},`))
+  const padded = new Uint8Array(Math.ceil(patched.length / 8) * 8).fill(0x20)
+  padded.set(patched)
+  const out = new Uint8Array(8 + padded.length + (raw.length - 8 - h))
+  out.set(raw.subarray(0, 8))
+  new DataView(out.buffer).setUint32(4, padded.length, true)
+  out.set(padded, 8)
+  out.set(raw.subarray(8 + h), 8 + padded.length)
+  return out.buffer
+}

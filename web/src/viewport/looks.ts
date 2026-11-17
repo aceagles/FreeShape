@@ -25,7 +25,7 @@ import type { Look } from './shading'
 
 /** What the overlay needs to know about an item (the selection store's items have these fields). */
 export interface LookItem {
-  readonly kind: 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region'
+  readonly kind: 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region' | 'connector'
   readonly part: string | null
   /** 0-based index of a face, edge or vertex; -1 otherwise. */
   readonly index: number

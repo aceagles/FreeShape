@@ -77,8 +77,9 @@ class _StudioView:
         self.packages = {}       # configuration ("": none named) -> the links.StudioPackage link_inputs hands out
 
     def _state(self, parts, pkg):
+        # connectors: what the parent published (read by links.resolve_connectors for an Assembly's instances, I10.3)
         return SimpleNamespace(parts=PartMap(parts, aliases=self.part_aliases), vars=dict(pkg.get("vars") or {}),
-                               sheet={})
+                               sheet={}, connectors={c["id"]: dict(c) for c in pkg.get("connectors") or ()})
 
     def state_for(self, config=None):
         """The state in configuration `config` (as PartStudioDoc.state_for), if the parent sent it; else the

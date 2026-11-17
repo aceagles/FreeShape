@@ -25,8 +25,8 @@ from .. import features as F
 from ..document import PartStudioDoc
 from ..variable_studio import VariableStudioDoc
 from .contract import (ASSEMBLY_OPS, BadPick, DRAWING_OPS, STUDIO_OPS, VARIABLES_OPS, AssemblyOutputs, ConnectorOut,
-                       DrawingOutputs, Engine, EngineError, InstanceOut, MateOut, StudioOutputs, VariablesOutputs,
-                       plain)
+                       DrawingOutputs, Engine, EngineError, InstanceConnectorOut, InstanceOut, MateOut, StudioOutputs,
+                       VariablesOutputs, plain)
 from .encode import Encoder, connector_out, element_names, feature_list, sketch_out
 from .inputs import CrossTabInputs
 from .linkgraph import live_package, package_digest, propagate
@@ -750,6 +750,10 @@ class _StudioRefs:
                 if pick["entity"] not in sr.sketch.entities:
                     raise BadPick(f"{at}.entity: no entity {pick['entity']!r} in sketch {pid!r}")
                 key = (pid, pick["entity"])
+        elif kind == "connector":        # I10.3: `part` is the mate_connector feature's id
+            if pid not in st.connectors:
+                raise BadPick(f"{at}.part: no mate connector {pid!r} in this tab")
+            key = (pid,)
         elif pid not in st.parts:
             raise BadPick(f"{at}.part: no part {pid!r} in this tab")
         elif kind == "part":
@@ -983,6 +987,24 @@ class AssemblyTab(_ConsumerTab):
                             index=None if index is None else int(index) + 1,
                             frame=plain(dict(frame)), world=plain(world))
 
+    # -- I10.3: the connectors an instance offers (block 1 of 1 in this file; the other piece is one keyword in the
+    #    InstanceOut call of outputs below)
+    def _instance_connectors(self, iid):
+        """[InstanceConnectorOut] for instance `iid`: what its Part Studio publishes plus its origin connector, each with
+        its frame placed by the instance's transform. One that cannot be placed is left out, as the desktop does."""
+        out = []
+        for pc in self.doc.published_connectors(iid) or []:
+            try:
+                end = self.doc.named_connector(iid, pc["id"])
+                world = A.frame_to_json(self.doc.world_frame(end))
+            except Exception:
+                continue
+            frame = {k: [float(v) for v in pc["frame"][k]] for k in ("o", "z", "x")}
+            out.append(InstanceConnectorOut(id=str(pc["id"]), name=str(pc.get("name", "")), frame=frame,
+                                            world={k: [float(v) for v in world[k]] for k in ("o", "z", "x")},
+                                            kind=str(end.get("kind", "connector"))))
+        return out
+
     def outputs(self):
         self.sync()
         doc, enc = self.doc, self.engine.encoder
@@ -1008,7 +1030,8 @@ class AssemblyTab(_ConsumerTab):
                 id=str(inst["id"]), name=str(inst.get("name", "")), part=key,
                 T=[[float(x) for x in row] for row in doc.T(inst["id"])], hidden=bool(inst.get("hidden")),
                 fixed=bool(inst.get("fixed")), color=tuple(float(c) for c in doc.instance_color(inst)),
-                source=plain(copy.deepcopy(inst.get("source") or {}))))
+                source=plain(copy.deepcopy(inst.get("source") or {})),
+                connectors=self._instance_connectors(inst["id"])))
         for m in doc.mates:
             rest = {k: v for k, v in m.items() if k not in ("id", "name", "type", "suppressed", "a", "b")}
             mates.append(MateOut(id=str(m["id"]), name=str(m.get("name", "")), type=str(m.get("type")),
@@ -1227,6 +1250,7 @@ class InProcessEngine(Engine):
                 doc = VariableStudioDoc.from_data(data, path=path, blobs=blobs)
             elif kind == "assembly":
                 doc = A.AssemblyDoc.from_data(data, path=path, resolver=self.inputs.part, blobs=blobs)
+                doc.connector_resolver = self.inputs.connectors
             else:
                 doc = D.DrawingDoc.from_data(data, path=path, resolver=self.inputs.drawing_shape, blobs=blobs)
         if name:
@@ -1258,6 +1282,7 @@ class InProcessEngine(Engine):
         elif kind == "assembly":
             doc = A.AssemblyDoc()
             doc.resolver = self.inputs.part
+            doc.connector_resolver = self.inputs.connectors
         else:
             doc = D.DrawingDoc()
             doc.resolver = self.inputs.drawing_shape

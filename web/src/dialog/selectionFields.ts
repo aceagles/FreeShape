@@ -13,8 +13,10 @@ import type { SelItem } from './dialogApi'
 
 /**
  * The kinds the view may pick for a field that wants `want` (the route's own strings). A face also fills a plane or an
- * axis field (the route turns it into one). A region field takes a sketch's region (card I7.13). What the refs route has no pick for (a datum plane or
- * axis, a connector) is left out: a field that wants only those cannot be filled from the view, and nothing is pickable.
+ * axis field (the route turns it into one). A region field takes a sketch's region (card I7.13). A mate connector (card I10.3) fills
+ * a field that wants `connector` (the Axis tool) or `axis_connector` (the Plane tool): the route turns it into the connector itself or
+ * its Z axis. What the refs route has no pick for (a datum plane or axis) is left out: a field that wants only those cannot be
+ * filled from the view, and nothing is pickable.
  */
 const KINDS_OF_WANT: Record<string, readonly PickKind[]> = {
   face: ['face'],
@@ -26,6 +28,8 @@ const KINDS_OF_WANT: Record<string, readonly PickKind[]> = {
   region: ['region'],
   path: ['edge'],
   element: ['face', 'edge'],
+  connector: ['connector'],
+  axis_connector: ['connector'],
 }
 
 export function pickKinds(want: readonly string[] | undefined): PickKind[] {
@@ -36,6 +40,8 @@ export function pickKinds(want: readonly string[] | undefined): PickKind[] {
 
 /** A pick for the refs route, from what the view picked: the index is 1-based there. `want` is the field's own list. */
 export function refPick(item: SelectionItem, want: readonly string[]): Record<string, unknown> | null {
+  // a Part Studio's mate connector: `part` is its feature id for the route (an Assembly instance's connector has no refs route)
+  if (item.kind === 'connector') return item.instance === undefined && item.key !== null ? { part: item.key, kind: 'connector', want } : null
   if (item.part === null) return null
   if (item.kind === 'part') return { part: item.part, kind: 'part', want }
   if (item.kind !== 'face' && item.kind !== 'edge' && item.kind !== 'vertex' && item.kind !== 'region') return null
@@ -55,6 +61,8 @@ export const BASE_LOADING = 'The model this feature is built on has not arrived 
  */
 export function baseIndex(item: SelectionItem, drawn: StudioOutputs | null, base: StudioOutputs | null): number | null | undefined {
   if (base === null) return undefined
+  // a connector is found in the base by its feature id: the base model has it, or the feature that makes it comes later
+  if (item.kind === 'connector') return base.connectors.some((c) => c.id === item.key) ? item.index : null
   if (drawn === base || item.kind === 'part') return item.index
   if (item.kind === 'region') {
     // a region is the sketch's: found in the base by its Element name (`part` is the sketch's feature id)
@@ -174,6 +182,10 @@ export function itemLabel(item: SelItem, outputs: StudioOutputs | null, fallback
     const sketch = featureName(id) ?? (id === '' ? null : id)
     const n = outputs ? regionIndex(ref, outputs, id) : -1
     return `Region${n >= 0 ? ` ${n + 1}` : ''}${sketch ? ` of ${sketch}` : ''}`
+  }
+  if (item.kind === 'connector' && ref) {
+    const f = featureName(ref['fid'])
+    if (f) return f
   }
   if ((item.kind === 'plane' || item.kind === 'axis') && ref) {
     if (ref['kind'] === 'std' && typeof ref['name'] === 'string') return ref['name']

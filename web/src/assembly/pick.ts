@@ -3,8 +3,10 @@ import type { MeshBVH } from 'three-mesh-bvh'
 import { elementName } from '../wire'
 import type { AssemblyOutputs, Part, Vec3 } from '../wire'
 import type { ViewCamera } from '../viewport/camera'
-import { TOLERANCE, viewRay } from '../viewport/pick'
-import type { ElementPick, PickFilter, PickKind, PickPointer } from '../viewport/pick'
+import { connectorHit, TOLERANCE, viewRay } from '../viewport/pick'
+import type { ConnectorPick, ElementPick, PickFilter, PickKind, PickPointer } from '../viewport/pick'
+import { pickTriad } from '../viewport/connectors'
+import type { TriadSpec } from '../viewport/connectors'
 import type { AssemblyScene } from './scene'
 
 /**
@@ -39,7 +41,10 @@ export class AssemblyPickIndex {
   private edgeScreen = new Float64Array(0)
   private vertexScreen = new Float64Array(0)
 
-  constructor(outputs: AssemblyOutputs, built: Pick<AssemblyScene, 'objects'>) {
+  private readonly triads: readonly TriadSpec[]
+
+  constructor(outputs: AssemblyOutputs, built: Pick<AssemblyScene, 'objects'> & Partial<Pick<AssemblyScene, 'triads'>>) {
+    this.triads = built.triads ?? []
     const ep: number[] = []
     const vp: number[] = []
     const world = new Vector3()
@@ -102,8 +107,13 @@ export class AssemblyPickIndex {
   }
 
   /** What is at (x, y), CSS pixels from the view's top left, for this kind of pointer, or null. */
-  pick(view: ViewCamera, x: number, y: number, pointer: PickPointer, filter?: PickFilter): ElementPick | null {
+  pick(view: ViewCamera, x: number, y: number, pointer: PickPointer, filter?: PickFilter): ElementPick | ConnectorPick | null {
     const allowed = new Set<PickKind>(filter ?? ASSEMBLY_KINDS)
+    // an instance's connector triad is tried first, ahead of the faces behind it (card I10.3)
+    if (allowed.has('connector')) {
+      const t = pickTriad(view, this.triads, x, y, pointer)
+      if (t) return connectorHit(t.spec, t.distancePx)
+    }
     this.project(view)
     const tol = TOLERANCE[pointer]
     const { back } = view.axes()

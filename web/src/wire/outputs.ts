@@ -10,6 +10,8 @@ import type {
   FolderEntry,
   InstanceEntry,
   Manipulator,
+  Frame,
+  InstanceConnector,
   MateConnector,
   MateEntry,
   Part,
@@ -262,6 +264,29 @@ function manipulator(x: unknown, where: string): Manipulator {
   }
 }
 
+function frame(x: unknown, where: string): Frame {
+  const f = record(x, where)
+  return { o: vec3(f['o'], `${where}.o`), z: vec3(f['z'], `${where}.z`), x: vec3(f['x'], `${where}.x`) }
+}
+
+function instanceConnector(x: unknown, where: string): InstanceConnector {
+  const f = dc(x, 'InstanceConnectorOut', where)
+  return {
+    id: str(f['id'], `${where}.id`),
+    name: str(f['name'], `${where}.name`),
+    kind: f['kind'] === 'origin' ? 'origin' : 'connector',
+    frame: frame(f['frame'], `${where}.frame`),
+    world: frame(f['world'], `${where}.world`),
+  }
+}
+
+/** A mate end's world frame: null when the end has none (an empty dict). */
+function endFrame(x: unknown, where: string): Frame | null {
+  const f = dc(x, 'ConnectorOut', where)
+  const w = f['world']
+  return w === null || w === undefined || Object.keys(record(w, `${where}.world`)).length === 0 ? null : frame(w, `${where}.world`)
+}
+
 function instance(x: unknown, where: string): InstanceEntry {
   const f = dc(x, 'InstanceOut', where)
   const part = f['part']
@@ -275,6 +300,8 @@ function instance(x: unknown, where: string): InstanceEntry {
     hidden: bool(f['hidden'], `${where}.hidden`),
     fixed: bool(f['fixed'], `${where}.fixed`),
     color: numbers(f['color'], `${where}.color`),
+    // an older payload has none
+    connectors: f['connectors'] === undefined ? [] : list(f['connectors'], `${where}.connectors`).map((c, i) => instanceConnector(c, `${where}.connectors[${i}]`)),
   }
 }
 
@@ -287,6 +314,7 @@ function mate(x: unknown, where: string): MateEntry {
     suppressed: bool(f['suppressed'], `${where}.suppressed`),
     a: str(dc(f['a'], 'ConnectorOut', `${where}.a`)['instance'], `${where}.a.instance`),
     b: str(dc(f['b'], 'ConnectorOut', `${where}.b`)['instance'], `${where}.b.instance`),
+    ends: [endFrame(f['a'], `${where}.a`), endFrame(f['b'], `${where}.b`)],
   }
 }
 

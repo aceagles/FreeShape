@@ -12,6 +12,8 @@ import { MIN_HALF } from '../viewport/camera'
 import { LookOverlay } from '../viewport/looks'
 import type { LookItem } from '../viewport/looks'
 import { setLook, shadedMaterial } from '../viewport/shading'
+import { assemblyTriads, buildTriads, moved } from '../viewport/connectors'
+import type { TriadSpec } from '../viewport/connectors'
 
 /** What the test hook reports about the Assembly on screen. */
 export interface AssemblyStats {
@@ -29,9 +31,13 @@ export interface AssemblyStats {
   triangles: number
   /** Instances drawn see-through by Shift+T. */
   transparent: number
+  /** Mate connector triads drawn on the instances (K; card I10.3). */
+  connectors: number
+  /** Mate end triads drawn (J; card I10.3). */
+  mateEnds: number
 }
 
-export const EMPTY_ASSEMBLY_STATS: AssemblyStats = { instances: 0, drawn: 0, hidden: 0, geometries: 0, drawnIds: [], triangles: 0, transparent: 0 }
+export const EMPTY_ASSEMBLY_STATS: AssemblyStats = { instances: 0, drawn: 0, hidden: 0, geometries: 0, drawnIds: [], triangles: 0, transparent: 0, connectors: 0, mateEnds: 0 }
 
 export interface AssemblyScene {
   root: Group
@@ -40,9 +46,11 @@ export interface AssemblyScene {
   objects: ReadonlyMap<string, Mesh>
   hasModel: boolean
   bounds: Bounds
+  /** The triads drawn (instance connectors and mate ends), as they are placed now; a pick can take the connectors. */
+  readonly triads: readonly TriadSpec[]
   /** Draw these instances' items as selected and this one as Aimed (see viewport/looks.ts; `part` of a look item is the instance id). Returns the ids of instances drawn whole-selected. */
   setLook(selected: readonly LookItem[], aimed: LookItem | null): Set<string>
-  update(width: number, height: number): void
+  update(width: number, height: number, scale: number): void
   /** Draw instance `id` at the placement `T` (4 x 4, row-major) instead of the one it was built with (F17: a drag shows at once). */
   place(id: string, T: readonly (readonly number[])[]): void
   dispose(): void
@@ -129,7 +137,7 @@ function localCorners(mesh: PartMesh): [number, number, number][] {
  * each instance that is not hidden a Mesh and an edge-line object that share it and carry the instance's placement as their
  * matrix. Hidden instances have no object. Typed-array views of the response are used in place.
  */
-export function buildAssemblyScene(outputs: AssemblyOutputs, opts: { transparent?: ReadonlySet<string> } = {}): AssemblyScene {
+export function buildAssemblyScene(outputs: AssemblyOutputs, opts: { transparent?: ReadonlySet<string>; connectors?: boolean; mates?: boolean } = {}): AssemblyScene {
   const root = new Group()
   root.name = 'assembly'
   const materials: Material[] = []
@@ -210,6 +218,12 @@ export function buildAssemblyScene(outputs: AssemblyOutputs, opts: { transparent
     }
   }
   stats.geometries = geometries.size
+  // K draws the connectors each instance offers, J the two ends of every mate; both are on when the options leave them out
+  const triads = assemblyTriads(outputs, { connectors: opts.connectors !== false, mates: opts.mates !== false })
+  const layer = buildTriads(triads)
+  root.add(layer.group)
+  stats.connectors = triads.filter((t) => t.kind === 'connector').length
+  stats.mateEnds = triads.length - stats.connectors
 
   const overlayOf = (id: string): LookOverlay | null => {
     let o = overlays.get(id)
@@ -232,6 +246,7 @@ export function buildAssemblyScene(outputs: AssemblyOutputs, opts: { transparent
     objects,
     hasModel: stats.drawn > 0,
     bounds: boundsOfBoxes(corners),
+    triads,
     setLook(selected, aimed) {
       const whole = new Set<string>()
       let hover: string | null = null
@@ -257,10 +272,11 @@ export function buildAssemblyScene(outputs: AssemblyOutputs, opts: { transparent
       }
       return whole
     },
-    update(width, height) {
+    update(width, height, scale) {
       size = [width, height]
       for (const m of lineMats) m.resolution.set(width, height)
       for (const o of overlays.values()) o.update(width, height)
+      layer.update(width, height, scale)
     },
     place(id, T) {
       const m = objects.get(id)
@@ -270,8 +286,13 @@ export function buildAssemblyScene(outputs: AssemblyOutputs, opts: { transparent
       m.matrix.copy(matrix)
       edgeObjects.get(id)?.matrix.copy(matrix)
       overlays.get(id)?.root.matrix.copy(matrix)
+      // the instance's connectors go with it (the mates' ends wait for the server's solve)
+      triads.forEach((t, i) => {
+        if (t.kind === 'connector' && t.instance === id) layer.set(i, (triads[i] = moved(t, T)))
+      })
     },
     dispose() {
+      layer.dispose()
       for (const o of overlays.values()) o.dispose()
       for (const g of geometries.values()) {
         g.geometry.dispose()

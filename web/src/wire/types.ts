@@ -96,6 +96,28 @@ export interface MateConnector {
   readonly sketch: string
 }
 
+/** A mate connector's frame: origin, z axis and x axis (the y axis is z x x). */
+export interface Frame {
+  readonly o: Vec3
+  readonly z: Vec3
+  readonly x: Vec3
+}
+
+/**
+ * A mate connector an Assembly instance offers (card I10.3: `InstanceConnectorOut`): what its Part Studio publishes, or the
+ * origin connector added to the instance. `id` is what a mate end names.
+ */
+export interface InstanceConnector {
+  readonly id: string
+  readonly name: string
+  /** "connector": published by the Part Studio; "origin": added at the instance's origin. */
+  readonly kind: 'connector' | 'origin'
+  /** In the part's own coordinates. */
+  readonly frame: Frame
+  /** The same frame placed by the instance's transform. */
+  readonly world: Frame
+}
+
 /** A construction plane: origin, x direction, normal. Keyed by its feature id in `planes`. */
 export interface PlaneOut {
   readonly o: Vec3
@@ -238,6 +260,8 @@ export interface InstanceEntry {
   readonly fixed: boolean
   /** r g b in 0..1. */
   readonly color: readonly number[]
+  /** The mate connectors the instance's part offers, placed by `T` (an older payload has none). */
+  readonly connectors: readonly InstanceConnector[]
 }
 
 /** One mate of an Assembly, as the read-only list shows it. */
@@ -249,6 +273,8 @@ export interface MateEntry {
   /** Ids of the two instances the mate joins (the connectors' `instance`). */
   readonly a: string
   readonly b: string
+  /** The world frames of the two ends (ConnectorOut.world); null for an end with no frame. */
+  readonly ends: readonly [Frame | null, Frame | null]
 }
 
 /** An Assembly's outputs. Indices in `parts` (Element names, faces, edges, vertices) are 0-based like a Part Studio's. */

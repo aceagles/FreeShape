@@ -29,6 +29,8 @@ import type { LookItem, LookSources } from './looks'
 import { buildSketchRegions } from './sketchRegions'
 import type { DrawnRegion } from './sketchRegions'
 import { setLook, shadedMaterial } from './shading'
+import { buildTriads, studioTriads } from './connectors'
+import type { TriadSpec } from './connectors'
 
 export interface SceneStats {
   /** Meshes drawn for the studio's own parts (hidden parts are not drawn). */
@@ -61,6 +63,8 @@ export interface SceneStats {
   hiddenDefaultPlanes: string[]
   /** Parts drawn see-through by Shift+T. */
   transparentParts: number
+  /** Mate connector triads drawn (card I10.3). */
+  connectors: number
 }
 
 /** What the hook says before any scene: nothing drawn. */
@@ -81,6 +85,7 @@ export const EMPTY_STATS: SceneStats = {
   ghostParts: 0,
   hiddenDefaultPlanes: [],
   transparentParts: 0,
+  connectors: 0,
 }
 
 export interface SceneOptions {
@@ -98,6 +103,8 @@ export interface SceneOptions {
   hiddenPlanes?: readonly string[]
   /** Ids of parts drawn see-through, like a Context body (Shift+T). They are still picked as parts. */
   transparent?: ReadonlySet<string>
+  /** Draw the mate connectors (K); true when left out. */
+  connectors?: boolean
 }
 
 /** How opaque the preview ghost is: the model under it still reads, and so does the shape of the result. */
@@ -149,6 +156,8 @@ export interface BuiltScene {
   bounds: Bounds
   /** The model and the default planes: what a fit frames (see fitBoundsFor). */
   fitBounds: Bounds
+  /** The mate connector triads drawn, which a pick can take (card I10.3); empty when K hides them. */
+  triads: readonly TriadSpec[]
   /** Keep line widths and the origin triad right for the viewport size and zoom (mm per pixel). */
   update(width: number, height: number, scale: number): void
   dispose(): void
@@ -494,6 +503,10 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   root.add(sketchRegions.group)
   const triad = triadObject(materials)
   root.add(triad)
+  const triads = opts.connectors === false ? [] : studioTriads(outputs)
+  const layer = buildTriads(triads)
+  root.add(layer.group)
+  stats.connectors = triads.length
   if (opts.ghost) {
     const ghost = new Group()
     ghost.name = 'preview-ghost'
@@ -536,7 +549,9 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     hasModel,
     bounds,
     fitBounds: hasModel ? fitBoundsFor(bounds, half) : bounds,
+    triads,
     update(width, height, scale) {
+      layer.update(width, height, scale)
       for (const m of lineMats) m.resolution.set(width, height)
       if (width !== size[0] || height !== size[1]) {
         size = [width, height]
@@ -546,6 +561,7 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     },
     dispose() {
       overlay.dispose()
+      layer.dispose()
       for (const g of geometries) g.dispose()
       root.traverse((o) => {
         if (o instanceof Mesh || o instanceof Line || o instanceof Points) o.geometry.dispose()

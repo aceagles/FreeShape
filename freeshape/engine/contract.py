@@ -204,6 +204,19 @@ class MateOut:
     params: dict             # flip, offset, angle ... (whatever else the mate stores)
 
 
+# -- I10.3: the mate connectors an instance offers (block 1 of 1 in this file; the other piece is
+#    InstanceOut.connectors, the last field of InstanceOut below) --
+@dataclass
+class InstanceConnectorOut:
+    """A mate connector an instance's part offers: what its Part Studio publishes, or an origin connector added to
+    the instance (AssemblyDoc.published_connectors). `id` is what a mate end names (`named`)."""
+    id: str
+    name: str
+    frame: dict              # {"o", "z", "x"}: 3-lists, in the part's own coordinates
+    world: dict              # the same frame placed by the instance's transform
+    kind: str = "connector"  # "connector" (published by the Part Studio) | "origin" (added at the instance's origin)
+
+
 @dataclass
 class InstanceOut:
     id: str
@@ -214,6 +227,7 @@ class InstanceOut:
     fixed: bool
     color: tuple
     source: dict             # the link as stored (kind, uid, path, part ...)
+    connectors: list = field(default_factory=list)     # [InstanceConnectorOut] (I10.3), in the order the part offers
 
 
 @dataclass

@@ -2659,6 +2659,68 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I10.3: Tablet mode, a Part Studio with a mate connector on a face of the bracket: its triad at a constant size over the model
+    name: 'connectors-studio',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      const doc = await idOf(page.request, 'Bracket')
+      const part = (await page.evaluate(() => window.__freeshapeViewport?.visiblePartIds[0])) ?? ''
+      await (await import('./support/connectors.ts')).connectorOnFace(page, doc, part, 2, 'F90', 'Pin')
+      await page.waitForFunction(() => (window.__freeshapeViewport?.connectors ?? 0) >= 1)
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.3: Desktop mode, the same connector beside the desktop program's Part Studio
+    name: 'desktop-connectors-studio',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      const doc = await idOf(page.request, 'Bracket')
+      const part = (await page.evaluate(() => window.__freeshapeViewport?.visiblePartIds[0])) ?? ''
+      await (await import('./support/connectors.ts')).connectorOnFace(page, doc, part, 2, 'F90', 'Pin')
+      await page.waitForFunction(() => (window.__freeshapeViewport?.connectors ?? 0) >= 1)
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.3: Tablet mode, the hinge Assembly: a connector on each of two parts (teal triads) and the two ends of each mate
+    name: 'connectors-assembly',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      const doc = await idOf(page.request, 'Hinge')
+      const { connectorOnFace } = await import('./support/connectors.ts')
+      await connectorOnFace(page, doc, 'F2/1', 2, 'F90', 'Top')
+      await connectorOnFace(page, doc, 'F4/1', 2, 'F91', 'Hub')
+      await openAssemblyTab(page, 2)
+      await page.waitForFunction(() => (window.__freeshapeAssembly?.connectors ?? 0) >= 2)
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.3: Desktop mode, the same Assembly beside the desktop program's Assembly
+    name: 'desktop-connectors-assembly',
+    mode: 'desktop',
+    desktop: 'desktop-assembly',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      const doc = await idOf(page.request, 'Hinge')
+      const { connectorOnFace } = await import('./support/connectors.ts')
+      await connectorOnFace(page, doc, 'F2/1', 2, 'F90', 'Top')
+      await connectorOnFace(page, doc, 'F4/1', 2, 'F91', 'Hub')
+      await openAssemblyTab(page, 2)
+      await page.waitForFunction(() => (window.__freeshapeAssembly?.connectors ?? 0) >= 2)
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

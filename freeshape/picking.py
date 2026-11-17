@@ -258,10 +258,11 @@ MAX_PICKS = 200                 # picks in one request
 MAX_ID = 200                    # longest part, sketch or entity id
 MAX_INDEX = 10_000_000
 MAX_COORD = 1e12
-PICK_KINDS = ("face", "edge", "vertex", "part", "region", "sketch_line", "sketch_point")
+PICK_KINDS = ("face", "edge", "vertex", "part", "region", "sketch_line", "sketch_point", "connector")   # connector: I10.3
 _INDEXED = ("face", "edge", "vertex", "region")     # picked by 1-based index
 _BY_ENTITY = ("sketch_line", "sketch_point")        # picked by sketch entity id
 _PICK_FIELDS = {"part", "kind", "index", "entity", "point", "want"}
+# a "connector" pick names a Part Studio's mate_connector feature in `part` (no index, no entity)
 
 
 def _num(x):

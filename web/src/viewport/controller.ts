@@ -47,8 +47,18 @@ export interface ViewportReport extends SceneStats {
   sketch: SketchReport | null
   /** Test hook: what a pointer of this kind would pick at a view position (CSS pixels from the top left), null for nothing. */
   pickAt(x: number, y: number, pointer: PickPointer, filter?: readonly PickKind[]): PickHit | null
+  /** Test hook (I10.3): where each drawn mate connector's triad is on screen (CSS pixels from the top left), by its id. */
+  connectorScreens(): ConnectorScreen[]
   /** Test hook (I9.9): what a selection box dragged from (x0, y0) to (x1, y1) would take, with the selection's filter. */
   boxHits(x0: number, y0: number, x1: number, y1: number): SelectionItemReport[]
+}
+
+/** Where a mate connector's triad is on screen. */
+export interface ConnectorScreen {
+  id: string
+  instance?: string
+  x: number
+  y: number
 }
 
 /** An item of the selection as the test hook reports it. */
@@ -184,6 +194,8 @@ export class ViewportController implements NavHost {
   private readonly box: BoxSource
   /** The tab's visibility settings (P, Shift+P, Shift+I, Shift+T): what setOutputs draws by. */
   private vis: ViewState = DEFAULT_VIEW
+  /** Whether the mate connectors were drawn the last time the scene was built (K, or a dialog's field that wants one). */
+  private connectorsDrawn = true
   /** Desktop mode's right click (card I9.10): the shell opens a menu for what is under the pointer; coordinates are the window's. */
   private contextHandler: ((e: ViewContextEvent) => void) | null = null
   /** What setOutputs was last given, so a change of `vis` draws it again. */
@@ -204,7 +216,10 @@ export class ViewportController implements NavHost {
     this.pointer.setHandleHandler(this.manipulators)
     wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter), this.box, this.contextSink)
     // the store tells us once per real change: an Aim move that lands on the same item never gets here
-    this.unsubscribe = selection.subscribe(() => this.drawLook())
+    this.unsubscribe = selection.subscribe(() => {
+      this.syncConnectors()
+      this.drawLook()
+    })
     this.report()
   }
 
@@ -312,6 +327,7 @@ export class ViewportController implements NavHost {
   setOutputs(given: StudioOutputs, preview: PreviewLook | null = null): void {
     if (this.disposed) return
     this.lastShown = { shown: given, preview }
+    this.connectorsDrawn = this.connectorsOn()
     const shown = shapeStudio(given, this.vis)
     let outputs = shown
     this.previewNumber = preview?.number ?? null
@@ -330,7 +346,7 @@ export class ViewportController implements NavHost {
       this.scene.remove(this.built.root)
       this.built.dispose()
     }
-    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, ghost, hiddenPlanes: this.vis.hiddenPlanes, transparent: new Set(this.vis.transparent) })
+    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, ghost, hiddenPlanes: this.vis.hiddenPlanes, transparent: new Set(this.vis.transparent), connectors: this.connectorsDrawn })
     if (preview && ghost) this.tinted = { feature: preview.feature, parts: this.built.stats.ghostParts }
     this.scene.add(this.built.root)
     if (this.sketchMode) this.seeThrough(this.built.root, true)
@@ -342,6 +358,17 @@ export class ViewportController implements NavHost {
     this.emptyKind = null
     if (!this.fitted) this.fit()
     this.requestRender()
+  }
+
+  /** K shows the mate connectors; so does a dialog's selection field that wants one, as the desktop shows what a dialog picks (card I10.3). */
+  private connectorsOn(): boolean {
+    return this.vis.connectors || (this.selection.pickFilter !== undefined && [...this.selection.pickFilter].includes('connector'))
+  }
+
+  /** A field that wants a connector became active or ended: draw the scene again when that changes whether the triads show. */
+  private syncConnectors(): void {
+    if (this.disposed || !this.lastShown || this.connectorsOn() === this.connectorsDrawn) return
+    this.setOutputs(this.lastShown.shown, this.lastShown.preview)
   }
 
   /** The tab's visibility settings changed (card I9.8): draw the model again by them. */
@@ -489,6 +516,10 @@ export class ViewportController implements NavHost {
     return this.picker ? this.picker.pick(this.view, x, y, pointer, filter) : null
   }
 
+  private connectorScreens(): ConnectorScreen[] {
+    return (this.built?.triads ?? []).filter((t) => t.kind === 'connector').map((t) => ({ id: t.id, ...this.view.project(t.o) }))
+  }
+
   requestRender(): void {
     if (this.pending || this.disposed) return
     this.pending = requestAnimationFrame(() => {
@@ -528,6 +559,7 @@ export class ViewportController implements NavHost {
       },
       sketch: this.sketchMode?.report() ?? null,
       pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
+      connectorScreens: () => this.connectorScreens(),
       boxHits: (x0, y0, x1, y1) => this.boxHits({ x0, y0, x1, y1 }, this.selection.pickFilter).map(reportItem),
     }
   }

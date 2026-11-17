@@ -11,7 +11,8 @@ import { viewportBackground } from '../viewport/colors'
 import { rayPoint, viewRay } from '../viewport/pick'
 import { panView, turnView } from '../viewport/controller'
 import type { PickFilter, PickPointer } from '../viewport/pick'
-import type { ElementPick } from '../viewport/pick'
+import type { ConnectorPick, ElementPick } from '../viewport/pick'
+import type { ConnectorScreen } from '../viewport/controller'
 import { DEFAULT_VIEW, shapeAssembly } from '../viewport/visibility'
 import type { ViewState } from '../viewport/visibility'
 import { AssemblyPickIndex } from './pick'
@@ -32,7 +33,9 @@ export interface AssemblyReport extends AssemblyStats {
   /** Frames drawn so far. */
   frames: number
   /** Test hook: what a pointer of this kind would pick at a view position (CSS pixels from the top left), null for nothing. */
-  pickAt(x: number, y: number, pointer: PickPointer, filter?: PickFilter): ElementPick | null
+  pickAt(x: number, y: number, pointer: PickPointer, filter?: PickFilter): ElementPick | ConnectorPick | null
+  /** Test hook (I10.3): where each drawn connector's triad is on screen (CSS pixels from the top left). */
+  connectorScreens(): ConnectorScreen[]
   /** Screen position (CSS pixels from the view's top left) of the middle of a drawn instance's bounding box, or null. */
   screenOf(instance: string): { x: number; y: number } | null
   /** The move gizmo as drawn (positions in CSS pixels from the view's top left), or null when nothing movable is selected. */
@@ -67,6 +70,8 @@ export class AssemblyController implements NavHost {
   private latest: AssemblyOutputs | null = null
   /** The tab's visibility settings (Shift+I, Shift+T) and what setOutputs was last given, so a change draws it again. */
   private vis: ViewState = DEFAULT_VIEW
+  /** Whether the instances' connectors were drawn the last time the scene was built (K, or a dialog's field that wants one). */
+  private connectorsDrawn = true
   private given: AssemblyOutputs | null = null
   private frames = 0
   private pending = 0
@@ -134,6 +139,7 @@ export class AssemblyController implements NavHost {
     this.unsubscribe = selection.subscribe(() => {
       this.overlay.setCount(selection.getState().items.length)
       this.gizmo.refresh()
+      this.syncConnectors()
       this.drawLook()
     })
     this.report()
@@ -163,9 +169,9 @@ export class AssemblyController implements NavHost {
   }
 
   private applyLook(): void {
-    const items = this.selection.getState().items.flatMap((i) => (i.instance === undefined ? [] : [{ kind: i.kind, part: i.instance, index: i.index, key: null }]))
+    const items = this.selection.getState().items.flatMap((i) => (i.instance === undefined || i.kind === 'connector' ? [] : [{ kind: i.kind, part: i.instance, index: i.index, key: null }]))
     const aimed = this.selection.getAimed()
-    this.built?.setLook(items, aimed?.instance === undefined ? null : { kind: aimed.kind, part: aimed.instance, index: aimed.index, key: null })
+    this.built?.setLook(items, aimed?.instance === undefined || aimed.kind === 'connector' ? null : { kind: aimed.kind, part: aimed.instance, index: aimed.index, key: null })
   }
 
   /** What sends a drag to the server; null (or a disabled one) shows no gizmo. */
@@ -249,6 +255,7 @@ export class AssemblyController implements NavHost {
   setOutputs(sent: AssemblyOutputs): void {
     if (this.disposed) return
     this.given = sent
+    this.connectorsDrawn = this.connectorsOn()
     const outputs = shapeAssembly(sent, this.vis)
     reconcileAssembly(this.selection, outputs)
     this.drop()
@@ -256,7 +263,7 @@ export class AssemblyController implements NavHost {
     if (!this.dragging) this.solved.clear()
     this.latest = outputs
     this.gizmo.setOutputs(outputs)
-    this.built = buildAssemblyScene(outputs, { transparent: new Set(this.vis.transparent) })
+    this.built = buildAssemblyScene(outputs, { transparent: new Set(this.vis.transparent), connectors: this.connectorsDrawn, mates: this.vis.mates })
     this.scene.add(this.built.root)
     if (this.dragging) this.placeOverrides()
     this.picker = new AssemblyPickIndex(outputs, this.built)
@@ -264,6 +271,17 @@ export class AssemblyController implements NavHost {
     this.revision = outputs.revision
     if (!this.fitted) this.fit()
     this.requestRender()
+  }
+
+  /** K shows the instances' connectors; so does a dialog's selection field that wants one (card I10.3). */
+  private connectorsOn(): boolean {
+    return this.vis.connectors || (this.selection.pickFilter !== undefined && [...this.selection.pickFilter].includes('connector'))
+  }
+
+  /** A field that wants a connector became active or ended: draw the Assembly again when that changes whether the triads show. */
+  private syncConnectors(): void {
+    if (this.disposed || !this.given || this.connectorsOn() === this.connectorsDrawn) return
+    this.setOutputs(this.given)
   }
 
   /** The tab's visibility settings changed (card I9.8): draw the Assembly again by them. */
@@ -338,7 +356,7 @@ export class AssemblyController implements NavHost {
     return this.built ? rayPoint(this.built.root, viewRay(this.view, x, y)) : null
   }
 
-  pickAt(x: number, y: number, pointer: PickPointer, filter?: PickFilter): ElementPick | null {
+  pickAt(x: number, y: number, pointer: PickPointer, filter?: PickFilter): ElementPick | ConnectorPick | null {
     return this.picker ? this.picker.pick(this.view, x, y, pointer, filter) : null
   }
 
@@ -365,7 +383,7 @@ export class AssemblyController implements NavHost {
     if (this.disposed) return
     this.view.apply()
     this.gizmo.refresh()
-    this.built?.update(this.view.width, this.view.height)
+    this.built?.update(this.view.width, this.view.height, this.view.scale)
     this.renderer.render(this.scene, this.view.camera)
     this.frames++
     this.report()
@@ -379,6 +397,7 @@ export class AssemblyController implements NavHost {
       frames: this.frames,
       pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
       screenOf: (id) => this.screenOf(id),
+      connectorScreens: () => (this.built?.triads ?? []).filter((t) => t.kind === 'connector').map((t) => ({ id: t.id, instance: t.instance, ...this.view.project(t.o) })),
       gizmo: this.gizmo.current(),
       placements: Object.fromEntries((this.latest?.instances ?? []).map((i) => [i.id, (this.pose(i.id) ?? i.T).map((r) => [...r])])),
     }

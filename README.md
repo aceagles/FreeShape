@@ -15,19 +15,24 @@ keeps everything upstream has, including 2.0, and adds Onshape-style Documents a
 a version you can host on your own server: see the [roadmap](ROADMAP.md). The rest of this README is
 upstream's, written by Richard Willmott.
 
-What this fork adds:
+### Upstream and this fork compared
 
-- **Documents** — a Document is a folder of tabs kept under git. Create named **Versions**, branch into
-  **Workspaces** and merge them tab by tab, compare two Versions, and link to another Document at a pinned
-  Version.
-- **Top-down design** — **Derived** parts, sketches and mate connectors that follow their source; **Variable
-  Studios** shared between tabs; **Context**, to edit a part against its neighbours in an Assembly; a
-  dependency view of what feeds each tab.
-- **References that survive edits** — every face and edge has a stable name built from its feature history
-  (ported from FreeCAD's element map), so a fillet or a mate stays on the right edge when earlier features
-  change.
-- **A rebuild engine** — each tab rebuilds in its own process, so the window stays responsive and linked tabs
-  update live.
+| Area | Upstream | This fork |
+|---|---|---|
+| Files and versions | One file per Part Studio or Assembly, with named versions inside it. | A Document is a folder of tabs kept under git. Versions, Workspaces branched from a Version and merged tab by tab, links to another Document at a pinned Version. |
+| Top-down design | Derived parts; configurations from a variable table. | Also derived sketches and mate connectors, Variable Studios shared between tabs, editing a part in the context of an Assembly, and a dependency view of what feeds each tab. |
+| References | By index: an edit before a fillet can move it to another edge. | Every face and edge has a stable name built from its feature history, ported from FreeCAD's element map. Fillets and mates stay on the right edge; a missing one fails by name. |
+| Rebuild | In the app's own process. | One worker process per tab, so the window stays responsive and linked tabs update live. `python -m freeshape serve <Document>` serves a Document over local HTTP with a view-only browser viewer. |
+| Surfaces | Offset surface. | Surface and thin bodies on Extrude, Revolve and Sweep; Thicken, Enclose, Fill, Boundary surface, Split with a surface. |
+| Assemblies | Standard mates and relations, patterns, exploded views, bill of materials, interference check. | Also the extras listed below: pin slot and parallel mates, mate limits, Animate, an interference panel, fasteners sized to the hole. |
+| Export | DXF and PDF drawings; STEP, binary STL, BREP. | Also SVG and PNG drawings, 3MF, OBJ, STL resolution options, and DXF from any sketch or flat face. |
+| Releases | 2.0.0 installers; listed in the AM package manager. | Its own installers, built by CI from a `v<version>-fork.<n>` tag, including a `.deb`. Not in the AM package manager. |
+
+Upstream has one fix the fork has not taken yet: the Configurations window opens again once a part has
+configurations (upstream commit `41f303d`).
+
+What else this fork adds:
+
 - **Assemblies** — mate connectors on parts and sketches, pin slot and parallel mates, mate limits, mate values
   with Set value and Animate, linear relations, groups, sketches as layout instances, suppress, and Select
   other.
@@ -58,11 +63,19 @@ What this fork adds:
   edges. Not included: full round, conic and curvature sections, and face blend. No retry ladder or crash guard
   was built: a corpus of 40 fillets found nothing for them to rescue (ADR 0012).
 - **Component library** — browse a folder of STEP files with previews and insert from it.
-- **Headless and browser** — `python -m freeshape serve <Document>` serves a Document over HTTP on your own
-  machine, with a view-only browser viewer.
 
-The installers linked below are upstream's and do not include these additions. To use this fork, run it from
-source: see [BUILDING.md](BUILDING.md).
+### Install this fork
+
+Download the installer for your system from the fork's
+[latest release](https://github.com/aceagles/FreeShape/releases/latest). The steps and first-run warnings are the
+same as in [Download and install](#download-and-install) below.
+
+- **Windows:** `FreeShape-Setup-2.0.0.exe`, or `FreeShape-portable-2.0.0.zip` to run without installing.
+- **Mac (Apple Silicon):** `FreeShape-2.0.0-mac-arm64.dmg`.
+- **Linux:** `FreeShape-2.0.0-x86_64.AppImage`, or on Debian and Ubuntu the `.deb`:
+  `sudo apt install ./freeshape_2.0.0+fork.<n>_amd64.deb`, where `<n>` is the release number.
+
+To run it from source or cut a release, see [BUILDING.md](BUILDING.md).
 
 ## Why I made it
 
@@ -145,10 +158,13 @@ See [CHANGES.md](CHANGES.md) for the full history.
 
 ## Download and install
 
-Get it from the [**latest release**](https://github.com/richiewillmott/FreeShape/releases/latest) — no Python or anything
-else needed:
+Get it from this fork's [**latest release**](https://github.com/aceagles/FreeShape/releases/latest). You don't need
+Python or anything else. Upstream's own installers are on
+[its release page](https://github.com/richiewillmott/FreeShape/releases/latest); they do not include this fork's
+additions.
 
 - **Windows:** `FreeShape-Setup-2.0.0.exe` — run it and follow the installer (it also updates an older version).
+  Or unzip `FreeShape-portable-2.0.0.zip` and run it without installing.
   Windows SmartScreen may warn the first time because the installer isn't code-signed yet: click
   **More info → Run anyway**.
 - **Mac (Apple Silicon, M1 or newer):** `FreeShape-2.0.0-mac-arm64.dmg` — open it and drag FreeShape into Applications.
@@ -157,6 +173,8 @@ else needed:
   `chmod +x FreeShape-2.0.0-x86_64.AppImage && ./FreeShape-2.0.0-x86_64.AppImage`
   (or right-click → Properties → "Allow executing as program", then double-click). If it says FUSE is missing, run
   it with `--appimage-extract-and-run`, or install `libfuse2` (Ubuntu: `sudo apt install libfuse2t64`).
+- **Debian / Ubuntu:** `freeshape_2.0.0+fork.<n>_amd64.deb` — install it with
+  `sudo apt install ./freeshape_2.0.0+fork.<n>_amd64.deb`.
 
 Want to run it from the source code, change it, or build the installers yourself? See **[BUILDING.md](BUILDING.md)**.
 

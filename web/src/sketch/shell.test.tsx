@@ -105,11 +105,11 @@ it('the sketch strip and its right end fit a 1024 pixel window with the two pins
   expect(stripWidth(SKETCH_STRIP, 2) + 106 + 2 + 64 + 2 + 6 + 76 + 4 + 84).toBeLessThanOrEqual(1024)
 })
 
-it('the Draw group ends with Mirror and the two patterns; Mirror is wired and the patterns are dimmed until I14.3 (d-s14-strip)', () => {
+it('the Draw group ends with Mirror and the two patterns, all three wired (d-s14-strip, I14.3)', () => {
   const draw = SKETCH_STRIP.find((d) => d.kind === 'group' && d.key === 'draw')
   const ids = draw?.kind === 'group' ? draw.tools.map((t) => t.id) : []
   expect(ids.slice(-3)).toEqual(['sk_mirror', 'sk_lpattern', 'sk_cpattern'])
-  expect([sketchToolState('sk_mirror'), sketchToolState('sk_lpattern'), sketchToolState('sk_cpattern')]).toEqual(['ok', 'dimmed', 'dimmed'])
+  expect([sketchToolState('sk_mirror'), sketchToolState('sk_lpattern'), sketchToolState('sk_cpattern')]).toEqual(['ok', 'ok', 'ok'])
 })
 
 it('Construct with nothing selected shows pressed on the strip, and the mode ends when the sketch closes (F20)', async () => {

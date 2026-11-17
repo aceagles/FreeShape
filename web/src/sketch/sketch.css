@@ -249,3 +249,8 @@
   color: var(--c-inkSoft);
   font-size: var(--fs-small);
 }
+
+/* the pattern panel (I14.3), Desktop mode: Instances has no unit, so it keeps the unit's room (24 px and the 6 px gap) and lines up with Spacing or Total angle */
+.shell[data-mode='desktop'] .copy-panel .inline-number:not(:has(.inline-number-unit)) {
+  padding-right: 30px;
+}

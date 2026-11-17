@@ -179,9 +179,7 @@ test('the Draw group on the strip has its drawing tools, the Rectangle in both f
   await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
   const rows = page.locator('.group-row')
   await expect(rows).toHaveCount(12)
-  for (const id of ['line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'trim', 'corner_fillet', 'use_edge', 'sk_mirror']) await expect(page.locator(`.group-row[data-tool="${id}"]`)).toHaveAttribute('data-state', 'ok')
-  // the patterns wait for I14.3
-  for (const id of ['sk_lpattern', 'sk_cpattern']) await expect(page.locator(`.group-row[data-tool="${id}"]`)).toHaveAttribute('data-state', 'dimmed')
+  for (const id of ['line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'trim', 'corner_fillet', 'use_edge', 'sk_mirror', 'sk_lpattern', 'sk_cpattern']) await expect(page.locator(`.group-row[data-tool="${id}"]`)).toHaveAttribute('data-state', 'ok')
   await page.locator('.group-row[data-tool="rectangle"]').click()
   await tool(page).toBe('rectangle')
   await expect(page.getByTestId('aim-hint')).toContainText('Rectangle')

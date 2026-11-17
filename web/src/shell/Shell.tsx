@@ -35,6 +35,7 @@ import { DimensionDock, DimensionHint } from '../sketch/DimensionPad'
 import { DimensionTool } from '../sketch/dimension'
 import { CopyHint, EditDock, EditHint } from '../sketch/EditPad'
 import { CopyTools } from '../sketch/tools/copy'
+import { CopyDock } from '../sketch/CopyPanel'
 import { EditTools } from '../sketch/tools/edit'
 import { constructionPressed, SketchStore } from '../sketch/store'
 import { ConstraintHint, ConstraintNote } from '../sketch/ConstraintNote'
@@ -89,6 +90,7 @@ function useWindowWidth(): number {
 interface DialogState {
   title: string
   content: ReactNode
+  actions?: ReactNode
 }
 
 /** The small dialog over the page, if one is open. */
@@ -211,7 +213,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     return () => edit.detach()
   }, [edit])
   // Mirror (I14.2), and the patterns after it: the copy tools collect picks, preview and send in one place
-  const [copy] = useState(() => new CopyTools({ sketch: sketchStore, transport: store }))
+  const [copyDock] = useState(() => new CopyDock())
+  const [copy] = useState(() => new CopyTools({ sketch: sketchStore, transport: store, openPanel: copyDock.open, closePanel: copyDock.close, variables: copyDock.variables }))
   useEffect(() => {
     copy.attach()
     return () => copy.detach()
@@ -256,12 +259,12 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
 
   const api = useMemo<ShellApi>(
     () => ({
-      openDialog: (title, content) => {
+      openDialog: (title, content, actions) => {
         if (editing !== null) return
         // Tablet mode: the dialog area is the column's own box, so the column opens for it. Desktop mode: it floats over
         // the viewport, so a column collapsed in a sketch stays collapsed under the Dimension box.
         if (mode !== 'desktop') setCollapsed(false)
-        setDialog({ title, content })
+        setDialog({ title, content, actions })
       },
       closeDialog: () => setDialog(null),
       dialogOpen: dialog !== null || editing !== null || exporting !== null,
@@ -286,8 +289,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     if (!api.dialogOpen) {
       dimension.padGone()
       edit.padGone()
+      copy.panelGone()
     }
-  }, [api, dimension, edit])
+  }, [api, dimension, edit, copy])
   useEffect(() => {
     window.__freeshape = {
       shell: api,
@@ -406,6 +410,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const variables = useMemo(() => Object.keys(studio?.variables ?? {}).map((n) => n.replace(/^#/, '')), [studio])
   useEffect(() => dock.bind(api, variables))
   useEffect(() => editDock.bind(api, variables))
+  useEffect(() => copyDock.bind(api, variables))
   const assembly = useAssembly({ store, tab: currentTab, tabKind, readOnly, documentName: name, onError: failText })
   // the visibility keys (card I9.8): the View settings kept per tab here, the parts' and sketches' eyes kept on the server
   const [visibility] = useState(() => new ViewVisibility())
@@ -779,7 +784,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
               />
             )}
             {dialog && (
-              <DialogArea title={dialog.title} onClose={() => setDialog(null)}>
+              <DialogArea title={dialog.title} onClose={() => setDialog(null)} actions={dialog.actions}>
                 {dialog.content}
               </DialogArea>
             )}

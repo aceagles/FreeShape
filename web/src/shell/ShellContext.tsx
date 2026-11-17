@@ -4,8 +4,8 @@ import type { SelectionStore } from '../selection/store'
 
 /** What later cards use to reach the shell: the dialog area over the feature panel, and the panel's collapsed state. */
 export interface ShellApi {
-  /** Open the dialog area over the feature panel (expanding the panel if it is collapsed). `content` fills its body. */
-  openDialog(title: string, content?: ReactNode): void
+  /** Open the dialog area over the feature panel (expanding the panel if it is collapsed). `content` fills its body; `actions`, when given, replace the header's close button (a sketch pattern's Cancel and Accept, I14.3). */
+  openDialog(title: string, content?: ReactNode, actions?: ReactNode): void
   closeDialog(): void
   dialogOpen: boolean
   panelCollapsed: boolean

@@ -2112,6 +2112,121 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I14.3: a circle selected, Linear pattern, the pen on a line right of it: the panel in the dialog area with the pad up on Instances (4 typed), and the ghost of the copies
+    name: 'sketch-pattern-linear',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      const draw = async (id: string) => {
+        await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
+        await page.locator(`.group-row[data-tool="${id}"]`).click()
+      }
+      await draw('line')
+      const b = await screenFor(page, 45, 12)
+      for (const p of [await screenFor(page, -45, 12), b, b]) await place(page, p)
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 1)
+      await draw('circle')
+      await place(page, await screenFor(page, 0, 0))
+      await place(page, await screenFor(page, 5, 0))
+      await page.locator('.tool-strip').getByRole('button', { name: 'Select', exact: true }).click()
+      await place(page, await screenFor(page, 0, -5))
+      await draw('sk_lpattern')
+      await place(page, await screenFor(page, 30, 12))
+      await page.getByTestId('copy-panel').waitFor()
+      await page.getByTestId('pad').getByRole('button', { name: '4', exact: true }).click()
+      await page.locator('.sketch-layer g[data-preview="copies"]').waitFor({ state: 'attached' })
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I14.3: a circle at (20, 0) selected, Circular pattern, the pen on the origin: Instances 6 and Total angle 360 with the pad up, and the ghost of the six
+    name: 'sketch-pattern-circular',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      const draw = async (id: string) => {
+        await page.locator('.tool-strip').getByRole('button', { name: /^Draw/ }).click()
+        await page.locator(`.group-row[data-tool="${id}"]`).click()
+      }
+      await draw('circle')
+      await place(page, await screenFor(page, 20, 0))
+      await place(page, await screenFor(page, 25, 0))
+      await page.locator('.tool-strip').getByRole('button', { name: 'Select', exact: true }).click()
+      await place(page, await screenFor(page, 20, -5))
+      await draw('sk_cpattern')
+      await place(page, await screenOf(page, 'point', 'origin'))
+      await page.getByTestId('copy-panel').waitFor()
+      await page.locator('.sketch-layer g[data-preview="copies"]').waitFor({ state: 'attached' })
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I14.3: Desktop mode, Linear pattern: the panel floating over the view with Instances and Spacing as typed fields, 4 typed, and the ghost
+    name: 'desktop-sketch-pattern-linear',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      const bar = page.locator('[data-strip="sketch"]')
+      const click = (p: { x: number; y: number }) =>
+        sendPointer(page, [
+          { phase: 'move', kind: 'mouse', id: 20, ...p },
+          { phase: 'down', kind: 'mouse', id: 20, ...p, button: 0 },
+          { phase: 'up', kind: 'mouse', id: 20, ...p, button: 0 },
+        ])
+      await bar.getByRole('button', { name: 'Line', exact: true }).click()
+      const b = await screenFor(page, 45, 12)
+      for (const p of [await screenFor(page, -45, 12), b, b]) await click(p)
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 1)
+      await bar.getByRole('button', { name: 'Circle', exact: true }).click()
+      await click(await screenFor(page, 0, 0))
+      await click(await screenFor(page, 5, 0))
+      await bar.getByRole('button', { name: 'Select', exact: true }).click()
+      await click(await screenFor(page, 0, -5))
+      await bar.getByRole('button', { name: 'Linear pattern', exact: true }).click()
+      await click(await screenFor(page, 30, 12))
+      await page.getByTestId('copy-panel').waitFor()
+      await page.keyboard.type('4')
+      await page.keyboard.press('Tab')
+      await page.locator('.sketch-layer g[data-preview="copies"]').waitFor({ state: 'attached' })
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I14.3: Desktop mode, Circular pattern about the origin: Instances 6 and Total angle 360 as typed fields, and the ghost of the six
+    name: 'desktop-sketch-pattern-circular',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      const bar = page.locator('[data-strip="sketch"]')
+      const click = (p: { x: number; y: number }) =>
+        sendPointer(page, [
+          { phase: 'move', kind: 'mouse', id: 20, ...p },
+          { phase: 'down', kind: 'mouse', id: 20, ...p, button: 0 },
+          { phase: 'up', kind: 'mouse', id: 20, ...p, button: 0 },
+        ])
+      await bar.getByRole('button', { name: 'Circle', exact: true }).click()
+      await click(await screenFor(page, 20, 0))
+      await click(await screenFor(page, 25, 0))
+      await bar.getByRole('button', { name: 'Select', exact: true }).click()
+      await click(await screenFor(page, 20, -5))
+      await bar.getByRole('button', { name: 'Circular pattern', exact: true }).click()
+      await click(await screenOf(page, 'point', 'origin'))
+      await page.getByTestId('copy-panel').waitFor()
+      await page.locator('.sketch-layer g[data-preview="copies"]').waitFor({ state: 'attached' })
+      await settledSketch(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

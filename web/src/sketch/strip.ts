@@ -41,7 +41,7 @@ export const SKETCH_STRIP: readonly StripDef[] = [
 ]
 
 /** The tools whose cards are done: Select picks and selects in the view (I7.7); the drawing tools place points (I7.8); Dimension is I7.11; Construct and Delete act on the selection (I7.9). Every other button waits for its card and stays dimmed. */
-const WIRED: ReadonlySet<string> = new Set(['select', 'dimension', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'construct', 'delete', 'trim', 'corner_fillet', 'use_edge', 'sk_mirror'])
+const WIRED: ReadonlySet<string> = new Set(['select', 'dimension', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'construct', 'delete', 'trim', 'corner_fillet', 'use_edge', 'sk_mirror', 'sk_lpattern', 'sk_cpattern'])
 
 /** The strip button that is lit for a tool: the tool's own (the Center rectangle has its own row, as on the Desktop toolbar). */
 export const stripActive = (tool: string): string => tool
@@ -144,7 +144,7 @@ export interface SketchRowContext {
 }
 
 /** The tools of the sketch row the client has: the ones the server and the sketch store do (sketch/store.ts, constraints.ts). */
-const CHOOSABLE: readonly string[] = ['select', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'dimension', 'corner_fillet', 'use_edge', 'trim', 'sk_mirror', ...CONSTRAIN]
+const CHOOSABLE: readonly string[] = ['select', 'line', 'rectangle', 'center_rectangle', 'circle', 'arc', 'point', 'dimension', 'corner_fillet', 'use_edge', 'trim', 'sk_mirror', 'sk_lpattern', 'sk_cpattern', ...CONSTRAIN]
 
 /** The commands DesktopToolbar needs to draw the sketch row: every tool the client has, the active one pressed. */
 export function sketchRowCommands(c: SketchRowContext): Record<string, ToolbarCommand> {

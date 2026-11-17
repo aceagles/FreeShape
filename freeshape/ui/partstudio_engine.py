@@ -371,24 +371,6 @@ class StudioEngine(QObject):
         QCoreApplication.processEvents()
         return True
 
-    def prewarm(self):
-        """Start the warm spare worker now, in the background, so the first Part Studio opened does not wait for
-        a Python start plus `import OCP` -- about a second on Linux, several on Windows (#52). It runs on the
-        engine thread, ahead of any tab: a tab opened before the spare is warm takes that same spare (the
-        process is already starting) instead of starting another. Returns the Future, or None when off."""
-        if self._closed or self.broken or self.spares < 1:
-            return None
-        return self._pool.submit(self._prewarm)
-
-    def _prewarm(self):
-        if self._closed:
-            return
-        timing.mark("engine: prewarming a worker")
-        try:
-            engine_process.SPARES.fill(self._get_engine()._ctx, self.spares)
-        except Exception as e:      # noqa: BLE001 -- the first tab starts its own worker and reports the failure
-            timing.mark(f"engine: prewarm failed: {e}")
-
     # ------------------------------------------------------------------ the engine thread
     def _get_engine(self):
         if self._engine is None:

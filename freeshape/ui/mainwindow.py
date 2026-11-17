@@ -2080,15 +2080,6 @@ class MainWindow(QMainWindow):
                 break
         self.home.set_recent(items, back)
 
-    def prewarm_engine(self):
-        """Start a warm engine worker in the background, so the first Document opened does not wait for one to
-        start (#52: seconds on Windows). Off with FREESHAPE_PREWARM=0 or the setting engine/prewarm = false."""
-        if self.studio_engine is None or os.environ.get("FREESHAPE_PREWARM", "1") == "0":
-            return None
-        if str(self.settings.value("engine/prewarm", "true")).lower() == "false":
-            return None
-        return self.studio_engine.prewarm()
-
     def show_home(self):
         if self.main_stack.currentIndex() == 0:
             self._leave_modes()

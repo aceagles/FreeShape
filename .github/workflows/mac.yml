@@ -74,10 +74,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt "pyinstaller>=6.16"
-      - name: TEMPORARY git timing diagnostic (issue 52)
-        if: github.event_name == 'workflow_dispatch'
-        continue-on-error: true
-        run: python scripts/diag_git_timing.py
       - name: Build FreeShape.exe and check it starts
         run: |
           build() { python -m PyInstaller packaging/freeshape.spec --noconfirm --clean --distpath dist --workpath build; }
@@ -96,13 +92,11 @@ jobs:
         timeout-minutes: 15
         run: |
           # each run: start FreeShape, wait the given seconds on Home, open a one-Part-Studio Document as a card
-          # click does, and wait for its first rebuild from the worker. The first run is a first-ever start.
-          for spec in "cold 0" "cold 0" "cold 20" "prewarm 0" "prewarm 20"; do
-            set -- $spec
+          # click does and wait for its first rebuild from the worker, then open a second one the same way
+          for wait in 0 0 20; do
             rm -f open-timing.txt
-            start=$(date +%s.%N)
-            dist/FreeShape/FreeShape.exe --open-timing "$PWD/open-timing.txt" $1 $2 || true
-            echo "== $1, $2 s on Home (whole run $(python -c "import time; print(round(time.time() - $start, 1))") s)"
+            dist/FreeShape/FreeShape.exe --open-timing "$PWD/open-timing.txt" $wait || true
+            echo "== $wait s on Home"
             cat open-timing.txt || echo "(no output)"
           done
       - name: Build the installer

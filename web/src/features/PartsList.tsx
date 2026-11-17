@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { Icon, paths } from '../shell/icons'
 import { Modal, ModalButtons } from '../shell/Modal'
-import { useLongPress } from '../shell/longPress'
+import { useContextMenu } from '../shell/Menu'
+import { partMenu } from '../shell/contextMenus'
+import type { PartActions } from '../shell/contextMenus'
+import { useMenuPress } from '../shell/rightClick'
 import { anchorOf, Popover, PopoverItem } from '../shell/Popover'
 import type { Anchor } from '../shell/Popover'
 import { TextPrompt } from '../shell/TextPrompt'
@@ -16,12 +19,14 @@ interface Props {
   selected: string | null
   edits: FeatureEdits
   onSelect: (id: string) => void
+  /** Desktop mode's context menu: Isolate and Delete part, which the shell does (the view and the Delete part feature). */
+  partActions?: { isolate: (id: string) => void; remove: (id: string) => void }
 }
 
 type Dialog = { kind: 'rename' | 'colour'; part: Part }
 
-function PartButton({ part, selected, canMenu, onSelect, onMenu }: { part: Part; selected: boolean; canMenu: boolean; onSelect: () => void; onMenu: (el: HTMLElement) => void }) {
-  const press = useLongPress((el) => canMenu && onMenu(el))
+function PartButton({ part, selected, canMenu, onSelect, onMenu, onContext }: { part: Part; selected: boolean; canMenu: boolean; onSelect: () => void; onMenu: (el: HTMLElement) => void; onContext: (x: number, y: number) => void }) {
+  const press = useMenuPress(canMenu, onMenu, onContext)
   return (
     <button
       type="button"
@@ -42,11 +47,11 @@ function PartButton({ part, selected, canMenu, onSelect, onMenu }: { part: Part;
   )
 }
 
-function PartRow({ part, selected, edits, onSelect, onMenu }: { part: Part; selected: boolean; edits: FeatureEdits; onSelect: () => void; onMenu: (el: HTMLElement) => void }) {
+function PartRow({ part, selected, edits, onSelect, onMenu, onContext }: { part: Part; selected: boolean; edits: FeatureEdits; onSelect: () => void; onMenu: (el: HTMLElement) => void; onContext: (x: number, y: number) => void }) {
   const { eye, bind } = useRowEye(part.hidden)
   return (
     <li className="part-row" data-part-row={part.id} data-hidden={part.hidden ? '' : undefined} data-selected={selected ? '' : undefined} {...bind}>
-      <PartButton part={part} selected={selected} canMenu={!edits.disabled} onSelect={onSelect} onMenu={onMenu} />
+      <PartButton part={part} selected={selected} canMenu={!edits.disabled} onSelect={onSelect} onMenu={onMenu} onContext={onContext} />
       <button
         type="button"
         className="icon-button part-eye"
@@ -96,19 +101,31 @@ function ColourDialog({ part, onPick, onCancel }: { part: Part; onPick: (rgb: re
  * set_part_override. Context bodies are other tabs' bodies, not parts of this studio: they are not listed.
  * The desktop's split into Parts and Surfaces is left out on purpose.
  */
-export function PartsList({ outputs, selected, edits, onSelect }: Props) {
+export function PartsList({ outputs, selected, edits, onSelect, partActions }: Props) {
   const [menu, setMenu] = useState<{ part: Part; anchor: Anchor } | null>(null)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const parts = outputs.parts
   const close = () => setMenu(null)
+  const context = useContextMenu()
+  const openContext = (part: Part, x: number, y: number) => {
+    const actions: PartActions = {
+      rename: () => setDialog({ kind: 'rename', part }),
+      colour: () => setDialog({ kind: 'colour', part }),
+      setHidden: (hidden) => edits.setPartHidden(part.id, hidden),
+      isolate: partActions && (() => partActions.isolate(part.id)),
+      remove: partActions && (() => partActions.remove(part.id)),
+    }
+    context.open({ x, y, label: `${part.name} menu`, ...partMenu(part, { busy: edits.busy, actions }) })
+  }
   return (
     <>
+      {context.node}
       <div className="parts-heading" id="parts-heading">
         Parts ({parts.length})
       </div>
       <ul className="parts-list" aria-labelledby="parts-heading" data-testid="parts-list">
         {parts.map((p) => (
-          <PartRow key={p.id} part={p} selected={p.id === selected} edits={edits} onSelect={() => onSelect(p.id)} onMenu={(el) => setMenu({ part: p, anchor: anchorOf(el) })} />
+          <PartRow key={p.id} part={p} selected={p.id === selected} edits={edits} onSelect={() => onSelect(p.id)} onMenu={(el) => setMenu({ part: p, anchor: anchorOf(el) })} onContext={(x, y) => openContext(p, x, y)} />
         ))}
       </ul>
       {menu && (

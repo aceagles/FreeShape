@@ -14,6 +14,7 @@ import type { PreviewState } from '../dialog/useFeatureDialog'
 import { AssemblyPanel } from '../assembly/AssemblyPanel'
 import { AssemblyViewport } from '../assembly/AssemblyViewport'
 import { instanceItem, selectedInstance } from '../assembly/select'
+import type { ViewContextEvent } from '../selection/aimCommit'
 import { useAssembly } from '../assembly/useAssembly'
 import { assemblyCommands, assemblyStrip, assemblyToolState, instancesOf, isAuthoringTool, S10_NOTE, useAssemblyTypes } from '../assembly/strip'
 import { FeaturePanel } from '../features/FeaturePanel'
@@ -21,7 +22,7 @@ import { useFeatureEdits } from '../features/useFeatureEdits'
 import { useStudioOutputs } from '../features/studioOutputs'
 import { SelectionChip } from '../selection/SelectionChip'
 import { filterKinds, FILTER_KEYS } from '../selection/filter'
-import { partItem, SelectionStore } from '../selection/store'
+import { itemOf, partItem, SelectionStore } from '../selection/store'
 import { useSelection } from '../selection/useSelection'
 import { ASSEMBLY_TOOLBAR, DESKTOP_TOOLBAR, FEATURE_STRIP } from '../tools/defs'
 import { picksOf } from '../tools/picks'
@@ -51,7 +52,7 @@ import { startSketch } from '../sketch/start'
 import { DESKTOP_SKETCH_TOOLBAR, runSketchTool, SKETCH_STRIP, sketchRowCommands, sketchToolState, stripActive } from '../sketch/strip'
 import { StudioViewport } from '../viewport/StudioViewport'
 import type { PreviewLook } from '../viewport/controller'
-import type { StudioOutputs } from '../wire'
+import type { InstanceEntry, StudioOutputs } from '../wire'
 import { DialogArea, DialogHost } from './DialogArea'
 import { explainError } from './errors'
 import { DebugPopover, useDebugPanel } from './LinkStatus'
@@ -67,6 +68,8 @@ import { ModeProvider, useMode } from './mode'
 import { clampLeftWidth, columnWidth, desktopColumnWidth, readLeftWidth, storeLeftWidth } from './layout'
 import { Splitter } from './Splitter'
 import { isRunnable, MENU_BAR, STANDARD_VIEW_ITEMS } from './menus'
+import { useContextMenu } from './Menu'
+import { assemblyViewMenu, instanceMenu, mateMenu, sketchViewMenu, studioViewMenu } from './contextMenus'
 import type { Commands, MenuItem, MenuState } from './menus'
 import { runViewCommand, viewOnScreen } from '../viewport/viewCommands'
 import { ViewVisibility } from '../viewport/visibility'
@@ -96,6 +99,7 @@ interface DialogState {
 /** The small dialog over the page, if one is open. */
 type Modal =
   | { kind: 'rename'; tab: TabInfo }
+  | { kind: 'renameInstance'; id: string; name: string }
   | { kind: 'delete'; tab: TabInfo }
   | { kind: 'leave' }
   | { kind: 'takeover' }
@@ -168,6 +172,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   // after Accept the preview stays drawn until the revision it made arrives, so the view does not flash the old model
   const [holdUntil, setHoldUntil] = useState<number | null>(null)
   const debug = useDebugPanel()
+  // the right-click menus of the view, the Instances and Mates lists (card I9.10); the Features, Parts and tab menus open from their own components
+  const context = useContextMenu()
   // the sketch this client has open (one at a time, kept on the server); the sketch strip and view show it on its tab
   const [sketchStore] = useState(() => new SketchStore(store))
   useEffect(() => {
@@ -368,11 +374,11 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   )
   // the Sketch tool: a new sketch on the selected plane or face, else ask for a plane
   const beginSketch = useCallback(
-    (plane?: string) => {
+    (plane?: string, onItems?: typeof picked.items) => {
       if (currentTab === null || docId.current === null || tabKind !== 'studio' || readOnly) return
       const target = { document: docId.current, tab: currentTab }
       if (plane !== undefined) return void sketchStore.open({ ...target, plane: { kind: 'std', name: plane } })
-      startSketch({ ...target, store: sketchStore, items: picked.items }).then(
+      startSketch({ ...target, store: sketchStore, items: onItems ?? picked.items }).then(
         (r) => (r === 'choose' ? setModal({ kind: 'plane' }) : r === null ? selection.clear() : failText('Could not start the sketch', r)),
         (e) => fail('Could not start the sketch', e),
       )
@@ -572,6 +578,113 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     view: (c) => void runViewCommand(c),
     say: failText,
   })
+  // Desktop mode's right-click menus (card I9.10): the desktop opens none while a dialog, a sketch's start or a tool has the window
+  const sendEach = async (edits: readonly Record<string, unknown>[], title: string): Promise<void> => {
+    try {
+      for (const e of edits) await store.edit(currentTab!, e)
+    } catch (e) {
+      fail(title, e)
+    }
+  }
+  const askDeleteInstance = (id: string) => {
+    const label = assembly.outputs?.instances.find((i) => i.id === id)?.name ?? 'the instance'
+    setModal({ kind: 'confirm', title: `Delete "${label}"?`, text: 'The instance and its mates are removed from the Assembly.', label: 'Delete', run: () => void assembly.edits.deleteInstance(id) })
+  }
+  const openInstanceMenu = (inst: InstanceEntry, x: number, y: number) => {
+    selection.set([instanceItem(inst.id, inst.part)])
+    const e = assembly.edits
+    context.open({
+      x,
+      y,
+      label: `${inst.name} menu`,
+      ...instanceMenu(inst, {
+        busy: e.busy || e.disabled,
+        actions: {
+          rename: () => setModal({ kind: 'renameInstance', id: inst.id, name: inst.name }),
+          setFixed: (fixed) => e.setFixed(inst.id, fixed),
+          setHidden: (hidden) => e.setHidden(inst.id, hidden),
+          isolate: () => void tabView.toggleIsolate([inst.id]),
+          // the gizmo shows on the one free instance that is selected; the menu selects it and says why when it cannot
+          move: () => (inst.fixed ? failText('Move', `${inst.name} is fixed. Free it first, then move it.`) : inst.hidden ? failText('Move', `${inst.name} is hidden. Show it first, then move it.`) : undefined),
+          remove: () => askDeleteInstance(inst.id),
+        },
+      }),
+    })
+  }
+  const onAssemblyContext = (e: ViewContextEvent) => {
+    const out = assembly.outputs
+    if (tabKind !== 'assembly' || out === null || dialog !== null) return
+    const under = e.hit !== null && (e.hit.kind === 'face' || e.hit.kind === 'edge') ? e.hit.instance : undefined
+    const inst = under === undefined ? undefined : out.instances.find((i) => i.id === under)
+    if (inst !== undefined) return openInstanceMenu(inst, e.x, e.y)
+    context.open({
+      x: e.x,
+      y: e.y,
+      label: 'View menu',
+      ...assemblyViewMenu({
+        anyHidden: out.instances.some((i) => i.hidden),
+        readOnly,
+        fit: () => void runViewCommand('fit'),
+        view: (n) => void runViewCommand(n),
+        showAll: () => void visibilityKeys['view.showAll']!(),
+      }),
+    })
+  }
+  const onStudioContext = (e: ViewContextEvent) => {
+    if (tabKind !== 'studio' || studio === null) return
+    if (e.sketch) {
+      if (!sketchHere) return
+      return context.open({ x: e.x, y: e.y, label: 'Sketch menu', ...sketchViewMenu({ normalTo: () => sketchStore.normalTo(), finish: () => sketchStore.commit(), cancel: askCancelSketch }) })
+    }
+    if (sketch.open || sketch.opening || editingHere !== null || dialog !== null) return
+    const hit = e.hit
+    const part = hit !== null && (hit.kind === 'face' || hit.kind === 'edge') ? hit.part : null
+    // the parts the menu acts on: the selection when it holds the one under the pointer, else that one
+    const selected = [...new Set(picked.items.flatMap((i) => (i.part !== null && (i.kind === 'face' || i.kind === 'edge' || i.kind === 'part' || i.kind === 'vertex') ? [i.part] : [])))]
+    const ids = part === null ? [] : selected.includes(part) && selected.length > 1 ? selected : [part]
+    const parts = ids.flatMap((id) => studio.parts.filter((p) => p.id === id).map((p) => ({ id, hidden: p.hidden })))
+    const key = hit !== null && (hit.kind === 'plane' || hit.kind === 'axis') ? hit.key : null
+    context.open({
+      x: e.x,
+      y: e.y,
+      label: 'View menu',
+      ...studioViewMenu({
+        kind: hit?.kind ?? null,
+        parts,
+        anyHidden: studio.parts.some((p) => p.hidden),
+        partCount: studio.parts.length,
+        readOnly,
+        actions: {
+          newSketch: hit === null ? undefined : () => beginSketch(undefined, [itemOf(hit)]),
+          normalTo: hit === null ? undefined : () => void viewOnScreen()?.normalKey?.(itemOf(hit)),
+          setPartsHidden: (list, hidden) => void sendEach(list.map((p) => ({ op: 'set_part_override', part: p, hidden })), hidden ? 'Could not hide the parts' : 'Could not show the parts'),
+          isolate: (list) => void tabView.toggleIsolate(list),
+          selectPart: (id) => selection.set([partItem(id)]),
+          deletePart: (id) => startTool('delete_part', [{ part: id, kind: 'part' }]),
+          editSketch: () => {
+            const f = hit === null ? undefined : studio.features.find((x) => x.id === hit.part)
+            if (f !== undefined) startEdit(f)
+          },
+          hideSketch: () => hit !== null && hit.part !== null && edits.setFeatureHidden(hit.part, true),
+          // the default planes are the tab's view state; a plane or axis a person made has an eye on the server
+          hidePlane: () => {
+            if (key === null) return
+            if (key in studio.planes) edits.setFeatureHidden(key, true)
+            else if (!viewState.hiddenPlanes.includes(key)) tabView.toggleDefaultPlane(key)
+          },
+          hideAxis: () => key !== null && key in studio.axes && edits.setFeatureHidden(key, true),
+          showAll: () => void visibilityKeys['view.showAll']!(),
+          fit: () => void runViewCommand('fit'),
+          view: (n) => void runViewCommand(n),
+        },
+      }),
+    })
+  }
+  const onAssemblyRowContext = (t: { kind: 'instance'; instance: InstanceEntry } | { kind: 'mate'; mate: { type: string; suppressed: boolean; id: string } }, x: number, y: number) => {
+    if (dialog !== null) return
+    if (t.kind === 'instance') return openInstanceMenu(t.instance, x, y)
+    context.open({ x, y, label: 'Mate menu', ...mateMenu(t.mate, assembly.outputs?.errors[t.mate.id]) })
+  }
   const commands: Commands = {
     'view.planes': () => void visibilityKeys['view.planes']!(),
     ...Object.fromEntries(FILTER_KEYS.map((k) => [`select.${k}`, () => tabView.toggleSelect(k)])),
@@ -735,6 +848,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 selected={selectedInstance(picked.items)}
                 edits={assembly.edits}
                 onSelect={(i) => selection.set([instanceItem(i.id, i.part)])}
+                onContext={onAssemblyRowContext}
                 onCollapsedChange={setCollapsed}
               />
             ) : (
@@ -751,6 +865,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
               onSelectPart={api.selectPart}
               onCollapsedChange={setCollapsed}
               origin={desktop ? { hidden: new Set(viewState.hiddenPlanes), toggle: tabView.toggleDefaultPlane } : undefined}
+              partActions={desktop ? { isolate: (id) => void tabView.toggleIsolate([id]), remove: (id) => startTool('delete_part', [{ part: id, kind: 'part' }]) } : undefined}
             />
             )}
             {editingHere && doc && (
@@ -795,7 +910,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           {/* data-dialog-base: the view draws an open dialog's base model, the one its picks resolve against (a test hook) */}
           <div className="shell-viewport" ref={setViewportEl} data-region="viewport" data-testid="shell-viewport" data-dialog-base={base !== null ? '' : undefined}>
             {tabKind === 'assembly' ? (
-              <AssemblyViewport outputs={assembly.outputs} selection={selection} drag={assembly.edits.drag} visibility={viewState} />
+              <AssemblyViewport outputs={assembly.outputs} selection={selection} drag={assembly.edits.drag} visibility={viewState} onContext={onAssemblyContext} />
             ) : (
               <StudioViewport
                 outputs={drawn}
@@ -804,6 +919,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 tabKind={tabKind}
                 sketch={sketchHere ? sketchStore : null}
                 visibility={viewState}
+                onContext={onStudioContext}
               />
             )}
             <div className="chip-slot" data-testid="chip-slot" data-region="selection-chip">
@@ -829,6 +945,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           />
         )}
         {debug.open && <DebugPopover store={store} version={version} />}
+        {context.node}
         {modal?.kind === 'rename' && (
           <TextPrompt
             title="Rename tab"
@@ -836,6 +953,20 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
             initial={modal.tab.name}
             confirmLabel="Rename"
             onSubmit={(value) => rename(modal.tab, value)}
+            onCancel={closeModal}
+          />
+        )}
+        {modal?.kind === 'renameInstance' && (
+          <TextPrompt
+            title="Rename instance"
+            label="Name"
+            initial={modal.name}
+            confirmLabel="Rename"
+            onSubmit={async (value) => {
+              const problem = await assembly.edits.rename(modal.id, value)
+              if (typeof problem === 'string') return problem
+              setModal(null)
+            }}
             onCancel={closeModal}
           />
         )}

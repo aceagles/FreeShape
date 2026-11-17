@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { ViewContextEvent } from '../selection/aimCommit'
 import { SelectionStore } from '../selection/store'
 import { useMode } from '../shell/mode'
 import type { SketchStore } from '../sketch/store'
@@ -22,6 +23,7 @@ export function Viewport({
   preview = null,
   sketch = null,
   visibility,
+  onContext,
 }: {
   outputs: StudioOutputs | null
   selection?: SelectionStore
@@ -31,6 +33,8 @@ export function Viewport({
   sketch?: SketchStore | null
   /** The tab's visibility settings (P, Shift+P, Shift+I, Shift+T), card I9.8. */
   visibility?: ViewState
+  /** Desktop mode: a right click on the view, or in the open sketch (card I9.10). */
+  onContext?: (e: ViewContextEvent) => void
 }) {
   // a viewport mounted on its own keeps its own selection; the shell passes the one it shares with the chip and the Parts list
   const [own] = useState(() => new SelectionStore())
@@ -86,6 +90,15 @@ export function Viewport({
   useEffect(() => {
     controller.current?.setDesktop(desktop)
   }, [desktop, store, failed])
+
+  // the shell's menu for a right click: held in a ref, so the handler it reads is the latest without re-wiring the view
+  const contextRef = useRef(onContext)
+  useEffect(() => {
+    contextRef.current = onContext
+  })
+  useEffect(() => {
+    controller.current?.setContextHandler((e) => contextRef.current?.(e))
+  }, [store, failed])
 
   // sketch mode follows the store that has the sketch open (after the controller exists: the effect above runs first)
   useEffect(() => {

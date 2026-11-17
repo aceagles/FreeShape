@@ -2,7 +2,9 @@ import { Fragment, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { Icon, paths } from '../shell/icons'
 import { ConfirmDialog } from '../shell/Modal'
-import { useLongPress } from '../shell/longPress'
+import { useContextMenu } from '../shell/Menu'
+import { featureMenu } from '../shell/contextMenus'
+import { useMenuPress } from '../shell/rightClick'
 import { anchorOf, Popover, PopoverItem } from '../shell/Popover'
 import type { Anchor } from '../shell/Popover'
 import { TextPrompt } from '../shell/TextPrompt'
@@ -42,7 +44,7 @@ const DOUBLE_TAP_MS = 400
 /** Sketches, planes and axes have an eye; the other features do not. */
 export const hasEye = (f: FeatureEntry): boolean => f.type === 'sketch' || f.type === 'plane' || f.type === 'axis'
 
-function FeatureButton({ feature, index, indent, selected, rolledBack, slot, canMenu, eyeLocked, onSelect, onEdit, onMenu, onEye }: {
+function FeatureButton({ feature, index, indent, selected, rolledBack, slot, canMenu, eyeLocked, onSelect, onEdit, onMenu, onContext, onEye }: {
   feature: FeatureEntry
   index: number
   indent: boolean
@@ -54,9 +56,11 @@ function FeatureButton({ feature, index, indent, selected, rolledBack, slot, can
   onSelect: () => void
   onEdit?: () => void
   onMenu: (el: HTMLElement) => void
+  onContext: (x: number, y: number) => void
   onEye: () => void
 }) {
-  const press = useLongPress((el) => canMenu && onMenu(el))
+  // Tablet mode: a long press opens the popover; Desktop mode: a right click opens the context menu
+  const press = useMenuPress(canMenu, onMenu, onContext)
   const lastTap = useRef<number | null>(null)
   const state = stateOf(feature, rolledBack)
   const { eye, bind } = useRowEye(feature.hidden)
@@ -275,9 +279,31 @@ export function FeatureList({ outputs, selected, edits, onEdit, onSelect, origin
 
   const open = (f: FeatureEntry, index: number, el: HTMLElement) => setMenu({ feature: f, index, anchor: anchorOf(el) })
   const close = () => setMenu(null)
+  const context = useContextMenu()
+  const openContext = (f: FeatureEntry, index: number, x: number, y: number) =>
+    context.open({
+      x,
+      y,
+      label: `${f.name} menu`,
+      ...featureMenu(f, {
+        index,
+        total,
+        rollback,
+        busy: edits.busy,
+        actions: {
+          edit: onEdit ? () => onEdit(f) : undefined,
+          rename: () => setDialog({ kind: 'rename', feature: f }),
+          setHidden: (hidden) => edits.setFeatureHidden(f.id, hidden),
+          setSuppressed: (value) => edits.setSuppressed(f.id, value),
+          rollTo: (at) => void edits.setRollback(at),
+          remove: () => setDialog({ kind: 'delete', feature: f }),
+        },
+      }),
+    })
 
   return (
     <>
+      {context.node}
       <ul ref={body} className="feature-list" aria-label="Features">
         {origin && ORIGIN_PLANES.map((n) => <OriginRow key={`origin:${n}`} name={n} hidden={origin.hidden.has(n)} onEye={() => origin.toggle(n)} />)}
         {rows.map((row, at) => {
@@ -307,6 +333,7 @@ export function FeatureList({ outputs, selected, edits, onEdit, onSelect, origin
                   onSelect={() => onSelect(row.feature.id)}
                   onEdit={onEdit ? () => onEdit(row.feature) : undefined}
                   onMenu={(el) => open(row.feature, row.index, el)}
+                  onContext={(x, y) => openContext(row.feature, row.index, x, y)}
                 />
               )}
             </Fragment>

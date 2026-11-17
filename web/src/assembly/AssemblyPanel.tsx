@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Icon, paths } from '../shell/icons'
 import { ConfirmDialog } from '../shell/Modal'
 import { useMode } from '../shell/mode'
+import { useRightClick } from '../shell/rightClick'
 import { size } from '../theme/tokens'
 import { cssColor } from '../features/partPalette'
 import type { AssemblyOutputs, InstanceEntry, MateEntry } from '../wire'
@@ -20,19 +21,22 @@ interface Props {
   selected: string | null
   edits: AssemblyEdits
   onSelect: (instance: InstanceEntry) => void
+  /** Desktop mode: a right click on an instance row or a mate row (x, y: where, in window coordinates); the shell opens the menu. */
+  onContext?: (target: { kind: 'instance'; instance: InstanceEntry } | { kind: 'mate'; mate: MateEntry }, x: number, y: number) => void
   onCollapsedChange: (collapsed: boolean) => void
 }
 
 /** Mate types as the desktop spells them in its list ("revolute" -> "Revolute"). */
 const typeLabel = (t: string): string => (t.length === 0 ? t : t[0]!.toUpperCase() + t.slice(1).replace(/_/g, ' '))
 
-function InstanceRow({ inst, error, selected, edits, onSelect }: { inst: InstanceEntry; error: string | undefined; selected: boolean; edits: AssemblyEdits; onSelect: () => void }) {
+function InstanceRow({ inst, error, selected, edits, onSelect, onContext }: { inst: InstanceEntry; error: string | undefined; selected: boolean; edits: AssemblyEdits; onSelect: () => void; onContext: (x: number, y: number) => void }) {
   const state = error !== undefined ? 'failed' : undefined
   const off = edits.disabled || edits.busy
   const eyeOf = useRowEye(inst.hidden)
+  const right = useRightClick(onContext)
   return (
     <li {...eyeOf.bind} className="part-row instance-row" data-instance-row={inst.id} data-hidden={inst.hidden ? '' : undefined} data-fixed={inst.fixed ? '' : undefined} data-selected={selected ? '' : undefined}>
-      <button type="button" className="panel-row part-select" data-instance={inst.id} data-state={state} aria-current={selected ? 'true' : undefined} onClick={onSelect}>
+      <button type="button" className="panel-row part-select" data-instance={inst.id} data-state={state} aria-current={selected ? 'true' : undefined} onClick={onSelect} {...right}>
         <Icon d={paths.cube} px={size.iconSmall} stroke="var(--c-inkSoft)" />
         <span className="row-text">
           <span className="row-name">{inst.name}</span>
@@ -67,11 +71,12 @@ function InstanceRow({ inst, error, selected, edits, onSelect }: { inst: Instanc
   )
 }
 
-function MateRow({ mate, names, error }: { mate: MateEntry; names: ReadonlyMap<string, string>; error: string | undefined }) {
+function MateRow({ mate, names, error, onContext }: { mate: MateEntry; names: ReadonlyMap<string, string>; error: string | undefined; onContext: (x: number, y: number) => void }) {
+  const right = useRightClick(onContext)
   const detail = `${typeLabel(mate.type)}: ${names.get(mate.a) ?? mate.a} and ${names.get(mate.b) ?? mate.b}${mate.suppressed ? ', suppressed' : ''}`
   // Desktop mode shows the name alone (assembly.css); the type and the instances are the row's tooltip there
   return (
-    <li className="mate-row" data-mate-row={mate.id} data-state={error !== undefined ? 'failed' : mate.suppressed ? 'suppressed' : undefined} title={detail}>
+    <li className="mate-row" data-mate-row={mate.id} data-state={error !== undefined ? 'failed' : mate.suppressed ? 'suppressed' : undefined} title={detail} {...right}>
       <span className="row-text">
         <span className="row-name">{mate.name}</span>
         <span className="row-message mate-detail">{detail}</span>
@@ -88,7 +93,7 @@ function MateRow({ mate, names, error }: { mate: MateEntry; names: ReadonlyMap<s
  * Desktop mode (card F18), as the desktop's panel: "Instances (n)" is the title row itself, Delete is a small icon in it
  * (and the Delete key), and a mate row shows its name only.
  */
-export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onSelect, onCollapsedChange }: Props) {
+export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onSelect, onContext, onCollapsedChange }: Props) {
   const [deleting, setDeleting] = useState<InstanceEntry | null>(null)
   const desktop = useMode() === 'desktop'
   if (collapsed) {
@@ -137,7 +142,7 @@ export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onS
             )}
             <ul className="parts-list" aria-labelledby="instances-heading" data-testid="instance-list">
               {outputs.instances.map((inst) => (
-                <InstanceRow key={inst.id} inst={inst} error={errors[inst.id]} selected={inst.id === selected} edits={edits} onSelect={() => onSelect(inst)} />
+                <InstanceRow key={inst.id} inst={inst} error={errors[inst.id]} selected={inst.id === selected} edits={edits} onSelect={() => onSelect(inst)} onContext={(x, y) => onContext?.({ kind: 'instance', instance: inst }, x, y)} />
               ))}
             </ul>
             {!desktop && canDelete && (
@@ -159,7 +164,7 @@ export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onS
             </div>
             <ul className="parts-list" aria-labelledby="mates-heading" data-testid="mate-list">
               {outputs.mates.map((m) => (
-                <MateRow key={m.id} mate={m} names={names} error={errors[m.id]} />
+                <MateRow key={m.id} mate={m} names={names} error={errors[m.id]} onContext={(x, y) => onContext?.({ kind: 'mate', mate: m }, x, y)} />
               ))}
             </ul>
           </>

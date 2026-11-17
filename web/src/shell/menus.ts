@@ -37,6 +37,8 @@ export interface MenuItem {
   items?: readonly MenuEntry[]
   /** Whether the item is on now, when its command is wired. Default: on. */
   enabled?: (state: MenuState) => boolean
+  /** The tooltip of the item while its command is not wired, in place of DESKTOP_ONLY (a context menu's item that waits for a named card). */
+  note?: string
 }
 
 export interface MenuSeparator {

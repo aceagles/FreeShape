@@ -1,3 +1,4 @@
+import type { ViewContextEvent } from '../selection/aimCommit'
 import type { SelectionStore } from '../selection/store'
 import type { SketchStore } from '../sketch/store'
 import type { StudioOutputs } from '../wire'
@@ -18,6 +19,7 @@ export function StudioViewport({
   preview = null,
   sketch = null,
   visibility,
+  onContext,
 }: {
   outputs: StudioOutputs | null
   selection?: SelectionStore
@@ -25,6 +27,8 @@ export function StudioViewport({
   preview?: PreviewLook | null
   sketch?: SketchStore | null
   visibility?: ViewState
+  /** Desktop mode: a right click on the view (card I9.10). */
+  onContext?: (e: ViewContextEvent) => void
 }) {
-  return <Viewport outputs={outputs} selection={selection} tabKind={tabKind} preview={preview} sketch={sketch} visibility={visibility} />
+  return <Viewport outputs={outputs} selection={selection} tabKind={tabKind} preview={preview} sketch={sketch} visibility={visibility} onContext={onContext} />
 }

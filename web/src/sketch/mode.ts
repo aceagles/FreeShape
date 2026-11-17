@@ -36,6 +36,8 @@ export interface SketchHost {
   modelBounds(): Bounds | null
   /** Draw the mouse's selection box (Desktop mode, I9.9), or none with null; without it the sketch draws no box. */
   drawBox?(box: BoxDrag | null): void
+  /** Desktop mode, the mouse: a right click without movement (not on a drawing tool's shape) at a view position; the shell opens the sketch's menu. */
+  onContext?(x: number, y: number): void
 }
 
 /** What `window.__freeshapeViewport.sketch` reports: the state of sketch mode, for tests that look at the page from outside. */
@@ -180,6 +182,10 @@ export class SketchMode {
         else this.store.select(hit)
         if (kind === 'pen') this.store.aim(null)
         this.store.setPreview(null)
+      },
+      // a right click: Desktop mode's sketch menu (Normal to sketch, Finish sketch, Cancel sketch); with a drawing tool on, the shape ends instead (DrawTools.wrap)
+      secondary: (pt: PenPoint) => {
+        if (kind === 'mouse' && p.desktop) this.host.onContext?.(pt.x, pt.y)
       },
       cancel: () => {
         if (kind === 'pen') {

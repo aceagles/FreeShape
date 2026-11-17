@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useShell } from '../shell/ShellContext'
 import { useMode } from '../shell/mode'
+import type { ViewContextEvent } from '../selection/aimCommit'
 import type { SelectionStore } from '../selection/store'
 import type { AssemblyOutputs } from '../wire'
 import type { ViewState } from '../viewport/visibility'
@@ -17,7 +18,7 @@ import type { DragSender } from './gizmo'
  * they change; `selection` is the store the view picks for and draws. The pointer module navigates and the view cube sets
  * the standard views, as in a Part Studio.
  */
-export function AssemblyViewport({ outputs, selection, drag, visibility }: { outputs: AssemblyOutputs | null; selection: SelectionStore; drag?: DragSender; visibility?: ViewState }) {
+export function AssemblyViewport({ outputs, selection, drag, visibility, onContext }: { outputs: AssemblyOutputs | null; selection: SelectionStore; drag?: DragSender; visibility?: ViewState; onContext?: (e: ViewContextEvent) => void }) {
   const shell = useShell()
   const [gizmo, setGizmo] = useState<GizmoShape | null>(null)
   const host = useRef<HTMLDivElement>(null)
@@ -60,6 +61,15 @@ export function AssemblyViewport({ outputs, selection, drag, visibility }: { out
   useEffect(() => {
     controller.current?.setDesktop(desktop)
   }, [desktop, selection, failed])
+
+  // the shell's menu for a right click (card I9.10), through a ref so the handler read is the latest
+  const contextRef = useRef(onContext)
+  useEffect(() => {
+    contextRef.current = onContext
+  })
+  useEffect(() => {
+    controller.current?.setContextHandler((e) => contextRef.current?.(e))
+  }, [selection, failed])
 
   const { openDialog, closeDialog } = shell
   const typeValue = useCallback(() => {

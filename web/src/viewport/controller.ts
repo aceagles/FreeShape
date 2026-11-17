@@ -4,7 +4,7 @@ import { ManipulatorLayer } from '../dialog/manipulator'
 import { PointerModule } from '../input/pointer'
 import type { NavHost } from '../input/pointer'
 import { wireSelection } from '../selection/aimCommit'
-import type { BoxSource } from '../selection/aimCommit'
+import type { BoxSource, ContextSink, ViewContextEvent } from '../selection/aimCommit'
 import { MouseOverlay } from '../selection/mouseOverlay'
 import type { SelectionItem, SelectionStore } from '../selection/store'
 import { BOX_KINDS, studioBoxHits } from './boxSelect'
@@ -184,6 +184,8 @@ export class ViewportController implements NavHost {
   private readonly box: BoxSource
   /** The tab's visibility settings (P, Shift+P, Shift+I, Shift+T): what setOutputs draws by. */
   private vis: ViewState = DEFAULT_VIEW
+  /** Desktop mode's right click (card I9.10): the shell opens a menu for what is under the pointer; coordinates are the window's. */
+  private contextHandler: ((e: ViewContextEvent) => void) | null = null
   /** What setOutputs was last given, so a change of `vis` draws it again. */
   private lastShown: { shown: StudioOutputs; preview: PreviewLook | null } | null = null
 
@@ -200,10 +202,23 @@ export class ViewportController implements NavHost {
     this.box = { hits: (b, filter) => this.boxHits(b, filter), draw: (b) => this.overlay.showBox(b) }
     this.pointer.setCursorHandler((p) => this.overlay.cursor(p))
     this.pointer.setHandleHandler(this.manipulators)
-    wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter), this.box)
+    wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter), this.box, this.contextSink)
     // the store tells us once per real change: an Aim move that lands on the same item never gets here
     this.unsubscribe = selection.subscribe(() => this.drawLook())
     this.report()
+  }
+
+  /** Where the view's own position (x, y) is in the window. */
+  private windowAt(x: number, y: number): { x: number; y: number } {
+    const r = this.canvas.getBoundingClientRect()
+    return { x: r.left + x, y: r.top + y }
+  }
+
+  private readonly contextSink: ContextSink = (hit, p) => this.contextHandler?.({ ...this.windowAt(p.x, p.y), hit, sketch: false })
+
+  /** The shell's answer to a right click on the view (Desktop mode); null takes it away. */
+  setContextHandler(handler: ((e: ViewContextEvent) => void) | null): void {
+    this.contextHandler = handler
   }
 
   /** Desktop or Tablet mode (I9.9): in Desktop mode the mouse toggles on a click, draws a selection box and shows the count badge. */
@@ -248,11 +263,12 @@ export class ViewportController implements NavHost {
           requestRender: () => this.requestRender(),
           modelBounds: () => (this.built?.hasModel ? this.built.bounds : null),
           drawBox: (b) => this.overlay.showBox(b),
+          onContext: (x, y) => this.contextHandler?.({ ...this.windowAt(x, y), hit: null, sketch: true }),
         },
         store,
       )
     } else {
-      wireSelection(this.pointer, this.selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter), this.box)
+      wireSelection(this.pointer, this.selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter), this.box, this.contextSink)
       // the sketch's Drag handles gave up the hook: the drag arrows of a preview take it back
       this.pointer.setHandleHandler(this.manipulators)
     }

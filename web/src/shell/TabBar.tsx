@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import type { TabInfo } from '../net/connection'
 import { Icon, paths } from './icons'
-import { useLongPress } from './longPress'
-import { MenuButton } from './Menu'
+import { MenuButton, useContextMenu } from './Menu'
+import { tabMenu } from './contextMenus'
+import { useMenuPress } from './rightClick'
 import { createMenu } from './menus'
 import type { Commands, MenuState } from './menus'
 import { anchorOf, Popover, PopoverItem } from './Popover'
@@ -26,9 +27,9 @@ interface Props {
 
 type Open = { kind: 'tab'; tab: TabInfo; anchor: Anchor } | { kind: 'add'; anchor: Anchor }
 
-function TabButton({ tab, current, canMenu, icon, onSelect, onMenu }: { tab: TabInfo; current: boolean; canMenu: boolean; icon: boolean; onSelect: () => void; onMenu: (el: HTMLElement) => void }) {
-  // read-only: no menu, as for the feature and part rows (every item would be off)
-  const press = useLongPress((el) => canMenu && onMenu(el))
+function TabButton({ tab, current, canMenu, icon, onSelect, onMenu, onContext }: { tab: TabInfo; current: boolean; canMenu: boolean; icon: boolean; onSelect: () => void; onMenu: (el: HTMLElement) => void; onContext: (x: number, y: number) => void }) {
+  // read-only: no menu, as for the feature and part rows (every item would be off). Tablet: a long press; Desktop: a right click
+  const press = useMenuPress(canMenu, onMenu, onContext)
   return (
     <button
       type="button"
@@ -38,11 +39,6 @@ function TabButton({ tab, current, canMenu, icon, onSelect, onMenu }: { tab: Tab
       data-kind={tab.kind}
       onClick={onSelect}
       {...press}
-      // a right click opens the same menu on a mouse (the press's own handler only keeps the browser's menu away)
-      onContextMenu={(e) => {
-        e.preventDefault()
-        if (canMenu) onMenu(e.currentTarget)
-      }}
     >
       {icon && <Icon d={tab.kind === 'assembly' ? paths.assembly : paths.tab} px={16} sw={1.5} />}
       {tab.name}
@@ -57,6 +53,7 @@ function TabButton({ tab, current, canMenu, icon, onSelect, onMenu }: { tab: Tab
 export function TabBar({ tabs, currentTab, readOnly, onSelect, onAdd, onRename, onDelete, strip }: Props) {
   const [open, setOpen] = useState<Open | null>(null)
   const close = () => setOpen(null)
+  const context = useContextMenu()
   const tabButtons = tabs.map((t) => (
     <TabButton
       key={t.id}
@@ -66,6 +63,7 @@ export function TabBar({ tabs, currentTab, readOnly, onSelect, onAdd, onRename, 
       icon={strip !== undefined}
       onSelect={() => onSelect(t.id)}
       onMenu={(el) => setOpen({ kind: 'tab', tab: t, anchor: anchorOf(el) })}
+      onContext={(x, y) => context.open({ x, y, label: `${t.name} menu`, ...tabMenu({ rename: () => onRename(t), close: () => onDelete(t) }) })}
     />
   ))
   return (
@@ -80,6 +78,7 @@ export function TabBar({ tabs, currentTab, readOnly, onSelect, onAdd, onRename, 
           </div>
         </>
       )}
+      {context.node}
       {strip ? <div className="strip-tabs">{tabButtons}</div> : tabButtons}
       {strip && <div className="strip-gap" />}
       {strip && (

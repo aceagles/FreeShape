@@ -2227,6 +2227,68 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I9.10: Desktop mode, a right click on a face of the bracket: the viewport menu at the pointer, beside the desktop's own
+    name: 'desktop-context-face',
+    mode: 'desktop',
+    desktop: 'desktop-context',
+    steps: async (page) => {
+      await openApp(page)
+      const [face] = await faceSpots(page, page.request, 'mouse')
+      const canvas = (await page.locator('[data-region="viewport"] canvas').first().boundingBox())!
+      await page.mouse.click(canvas.x + face!.x, canvas.y + face!.y, { button: 'right' })
+      await page.getByTestId('context-menu').waitFor()
+    },
+  },
+  {
+    // I9.10: Desktop mode, a right click on the Extrude row: the feature menu with the items the client lacks dimmed
+    name: 'desktop-context-feature',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      await featureRow(page, 'Extrude 1').click({ button: 'right' })
+      await page.getByTestId('context-menu').waitFor()
+    },
+  },
+  {
+    // I9.10: Desktop mode, a right click on a part row (Export stays dimmed, decision d-s11-part-menu)
+    name: 'desktop-context-part',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      await partRow(page, /./).first().click({ button: 'right' })
+      await page.getByTestId('context-menu').waitFor()
+    },
+  },
+  {
+    // I9.10: Desktop mode, a right click on an Assembly instance in the list
+    name: 'desktop-context-instance',
+    mode: 'desktop',
+    desktop: 'desktop-assembly',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await settledAssembly(page)
+      await page.locator('[data-instance="I2"]').click({ button: 'right' })
+      await page.getByTestId('context-menu').waitFor()
+    },
+  },
+  {
+    // I9.10: Desktop mode, a right click in an open sketch: Normal to sketch, Finish sketch, Cancel sketch
+    name: 'desktop-context-sketch',
+    mode: 'desktop',
+    desktop: 'desktop-sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      const canvas = (await page.locator('[data-region="viewport"] canvas').first().boundingBox())!
+      await page.mouse.click(canvas.x + canvas.width * 0.7, canvas.y + canvas.height * 0.6, { button: 'right' })
+      await page.getByTestId('context-menu').waitFor()
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

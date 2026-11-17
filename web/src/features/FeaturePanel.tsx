@@ -26,6 +26,8 @@ interface Props {
   onCollapsedChange: (collapsed: boolean) => void
   /** Desktop mode: the Origin rows of the feature list (see FeatureList). */
   origin?: { hidden: ReadonlySet<string>; toggle: (name: string) => void }
+  /** Desktop mode: what a part's context menu asks of the shell (see PartsList). */
+  partActions?: { isolate: (id: string) => void; remove: (id: string) => void }
 }
 
 /** One icon of the rail. A tap selects it; the actions are in the expanded panel. */
@@ -59,7 +61,7 @@ function emptyText(tabKind: string | null, outputs: StudioOutputs | null): strin
  * The feature panel and its 56 px rail. The body is the open Part Studio's feature list and, under it in the same
  * scrolling body, its Parts list.
  */
-export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, selectedPart, edits, onEdit, onSelect, onSelectPart, onCollapsedChange, origin }: Props) {
+export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, selectedPart, edits, onEdit, onSelect, onSelectPart, onCollapsedChange, origin, partActions }: Props) {
   const empty = emptyText(tabKind, outputs)
   const list = empty === null ? outputs : null
   if (collapsed) {
@@ -92,7 +94,7 @@ export function FeaturePanel({ collapsed, locked, tabKind, outputs, selected, se
       <div className="panel-body" data-testid="panel-body">
         {list ? <FeatureList outputs={list} selected={selected} edits={edits} onEdit={onEdit} onSelect={onSelect} origin={origin} /> : empty && <p className="panel-empty">{empty}</p>}
         <div className="panel-parts-slot" data-testid="parts-slot">
-          {list && <PartsList outputs={list} selected={selectedPart} edits={edits} onSelect={onSelectPart} />}
+          {list && <PartsList outputs={list} selected={selectedPart} edits={edits} onSelect={onSelectPart} partActions={partActions} />}
         </div>
       </div>
     </section>

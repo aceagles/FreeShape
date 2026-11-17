@@ -2,6 +2,7 @@ import { Matrix4, Scene, Vector3, WebGLRenderer } from 'three'
 import { PointerModule } from '../input/pointer'
 import type { NavHost } from '../input/pointer'
 import { wireSelection } from '../selection/aimCommit'
+import type { ViewContextEvent } from '../selection/aimCommit'
 import type { SelectionStore } from '../selection/store'
 import type { AssemblyOutputs } from '../wire'
 import { ViewCamera, STANDARD_VIEWS } from '../viewport/camera'
@@ -86,6 +87,8 @@ export class AssemblyController implements NavHost {
   private readonly unsubscribe: () => void
   /** Desktop mode (I9.9): the selection box and the count badge over the view. */
   private readonly overlay: MouseOverlay
+  /** Desktop mode's right click (card I9.10): the shell opens a menu for what is under the pointer; coordinates are the window's. */
+  private contextHandler: ((e: ViewContextEvent) => void) | null = null
 
   constructor(
     readonly canvas: HTMLCanvasElement,
@@ -115,16 +118,30 @@ export class AssemblyController implements NavHost {
     this.overlay = new MouseOverlay(canvas.parentElement ?? document.body)
     this.pointer.setCursorHandler((p) => this.overlay.cursor(p))
     // a press on a gizmo handle is the handle's (the pointer module asks it first): it moves the instance and draws no box
-    wireSelection(this.pointer, selection, (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter), {
-      hits: (b) => this.boxHits(b),
-      draw: (b) => this.overlay.showBox(b),
-    })
+    wireSelection(
+      this.pointer,
+      selection,
+      (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
+      {
+        hits: (b) => this.boxHits(b),
+        draw: (b) => this.overlay.showBox(b),
+      },
+      (hit, p) => {
+        const r = canvas.getBoundingClientRect()
+        this.contextHandler?.({ x: r.left + p.x, y: r.top + p.y, hit, sketch: false })
+      },
+    )
     this.unsubscribe = selection.subscribe(() => {
       this.overlay.setCount(selection.getState().items.length)
       this.gizmo.refresh()
       this.drawLook()
     })
     this.report()
+  }
+
+  /** The shell's answer to a right click on the view (Desktop mode); null takes it away. */
+  setContextHandler(handler: ((e: ViewContextEvent) => void) | null): void {
+    this.contextHandler = handler
   }
 
   /** Desktop or Tablet mode (I9.9): in Desktop mode the mouse toggles on a click, draws a selection box and shows the count badge. */

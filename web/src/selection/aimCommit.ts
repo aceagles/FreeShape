@@ -1,10 +1,24 @@
 import type { BoxDrag, PenHandler, PenPoint, PointerModule } from '../input/pointer'
-import type { PickFilter, PickHit, PickPointer } from '../viewport/pick'
+import type { PickFilter, PickHit, PickKind, PickPointer } from '../viewport/pick'
 import { itemOf } from './store'
 import type { SelectionItem, SelectionStore } from './store'
 
 /** What is under a view position (CSS pixels from the canvas's top left) for this kind of pointer, or null: `ViewportController.pickAt` without the filter. */
 export type PickFn = (x: number, y: number, pointer: PickPointer, filter: SelectionStore['pickFilter']) => PickHit | null
+
+/** The kinds a right click picks (the desktop's `Viewport.mouseReleaseEvent`: face, edge, region, plane, axis, sketch_line), whatever the Select menu says. */
+export const CONTEXT_KINDS: readonly PickKind[] = ['face', 'edge', 'plane', 'axis', 'region']
+
+/** What a view tells the shell about a right click (Desktop mode, card I9.10): what is under it, or null, and where (view coordinates). */
+export type ContextSink = (hit: PickHit | null, p: PenPoint) => void
+
+/** A right click on a view as the shell gets it: where (the window's coordinates), what is under it, and whether the view is in sketch mode (then `hit` is null). */
+export interface ViewContextEvent {
+  x: number
+  y: number
+  hit: PickHit | null
+  sketch: boolean
+}
 
 /** What a view gives the selection for its box (I9.9): the items a released box takes, and where to draw the box (null: none). */
 export interface BoxSource {
@@ -23,10 +37,11 @@ export interface BoxSource {
  * The second tap of a double tap takes the first one back (the double tap fits the view and selects nothing).
  * Desktop mode (I9.9, `pointer.desktop`): a mouse click toggles the item under it and keeps the rest, a click on empty
  * space clears unless Shift or Ctrl is held, and with `box` a left drag draws a selection box (none while a dialog has the
- * view, as on the desktop). Pen and finger are the same in both modes.
+ * view, as on the desktop). Pen and finger are the same in both modes. With `context`, a right click in Desktop mode reports what is
+ * under it (picked with CONTEXT_KINDS, not the Select menu's filter, as the desktop does).
  * Returns the function that undoes the wiring.
  */
-export function wireSelection(pointer: PointerModule, selection: SelectionStore, pick: PickFn, box?: BoxSource): () => void {
+export function wireSelection(pointer: PointerModule, selection: SelectionStore, pick: PickFn, box?: BoxSource, context?: ContextSink): () => void {
   const itemAt = (x: number, y: number, kind: PickPointer): SelectionItem | null => {
     const hit = pick(x, y, kind, selection.pickFilter)
     return hit ? itemOf(hit) : null
@@ -63,6 +78,8 @@ export function wireSelection(pointer: PointerModule, selection: SelectionStore,
     const item = itemAt(p.x, p.y, 'mouse')
     if (item) selection.doubleClick(item)
   }
+  // a right click without movement (the pointer module's `secondary`; a right drag orbits): Desktop mode asks the shell for a menu
+  if (context) mouse.secondary = (p) => void (pointer.desktop && context(pick(p.x, p.y, 'mouse', CONTEXT_KINDS), p))
   let before: readonly SelectionItem[] | null = null
   pointer.setPenHandler(picking('pen'))
   pointer.setMouseHandler(mouse)

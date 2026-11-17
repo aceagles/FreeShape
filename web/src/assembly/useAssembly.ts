@@ -29,6 +29,8 @@ export interface AssemblyEdits {
   setFixedAll(instances: readonly string[], fixed: boolean): Promise<void>
   /** Delete one instance and the mates on it (delete_instances); resolves false when it failed. */
   deleteInstance(instance: string): Promise<boolean>
+  /** Rename an instance or a mate (rename); resolves with a message in plain words when the server refused (the rename dialog shows it). */
+  rename(id: string, name: string): Promise<string | void>
   /** A drag by a Drag handle: move_begin, move_to (the latest only while one is in flight) and move_end. */
   drag: DragSender
 }
@@ -240,9 +242,23 @@ export function useAssembly({ store, tab, tabKind, readOnly, documentName, onErr
           if (!(await act(fixed ? 'Could not fix the instance' : 'Could not free the instance', { op: 'set_fixed', instance, value: fixed }))) return
         }
       },
+      rename: async (id, name) => {
+        if (mine === null || disabled) return
+        if (inFlight.current) return 'Another change is still being saved. Try again in a moment.'
+        inFlight.current = true
+        setBusy(true)
+        try {
+          await store.edit(mine, { op: 'rename', id, name })
+        } catch (e) {
+          return explainError(e, documentName)
+        } finally {
+          inFlight.current = false
+          setBusy(false)
+        }
+      },
       deleteInstance: (instance) => act('Could not delete the instance', { op: 'delete_instances', ids: [instance] }),
     }),
-    [busy, disabled, act, drag],
+    [busy, disabled, act, drag, store, mine, documentName],
   )
   return { outputs, edits }
 }

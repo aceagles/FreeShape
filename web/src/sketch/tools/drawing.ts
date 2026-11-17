@@ -34,7 +34,7 @@ export interface DrawReport {
   sent: number
 }
 
-const SNAP_TEXT: Record<string, string> = { point: 'Coincident', on: 'On curve', edge: 'On edge' }
+const SNAP_TEXT: Record<string, string> = { point: 'Coincident', mid: 'Midpoint', on: 'On curve', edge: 'On edge' }
 const INFER_TEXT = { H: 'Horizontal', V: 'Vertical' } as const
 
 /** How near (CSS px) a press must be to the last placed point to end the shape there: a mouse is exact, a pen less, a finger least. */

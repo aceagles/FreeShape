@@ -3,8 +3,8 @@ import type { P, ScreenLayout } from '../layout'
 import { segmentDistance, SKETCH_TOLERANCE } from '../pick'
 import type { FrameEdge, SketchData, Uv } from '../wire'
 
-/** What an Aim snapped to: an existing point, a line or circle (by entity id), or a model edge (no id to tie to). */
-export type Snap = { kind: 'point'; id: string } | { kind: 'on'; id: string } | { kind: 'edge' } | null
+/** What an Aim snapped to: an existing point, the middle of a line (by line id), a line or circle (by entity id), or a model edge (no id to tie to). */
+export type Snap = { kind: 'point'; id: string } | { kind: 'mid'; id: string } | { kind: 'on'; id: string } | { kind: 'edge' } | null
 
 /** Where the pen's Aim lands: the sketch point, where that is on screen, what it snapped to and the alignment it found. */
 export interface Aim {
@@ -40,6 +40,29 @@ function pointHit(layout: ScreenLayout, x: number, y: number, reach: number): { 
   for (const p of layout.points) {
     const d = Math.hypot(p.x - x, p.y - y)
     if (d <= reach && (!best || d < best.d)) best = { id: p.id, d }
+  }
+  return best
+}
+
+/**
+ * The middle of the line whose middle is nearest (x, y) on screen within reach, or null (Sketcher._hit_midpoint). Every line offers its
+ * middle: the line being drawn is not an entity yet, and the desktop's callers pass no exclusions.
+ */
+function midpointHit(ctx: SnapContext, x: number, y: number, reach: number): { id: string; uv: Uv } | null {
+  let best: { id: string; uv: Uv } | null = null
+  let bestD = reach
+  for (const [id, e] of Object.entries(ctx.sketch.entities)) {
+    if (e.type !== 'line' || !e.p1 || !e.p2) continue
+    const a = ctx.sketch.points[e.p1]
+    const b = ctx.sketch.points[e.p2]
+    if (!a || !b) continue
+    const uv: Uv = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+    const s = ctx.toView(uv)
+    const d = Math.hypot(s.x - x, s.y - y)
+    if (d < bestD) {
+      bestD = d
+      best = { id, uv }
+    }
   }
   return best
 }
@@ -186,9 +209,11 @@ function edgeHit(ctx: SnapContext, x: number, y: number, reach: number): Uv | nu
 
 /**
  * Where an Aim at (x, y) lands in the sketch, with the snap it found. A port of the desktop's Sketcher.snap for the kinds
- * milestone 1 has (an existing point, a line or circle, the origin, a model edge, level or plumb from `anchor`, the point the
- * shape was started from); tangent, midpoints and alignment with points aimed at earlier are left out. The order is the desktop's:
- * a point wins; then an alignment with the anchor (an existing point at the aligned place still wins over it); then a curve
+ * milestone 1 has (an existing point, the middle of a line, a line or circle, the origin, a model edge, level or plumb from `anchor`,
+ * the point the shape was started from). Left out: tangent (needs a port of Sketcher._tangent_infer and a "tan" snap sent as a tangent
+ * constraint) and alignment with points or midpoints aimed at earlier (needs the client to remember the aimed sources and send a
+ * horizontal or vertical constraint to each; a midpoint source also needs its construction point made first). The order is the desktop's: a point wins; then the middle of a
+ * line (within the point reach; it wins over any alignment, as on the desktop); then an alignment with the anchor (an existing point at the aligned place still wins over it); then a curve
  * (where a level or plumb alignment crosses it, when there is one); then a model edge; else the free point.
  * Null when the view cannot place the pen on the plane (edge on).
  */
@@ -199,6 +224,8 @@ export function snapAim(ctx: SnapContext, x: number, y: number, anchor: Uv | nul
   const done = (uv: Uv, snap: Snap, infer: 'H' | 'V' | null = null, guide: Uv | null = null): Aim => ({ uv, at: ctx.toView(uv), snap, infer, guide })
   const hit = pointHit(ctx.layout, x, y, tol.point)
   if (hit) return done(ctx.sketch.points[hit.id]!, { kind: 'point', id: hit.id })
+  const mid = midpointHit(ctx, x, y, tol.point)
+  if (mid) return done(mid.uv, { kind: 'mid', id: mid.id })
   let uv = raw
   let axis: 'H' | 'V' | null = null
   if (anchor) {

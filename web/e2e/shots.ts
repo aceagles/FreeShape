@@ -2089,6 +2089,29 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // F24: the Line tool aiming at the middle of a line drawn before it: the mark and the "Midpoint" label
+    name: 'sketch-draw-midpoint',
+    mock: 'sketch',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      await chooseWithRing(page, 'line')
+      const a = await screenFor(page, -30, 10)
+      const b = await screenFor(page, 30, 30)
+      await place(page, a)
+      await place(page, b)
+      await place(page, b)
+      await page.waitForFunction(() => (window.__freeshapeViewport?.sketch?.stats.lines ?? 0) >= 1)
+      const mid = await screenFor(page, 0, 20)
+      await sendPointer(page, [
+        { phase: 'down', kind: 'pen', id: 10, x: mid.x + 24, y: mid.y },
+        { phase: 'move', kind: 'pen', id: 10, x: mid.x + 4, y: mid.y - 3 },
+      ])
+      await page.locator('[data-kind="aim"][data-snap="mid"]').waitFor()
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

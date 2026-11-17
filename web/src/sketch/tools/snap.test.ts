@@ -66,3 +66,50 @@ describe('snap order and reach', () => {
     expect(snapAim({ ...ctx, toUv: () => null }, 10, 10, null)).toBeNull()
   })
 })
+
+describe('the middle of a line (F24)', () => {
+  // l1 runs (-20, 10) to (20, 10): its middle (0, 10) has no point. l2 runs (-20, -10) to (20, -10) and has a point at its middle.
+  const sketch: SketchData = {
+    points: { origin: [0, 0], a: [-20, 10], b: [20, 10], c: [-20, -10], d: [20, -10], m: [0, -10] },
+    entities: {
+      l1: { type: 'line', p1: 'a', p2: 'b', construction: false },
+      l2: { type: 'line', p1: 'c', p2: 'd', construction: false },
+    } as SketchData['entities'],
+    constraints: [{ id: 'k1', type: 'midpoint', refs: ['m', 'l2'] }],
+  }
+  const ctx: SnapContext = { sketch, layout: layoutSketch(drawSketch(sketch, statusOf(sketch)), toView), edges: [], toUv, toView, pointer: 'pen' }
+  const mid1 = toView([0, 10])
+
+  it('near the middle it snaps to it, and the pick is constrained to the line', () => {
+    const a = snapAim(ctx, mid1.x + 4, mid1.y + 3, null)!
+    expect(a.snap).toEqual({ kind: 'mid', id: 'l1' })
+    expect(a.uv[0]).toBeCloseTo(0, 9)
+    expect(a.uv[1]).toBeCloseTo(10, 9)
+    expect(snapConstraints('point', [{ uv: a.uv, snap: a.snap }])).toEqual([{ type: 'midpoint', refs: ['$p0', 'l1'] }])
+  })
+  it('an existing point at the middle wins, so none is duplicated', () => {
+    const a = snapAim(ctx, 400 + 2, 300 + 100 + 2, null)!
+    expect(a.snap).toEqual({ kind: 'point', id: 'm' })
+    expect(snapConstraints('point', [{ uv: a.uv, snap: a.snap }])).toEqual([{ type: 'coincident', refs: ['$p0', 'm'] }])
+  })
+  it('wins over an alignment with the anchor', () => {
+    // the anchor is level with the middle: the pen is level with it, and the middle still wins
+    const a = snapAim(ctx, mid1.x + 3, mid1.y, [-30, 10])!
+    expect(a.snap).toEqual({ kind: 'mid', id: 'l1' })
+    expect(a.infer).toBeNull()
+  })
+  it('a line with an end at the anchor still offers its middle', () => {
+    const a = snapAim(ctx, mid1.x + 3, mid1.y + 2, [-20, 10])!
+    expect(a.snap).toEqual({ kind: 'mid', id: 'l1' })
+  })
+  it('away from the middle the snap on the line is unchanged', () => {
+    const a = snapAim(ctx, mid1.x + 60, mid1.y + 3, null)!
+    expect(a.snap).toEqual({ kind: 'on', id: 'l1' })
+    expect(a.uv[1]).toBeCloseTo(10, 9)
+  })
+  it('a mouse reaches 9 px to a middle, no further', () => {
+    const m = { ...ctx, pointer: 'mouse' as const }
+    expect(snapAim(m, mid1.x + 8, mid1.y, null)!.snap).toEqual({ kind: 'mid', id: 'l1' })
+    expect(snapAim(m, mid1.x + 12, mid1.y, null)!.snap).toEqual({ kind: 'on', id: 'l1' })
+  })
+})

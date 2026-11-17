@@ -27,7 +27,7 @@ export interface Constraint {
 
 /**
  * The constraints the snaps of `picks` imply, in the server's words (sketch.add): a pick on an existing point is a coincident
- * with it, a pick on a line or circle is a point_on, and a line whose end was level or plumb with its start is horizontal or
+ * with it, a pick on the middle of a line is a midpoint, a pick on a line or circle is a point_on, and a line whose end was level or plumb with its start is horizontal or
  * vertical. A model edge snap places the point and ties it to nothing (the server's sketch.add has no model reference).
  */
 export function snapConstraints(tool: DrawTool, picks: readonly Pick[]): Constraint[] {
@@ -38,6 +38,7 @@ export function snapConstraints(tool: DrawTool, picks: readonly Pick[]): Constra
     const p = picks[i]!
     if (p.point) continue
     if (p.snap?.kind === 'point') out.push({ type: 'coincident', refs: [`$p${i}`, p.snap.id] })
+    else if (p.snap?.kind === 'mid') out.push({ type: 'midpoint', refs: [`$p${i}`, p.snap.id] })
     else if (p.snap?.kind === 'on') out.push({ type: 'point_on', refs: [`$p${i}`, p.snap.id] })
   }
   if (tool === 'line' && picks.length === 2 && picks[1]!.infer) out.push({ type: picks[1]!.infer === 'H' ? 'horizontal' : 'vertical', refs: ['$e0'] })

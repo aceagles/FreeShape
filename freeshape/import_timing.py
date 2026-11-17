@@ -201,7 +201,10 @@ def write_synthetic(path, copies):
 # ---------------------------------------------------------------------------- the run
 
 def run(out_path, *sources):
+    import faulthandler
     from . import timing
+    if sys.stderr is not None:
+        faulthandler.enable(all_threads=True)       # a crash in a native call still says where it was
     timing.enable()
     tmp = tempfile.mkdtemp(prefix="freeshape-import-timing-")
     os.environ["FREESHAPE_DATA_DIR"] = os.path.join(tmp, "appdata")

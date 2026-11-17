@@ -871,6 +871,22 @@ class Viewport(QOpenGLWidget):
             return (self.SEE_THROUGH_FACE_ALPHA, False, self.SEE_THROUGH_EDGE_ALPHA, True)
         return (1.0, True, 1.0, sketching)
 
+    def _fill_solid_depth(self, face_depth):
+        """See-through faces write no depth, so every edge behind them would draw too (#22). Write the opaque
+        solids' depth, colour off, so the edge batch shows only the edges facing the eye. True if it drew."""
+        b = self._batch
+        if face_depth or b is None or not b["nsolid"] or not b["nedge"]:
+            return False
+        GL.glColorMask(GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE, GL.GL_FALSE)
+        GL.glEnable(GL.GL_POLYGON_OFFSET_FILL)
+        GL.glPolygonOffset(1.0, 1.0)              # as the face pass, so edges on the near face still win
+        self._bind_batch(colors=False)
+        GL.glDrawElements(GL.GL_TRIANGLES, b["nsolid"] * 3, GL.GL_UNSIGNED_INT, self._idx_ptr(0))
+        self._unbind_batch()
+        GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
+        GL.glColorMask(GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE, GL.GL_TRUE)
+        return True
+
     def _draw_scene(self):
         face_alpha, face_depth, edge_alpha, sketch_on_top = self.sketch_view_policy()
         GL.glEnable(GL.GL_DEPTH_TEST)
@@ -964,10 +980,13 @@ class Viewport(QOpenGLWidget):
             GL.glBlendFuncSeparate(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA, GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
 
         # ---- edges (one draw call), then highlighted ones
+        occlude = self._fill_solid_depth(face_depth)
         GL.glLineWidth(1.4)
         GL.glColor4f(*theme.EDGE, edge_alpha)
         if b is not None and b["nedge"]:
             self._draw_edge_batch()
+        if occlude:
+            GL.glClear(GL.GL_DEPTH_BUFFER_BIT)      # back to see-through: nothing after this is hidden by solids
         hl = [pk for pk in list(self.selection) + ([self.hover] if self.hover is not None else []) if pk.kind == "edge"]
         if hl:
             meshes = {pid: m for pid, m, _ in self.parts}
@@ -1688,7 +1707,10 @@ class Viewport(QOpenGLWidget):
                     tt, _ = _ray_tris(o, d, m.verts, m.tris)
                     if tt < best[0]:
                         best = (tt, Pick("region", (fid, ri)))
-            if best[1] is not None and self.cam.view_z_of_t(best[0]) >= face_z - tol_z * 4:
+            # a dialog field that takes regions (Extrude's profiles) sees through bodies to them, as in Onshape:
+            # a region inside or behind a part still wins over the face in front of it
+            through_to_regions = self.select_filter is not None and "region" in self.select_filter
+            if best[1] is not None and (through_to_regions or self.cam.view_z_of_t(best[0]) >= face_z - tol_z * 4):
                 return best[1]
 
         # planes win when they're in front of, or level with, the nearest face

@@ -293,6 +293,13 @@ class MainWindow(QMainWindow):
         self.left_stack.addWidget(self.dwg.panel)
         self.dependencies = DependenciesPanel()                 # I6.3: what this tab uses / what uses it
         self.dependencies.tabRequested.connect(self._open_dependency_tab)
+        # open / closed sections of the left column are remembered between sessions
+        self.dependencies.set_open(str(self.settings.value("panels/dependencies_open", "false")).lower() == "true")
+        self.dependencies.header.toggled.connect(
+            lambda on: self.settings.setValue("panels/dependencies_open", "true" if on else "false"))
+        self.left.parts_header.setChecked(str(self.settings.value("panels/parts_open", "true")).lower() != "false")
+        self.left.parts_header.toggled.connect(
+            lambda on: self.settings.setValue("panels/parts_open", "true" if on else "false"))
         left_col = QWidget()
         lcl = QVBoxLayout(left_col)
         lcl.setContentsMargins(0, 0, 0, 0)

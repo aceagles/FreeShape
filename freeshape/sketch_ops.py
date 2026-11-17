@@ -1026,6 +1026,8 @@ def constraints_for(sk: Sketch, tool: str, picks) -> list:
                     d = np.linalg.norm(sk.P(sk.entities[a]["c"]) - sk.P(sk.entities[b]["c"]))
                     internal = d < max(sk.radius(a), sk.radius(b))
                     val = -1.0 if internal else 1.0
+                if tb == "line":
+                    a, b = b, a                 # stored line first, so the solver always takes it
                 made.append(("tangent", [a, b], val))
     if tool == "normal" and len(picks) == 2:
         a, b = picks

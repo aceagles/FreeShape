@@ -143,6 +143,12 @@ class Sketch:
         self.constraints.append(c)
         return c
 
+    def find_constraint(self, ctype, refs) -> dict | None:
+        """The constraint of this kind already on these references (in any order), or None. A pair holds at
+        most one relation of each kind."""
+        key = sorted(refs)
+        return next((c for c in self.constraints if c["type"] == ctype and sorted(c["refs"]) == key), None)
+
     def entity_points(self, eid) -> list[str]:
         e = self.entities[eid]
         return [e[k] for k in POINT_KEYS if k in e] + list(e.get("pts", ()))
@@ -427,15 +433,19 @@ class Sketch:
                     return [np.linalg.norm(pt(get, e["p1"]) - c) - np.linalg.norm(pt(get, e["p2"]) - c)]
                 eqs.append((None, f, pkeys(e["c"], e["p1"], e["p2"])))
 
+        self._skipped = set()               # constraints that give the solver nothing (bad refs, unsupported pair)
         for c in self.constraints:
             t, R = c["type"], c["refs"]
             v = c.get("value", 0.0)
             try:
                 f, keys = self._make_eq(t, R, v, pt, rad, line_dir, pkeys, ekeys, ents, c)
             except (KeyError, IndexError):
+                self._skipped.add(c["id"])
                 continue
             if f is not None:
                 eqs.append((c["id"], f, keys))
+            else:
+                self._skipped.add(c["id"])
         return eqs
 
     @staticmethod
@@ -536,8 +546,13 @@ class Sketch:
         if t == "tangent":
             a, b = R
             if typ(0) != "line" and typ(1) == "line":
-                a, b = b, a
-            if typ(0) == "line":
+                if ents[a]["type"] == "arc" and {ents[a]["p1"], ents[a]["p2"]} & {ents[b]["p1"], ents[b]["p2"]}:
+                    # an arc ending on the line, stored arc-first: what fillet, slot and offset caps write. Their own
+                    # constraints hold that corner and this has never had an equation; giving it one stalls offset
+                    # caps after a big edit, so it stays as it was. The sketcher stores picked tangents line-first
+                    return None, []
+                a, b = b, a                 # line first, whichever order it was picked in
+            if ents[a]["type"] == "line":
                 l1, l2 = ents[a]["p1"], ents[a]["p2"]
                 cc = ents[b]["c"]
 
@@ -648,7 +663,7 @@ class Sketch:
         variables (e.g. the point being dragged). Returns True if every constraint is met."""
         idx, n = self._layout()
         if n == 0:
-            self.status = {"ok": True, "bad": set(), "free": set(), "dof": 0}
+            self.status = {"ok": True, "bad": set(), "free": set(), "dof": 0, "skipped": set()}
             return True
         eqs = self._equations()
         x = self._get_x(idx, n)
@@ -732,7 +747,7 @@ class Sketch:
                         free.add(kk)
         else:
             free = {k for (k, _) in idx}
-        self.status = {"ok": not bad, "bad": bad, "free": free, "dof": dof}
+        self.status = {"ok": not bad, "bad": bad, "free": free, "dof": dof, "skipped": set(self._skipped)}
         return not bad
 
     def is_entity_free(self, eid) -> bool:

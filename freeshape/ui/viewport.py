@@ -265,6 +265,25 @@ class Viewport(QOpenGLWidget):
             self._mesh_cache.clear()
         self._mesh_cache[(kind, hash(shape))] = (shape, mesh)
 
+    def forget_meshes(self, shapes, keep=()):
+        """Drop the cached meshes of `shapes` (a closed tab's) and the shapes the caches hold with them, except
+        those of `keep` (other open tabs) and of the scene shown now. Without this a closed tab's model stays in
+        the caches until they overflow (#63)."""
+        def unplaced(s):
+            return s.Located(K.TopLoc_Location()) if not s.Location().IsIdentity() else s
+        keep = [s for s in keep if s is not None] + [s for s in self.part_shapes.values() if s is not None]
+        keep_h = {hash(s) for s in keep}
+        drop_h = {hash(s) for s in shapes if s is not None} - keep_h
+        gone = set()
+        for key in [k for k in self._mesh_cache if k[1] in drop_h]:
+            gone.add(id(self._mesh_cache.pop(key)[1]))
+        for key in [k for k, hit in self._placed_cache.items() if id(hit[0]) in gone]:
+            del self._placed_cache[key]
+        keep_b = {hash(unplaced(s)) for s in keep}
+        drop_b = {hash(unplaced(s)) for s in shapes if s is not None} - keep_b
+        for key in [k for k in self._base_meshes if k[0] in drop_b]:
+            del self._base_meshes[key]
+
     def placed_mesh(self, local_shape, M):
         """Mesh of a part placed by a 4x4 transform (assemblies): the part is tessellated once in its own
         coordinates and only the vertices move, so dragging stays fast."""

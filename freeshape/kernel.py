@@ -455,6 +455,21 @@ def volume(shape) -> float:
     return v
 
 
+def forget_volumes(shapes, keep=()):
+    """Drop the cached volumes of `shapes` (a closed tab's) and the shapes the cache holds with them, except
+    those of `keep`."""
+    if not _VOLUME_CACHE:
+        return
+    keep_h = {hash(s) for s in keep if s is not None}
+    for s in shapes:
+        if s is None or hash(s) in keep_h:
+            continue
+        for k in {hash(s), hash(_solids_only(s))} if solids(s) else ():
+            hit = _VOLUME_CACHE.get(k)
+            if hit is not None and hash(hit[0]) not in keep_h:
+                del _VOLUME_CACHE[k]
+
+
 def rough_volume(shape) -> float:
     """Volume to about 1% — fast even on thread surfaces. For sanity checks only."""
     g = GProp_GProps()

@@ -13,7 +13,9 @@ held at once (sampled), `window_peak_mb` the window's own, `worker_peak_mb` the 
 `window_steady_mb` and `worker_steady_mb` are what the window and the tab's engine worker hold once the import has
 settled: the window keeps handling events for 30 s (FREESHAPE_STEADY_WAIT seconds, if set), then each process runs
 gc and memtrim.release_memory() and reads its own memory. Run with FREESHAPE_NO_MEMTRIM=1 to see them without the
-release. Used by the Windows test build on GitHub (.github/workflows/mac.yml); from source:
+release. Then the tab is closed: `after_close_mb` is what the window holds once that has settled (5 s at most), read
+the same way, and `idle_mb` what it held before the first import; the two should be close (#63). Used by the Windows
+test build on GitHub (.github/workflows/mac.yml); from source:
 python -m freeshape --import-timing out.txt synthetic:400
 """
 import math
@@ -247,6 +249,8 @@ def run(out_path, *sources, steady_wait=None):
     w.settings = QSettings(os.path.join(tmp, "settings.ini"), QSettings.IniFormat)
     w.show()
     app.processEvents()
+    _settle_wait(app, min(steady_wait, 5))
+    idle = steady_mb()[1]
     for src in sources:
         try:
             path = src
@@ -279,10 +283,16 @@ def run(out_path, *sources, steady_wait=None):
             if w.studio_engine is not None and w.studio_engine.attached(w.doc):
                 worker_steady = w.studio_engine.in_engine(
                     w.doc, lambda eng, tab: eng.run_in_worker(tab, steady_mb))[1]
+            w.close_tab(w._tab_index(w.doc))           # what the window keeps of a closed tab (#63)
+            if w.studio_engine is not None:
+                w.studio_engine.settle(60)
+            _settle_wait(app, min(steady_wait, 5))
+            after_close = steady_mb()[1]
             lines.append(f"RESULT {src} file_mb={mb:.1f} parts={n} total={total:.1f} "
                          f"longest_freeze={gaps['max']:.2f} peak_mb={mem.peak:.0f} "
                          f"window_peak_mb={mem.window_peak:.0f} worker_peak_mb={mem.other_peak:.0f} "
                          f"window_steady_mb={window_steady:.0f} worker_steady_mb={worker_steady:.0f} "
+                         f"after_close_mb={after_close:.0f} idle_mb={idle:.0f} "
                          f"settled={settled}" + (f" error={err}" if err else ""))
             ok = ok and settled and not err
         except Exception as e:      # noqa: BLE001

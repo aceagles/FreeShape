@@ -344,6 +344,7 @@ class StudioEngine(QObject):
     def _drop(self, rec):
         rec.alive = False
         rec.doc.__dict__.pop("rebuild", None)
+        self.live.forget(rec.doc)
         self._pool.submit(self._close_tab, rec)
 
     def _close_tab(self, rec):
@@ -984,6 +985,14 @@ class LiveTabs:
                     w.status.showMessage(f"Could not refresh “{d.name}”: {e}", 8000)
 
     # ------------------------------------------------------------------ what is displayed
+    def forget(self, doc):
+        """A tab closed: drop its shapes' hashes and with them the shapes this map holds (#63)."""
+        st = getattr(doc, "state", None)
+        for p in (st.parts.values() if st is not None else ()):
+            hit = self._hashes.get(id(p.shape))
+            if hit is not None and hit[0] is p.shape:
+                del self._hashes[id(p.shape)]
+
     def hash_of(self, shape):
         hit = self._hashes.get(id(shape))
         if hit is None or hit[0] is not shape:

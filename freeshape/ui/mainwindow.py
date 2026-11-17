@@ -4533,6 +4533,7 @@ class MainWindow(QMainWindow):
         self._leave_modes()
         if not self._confirm_discard(doc):
             return
+        drawn = self._tab_shapes(doc)
         if self.tabs.count() == 1:
             self._add_tab(self._new_document())        # always keep one tab open
             i = self._tab_index(doc)
@@ -4541,8 +4542,34 @@ class MainWindow(QMainWindow):
         self._drop_autosave(self.docs.get(key))
         self.docs.pop(key, None)
         self._views.pop(key, None)
+        self._forget_closed_tab(doc, key, drawn)
         if self.studio_engine is not None:
             self.studio_engine.prune()
+
+    def _tab_shapes(self, doc):
+        """The shapes a Part Studio tab put in the window's caches: its parts and sketch regions, and what the
+        3D view draws for it (a flat pattern, say) when it is the tab shown."""
+        if getattr(doc, "kind", None) != "studio" or doc.state is None:
+            return []
+        out = [p.shape for p in doc.state.parts.values()]
+        out += [f for sr in doc.state.sketches.values() for f in (getattr(sr, "regions", None) or ())]
+        if doc is self.doc and not self.is_asm and not self.is_dwg:
+            out += list(self.viewport.part_shapes.values())
+        return out
+
+    def _forget_closed_tab(self, doc, key, shapes):
+        """Let go of what the window keeps of a closed tab besides self.docs (#63): the studio state drawn last
+        (`_shown`, which an Assembly or Drawing shown next does not replace), a sketch parked in it, and the
+        meshes and volumes cached for its shapes."""
+        if self._shown is not None and self._shown[0] is doc:
+            self._shown = None
+        parked = self._parked.pop(key, None)
+        if parked is not None:
+            parked["dialog"].deleteLater()
+        if shapes:
+            keep = [s for d in self.docs.values() if d is not doc for s in self._tab_shapes(d)]
+            self.viewport.forget_meshes(shapes, keep)
+            K.forget_volumes(shapes, keep)
 
     def _rename_tab(self, i):
         if i < 0:

@@ -22,9 +22,9 @@ export const FLOAT = { left: 12, top: 12, width: 300 } as const
 /**
  * The dialog area. Tablet mode: it covers the feature panel exactly (the panel column's own box, so the viewport never
  * changes width). Desktop mode: it floats over the viewport at its top left (12, 12), 300 px wide, and the left column stays
- * visible and usable beside it. It is empty; feature dialogs (S3), the pad (S5) and the rest fill `children`. Opened through useShell().
+ * visible and usable beside it (`width` widens a floating one: the file explorer). It is empty; feature dialogs (S3), the pad (S5) and the rest fill `children`. Opened through useShell().
  */
-export function DialogArea({ title, onClose, actions, children }: { title: string; onClose: () => void; actions?: ReactNode; children?: ReactNode }) {
+export function DialogArea({ title, onClose, actions, children, width }: { title: string; onClose: () => void; actions?: ReactNode; children?: ReactNode; width?: number }) {
   const [dock, setDock] = useState<HTMLElement | null>(null)
   const host = useContext(HostContext)
   const floating = useMode() === 'desktop' && host !== null
@@ -34,7 +34,7 @@ export function DialogArea({ title, onClose, actions, children }: { title: strin
       data-region="dialog"
       role="dialog"
       aria-label={title || 'Dialog'}
-      style={floating ? { left: FLOAT.left, top: FLOAT.top, width: FLOAT.width } : undefined}
+      style={floating ? { left: FLOAT.left, top: FLOAT.top, width: width ?? FLOAT.width } : undefined}
     >
       <div className="dialog-header">
         <div className="dialog-title">{title}</div>

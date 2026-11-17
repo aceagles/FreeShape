@@ -2371,6 +2371,100 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I11.7: Tablet mode, the strip's Import: the file explorer over the left column, a folder open and an entry chosen
+    name: 'explorer-add',
+    mock: 'dialog',
+    steps: async (page) => {
+      await (await import('./support/library.ts')).mockLibrary(page)
+      await openApp(page)
+      await page.locator('.tool-strip').getByRole('button', { name: /^Create/ }).click()
+      await page.getByRole('menuitem', { name: /^Import/ }).click()
+      const explorer = page.getByRole('dialog', { name: 'Files' })
+      await explorer.getByRole('button', { name: /^bearings/ }).click()
+      await explorer.getByRole('button', { name: /skate-608/ }).click()
+      await explorer.getByTestId('ex-detail').waitFor()
+      await settled(page)
+    },
+  },
+  {
+    // I11.7: Tablet mode, the part added: the status line says Imported <name>
+    name: 'explorer-imported',
+    mock: 'dialog',
+    steps: async (page) => {
+      await (await import('./support/library.ts')).mockLibrary(page)
+      await openApp(page)
+      await page.locator('.tool-strip').getByRole('button', { name: /^Create/ }).click()
+      await page.getByRole('menuitem', { name: /^Import/ }).click()
+      const explorer = page.getByRole('dialog', { name: 'Files' })
+      await explorer.getByRole('button', { name: /^fasteners/ }).click()
+      await explorer.getByRole('button', { name: /m3-nut-block/ }).click()
+      await explorer.getByRole('button', { name: 'Add to this Part Studio' }).click()
+      await explorer.getByTestId('ex-status').filter({ hasText: 'Imported m3-nut-block' }).waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I11.7: Tablet mode, a search typed in the prompt that Tablet mode uses for text, as a tab's name is
+    name: 'explorer-search',
+    mock: 'dialog',
+    steps: async (page) => {
+      await (await import('./support/library.ts')).mockLibrary(page)
+      await openApp(page)
+      await page.locator('.tool-strip').getByRole('button', { name: /^Create/ }).click()
+      await page.getByRole('menuitem', { name: /^Import/ }).click()
+      await page.getByRole('dialog', { name: 'Files' }).getByRole('button', { name: 'Search', exact: true }).click()
+      await page.getByRole('dialog', { name: 'Search' }).getByRole('textbox').fill('skate')
+      await page.getByRole('dialog', { name: 'Search' }).waitFor()
+    },
+  },
+  {
+    // I11.7: Tablet mode, the home screen's Files button: the explorer in browse mode over the Documents
+    name: 'explorer-home',
+    mock: null,
+    steps: async (page) => {
+      await (await import('./support/library.ts')).mockLibrary(page)
+      await closeAllDiscard(page)
+      await page.goto('/')
+      await page.getByRole('button', { name: 'Files', exact: true }).click()
+      const explorer = page.getByRole('dialog', { name: 'Files' })
+      await explorer.getByRole('button', { name: /^fasteners/ }).click()
+      await explorer.getByRole('button', { name: /m3-nut-block/ }).click()
+      await explorer.getByTestId('ex-detail').waitFor()
+    },
+  },
+  {
+    // I11.7: Desktop mode, Ctrl+Shift+L: the explorer floating over the view, a search typed in the box, an entry chosen
+    name: 'desktop-explorer',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await (await import('./support/library.ts')).mockLibrary(page)
+      await openApp(page)
+      await page.keyboard.press('Control+Shift+L')
+      const explorer = page.getByRole('dialog', { name: 'Files' })
+      await explorer.getByRole('textbox', { name: 'Search' }).fill('skate')
+      await explorer.getByRole('button', { name: /skate-608/ }).click()
+      await explorer.getByTestId('ex-detail').waitFor()
+      await settled(page)
+    },
+  },
+  {
+    // I11.7: Desktop mode, the explorer on its Documents root
+    name: 'desktop-explorer-documents',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await (await import('./support/library.ts')).mockLibrary(page)
+      await openApp(page)
+      await page.keyboard.press('Control+Shift+L')
+      const explorer = page.getByRole('dialog', { name: 'Files' })
+      await explorer.getByRole('navigation', { name: 'Roots' }).getByRole('button', { name: /^Documents/ }).click()
+      await explorer.getByRole('button', { name: /^Hinge/ }).waitFor()
+      await settled(page)
+    },
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

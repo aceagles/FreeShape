@@ -31,7 +31,7 @@ export const FEATURE_STRIP: readonly StripDef[] = [
     key: 'create',
     name: 'Create',
     gap: space.s10,
-    tools: [t('extrude', 'Extrude'), t('revolve', 'Revolve'), t('sweep', 'Sweep'), t('rib', 'Rib'), t('loft', 'Loft'), t('boundary_surface', 'Boundary surface')],
+    tools: [t('extrude', 'Extrude'), t('revolve', 'Revolve'), t('sweep', 'Sweep'), t('rib', 'Rib'), t('loft', 'Loft'), t('boundary_surface', 'Boundary surface'), t('import', 'Import')],
   },
   {
     kind: 'group',

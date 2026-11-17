@@ -157,3 +157,13 @@
   background: var(--c-selected);
   color: var(--c-ink);
 }
+
+/* The file explorer over the home screen (card I11.7): everything under the top bar */
+.home-explorer {
+  position: fixed;
+  top: var(--top-bar);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 4;
+}

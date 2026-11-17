@@ -124,6 +124,7 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
     'document.newAssembly': menu('document.newAssembly'),
     'document.closeTab': menu('document.closeTab'),
     'document.open': menu('document.open'),
+    'document.library': menu('document.library'),
     'palette.open': () => {
       c.openPalette()
       return true

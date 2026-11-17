@@ -1,4 +1,5 @@
 import { ApiError, json, request, tabPath } from '../net/api'
+import type { TabInfo } from '../net/connection'
 
 /** The STL resolution presets of the desktop's STL dialog (freeshape/export_options.py PRESETS), then Custom. */
 export type ExportPreset = 'coarse' | 'medium' | 'fine' | 'custom'
@@ -42,14 +43,99 @@ export interface ExportRoot {
   max_bytes: number
 }
 
+/** A read-only file root the server lists (GET /files, I11.2): `files` is how many STEP files its index holds, `max_upload` the largest the server imports. */
+export interface FileRoot {
+  name: string
+  files: number
+  max_upload: number
+}
+
+/** The reply of GET /files: the read-only roots to browse and the export roots to save into. */
+export interface FilesReply {
+  roots: FileRoot[]
+  export_roots: ExportRoot[]
+}
+
+/** The one GET /files: both the explorer (roots) and the Export dialog (export roots) read their part of it. A server that cannot say gives an error. */
+export async function fetchFiles(): Promise<FilesReply> {
+  const r = await json<{ roots?: FileRoot[]; export_roots?: ExportRoot[] }>('GET', '/files')
+  return {
+    roots: Array.isArray(r.roots) ? r.roots.filter((x) => typeof x?.name === 'string') : [],
+    export_roots: Array.isArray(r.export_roots) ? r.export_roots.filter((x) => typeof x?.name === 'string') : [],
+  }
+}
+
 /** The export roots the server was started with; none when it has none or cannot be asked. */
 export async function fetchExportRoots(): Promise<ExportRoot[]> {
   try {
-    const r = await json<{ export_roots?: ExportRoot[] }>('GET', '/files')
-    return Array.isArray(r.export_roots) ? r.export_roots.filter((x) => typeof x?.name === 'string') : []
+    return (await fetchFiles()).export_roots
   } catch {
     return []
   }
+}
+
+/** A sub-folder of a file root's folder (`path` is what `dir` takes). */
+export interface FolderRef {
+  name: string
+  path: string
+  files: number
+}
+
+/** One STEP file of a root, as the root's index and manifest.csv give it: `licence`, `authors` and `url` are null when the manifest says nothing. */
+export interface FileEntry {
+  id: string
+  name: string
+  file: string
+  path: string
+  size: number
+  description: string
+  tags: string[]
+  licence: string | null
+  authors: string | null
+  url: string | null
+}
+
+/** The reply of GET /files/<root>: one folder's sub-folders and one page of its entries, or the page of a search. */
+export interface FolderReply {
+  root: string
+  dir: string
+  q: string
+  dirs: FolderRef[]
+  entries: FileEntry[]
+  total: number
+  offset: number
+  limit: number
+}
+
+/** How many entries the explorer asks for at a time (the server's default page). */
+export const PAGE_SIZE = 200
+
+/** One folder of a root: `dir` ('' is the root's top), a search `q` (below `dir`), and the page from `offset`. */
+export function fetchFolder(root: string, o: { dir?: string; q?: string; offset?: number; limit?: number; signal?: AbortSignal } = {}): Promise<FolderReply> {
+  const q = new URLSearchParams()
+  if (o.dir !== undefined && o.dir !== '') q.set('dir', o.dir)
+  if (o.q !== undefined && o.q !== '') q.set('q', o.q)
+  if (o.offset !== undefined && o.offset > 0) q.set('offset', String(o.offset))
+  q.set('limit', String(o.limit ?? PAGE_SIZE))
+  return json<FolderReply>('GET', `/files/${encodeURIComponent(root)}?${q.toString()}`, { signal: o.signal })
+}
+
+/** What the import route answers (I11.1): the tab the file went into, the feature made (`error` is why it did not build) and the tab list. */
+export interface ImportReply {
+  document: string
+  tab: { id: string; name: string }
+  feature: { id: string; name: string; error: string | null } | null
+  parts: Array<{ id: string; name: string }>
+  tabs: TabInfo[]
+}
+
+/**
+ * Imports a file root's entry (I11.2): the body is {root, entry} and nothing else, as the server takes it. `newTab` makes a new
+ * Part Studio named after the file (new_tab=1) instead of adding to `tab`. A refusal is an ApiError (404 gone, 409 changed on disk,
+ * 413 too big, 415 not STEP or BREP, 423 read-only).
+ */
+export function importEntry(doc: string, tab: string, root: string, entry: string, newTab: boolean): Promise<ImportReply> {
+  return json<ImportReply>('POST', `${tabPath(doc, tab)}/import${newTab ? '?new_tab=1' : ''}`, { body: { root, entry } })
 }
 
 /** Where an export goes: the browser's download, or a file saved into a server folder (`replace` lets it take the place of one of that name). */

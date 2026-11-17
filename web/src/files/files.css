@@ -47,3 +47,335 @@
   color: var(--c-accent);
   font: inherit;
 }
+
+/* The file explorer (I11.7): roots, a breadcrumb, a search box, a list of folders and entries, and the chosen entry's detail.
+   Tablet mode keeps 44 px rows; Desktop mode uses the desktop's denser rows. A narrow placement (over the 280 px left column)
+   lays the roots out as a row above the list; a wide one (floating over the view, or the home screen) has them in a column. */
+.explorer {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  gap: var(--sp-10);
+  outline: none;
+}
+.explorer[data-placement='column'] {
+  flex-direction: column;
+}
+.explorer[data-placement='float'] {
+  flex: none;
+  height: min(500px, calc(100vh - 220px));
+}
+.ex-roots {
+  flex: none;
+  display: flex;
+  gap: var(--sp-4);
+}
+.explorer[data-placement='column'] .ex-roots {
+  overflow-x: auto;
+  padding-bottom: var(--sp-2);
+}
+.explorer:not([data-placement='column']) .ex-roots {
+  flex-direction: column;
+  width: 150px;
+  overflow-y: auto;
+  padding-right: var(--sp-10);
+  border-right: 1px solid var(--c-lineSoft);
+}
+.ex-root {
+  flex: none;
+  min-height: var(--touch);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: 0 var(--sp-10);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-inkSoft);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ex-root[aria-current='true'] {
+  border-color: var(--c-accentLine);
+  background: var(--c-accentSoft);
+  color: var(--c-accentDark);
+}
+.ex-root-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ex-root-count {
+  color: var(--c-muted);
+  font-size: var(--fs-small);
+}
+.ex-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+.ex-crumbs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.ex-crumb-part {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.ex-crumb {
+  max-width: 160px;
+  min-height: var(--touch);
+  padding: 0 var(--sp-6);
+  border: 0;
+  background: transparent;
+  color: var(--c-accentDark);
+  font: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ex-crumb[aria-current='location'] {
+  color: var(--c-ink);
+  font-weight: 600;
+}
+.ex-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-height: var(--touch);
+  box-sizing: border-box;
+  padding: 0 var(--sp-8) 0 var(--sp-10);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+}
+.ex-search-input,
+.ex-search-button {
+  flex: 1;
+  min-width: 0;
+  min-height: calc(var(--touch) - 2px);
+  border: 0;
+  background: transparent;
+  color: var(--c-ink);
+  font: inherit;
+  outline: none;
+}
+.ex-search-button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  text-align: left;
+  cursor: pointer;
+}
+.ex-search-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ex-search-text[data-empty] {
+  color: var(--c-muted);
+}
+.ex-clear {
+  flex: none;
+  min-width: var(--touch);
+  min-height: var(--touch);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 calc(var(--sp-8) * -1) 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+}
+.ex-count {
+  flex: none;
+  color: var(--c-muted);
+  font-size: var(--fs-small);
+}
+.ex-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--c-lineSoft);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+}
+.ex-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ex-row {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--touch);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-10);
+  padding: var(--sp-4) var(--sp-10);
+  border: 0;
+  border-bottom: 1px solid var(--c-lineSoft);
+  background: transparent;
+  color: var(--c-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ex-row:disabled {
+  color: var(--c-muted);
+  cursor: default;
+}
+.ex-row[aria-current='true'] {
+  background: var(--c-accentSoft);
+  box-shadow: inset 3px 0 0 var(--c-accent);
+}
+.ex-row-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ex-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ex-meta {
+  min-width: 0;
+  display: flex;
+  gap: var(--sp-8);
+  color: var(--c-muted);
+  font-size: var(--fs-small);
+  white-space: nowrap;
+}
+.ex-meta > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ex-meta > .ex-folder-name {
+  flex: 0 1 auto;
+}
+.ex-meta > .ex-licence {
+  flex: 0 1 auto;
+}
+.ex-note {
+  margin: 0;
+  padding: var(--sp-12);
+  color: var(--c-muted);
+  list-style: none;
+}
+.ex-link {
+  border: 0;
+  background: transparent;
+  color: var(--c-accentDark);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ex-detail {
+  flex: none;
+  max-height: 40%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-8) var(--sp-10);
+  border: 1px solid var(--c-accentLine);
+  border-radius: var(--r-sm);
+  background: var(--c-accentSoft);
+}
+.ex-detail-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ex-detail-line {
+  color: var(--c-inkSoft);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.ex-detail-line a {
+  color: var(--c-accentDark);
+}
+.ex-why {
+  color: var(--c-muted);
+}
+.ex-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin-top: var(--sp-6);
+}
+.ex-action {
+  flex: 1 1 auto;
+  min-height: var(--touch);
+  padding: 0 var(--sp-12);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font: inherit;
+  cursor: pointer;
+}
+.ex-action[data-kind='primary'] {
+  border-color: var(--c-accentDark);
+  background: var(--c-accent);
+  color: var(--c-white);
+  font-weight: 600;
+}
+.ex-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ex-status {
+  flex: none;
+  padding: var(--sp-6) var(--sp-10);
+  border-radius: var(--r-sm);
+  background: var(--c-surface);
+  color: var(--c-ink);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.ex-status[data-kind='error'] {
+  color: var(--c-danger);
+}
+.ex-status[data-kind='ok'] {
+  color: var(--c-ok);
+}
+
+/* Desktop mode: the desktop's rows (about 28 px) and a 13 px type, since a mouse needs no 44 px targets */
+.explorer[data-mode='desktop'] .ex-root,
+.explorer[data-mode='desktop'] .ex-crumb,
+.explorer[data-mode='desktop'] .ex-search,
+.explorer[data-mode='desktop'] .ex-clear,
+.explorer[data-mode='desktop'] .ex-action {
+  min-height: 30px;
+}
+.explorer[data-mode='desktop'] .ex-search-input {
+  min-height: 28px;
+}
+.explorer[data-mode='desktop'] .ex-clear {
+  min-width: 28px;
+}
+.explorer[data-mode='desktop'] .ex-row {
+  min-height: 36px;
+}

@@ -8,8 +8,10 @@ import { PadDemo, padResult } from '../pad/PadDemo'
 import type { PadDemoOptions, PadResult } from '../pad/PadDemo'
 import { FeatureDialog } from '../dialog/FeatureDialog'
 import { ExportDialog } from '../files/ExportDialog'
+import { Explorer } from '../files/Explorer'
+import type { ExplorerMode } from '../files/Explorer'
 import { SavedNote } from '../files/SavedNote'
-import type { ExportFormat, ExportResult } from '../files/filesApi'
+import type { ExportFormat, ExportResult, ImportReply } from '../files/filesApi'
 import type { PreviewState } from '../dialog/useFeatureDialog'
 import { AssemblyPanel } from '../assembly/AssemblyPanel'
 import { AssemblyViewport } from '../assembly/AssemblyViewport'
@@ -106,7 +108,7 @@ type Modal =
   | { kind: 'rename'; tab: TabInfo }
   | { kind: 'renameInstance'; id: string; name: string }
   | { kind: 'delete'; tab: TabInfo }
-  | { kind: 'leave' }
+  | { kind: 'leave'; next?: { id: string; name: string } }
   | { kind: 'takeover' }
   | { kind: 'plane' }
   | { kind: 'shortcuts' }
@@ -149,7 +151,8 @@ interface ShellProps {
   store: ConnectionStore
   documentId: string
   version?: string
-  onLeave: () => void
+  /** Close this Document and go home; `next` is a Document to open there, which the explorer's Documents root asks for. */
+  onLeave: (next?: { id: string; name: string }) => void
 }
 
 function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
@@ -169,6 +172,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const [exporting, setExporting] = useState<{ tab: string; format?: ExportFormat } | null>(null)
   // the tab whose Insert panel is open (card I10.1)
   const [inserting, setInserting] = useState<string | null>(null)
+  // the file explorer (I11.7): the Component library and the two imports; the mode says which button of an entry leads
+  const [exploring, setExploring] = useState<ExplorerMode | null>(null)
   // where a saved export went (I11.14): a note until it is dismissed or the next export
   const [savedNote, setSavedNote] = useState<string | null>(null)
   const dismissSaved = useCallback(() => setSavedNote(null), [])
@@ -284,7 +289,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         setDialog({ title, content, actions })
       },
       closeDialog: () => setDialog(null),
-      dialogOpen: dialog !== null || editing !== null || exporting !== null,
+      dialogOpen: dialog !== null || editing !== null || exporting !== null || exploring !== null,
       panelCollapsed: collapsed,
       setPanelCollapsed: setCollapsed,
       selectedFeature,
@@ -299,7 +304,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
       },
       selection,
     }),
-    [mode, dialog, editing, exporting, collapsed, selectedFeature, selectedPart, currentTab, selection],
+    [mode, dialog, editing, exporting, exploring, collapsed, selectedFeature, selectedPart, currentTab, selection],
   )
   // the dialog area closed under the Dimension pad (its close button): the dimension is given up
   useEffect(() => {
@@ -344,6 +349,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
       }
       setCollapsed(false)
       setExporting(null)
+      setExploring(null)
       setPreview(null)
       setDialogBase(null)
       setHoldUntil(null)
@@ -375,6 +381,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
       if (currentTab === null || tabKind !== 'studio' || editing !== null || dialog !== null) return
       setCollapsed(false)
       setExporting(null)
+      setExploring(null)
       setPreview(null)
       setHoldUntil(null)
       setEditing({ tab: currentTab, id: '', name: toolTypes?.get(type)?.label ?? type, create: { type, picks: withPicks ?? picks } })
@@ -479,7 +486,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     }
   }
   /** Close the Document on the server and go home. A server over one Document keeps it open (409): leave anyway. */
-  const leave = async (discard = false) => {
+  const leave = async (discard = false, next?: { id: string; name: string }) => {
     setModal(null)
     try {
       await closeDocument(documentId, discard)
@@ -489,9 +496,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         return
       }
     }
-    onLeave()
+    onLeave(next)
   }
-  const back = () => (dirty ? setModal({ kind: 'leave' }) : void leave())
+  const back = (next?: { id: string; name: string }) => (dirty ? setModal({ kind: 'leave', next }) : void leave(false, next))
   const doTakeOver = async () => {
     setModal(null)
     try {
@@ -528,6 +535,18 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     setCollapsed(false)
     setExporting({ tab: currentTab, format })
   }
+  // The file explorer (I11.7): the Document menu's two imports and Component library, Ctrl+Shift+L, the Desktop toolbar's Import and the Tablet strip's Import
+  const explorerBusy = dialog !== null || editingHere !== null || sketchHere || sketch.opening
+  const openExplorer = (mode: ExplorerMode) => {
+    if (explorerBusy) return
+    if (!desktop) setCollapsed(false)
+    setExporting(null)
+    setExploring(mode)
+  }
+  const importedFile = (reply: ImportReply, newTab: boolean) => {
+    store.setTabs(reply.tabs)
+    if (newTab) setSelected(reply.tab.id)
+  }
   const selectedParts = tabKind === 'studio' && studio !== null ? [...new Set(picked.items.flatMap((i) => (i.kind === 'part' && i.part !== null ? [i.part] : [])))].flatMap((id) => studio.parts.filter((p) => p.id === id).map((p) => ({ id, name: p.name }))) : []
   // Insert (I10.1): the Assembly toolbar's Insert, the I key and the view menu's Insert parts… open or close the panel; it floats in Desktop mode and covers the column in Tablet mode
   const insertOpen = inserting !== null && inserting === currentTab && tabKind === 'assembly'
@@ -550,6 +569,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     fit: { run: () => void runViewCommand('fit') },
     iso: { run: () => void runViewCommand('iso') },
     export: { run: () => openExport(), enabled: exportable },
+    import: { run: () => openExplorer('new') },
   }
   // the Desktop sketch toolbar: what a tool button does is what the tablet strip's does (a Constrain tool is tool-first)
   const askCancelSketch = () => (sketch.view?.canUndo ? setModal({ kind: 'discard' }) : sketchStore.cancel())
@@ -720,7 +740,10 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     'document.closeTab': () => currentInfo !== null && setModal({ kind: 'delete', tab: currentInfo }),
     'document.save': () => void save(),
     'document.shortcuts': () => setModal({ kind: 'shortcuts' }),
-    'document.open': back,
+    'document.open': () => back(),
+    'document.importNew': () => openExplorer('new'),
+    'document.importInto': () => openExplorer('add'),
+    'document.library': () => openExplorer('browse'),
     'document.exportStep': () => openExport('step'),
     'document.exportStl': () => openExport('stl'),
     ...Object.fromEntries(STANDARD_VIEW_ITEMS.map(([v]) => [`view.${v}`, () => void runViewCommand(v)])),
@@ -762,7 +785,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         sketch: sketchHere ? sketchStore : null,
         constraints,
         dialog: () => (editingHere !== null ? featureDialogKeys() : null),
-        closeArea: dialog !== null ? () => setDialog(null) : exporting !== null ? () => setExporting(null) : insertOpen ? () => setInserting(null) : null,
+        closeArea: dialog !== null ? () => setDialog(null) : exporting !== null ? () => setExporting(null) : exploring !== null ? () => setExploring(null) : insertOpen ? () => setInserting(null) : null,
         modalOpen: modal !== null,
         selection,
         selectedFeature: featureNow && { id: featureNow.id, name: featureNow.name },
@@ -812,7 +835,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           onAddTab={(kind) => void add(kind)}
           onRenameTab={(tab) => setModal({ kind: 'rename', tab })}
           onDeleteTab={(tab) => setModal({ kind: 'delete', tab })}
-          onBack={back}
+          onBack={() => back()}
           onSave={() => void save()}
           onExport={() => openExport()}
           canExport={exportable}
@@ -878,10 +901,10 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           <ToolStrip
             strip="feature"
             defs={FEATURE_STRIP}
-            stateOf={(id) => (id === 'sketch' && tabKind === 'studio' ? 'ok' : stateOf(toolTypes, id))}
+            stateOf={(id) => ((id === 'sketch' || id === 'import') && tabKind === 'studio' ? 'ok' : stateOf(toolTypes, id))}
             disabled={tabKind !== 'studio' || editing !== null || dialog !== null || sketch.open || sketch.opening}
             width={width}
-            onStart={(id) => (id === 'sketch' ? beginSketch() : startTool(id))}
+            onStart={(id) => (id === 'sketch' ? beginSketch() : id === 'import' ? openExplorer('add') : startTool(id))}
           />
         )}
         <div className="shell-main">
@@ -946,8 +969,23 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 onDone={finishExport}
               />
             )}
-            {insertOpen && doc && (
+            {insertOpen && exploring === null && doc && (
               <InsertPanel key={inserting} store={store} documentId={doc.id} tabs={tabs} edits={assembly.edits} onClose={() => setInserting(null)} />
+            )}
+            {exploring !== null && doc && (
+              <Explorer
+                mode={exploring}
+                placement={desktop ? 'float' : 'column'}
+                uiMode={mode}
+                target={{ document: doc.id, tab: currentTab, studio: tabKind === 'studio' && !sketchHere && editingHere === null, readOnly }}
+                currentDocument={doc.id}
+                onOpenDocument={(row) => {
+                  setExploring(null)
+                  back({ id: row.id, name: row.name })
+                }}
+                onImported={importedFile}
+                onClose={() => setExploring(null)}
+              />
             )}
             {dialog && (
               <DialogArea title={dialog.title} onClose={() => setDialog(null)} actions={dialog.actions}>
@@ -1035,12 +1073,12 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
             title={`Save changes to "${name}"?`}
             message="The Document has changes that are not saved yet. Discard throws them away, and they cannot be recovered afterwards."
             confirm={{ label: 'Save' }}
-            alternative={{ label: 'Discard', danger: true, onClick: () => void leave(true) }}
+            alternative={{ label: 'Discard', danger: true, onClick: () => void leave(true, modal.next) }}
             cancelLabel="Stay"
             onConfirm={() => {
               setModal(null)
               void save().then((ok) => {
-                if (ok) void leave()
+                if (ok) void leave(false, modal.next)
               })
             }}
             onCancel={closeModal}

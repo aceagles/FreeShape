@@ -8,7 +8,7 @@ import type { ConnectionStore } from './net/connection'
 import { useConnection } from './net/react'
 import { Shell } from './shell/Shell'
 
-type Screen = { kind: 'starting' } | { kind: 'home'; notice?: string } | { kind: 'document'; id: string; name: string }
+type Screen = { kind: 'starting' } | { kind: 'home'; notice?: string; open?: { id: string; name: string } } | { kind: 'document'; id: string; name: string }
 
 /**
  * The client: the home screen (src/home) and, inside a Document, the app shell (src/shell), over the live connection.
@@ -76,12 +76,15 @@ export function App({ store }: { store: ConnectionStore }) {
     }
   }, [ended, screen, store])
 
-  const leave = useCallback(() => {
-    store.unwatch()
-    setScreen({ kind: 'home' })
-  }, [store])
+  const leave = useCallback(
+    (next?: { id: string; name: string }) => {
+      store.unwatch()
+      setScreen({ kind: 'home', open: next })
+    },
+    [store],
+  )
 
   if (screen.kind === 'document') return <Shell store={store} documentId={screen.id} version={version} onLeave={leave} />
-  if (screen.kind === 'home') return <Home store={store} version={version} notice={screen.notice} onOpened={enter} />
+  if (screen.kind === 'home') return <Home store={store} version={version} notice={screen.notice} openNow={screen.open} onOpened={enter} />
   return <div className="app-starting" data-testid="starting" />
 }

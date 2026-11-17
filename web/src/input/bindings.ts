@@ -96,7 +96,7 @@ export const BINDINGS: readonly Binding[] = [
   { chord: 'Alt+Shift+N', command: 'document.newAssembly', label: 'New Assembly', where: ALL },
   { chord: 'Alt+W', command: 'document.closeTab', label: 'Close tab', where: ALL },
   { chord: 'Ctrl+O', command: 'document.open', label: 'Open…', where: ALL },
-  { chord: 'Ctrl+Shift+L', command: 'document.library', label: 'Component library…', where: ALL, shownOnly: true },
+  { chord: 'Ctrl+Shift+L', command: 'document.library', label: 'Component library…', where: ALL },
   { chord: 'Ctrl+Q', command: 'document.quit', label: 'Quit', where: ALL, shownOnly: true },
 
   { chord: 'Shift+S', command: 'feature.sketch', label: 'New sketch', where: ['studio'] },

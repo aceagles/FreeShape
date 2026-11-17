@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, closeDocument, createDocument, discardAutosave, listDocuments, openDocument, recoverDocument } from '../net/api'
 import type { DocumentReply, DocumentRow } from '../net/api'
 import type { ConnectionStore } from '../net/connection'
+import { Explorer } from '../files/Explorer'
 import { Icon, paths } from '../shell/icons'
+import { initialMode } from '../shell/mode'
 import { DebugPopover, LinkStatusButton, useDebugPanel } from '../shell/LinkStatus'
 import { ConfirmDialog } from '../shell/Modal'
 import { TextPrompt } from '../shell/TextPrompt'
@@ -31,12 +33,15 @@ export function Home({
   store,
   version,
   notice,
+  openNow,
   onOpened,
   now = Date.now,
 }: {
   store: ConnectionStore
   version?: string
   notice?: string | null
+  /** A Document to open as soon as the screen is up: the one the file explorer chose inside another Document. */
+  openNow?: { id: string; name: string }
   onOpened: (reply: DocumentReply) => void
   now?: () => number
 }) {
@@ -44,6 +49,9 @@ export function Home({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [modal, setModal] = useState<Modal | null>(null)
+  // the file explorer in browse mode (card I11.7); Desktop mode types its search, as the Document screen does
+  const [files, setFiles] = useState(false)
+  const [uiMode] = useState(initialMode)
   const debug = useDebugPanel()
 
   const load = useCallback(() => {
@@ -79,6 +87,13 @@ export function Home({
       setBusy(null)
     }
   }
+
+  const pending = useRef(openNow)
+  useEffect(() => {
+    const next = pending.current
+    pending.current = undefined
+    if (next !== undefined) void open(next)
+  })
 
   /** Recover or discard the autosave of the Document the dialog is about, then go in (or say why not). */
   const answerAutosave = async (reply: DocumentReply, what: 'recover' | 'discard') => {
@@ -127,6 +142,9 @@ export function Home({
       <header className="top-bar" data-region="top-bar">
         <div className="top-bar-name home-title">Documents</div>
         <div className="top-bar-gap" />
+        <button type="button" className="icon-button" aria-label="Files" title="Files: browse the file roots" aria-pressed={files} onClick={() => setFiles((f) => !f)}>
+          <Icon d={paths.folder} />
+        </button>
         <button type="button" className="icon-button" aria-label="Refresh the list" onClick={load}>
           <Icon d={paths.refresh} />
         </button>
@@ -197,6 +215,11 @@ export function Home({
           )}
         </div>
       </main>
+      {files && (
+        <div className="home-explorer" data-testid="home-explorer">
+          <Explorer mode="browse" placement="page" uiMode={uiMode} target={null} onOpenDocument={open} onImported={() => {}} onClose={() => setFiles(false)} now={now} />
+        </div>
+      )}
       {debug.open && <DebugPopover store={store} version={version} />}
       {modal?.kind === 'new' && (
         <TextPrompt title="New Document" label="Name" confirmLabel="Create" onSubmit={create} onCancel={() => setModal(null)} />

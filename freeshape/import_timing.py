@@ -9,8 +9,12 @@ sub-assemblies, the way a CAD export repeats its fasteners. One summary line per
 
 `total` is seconds until the parts are drawn; `longest_freeze` the longest the window went without handling an
 event (a 50 ms timer that could not fire); `peak_mb` the most memory the window and every process it started
-held at once (sampled), `window_peak_mb` the window's own, `worker_peak_mb` the most any one other process held. Used by the Windows test build on GitHub
-(.github/workflows/mac.yml); from source: python -m freeshape --import-timing out.txt synthetic:400
+held at once (sampled), `window_peak_mb` the window's own, `worker_peak_mb` the most any one other process held.
+`window_steady_mb` and `worker_steady_mb` are what the window and the tab's engine worker hold once the import has
+settled: the window keeps handling events for 30 s (FREESHAPE_STEADY_WAIT seconds, if set), then each process runs
+gc and memtrim.release_memory() and reads its own memory. Run with FREESHAPE_NO_MEMTRIM=1 to see them without the
+release. Used by the Windows test build on GitHub (.github/workflows/mac.yml); from source:
+python -m freeshape --import-timing out.txt synthetic:400
 """
 import math
 import os
@@ -97,6 +101,26 @@ def tree_mb(root=None):
         return _tree_mb_windows(root) if sys.platform == "win32" else _tree_mb_proc(root)
     except Exception:       # noqa: BLE001 -- no numbers rather than no run
         return {}
+
+
+def steady_mb():
+    """(pid, MB in memory) of this process after gc and memtrim.release_memory(). Runs in the window and, through
+    ProcessEngine.run_in_worker, in an engine worker."""
+    import gc
+    from .memtrim import release_memory
+    gc.collect()
+    release_memory()
+    me = os.getpid()
+    return me, tree_mb(me).get(me, 0.0)
+
+
+def _settle_wait(app, seconds):
+    """Keep the window handling events for `seconds` (deferred deletes, timers and queued results all run)."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        app.processEvents()
+        time.sleep(0.05)
+    app.processEvents()
 
 
 class MemorySampler:
@@ -200,12 +224,14 @@ def write_synthetic(path, copies):
 
 # ---------------------------------------------------------------------------- the run
 
-def run(out_path, *sources):
+def run(out_path, *sources, steady_wait=None):
     import faulthandler
     from . import timing
     if sys.stderr is not None:
         faulthandler.enable(all_threads=True)       # a crash in a native call still says where it was
     timing.enable()
+    if steady_wait is None:
+        steady_wait = float(os.environ.get("FREESHAPE_STEADY_WAIT", "30"))
     tmp = tempfile.mkdtemp(prefix="freeshape-import-timing-")
     os.environ["FREESHAPE_DATA_DIR"] = os.path.join(tmp, "appdata")
     os.environ.setdefault("FREESHAPE_NO_RECOVERY", "1")
@@ -247,9 +273,17 @@ def run(out_path, *sources):
             timer.stop()
             n = len(w.doc.state.parts)
             err = "; ".join(str(e) for e in w.doc.errors.values()) or "; ".join(str(x) for x in warned)
+            _settle_wait(app, steady_wait)
+            window_steady = steady_mb()[1]
+            worker_steady = float("nan")
+            if w.studio_engine is not None and w.studio_engine.attached(w.doc):
+                worker_steady = w.studio_engine.in_engine(
+                    w.doc, lambda eng, tab: eng.run_in_worker(tab, steady_mb))[1]
             lines.append(f"RESULT {src} file_mb={mb:.1f} parts={n} total={total:.1f} "
                          f"longest_freeze={gaps['max']:.2f} peak_mb={mem.peak:.0f} "
-                         f"window_peak_mb={mem.window_peak:.0f} worker_peak_mb={mem.other_peak:.0f} settled={settled}" + (f" error={err}" if err else ""))
+                         f"window_peak_mb={mem.window_peak:.0f} worker_peak_mb={mem.other_peak:.0f} "
+                         f"window_steady_mb={window_steady:.0f} worker_steady_mb={worker_steady:.0f} "
+                         f"settled={settled}" + (f" error={err}" if err else ""))
             ok = ok and settled and not err
         except Exception as e:      # noqa: BLE001
             import traceback

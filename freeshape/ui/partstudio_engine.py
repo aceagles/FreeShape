@@ -29,7 +29,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
-from PySide6.QtCore import QCoreApplication, QObject, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 
 from .. import blobstore
 from .. import docstore
@@ -37,6 +37,7 @@ from .. import features as F
 from .. import kernel as K
 from .. import links
 from .. import naming as N
+from ..memtrim import release_memory
 from .. import plugins
 from .. import tabkinds as TK
 from .. import timing
@@ -50,6 +51,7 @@ _NO_CONFIGS = {"rows": [], "active": 0}
 _EMPTY = {"features": [], "rollback": None, "folders": {}, "overrides": {}, "configs": _NO_CONFIGS,
           "python_builds": {}}
 _LIGHT = ("variable", "sketch", "plane", "axis")        # feature types re-run on the GUI thread (see the module doc)
+RELEASE_AFTER_S = 0.5      # decoding plus drawing a result this long means a big payload: release_memory() after
 
 
 # =========================================================================== pure helpers
@@ -480,7 +482,9 @@ class StudioEngine(QObject):
                 except Exception:   # noqa: BLE001
                     pass
                 rec.tab = None
+        t0 = time.perf_counter()
         res = self._decode(rec, snap, out)
+        res.decode_s = time.perf_counter() - t0
         res.rebuilt, res.extra = rebuilt, self.live.collect(eng, rec, rebuilt)
         return res
 
@@ -566,11 +570,21 @@ class StudioEngine(QObject):
             return
         applied = []
         if rec.kind == "studio" and rec.alive and not rec.dirty:   # else a newer request is on its way: skip drawing
+            t0 = time.perf_counter()
             applied.append(self.live.apply(rec, res))
             timing.mark(f"open: parts drawn ({len(res.parts)} parts)")
+            if getattr(res, "decode_s", 0.0) + time.perf_counter() - t0 >= RELEASE_AFTER_S:
+                QTimer.singleShot(0, self._release_memory)     # once `res` (the payload's bytes) has gone
         self.live.finished(rec, res, applied)
         self._pump(rec)
         self.prune()
+
+    @staticmethod
+    def _release_memory():
+        """A big payload has been drawn: hand what decoding it freed back to the OS (memtrim)."""
+        t0 = time.perf_counter()
+        release_memory()
+        timing.mark(f"window: released freed memory in {1e3 * (time.perf_counter() - t0):.1f} ms")
 
     def _failed(self, rec, exc):
         self.broken = f"{type(exc).__name__}: {exc}"

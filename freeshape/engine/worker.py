@@ -25,6 +25,8 @@ from .. import blobstore
 from .. import kernel as K
 from .. import links
 from .. import naming as N
+from .. import timing
+from ..memtrim import release_memory
 from ..features import Part, PartMap
 from .contract import EngineError, SketchOut, plain
 from .encode import connector_out, sketch_out
@@ -34,6 +36,8 @@ _LETTER = {"face": "F", "edge": "E", "vertex": "V"}
 _PARENT_POLL_S = 0.5
 
 _state = None            # this process's _Worker, once `load` has opened its tab
+RELEASE_AFTER_S = 0.5    # work since the last release_memory() that makes the next `outputs` release again
+_busy_s = 0.0            # seconds spent in load and calls since then
 
 
 # =========================================================================== the parent watchdog
@@ -407,10 +411,12 @@ def initialize(parent_pid):
 
 def load(spec):
     """The worker's first call: open its tab (from the parent's bytes and edit log); returns `meta`."""
-    global _state
+    global _state, _busy_s
     if _state is not None:
         raise EngineError("this worker already holds a tab")
+    t0 = time.perf_counter()
     _state = _Worker(spec)
+    _busy_s += time.perf_counter() - t0
     return _state.meta()
 
 
@@ -424,11 +430,22 @@ def current() -> _Worker:
 def call(op, arg=None, upstream=None, key=None, blobs=None):
     """One request from the parent. `upstream` (with its `key`) is sent only when it changed; `blobs` are the
     blobs an edit names that the worker was not sent before."""
+    global _busy_s
     w = current()
+    t0 = time.perf_counter()
     if upstream is not None:
         w.engine.install(upstream, key)
     w.add_blobs(blobs)
-    return w.call(op, arg)
+    out = w.call(op, arg)
+    _busy_s += time.perf_counter() - t0
+    if op == "outputs" and _busy_s >= RELEASE_AFTER_S:
+        # an import or full rebuild just finished: hand back what it freed, so the worker does not sit at its peak.
+        # A small edit stays under the bar and pays nothing.
+        _busy_s = 0.0
+        t1 = time.perf_counter()
+        release_memory()
+        timing.mark(f"worker: released freed memory in {1e3 * (time.perf_counter() - t1):.1f} ms")
+    return out
 
 
 def probe():

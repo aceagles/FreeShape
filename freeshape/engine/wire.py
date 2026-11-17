@@ -31,6 +31,9 @@ Nodes (`root` and everything inside it)
       "ndarray"    "dtype": d, "shape": [..], "off": o, "len": n     numpy array, C order, from buffer[o:o+n]
       "npscalar"   "dtype": d, "v": node                             a numpy scalar of dtype d
       "dc"         "t": ClassName, "f": {field: node, ...}           a dataclass of contract.py
+      "share"      "n": k, "v": node                                 `node`, which a later "ref" repeats
+      "ref"        "n": k                                            the object of the "share" numbered k,
+                                                                      which must come earlier in the header
 `dtype` is one of the allow-list in DTYPES ("bool", "|i1", "|u1", "<i2", "<u2", "<i4", "<u4", "<i8", "<u8",
 "<f2", "<f4", "<f8"). `len` is shape product times item size. A buffer is raw little-endian element data.
 
@@ -46,6 +49,14 @@ Choices
   `<` dtype (equal in value). Arrays read back writable and own their memory (copies of the payload).
 * A dataclass tag names a class of the REGISTRY (every dataclass defined in contract.py, by class name),
   never a dotted import path. A tag outside it is a ValueError.
+* Two nodes may share a buffer region: one `bytes` or one ndarray object met again in the same payload (a
+  placed part's BREP and mesh, shared by every copy) is written once, and each node holds the same "off" and
+  "len". A reader must not assume regions are disjoint. `from_wire` still gives every bytes / ndarray node
+  its own copy.
+* A non-empty dict or a dataclass met again in the same payload (by identity: the one MeshOut or element-name
+  dict that placed copies share) is written once, as a "share" the first time and a "ref" after. `from_wire`
+  hands back one object for all of them, as pickle does, so callers must not mutate it. A payload without
+  these tags reads as before.
 * Nesting deeper than MAX_DEPTH, in either direction, is a ValueError (so a cycle cannot recurse for ever).
 
 Errors: `to_wire` raises TypeError for an object it cannot carry, naming its type; `from_wire` raises
@@ -95,21 +106,52 @@ class _Writer:
     def __init__(self):
         self.parts = []
         self.size = 0
+        self.nshared = 0
+        self.shared = {}         # id(dict or dataclass) -> [object, its node, share number or None]
+        self.seen = {}           # id(object) -> (object, (offset, length)); the object is held so its id stays unique
 
-    def buffer(self, data):
-        """Append `data` (bytes) at an 8-aligned offset; returns (offset, length)."""
+    def buffer(self, data, key=None):
+        """Append `data` (bytes) at an 8-aligned offset; returns (offset, length). `key`: the object `data`
+        came from; one already written in this payload reuses its slot instead of being written again."""
+        if key is not None:
+            hit = self.seen.get(id(key))
+            if hit is not None:
+                return hit[1]
         off = self.size
         self.parts.append(data)
         pad = _pad(len(data))
         if pad:
             self.parts.append(b"\0" * pad)
         self.size += len(data) + pad
+        if key is not None:
+            self.seen[id(key)] = (key, (off, len(data)))
         return off, len(data)
 
     def node(self, x, depth):
+        t = type(x)
+        if (t is dict and x) or t in _TAG_OF:
+            hit = self.shared.get(id(x))
+            if hit is not None:
+                return self.ref(hit)
+            node = self.plain(x, t, depth)
+            self.shared[id(x)] = [x, node, None]       # held, so the id cannot be reused within this payload
+            return node
+        return self.plain(x, t, depth)
+
+    def ref(self, hit):
+        """A reference to an object already written: the first copy becomes a "share" node, in place."""
+        _, node, n = hit
+        if n is None:
+            n = hit[2] = self.nshared
+            self.nshared += 1
+            inner = dict(node)
+            node.clear()
+            node.update({"$": "share", "n": n, "v": inner})
+        return {"$": "ref", "n": n}
+
+    def plain(self, x, t, depth):
         if depth > MAX_DEPTH:
             raise ValueError(f"nesting deeper than {MAX_DEPTH} levels (a cycle?)")
-        t = type(x)
         if x is None or t is bool or t is str:
             return x
         if t is int:
@@ -130,7 +172,7 @@ class _Writer:
             return {"$": "dict", "items": [[self.node(k, depth + 1), self.node(v, depth + 1)]
                                            for k, v in x.items()]}
         if t is bytes:
-            off, n = self.buffer(x)
+            off, n = self.buffer(x, x)
             return {"$": "bytes", "off": off, "len": n}
         if t is np.ndarray:
             return self.array(x)
@@ -148,8 +190,11 @@ class _Writer:
         dt = a.dtype.newbyteorder("<") if a.dtype.byteorder == ">" else a.dtype
         if dt not in _WIRE_NAME:
             raise TypeError(f"cannot send a numpy array of dtype {a.dtype}")
-        data = np.ascontiguousarray(a, dtype=dt).tobytes(order="C")
-        off, n = self.buffer(data)
+        hit = self.seen.get(id(a))
+        if hit is not None:
+            off, n = hit[1]
+        else:
+            off, n = self.buffer(np.ascontiguousarray(a, dtype=dt).tobytes(order="C"), a)
         return {"$": "ndarray", "dtype": _WIRE_NAME[dt], "shape": list(a.shape), "off": off, "len": n}
 
 
@@ -176,6 +221,7 @@ def _is_int(v):
 class _Reader:
     def __init__(self, region):
         self.region = region
+        self.table = {}          # share number -> the object decoded for it
 
     def span(self, node):
         off, n = node.get("off"), node.get("len")
@@ -248,6 +294,18 @@ class _Reader:
                 return dt.type(self.node(x.get("v"), depth + 1))
             if tag == "dc":
                 return self.dataclass(x, depth)
+            if tag == "share":
+                n = x.get("n")
+                if not _is_int(n) or n in self.table or "v" not in x:
+                    raise ValueError(f"tag 'share' needs a new integer 'n' and a 'v', got n={n!r}")
+                obj = self.node(x["v"], depth + 1)
+                self.table[n] = obj
+                return obj
+            if tag == "ref":
+                n = x.get("n")
+                if not _is_int(n) or n not in self.table:
+                    raise ValueError(f"tag 'ref' names {n!r}, which no earlier 'share' defined")
+                return self.table[n]
         except TypeError as e:               # an unhashable set member or dict key, a scalar that does not fit
             raise ValueError(f"bad value under tag {tag!r}: {e}") from None
         except OverflowError as e:

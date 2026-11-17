@@ -113,13 +113,14 @@ class Encoder:
         self._brep = OrderedDict()       # id(shape) -> (shape, compressed brep, hash)
         self._mesh = OrderedDict()       # hash -> MeshOut
         self._bases = OrderedDict()      # hash(unplaced shape) -> (unplaced shape, compressed brep, hash)
+        self._names = OrderedDict()      # name content -> the one shared dict (see `names`)
         self._mesh_bases = OrderedDict()  # unplaced geometry -> its mesh, so a placed copy is not meshed again
         #                                   (K.tessellate)
 
     def fit(self, parts):
         """Size the caches for a model of `parts` parts (StudioTab.outputs calls it before encoding)."""
         self.limit = max(_CACHE_MIN, 2 * int(parts))
-        for cache in (self._brep, self._mesh, self._bases, self._mesh_bases):
+        for cache in (self._brep, self._mesh, self._bases, self._mesh_bases, self._names):
             self._trim(cache)
 
     def set_model(self, shapes):
@@ -196,6 +197,18 @@ class Encoder:
             return None
         return shape.Located(K.TopLoc_Location()), K.location_matrix(loc)
 
+    def names(self, part) -> dict:
+        """`element_names(part)`, as one shared dict per distinct content: the placed copies of a geometry name
+        their elements alike, so they hold the same object, which pickle and the wire send once. Callers must
+        treat it as read-only."""
+        out = element_names(part)
+        key = tuple((k, tuple(sorted(d.items()))) for k, d in out.items())
+        hit = _touch(self._names, key)
+        if hit is None:
+            hit = out
+            self._put(self._names, key, hit)
+        return hit
+
     def part(self, part, hidden=False, mesh=True, placed=False) -> PartOut:
         """A features.Part as output, in its own coordinates (`mesh=False`: without its display mesh).
         `placed=True`: a part whose shape is a placed copy goes as its unplaced geometry plus `loc` (see
@@ -215,7 +228,7 @@ class Encoder:
         if part.face_colors:      # kept 0-based by features.py; 1-based here, like every output index
             fc = {int(i) + 1: tuple(float(c) for c in rgb) for i, rgb in part.face_colors.items()}
         return PartOut(id=str(part.id), name=str(part.name), color=tuple(float(c) for c in part.color),
-                       hidden=bool(hidden), brep=data, hash=digest, names=element_names(part),
+                       hidden=bool(hidden), brep=data, hash=digest, names=self.names(part),
                        mesh=self.mesh(geo, geo_digest) if mesh else None, face_colors=fc, loc=loc,
                        base=base or "")
 

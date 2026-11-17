@@ -147,6 +147,12 @@ export const IMPORT_EXTENSIONS: readonly string[] = ['.step', '.stp', '.brep', '
 /** The picker's `accept` for a device import. */
 export const IMPORT_ACCEPT = IMPORT_EXTENSIONS.join(',')
 
+/** What an Assembly takes (I11.6): STEP only; a BREP is refused by the server and by the picker and the drop here. */
+export const STEP_EXTENSIONS: readonly string[] = ['.step', '.stp']
+export const STEP_ACCEPT = STEP_EXTENSIONS.join(',')
+export const isStepName = (name: string): boolean => STEP_EXTENSIONS.some((x) => name.toLowerCase().endsWith(x))
+export const isBrepName = (name: string): boolean => isImportName(name) && !isStepName(name)
+
 /** Whether a file's name ends in one of the import's extensions (the server checks the bytes). */
 export const isImportName = (name: string): boolean => IMPORT_EXTENSIONS.some((x) => name.toLowerCase().endsWith(x))
 
@@ -399,4 +405,34 @@ export function forgetArchiveProbe(): void {
 /** Records that an upload was answered 404: the server serves one Document. */
 export function noteArchiveUnsupported(): void {
   probe = Promise.resolve(false)
+}
+
+/** What the import route answers for an Assembly tab (I11.6): `instances` holds the new instances only, in solid order. */
+export interface StepInsertReply {
+  document: string
+  tab: { id: string }
+  rebuilt: string[]
+  tabs: TabInfo[]
+  instances: Array<{ id: string; name: string }>
+}
+
+/** What to say after a STEP went into an Assembly: the one instance's name, or how many came from the file. */
+export function insertedText(file: string, instances: ReadonlyArray<{ name: string }>): string {
+  if (instances.length === 1) return `Inserted ${instances[0]!.name}`
+  return `Inserted ${instances.length} parts from ${file}`
+}
+
+/** A library entry into the Assembly `tab` (I11.6): the body is {root, entry}; no new_tab (the server refuses it on an Assembly). One undo step. */
+export function insertEntry(doc: string, tab: string, root: string, entry: string): Promise<StepInsertReply> {
+  return json<StepInsertReply>('POST', `${tabPath(doc, tab)}/import`, { body: { root, entry } })
+}
+
+/** A STEP from the device into the Assembly `tab`: the bytes as application/octet-stream, the name in `?name=`. Refusals are an ApiError with the server's text. */
+export async function insertDevice(
+  doc: string,
+  tab: string,
+  file: File,
+  o: { limit?: number | null; onProgress?: (sent: number, total: number) => void; signal?: AbortSignal } = {},
+): Promise<StepInsertReply> {
+  return (await uploadFile(file, { url: `${tabPath(doc, tab)}/import`, query: { name: file.name }, ...o })) as StepInsertReply
 }

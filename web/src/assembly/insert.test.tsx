@@ -125,15 +125,16 @@ it('Tablet: the strip\'s Insert toggles the panel over the column; a tap selects
   store.stop()
 })
 
-it('shows From file, Other Document, Component library and Standard parts off, saying Desktop only for now', async () => {
+it('shows Other Document and Standard parts off, saying Desktop only for now; From file and Component library are on (I11.11)', async () => {
   const { store } = await open('desktop')
   pressI()
   const p = await screen.findByTestId('insert-panel')
-  for (const label of ['From file…', 'Other Document…', 'Component library…', 'Standard parts']) {
+  for (const label of ['Other Document…', 'Standard parts']) {
     const b = within(p).getByRole('button', { name: label }) as HTMLButtonElement
     expect(b.disabled).toBe(true)
     expect(b.title).toBe('Desktop only for now')
   }
+  for (const label of ['From file…', 'Component library…']) expect((within(p).getByRole('button', { name: label }) as HTMLButtonElement).disabled).toBe(false)
   store.stop()
 })
 

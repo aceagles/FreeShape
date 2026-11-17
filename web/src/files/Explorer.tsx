@@ -7,8 +7,8 @@ import { DialogArea } from '../shell/DialogArea'
 import { Icon, paths } from '../shell/icons'
 import type { Mode } from '../shell/mode'
 import { TextPrompt } from '../shell/TextPrompt'
-import { IMPORT_ACCEPT, fetchFiles, fetchFolder, importDevice, importEntry, importFailure, uploadLimitOf } from './filesApi'
-import type { FileEntry, FileRoot, FolderRef, ImportReply } from './filesApi'
+import { IMPORT_ACCEPT, STEP_ACCEPT, fetchFiles, fetchFolder, importDevice, importEntry, importFailure, insertDevice, insertEntry, insertedText, uploadLimitOf } from './filesApi'
+import type { FileEntry, FileRoot, FolderRef, ImportReply, StepInsertReply } from './filesApi'
 import { UploadProgress } from './UploadProgress'
 import type { UploadState } from './UploadProgress'
 import './files.css'
@@ -29,6 +29,8 @@ export interface ImportTarget {
   tab: string | null
   /** The tab on screen is a Part Studio, so Add to this Part Studio applies. */
   studio: boolean
+  /** The tab on screen is an Assembly: an entry or a file is inserted into it (I11.11), and a new Part Studio is not offered (the route refuses new_tab there). */
+  assembly?: boolean
   readOnly: boolean
 }
 
@@ -42,6 +44,8 @@ export interface ExplorerProps {
   onOpenDocument: (row: DocumentRow) => void | Promise<unknown>
   /** An import went through; `newTab` says it made a new Part Studio, which the shell switches to. */
   onImported: (reply: ImportReply, newTab: boolean) => void
+  /** A STEP went into the Assembly on screen (I11.11). */
+  onInserted?: (reply: StepInsertReply, said: string) => void
   onClose: () => void
   /** The Document this explorer sits in, so its row says so instead of opening it again. */
   currentDocument?: string
@@ -79,7 +83,7 @@ const safeUrl = (u: string): boolean => /^https?:\/\//i.test(u)
  * Part Studio on screen or opened as a new Part Studio, and the explorer says `Imported <name>` or the server's reason.
  * It is the desktop's Component library (freeshape/ui/step_library_ui.py) reached over serve; thumbnails are left out.
  */
-export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onImported, onClose, currentDocument, now = Date.now }: ExplorerProps) {
+export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onImported, onInserted, onClose, currentDocument, now = Date.now }: ExplorerProps) {
   const desktop = uiMode === 'desktop'
   const [files, setFiles] = useState<{ roots: FileRoot[] } | { error: string } | null>(null)
   const [root, setRoot] = useState<string | null>(null)
@@ -197,10 +201,18 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
     )
   }
 
+  const asm = target?.assembly === true
   const run = async (e: FileEntry, newTab: boolean) => {
     if (target === null || target.tab === null || root === null) return
-    setStatus({ kind: 'busy', text: `Importing ${e.name}…` })
+    setStatus({ kind: 'busy', text: `${asm ? 'Inserting' : 'Importing'} ${e.name}…` })
     try {
+      if (asm) {
+        const r = await insertEntry(target.document, target.tab, root, e.id)
+        const said = insertedText(e.name, r.instances)
+        setStatus({ kind: 'ok', text: said })
+        onInserted?.(r, said)
+        return
+      }
       const r = await importEntry(target.document, target.tab, root, e.id, newTab)
       const why = r.feature?.error
       setStatus(why ? { kind: 'error', text: `${e.name}: ${why}` } : { kind: 'ok', text: `Imported ${e.name}` })
@@ -217,11 +229,19 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
     setDeviceStatus(null)
     setUpload({ name: file.name, sent: 0, total: file.size })
     try {
-      const r = await importDevice(target.document, target.tab, file, newTab, {
+      const opts = {
         limit: files !== null && 'roots' in files ? uploadLimitOf(files.roots) : null,
         signal: ctl.signal,
-        onProgress: (sent, total) => setUpload({ name: file.name, sent, total }),
-      })
+        onProgress: (sent: number, total: number) => setUpload({ name: file.name, sent, total }),
+      }
+      if (asm) {
+        const r = await insertDevice(target.document, target.tab, file, opts)
+        const said = insertedText(file.name, r.instances)
+        setDeviceStatus({ kind: 'ok', text: said })
+        onInserted?.(r, said)
+        return
+      }
+      const r = await importDevice(target.document, target.tab, file, newTab, opts)
       const why = r.feature?.error
       setDeviceStatus(why ? { kind: 'error', text: `${file.name}: ${why}` } : { kind: 'ok', text: `Imported ${file.name}` })
       onImported(r, newTab)
@@ -244,7 +264,8 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
   }
 
   const canAdd = target !== null && target.tab !== null && target.studio && !target.readOnly
-  const canNew = target !== null && target.tab !== null && !target.readOnly
+  const canNew = target !== null && target.tab !== null && !target.readOnly && !asm
+  const canInsert = asm && target !== null && target.tab !== null && !target.readOnly
   const busy = status?.kind === 'busy'
   const why =
     target === null
@@ -253,7 +274,9 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
         ? 'This Document is open read-only here, so nothing can be added.'
         : target.tab === null
           ? 'This Document has no tab to add to.'
-          : !target.studio
+          : asm
+            ? 'A new Part Studio is made from a Part Studio tab.'
+            : !target.studio
             ? 'Select a Part Studio tab to add to it; a new Part Studio works from any tab.'
             : null
 
@@ -264,7 +287,7 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
         ref={input}
         type="file"
         className="ex-file-input"
-        accept={IMPORT_ACCEPT}
+        accept={asm ? STEP_ACCEPT : IMPORT_ACCEPT}
         tabIndex={-1}
         aria-hidden="true"
         data-testid="ex-device-input"
@@ -279,7 +302,7 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
       ) : (
         <>
           <div className="ex-device-row">
-            <button type="button" className="ex-action" data-kind="plain" disabled={!canNew} onClick={() => pickFile(deviceNew)}>
+            <button type="button" className="ex-action" data-kind="plain" disabled={asm ? !canInsert : !canNew} onClick={() => pickFile(deviceNew)}>
               From this device…
             </button>
             {canAdd && canNew && (
@@ -289,7 +312,7 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
             )}
           </div>
           <div className="ex-detail-line ex-why">
-            {canNew ? `A STEP or BREP file from this device ${deviceNew ? 'opens in a new Part Studio' : 'is added to this Part Studio'}.` : why}
+            {asm ? (canInsert ? 'A STEP file from this device is inserted into this Assembly.' : why) : canNew ? `A STEP or BREP file from this device ${deviceNew ? 'opens in a new Part Studio' : 'is added to this Part Studio'}.` : why}
           </div>
         </>
       )}
@@ -441,12 +464,20 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
         </div>
       )}
       <div className="ex-actions">
-        <button type="button" className="ex-action" data-kind={mode === 'add' ? 'primary' : 'plain'} disabled={!canAdd || busy} onClick={() => void run(entry, false)}>
-          Add to this Part Studio
-        </button>
-        <button type="button" className="ex-action" data-kind={mode === 'new' ? 'primary' : 'plain'} disabled={!canNew || busy} onClick={() => void run(entry, true)}>
-          Open in a new Part Studio
-        </button>
+        {asm ? (
+          <button type="button" className="ex-action" data-kind="primary" data-testid="ex-insert" disabled={!canInsert || busy} onClick={() => void run(entry, false)}>
+            Insert into this Assembly
+          </button>
+        ) : (
+          <>
+            <button type="button" className="ex-action" data-kind={mode === 'add' ? 'primary' : 'plain'} disabled={!canAdd || busy} onClick={() => void run(entry, false)}>
+              Add to this Part Studio
+            </button>
+            <button type="button" className="ex-action" data-kind={mode === 'new' ? 'primary' : 'plain'} disabled={!canNew || busy} onClick={() => void run(entry, true)}>
+              Open in a new Part Studio
+            </button>
+          </>
+        )}
       </div>
       {why !== null && <div className="ex-detail-line ex-why">{why}</div>}
     </div>

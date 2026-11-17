@@ -2808,6 +2808,76 @@ export const shots: ShotState[] = [
       ;(await import('./support/docs.ts')).removeDocument('Canvas shot')
     },
   },
+  {
+    // I11.11: Tablet mode, the Insert panel's Component library… opened the explorer on the hinge Assembly: an entry chosen, Insert into this Assembly
+    name: 'assembly-step-explorer',
+    mock: 'dialog',
+    steps: async (page) => {
+      await (await import('./support/library.ts')).mockLibrary(page)
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-strip="assembly"] [data-tool="insert"]').click()
+      await page.getByRole('button', { name: 'Component library…' }).click()
+      const explorer = page.getByRole('dialog', { name: 'Files' })
+      await explorer.getByRole('button', { name: /^fasteners/ }).click()
+      await explorer.getByRole('button', { name: /m3-nut-block/ }).click()
+      await explorer.getByTestId('ex-detail').waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I11.11: Tablet mode, a two-solid STEP inserted with From file…: the Insert panel says what went in
+    name: 'assembly-step-inserted',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-strip="assembly"] [data-tool="insert"]').click()
+      const chooser = page.waitForEvent('filechooser')
+      await page.getByRole('button', { name: 'From file…' }).click()
+      await (await chooser).setFiles(new URL('./fixtures/two_boxes.step', import.meta.url).pathname)
+      await page.getByTestId('insert-said').filter({ hasText: 'Inserted 2 parts from two_boxes.step' }).waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I11.11: Desktop mode, the explorer floating over the hinge Assembly with an entry chosen: Insert into this Assembly
+    name: 'desktop-assembly-step-explorer',
+    mode: 'desktop',
+    desktop: 'desktop-assembly',
+    steps: async (page) => {
+      await (await import('./support/library.ts')).mockLibrary(page)
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.keyboard.press('i')
+      await page.getByRole('button', { name: 'Component library…' }).click()
+      const explorer = page.getByRole('dialog', { name: 'Files' })
+      await explorer.getByRole('button', { name: /^fasteners/ }).click()
+      await explorer.getByRole('button', { name: /m3-nut-block/ }).click()
+      await explorer.getByTestId('ex-detail').waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I11.11: Desktop mode, a two-solid STEP inserted with From file…: the floating Insert panel says what went in
+    name: 'desktop-assembly-step-inserted',
+    mode: 'desktop',
+    desktop: 'desktop-assembly',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.keyboard.press('i')
+      const chooser = page.waitForEvent('filechooser')
+      await page.getByRole('button', { name: 'From file…' }).click()
+      await (await chooser).setFiles(new URL('./fixtures/two_boxes.step', import.meta.url).pathname)
+      await page.getByTestId('insert-said').filter({ hasText: 'Inserted 2 parts from two_boxes.step' }).waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

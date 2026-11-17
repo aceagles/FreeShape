@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { isImportName } from '../files/filesApi'
+import { isBrepName, isImportName, isStepName } from '../files/filesApi'
 import { inTextEntry } from '../input/surface'
 
 /*
@@ -33,7 +33,7 @@ export function installDropGuard(doc: Document = document): () => void {
   }
 }
 
-/** What a drop comes to: the files to import into new Part Studios, and what to say about the rest (null: nothing to say). */
+/** What a drop comes to: the files to import into new Part Studios (into the Assembly on screen: to insert), and what to say about the rest (null: nothing to say). */
 export interface DropPlan {
   import: File[]
   say: string | null
@@ -44,8 +44,9 @@ export interface DropPlan {
  * other file is named in the message. Off the view, in Tablet mode, or when `blocked` gives a reason, nothing is imported and the
  * message says why.
  */
-export function planDrop(files: readonly File[], ctx: { desktop: boolean; onView: boolean; blocked: string | null }): DropPlan {
+export function planDrop(files: readonly File[], ctx: { desktop: boolean; onView: boolean; blocked: string | null; assembly?: boolean }): DropPlan {
   if (files.length === 0) return { import: [], say: null }
+  if (ctx.assembly === true) return planAssemblyDrop(files, ctx)
   if (!ctx.desktop) return { import: [], say: 'Dropping files works in Desktop mode. Here, use Files, then From this device…, to import a STEP or BREP file.' }
   if (!ctx.onView) return { import: [], say: 'Drop a STEP or BREP file on the view to import it into a new Part Studio.' }
   if (ctx.blocked !== null) return { import: [], say: ctx.blocked }
@@ -56,6 +57,25 @@ export function planDrop(files: readonly File[], ctx: { desktop: boolean; onView
     import: ok,
     say: rest.length === 0 ? null : `${named} ${rest.length === 1 ? 'is' : 'are'} not a STEP or BREP file. The view imports .step, .stp, .brep and .brp files.`,
   }
+}
+
+/**
+ * The drop on an Assembly's tab (I11.11): each STEP file on the view is inserted, in the order dropped (the route takes STEP only,
+ * so a BREP is named with why, and any other file as not a STEP). Tablet mode and off the view insert nothing.
+ */
+function planAssemblyDrop(files: readonly File[], ctx: { desktop: boolean; onView: boolean; blocked: string | null }): DropPlan {
+  if (!ctx.desktop) return { import: [], say: 'Dropping files works in Desktop mode. Here, open Insert, then From file…, to insert a STEP file into this Assembly.' }
+  if (!ctx.onView) return { import: [], say: 'Drop a STEP file on the view to insert it into this Assembly.' }
+  if (ctx.blocked !== null) return { import: [], say: ctx.blocked }
+  const ok = files.filter((f) => isStepName(f.name))
+  const brep = files.filter((f) => isBrepName(f.name))
+  const rest = files.filter((f) => !isStepName(f.name) && !isBrepName(f.name))
+  const quote = (l: readonly File[]): string => l.map((f) => `“${f.name}”`).join(', ')
+  const say = [
+    brep.length === 0 ? null : `${quote(brep)} ${brep.length === 1 ? 'is a BREP file' : 'are BREP files'}. An Assembly takes STEP files only; drop ${brep.length === 1 ? 'it' : 'them'} on a Part Studio to import.`,
+    rest.length === 0 ? null : `${quote(rest)} ${rest.length === 1 ? 'is' : 'are'} not a STEP file. The view inserts .step and .stp files.`,
+  ].filter((x): x is string => x !== null)
+  return { import: ok, say: say.length === 0 ? null : say.join(' ') }
 }
 
 /** The Shell's drop: `onDrop` gets the dropped files and whether they landed on `view`. */

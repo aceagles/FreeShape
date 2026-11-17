@@ -16,7 +16,8 @@ import { useCanvasImage } from '../files/CanvasFlow'
 import { fetchCanvasImage } from '../files/canvasApi'
 import { UploadProgress } from '../files/UploadProgress'
 import type { UploadState } from '../files/UploadProgress'
-import { fetchUploadLimit, importDevice, importFailure } from '../files/filesApi'
+import { fetchUploadLimit, importDevice, importFailure, insertDevice, insertedText } from '../files/filesApi'
+import type { StepInsertReply } from '../files/filesApi'
 import type { ExportFormat, ExportResult, ImportReply } from '../files/filesApi'
 import type { PreviewState } from '../dialog/useFeatureDialog'
 import { AssemblyPanel } from '../assembly/AssemblyPanel'
@@ -181,6 +182,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const [inserting, setInserting] = useState<string | null>(null)
   // the file explorer (I11.7): the Component library and the two imports; the mode says which button of an entry leads
   const [exploring, setExploring] = useState<ExplorerMode | null>(null)
+  // what the last STEP inserted from the explorer said, for the Insert panel that shows again when the explorer closes (I11.11)
+  const [insertNote, setInsertNote] = useState<string | null>(null)
   // where a saved export went (I11.14): a note until it is dismissed or the next export
   const [savedNote, setSavedNote] = useState<string | null>(null)
   const dismissSaved = useCallback(() => setSavedNote(null), [])
@@ -287,6 +290,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     setEditing(null)
     setExporting(null)
     setInserting(null)
+    setInsertNote(null)
   }, [currentTab, selection])
 
   const api = useMemo<ShellApi>(
@@ -571,6 +575,10 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     setExporting(null)
     setExploring(mode)
   }
+  const insertedStep = (reply: StepInsertReply, said: string) => {
+    store.setTabs(reply.tabs)
+    setInsertNote(said)
+  }
   const importedFile = (reply: ImportReply, newTab: boolean) => {
     store.setTabs(reply.tabs)
     if (newTab) setSelected(reply.tab.id)
@@ -584,13 +592,22 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     if (!doc || currentTab === null) return
     const ctl = new AbortController()
     dropCtl.current = ctl
+    const asm = tabKind === 'assembly'
     let current = list[0]!
     try {
       const limit = await fetchUploadLimit()
       for (const f of list) {
         current = f
         setDropping({ name: f.name, sent: 0, total: f.size })
-        const r = await importDevice(doc.id, currentTab, f, true, { limit, signal: ctl.signal, onProgress: (sent, total) => setDropping({ name: f.name, sent, total }) })
+        const opts = { limit, signal: ctl.signal, onProgress: (sent: number, total: number) => setDropping({ name: f.name, sent, total }) }
+        if (asm) {
+          const a = await insertDevice(doc.id, currentTab, f, opts)
+          const said = insertedText(f.name, a.instances)
+          insertedStep(a, said)
+          setSavedNote(said)
+          continue
+        }
+        const r = await importDevice(doc.id, currentTab, f, true, opts)
         importedFile(r, true)
         if (r.feature?.error) failText('Import', `${f.name}: ${r.feature.error}`)
         else setSavedNote(`Imported ${f.name}`)
@@ -612,7 +629,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           : dropCtl.current !== null
             ? 'A file is still uploading. Wait for it, or cancel it.'
             : null
-    const plan = planDrop(files, { desktop, onView, blocked })
+    const plan = planDrop(files, { desktop, onView, blocked, assembly: tabKind === 'assembly' })
     if (plan.say !== null) failText('Import', plan.say)
     if (plan.import.length > 0) void importDropped(plan.import)
   })
@@ -624,6 +641,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     if (insertOpen) return setInserting(null)
     setCollapsed(false)
     setExporting(null)
+    setInsertNote(null)
     setInserting(currentTab)
   }
   const finishExport = (r: ExportResult | null) => {
@@ -1054,20 +1072,32 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
               />
             )}
             {insertOpen && exploring === null && doc && (
-              <InsertPanel key={inserting} store={store} documentId={doc.id} tabs={tabs} edits={assembly.edits} onClose={() => setInserting(null)} />
+              <InsertPanel
+                key={inserting}
+                store={store}
+                documentId={doc.id}
+                tabs={tabs}
+                tab={inserting}
+                onLibrary={() => openExplorer('add')}
+                onInserted={insertedStep}
+                note={insertNote}
+                edits={assembly.edits}
+                onClose={() => setInserting(null)}
+              />
             )}
             {exploring !== null && doc && (
               <Explorer
                 mode={exploring}
                 placement={desktop ? 'float' : 'column'}
                 uiMode={mode}
-                target={{ document: doc.id, tab: currentTab, studio: tabKind === 'studio' && !sketchHere && editingHere === null, readOnly }}
+                target={{ document: doc.id, tab: currentTab, studio: tabKind === 'studio' && !sketchHere && editingHere === null, assembly: tabKind === 'assembly', readOnly }}
                 currentDocument={doc.id}
                 onOpenDocument={(row) => {
                   setExploring(null)
                   back({ id: row.id, name: row.name })
                 }}
                 onImported={importedFile}
+                onInserted={insertedStep}
                 onClose={() => setExploring(null)}
               />
             )}

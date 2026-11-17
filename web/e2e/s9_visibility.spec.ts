@@ -128,7 +128,11 @@ test('Y hides the clicked part, the part under the pointer when nothing is selec
 
   // 4. a box around the model selects its edges and faces; Y hides the part they belong to
   const cam = (await settled(page)).camera
-  const box = { from: { x: 4, y: 4 }, to: { x: cam.width - 4, y: cam.height - 4 } }
+  // the box starts clear of the empty spot clicked in step 3: a press within a few pixels of the last click, soon after it,
+  // is a double click (I9.14) and starts no box, as on the desktop
+  const corner = { x: 4, y: 4 }
+  const from = Math.hypot(empty.x - corner.x, empty.y - corner.y) > 12 ? corner : { x: corner.x, y: empty.y + 16 }
+  const box = { from, to: { x: cam.width - 4, y: cam.height - 4 } }
   await page.mouse.move(at(box.from).x, at(box.from).y)
   await page.mouse.down()
   await page.mouse.move(at(box.to).x, at(box.to).y, { steps: 8 })

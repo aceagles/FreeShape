@@ -4210,9 +4210,15 @@ class MainWindow(QMainWindow):
             m.addAction("Cancel sketch", self.cancel_sketch)
             m.exec(gpos)
             return
+        lp = self.viewport.mapFromGlobal(gpos)
+        if self.mode == "dialog":
+            # an open feature dialog: only Select other, and the row goes to the dialog's field as a click would
+            if len(self.viewport.pick_all(lp.x(), lp.y())) >= 2:
+                m.addAction("Select other\u2026", lambda: self.viewport.open_select_other(lp.x(), lp.y()))
+                m.exec(gpos)
+            return
         if self.mode != "idle":
             return
-        lp = self.viewport.mapFromGlobal(gpos)
         osp = self.viewport.cam.to_screen(np.zeros(3))
         if abs(osp[0] - lp.x()) <= 10 and abs(osp[1] - lp.y()) <= 10:      # right-click on the Origin
             self._add_origin_connector_action(m)

@@ -180,3 +180,25 @@ def test_backtick_opens_the_list_in_the_studio_but_belongs_to_the_sketcher_in_a_
     vp.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_QuoteLeft, Qt.NoModifier))
     vp.sketcher = None
     assert seen == [Qt.Key_QuoteLeft] and len(win.popups) == 1
+
+
+def test_context_menu_offers_select_other_with_a_feature_dialog_open(win, monkeypatch):
+    from freeshape.ui import mainwindow as MW
+    seen = []
+
+    class Menu(MW.QMenu):
+        def exec(self, *a, **k):
+            seen.append({a.text(): a for a in self.actions()})
+
+    monkeypatch.setattr(MW, "QMenu", Menu)
+    win.start_feature("fillet")
+    fld = win.dialog.active_field
+    vp = win.viewport
+    x, y = at(win, 20, 0, 10)
+    win._viewport_context(vp.pick(x, y), vp.mapToGlobal(QPoint(int(x), int(y))))
+    assert list(seen[-1]) == ["Select other…"]
+    seen[-1]["Select other…"].trigger()
+    p = win.popups[-1]
+    p.choose(1)
+    assert len(fld.items) == 1 and fld.items[0][0] == "edge"
+    win.cancel_dialog()

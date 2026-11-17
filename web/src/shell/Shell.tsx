@@ -26,7 +26,11 @@ import { instanceItem, selectedInstance } from '../assembly/select'
 import type { ViewContextEvent } from '../selection/aimCommit'
 import { useAssembly } from '../assembly/useAssembly'
 import { InsertPanel } from '../assembly/InsertPanel'
-import { assemblyCommands, assemblyStrip, assemblyToolState, instancesOf, isAuthoringTool, S10_NOTE, useAssemblyTypes } from '../assembly/strip'
+import { MateDialog, mateDialogKeys } from '../assembly/MateDialog'
+import type { MateDone, MateStart } from '../assembly/MateDialog'
+import { NEED_TWO_PARTS, preselection, previewOutputs } from '../assembly/mates'
+import type { MateView } from '../assembly/mates'
+import { assemblyCommands, assemblyStrip, assemblyToolState, instancesOf, useAssemblyTypes } from '../assembly/strip'
 import { FeaturePanel } from '../features/FeaturePanel'
 import { useFeatureEdits } from '../features/useFeatureEdits'
 import { useStudioOutputs } from '../features/studioOutputs'
@@ -63,7 +67,7 @@ import { DESKTOP_SKETCH_TOOLBAR, runSketchTool, SKETCH_STRIP, sketchRowCommands,
 import { StudioViewport } from '../viewport/StudioViewport'
 import { planDrop, useFileDrop } from '../viewport/fileDrop'
 import type { PreviewLook } from '../viewport/controller'
-import type { InstanceEntry, StudioOutputs } from '../wire'
+import type { InstanceEntry, MateEntry, StudioOutputs } from '../wire'
 import { DialogArea, DialogHost } from './DialogArea'
 import { explainError } from './errors'
 import { DebugPopover, useDebugPanel } from './LinkStatus'
@@ -111,10 +115,14 @@ interface DialogState {
   actions?: ReactNode
 }
 
+/** Counts the mate dialogs opened, so each is a new component. */
+let mateStarts = 0
+
 /** The small dialog over the page, if one is open. */
 type Modal =
   | { kind: 'rename'; tab: TabInfo }
   | { kind: 'renameInstance'; id: string; name: string }
+  | { kind: 'renameMate'; id: string; name: string }
   | { kind: 'delete'; tab: TabInfo }
   | { kind: 'leave'; next?: { id: string; name: string } }
   | { kind: 'takeover' }
@@ -180,6 +188,10 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const [exporting, setExporting] = useState<{ tab: string; format?: ExportFormat } | null>(null)
   // the tab whose Insert panel is open (card I10.1)
   const [inserting, setInserting] = useState<string | null>(null)
+  // the mate dialog (card I10.6): what opened it, the preview it draws, and the last preview kept until an accepted mate's revision arrives
+  const [mateStart, setMateStart] = useState<MateStart | null>(null)
+  const [mateView, setMateView] = useState<MateView | null>(null)
+  const [mateHold, setMateHold] = useState<{ view: MateView; until: number } | null>(null)
   // the file explorer (I11.7): the Component library and the two imports; the mode says which button of an entry leads
   const [exploring, setExploring] = useState<ExplorerMode | null>(null)
   // what the last STEP inserted from the explorer said, for the Insert panel that shows again when the explorer closes (I11.11)
@@ -291,19 +303,21 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     setExporting(null)
     setInserting(null)
     setInsertNote(null)
+    setMateStart(null)
+    setMateHold(null)
   }, [currentTab, selection])
 
   const api = useMemo<ShellApi>(
     () => ({
       openDialog: (title, content, actions) => {
-        if (editing !== null) return
+        if (editing !== null || mateStart !== null) return
         // Tablet mode: the dialog area is the column's own box, so the column opens for it. Desktop mode: it floats over
         // the viewport, so a column collapsed in a sketch stays collapsed under the Dimension box.
         if (mode !== 'desktop') setCollapsed(false)
         setDialog({ title, content, actions })
       },
       closeDialog: () => setDialog(null),
-      dialogOpen: dialog !== null || editing !== null || exporting !== null || exploring !== null,
+      dialogOpen: dialog !== null || editing !== null || exporting !== null || exploring !== null || mateStart !== null,
       panelCollapsed: collapsed,
       setPanelCollapsed: setCollapsed,
       selectedFeature,
@@ -318,7 +332,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
       },
       selection,
     }),
-    [mode, dialog, editing, exporting, exploring, collapsed, selectedFeature, selectedPart, currentTab, selection],
+    [mode, dialog, editing, exporting, exploring, mateStart, collapsed, selectedFeature, selectedPart, currentTab, selection],
   )
   // the dialog area closed under the Dimension pad (its close button): the dimension is given up
   useEffect(() => {
@@ -472,6 +486,50 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     selection.setUserFilter(desktop ? filterKinds(viewState.select) : undefined)
   }, [selection, desktop, viewState.select])
   const assemblyTypes = useAssemblyTypes(documentId, tabKind === 'assembly' ? currentTab : null)
+  // The mate dialog (card I10.6): the strip's and toolbar's mate tools, Shift+F, Shift+R and Shift+L, and Edit on a mate open it in the dialog area.
+  // It takes the area from the Insert panel, the explorer and Export (they close, as every tool closes them) and refuses to start while another dialog has it.
+  const mating = mateStart !== null && mateStart.tab === currentTab && tabKind === 'assembly'
+  const partCount = assembly.outputs?.instances.filter((i) => i.part !== null).length ?? 0
+  const mateOff = readOnly ? 'This Document is open read-only here' : assembly.outputs === null || partCount < 2 ? NEED_TWO_PARTS : dialog !== null ? 'Finish or cancel the open dialog first' : null
+  const beginMate = (what: MateStart['what']) => {
+    if (currentTab === null || tabKind !== 'assembly') return
+    setCollapsed(false)
+    setExporting(null)
+    setExploring(null)
+    setInserting(null)
+    setInsertNote(null)
+    setMateHold(null)
+    setMateStart({ seq: ++mateStarts, tab: currentTab, what })
+  }
+  const startMate = (type: string) => {
+    if (tabKind !== 'assembly' || readOnly) return
+    // a mate tool pressed while the dialog is open changes its type
+    if (mating) return mateDialogKeys()?.setType(type)
+    if (mateOff !== null) return failText('Mate', mateOff)
+    beginMate({ type, ...preselection(picked.items) })
+  }
+  const editMate = (id: string) => {
+    if (readOnly || tabKind !== 'assembly') return
+    if (mating) return failText('Mate', 'Finish or cancel the open mate first.')
+    if (dialog !== null) return failText('Mate', mateOff ?? 'Finish or cancel the open dialog first')
+    beginMate({ mate: id })
+  }
+  const endMate = (done: MateDone) => {
+    setMateStart(null)
+    // an accepted mate keeps drawing as previewed until the revision it made has arrived
+    if (done.accepted && done.view !== null && done.revision !== null) setMateHold({ view: done.view, until: done.revision })
+  }
+  const held = mateHold !== null && (assembly.outputs?.revision ?? 0) < mateHold.until ? mateHold.view : null
+  const drawnAssembly = useMemo(() => {
+    const view = mateView ?? held
+    return assembly.outputs !== null && view !== null && tabKind === 'assembly' ? previewOutputs(assembly.outputs, view) : assembly.outputs
+  }, [assembly.outputs, mateView, held, tabKind])
+  const mateActions = {
+    edit: (m: { id: string }) => editMate(m.id),
+    rename: (m: { id: string; name: string }) => setModal({ kind: 'renameMate', id: m.id, name: m.name }),
+    setSuppressed: (m: { id: string }, value: boolean) => void sendEach([{ op: 'set_suppressed', mate: m.id, value }], value ? 'Could not suppress the mate' : 'Could not unsuppress the mate'),
+    remove: (m: { id: string }) => void sendEach([{ op: 'delete_mates', ids: [m.id] }], 'Could not delete the mate'),
+  }
 
   const add = async (kind: 'studio' | 'assembly') => {
     try {
@@ -561,14 +619,14 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const undoCmd = sketchHere ? { enabled: sketch.view?.canUndo === true, run: () => sketchStore.undo() } : { enabled: canUndo, run: edits.undo }
   const redoCmd = sketchHere ? { enabled: sketch.view?.canRedo === true, run: () => sketchStore.redo() } : { enabled: canRedo, run: edits.redo }
   // Export (I11.9): the Document menu, both toolbars and the Tablet top bar open the dialog; a Part Studio's selected parts ride along
-  const exportable = (tabKind === 'studio' || tabKind === 'assembly') && currentTab !== null && !sketchHere && !sketch.opening && editingHere === null
+  const exportable = (tabKind === 'studio' || tabKind === 'assembly') && currentTab !== null && !sketchHere && !sketch.opening && editingHere === null && !mating
   const openExport = (format?: ExportFormat) => {
     if (!exportable || dialog !== null) return
     setCollapsed(false)
     setExporting({ tab: currentTab, format })
   }
   // The file explorer (I11.7): the Document menu's two imports and Component library, Ctrl+Shift+L, the Desktop toolbar's Import and the Tablet strip's Import
-  const explorerBusy = dialog !== null || editingHere !== null || sketchHere || sketch.opening
+  const explorerBusy = dialog !== null || editingHere !== null || sketchHere || sketch.opening || mating
   const openExplorer = (mode: ExplorerMode) => {
     if (explorerBusy) return
     if (!desktop) setCollapsed(false)
@@ -637,7 +695,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   // Insert (I10.1): the Assembly toolbar's Insert, the I key and the view menu's Insert parts… open or close the panel; it floats in Desktop mode and covers the column in Tablet mode
   const insertOpen = inserting !== null && inserting === currentTab && tabKind === 'assembly'
   const toggleInsert = () => {
-    if (tabKind !== 'assembly' || currentTab === null || readOnly) return
+    if (tabKind !== 'assembly' || currentTab === null || readOnly || mating) return
     if (insertOpen) return setInserting(null)
     setCollapsed(false)
     setExporting(null)
@@ -706,6 +764,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     setFixedAll: assembly.edits.setFixedAll,
     view: (c) => void runViewCommand(c),
     say: failText,
+    mateType: mating ? (mateView?.type ?? ('type' in mateStart.what ? mateStart.what.type : null)) : null,
+    mateOff: mating ? null : mateOff,
+    startMate,
   })
   // Desktop mode's right-click menus (card I9.10): the desktop opens none while a dialog, a sketch's start or a tool has the window
   const sendEach = async (edits: readonly Record<string, unknown>[], title: string): Promise<void> => {
@@ -743,7 +804,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   }
   const onAssemblyContext = (e: ViewContextEvent) => {
     const out = assembly.outputs
-    if (tabKind !== 'assembly' || out === null || dialog !== null) return
+    if (tabKind !== 'assembly' || out === null || dialog !== null || mating) return
     const under = e.hit !== null && (e.hit.kind === 'face' || e.hit.kind === 'edge') ? e.hit.instance : undefined
     const inst = under === undefined ? undefined : out.instances.find((i) => i.id === under)
     if (inst !== undefined) return openInstanceMenu(inst, e.x, e.y)
@@ -811,10 +872,11 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
       }),
     })
   }
-  const onAssemblyRowContext = (t: { kind: 'instance'; instance: InstanceEntry } | { kind: 'mate'; mate: { type: string; suppressed: boolean; id: string } }, x: number, y: number) => {
-    if (dialog !== null) return
+  const onAssemblyRowContext = (t: { kind: 'instance'; instance: InstanceEntry } | { kind: 'mate'; mate: MateEntry }, x: number, y: number) => {
+    if (dialog !== null || mating) return
     if (t.kind === 'instance') return openInstanceMenu(t.instance, x, y)
-    context.open({ x, y, label: 'Mate menu', ...mateMenu(t.mate, assembly.outputs?.errors[t.mate.id]) })
+    const e = assembly.edits
+    context.open({ x, y, label: 'Mate menu', ...mateMenu(t.mate, assembly.outputs?.errors[t.mate.id], { busy: e.busy || e.disabled, actions: { edit: () => mateActions.edit(t.mate), rename: () => mateActions.rename(t.mate), setSuppressed: (v) => mateActions.setSuppressed(t.mate, v), remove: () => mateActions.remove(t.mate) } }) })
   }
   const commands: Commands = {
     'view.planes': () => void visibilityKeys['view.planes']!(),
@@ -881,8 +943,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         tabKind,
         sketch: sketchHere ? sketchStore : null,
         constraints,
-        dialog: () => (editingHere !== null ? featureDialogKeys() : null),
-        closeArea: dialog !== null ? () => setDialog(null) : exporting !== null ? () => setExporting(null) : exploring !== null ? () => setExploring(null) : insertOpen ? () => setInserting(null) : null,
+        dialog: () => (editingHere !== null ? featureDialogKeys() : mating ? mateDialogKeys() : null),
+        closeArea: dialog !== null ? () => setDialog(null) : mating ? () => setMateStart(null) : exporting !== null ? () => setExporting(null) : exploring !== null ? () => setExploring(null) : insertOpen ? () => setInserting(null) : null,
         modalOpen: modal !== null,
         selection,
         selectedFeature: featureNow && { id: featureNow.id, name: featureNow.name },
@@ -894,6 +956,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         assemblyUndo: assembly.edits.undo,
         assemblyRedo: assembly.edits.redo,
         toggleInsert,
+        startMate,
         beginSketch: () => beginSketch(),
         startTool: (type) => startTool(type),
         featureFromSketch: (type) => {
@@ -986,8 +1049,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
               strip="assembly"
               defs={assemblyStrip(assemblyTypes)}
               stateOf={(id) => assemblyToolState(id, assemblyTools)}
-              note={(id) => (isAuthoringTool(id) ? S10_NOTE : undefined)}
-              toggled={(id) => (id === 'insert' ? insertOpen : undefined)}
+              note={(id) => (assemblyTools[id]?.enabled === false ? assemblyTools[id]?.note : undefined)}
+              toggled={(id) => assemblyTools[id]?.pressed}
               width={width}
               onStart={(id) => assemblyTools[id]?.run()}
             />
@@ -1015,10 +1078,11 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
             {tabKind === 'assembly' ? (
               <AssemblyPanel
                 collapsed={collapsed}
-                locked={dialog !== null}
+                locked={dialog !== null || mating}
                 outputs={assembly.outputs}
                 selected={selectedInstance(picked.items)}
                 edits={assembly.edits}
+                mates={mateActions}
                 onSelect={(i) => selection.set([instanceItem(i.id, i.part)])}
                 onContext={onAssemblyRowContext}
                 onCollapsedChange={setCollapsed}
@@ -1072,6 +1136,21 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 onDone={finishExport}
               />
             )}
+            {mating && mateStart !== null && doc && (
+              <MateDialog
+                key={mateStart.seq}
+                store={store}
+                documentId={doc.id}
+                documentName={name}
+                tab={mateStart.tab}
+                start={mateStart}
+                types={assemblyTypes}
+                outputs={assembly.outputs}
+                selection={selection}
+                onView={setMateView}
+                onDone={endMate}
+              />
+            )}
             {insertOpen && exploring === null && doc && (
               <InsertPanel
                 key={inserting}
@@ -1112,7 +1191,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           {/* data-dialog-base: the view draws an open dialog's base model, the one its picks resolve against (a test hook) */}
           <div className="shell-viewport" ref={setViewportEl} data-region="viewport" data-testid="shell-viewport" data-dialog-base={base !== null ? '' : undefined}>
             {tabKind === 'assembly' ? (
-              <AssemblyViewport outputs={assembly.outputs} selection={selection} drag={assembly.edits.drag} visibility={viewState} onContext={onAssemblyContext} />
+              <AssemblyViewport outputs={drawnAssembly} selection={selection} drag={mating ? undefined : assembly.edits.drag} visibility={viewState} onContext={onAssemblyContext} />
             ) : (
               <StudioViewport
                 outputs={drawn}
@@ -1164,6 +1243,20 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         {modal?.kind === 'renameInstance' && (
           <TextPrompt
             title="Rename instance"
+            label="Name"
+            initial={modal.name}
+            confirmLabel="Rename"
+            onSubmit={async (value) => {
+              const problem = await assembly.edits.rename(modal.id, value)
+              if (typeof problem === 'string') return problem
+              setModal(null)
+            }}
+            onCancel={closeModal}
+          />
+        )}
+        {modal?.kind === 'renameMate' && (
+          <TextPrompt
+            title="Rename mate"
             label="Name"
             initial={modal.name}
             confirmLabel="Rename"

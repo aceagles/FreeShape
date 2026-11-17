@@ -11,7 +11,6 @@ import { iconNames } from '../tools/icons'
 import { decodeOutputs, isAssembly } from '../wire'
 import { registerView } from '../viewport/viewCommands'
 import { instanceItem } from './select'
-import { S10_NOTE } from './strip'
 
 // The Assembly toolbar (card I9.5), in both modes, on the hinge Assembly (I1 fixed, I2 and I3 free).
 beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }))
@@ -110,14 +109,15 @@ it('Desktop: the row runs in the order of _build_assembly_toolbar', async () => 
   store.stop()
 })
 
-it('Desktop: the mates are off with the S10 tooltip (by the server\'s words), Insert is on (I10.1), the rest are the desktop\'s', async () => {
+it('Desktop: the mates are on, named and tipped by the server\'s words (I10.6), Insert is on (I10.1), the rest are the desktop\'s', async () => {
   const { store } = await open('desktop')
   await waitFor(() => expect(desk('m_fastened').getAttribute('aria-label')).toBe('Fastened mate'))
   expect(desk('insert').disabled).toBe(false)
   for (const m of MATE_IDS) {
-    expect(desk(`m_${m}`).disabled).toBe(true)
-    expect(desk(`m_${m}`).title).toBe(S10_NOTE)
+    expect(desk(`m_${m}`).disabled).toBe(false)
+    expect(desk(`m_${m}`).title).toContain(`${MATES.find((x) => x[0] === m)![1]} help`)
   }
+  expect(desk('m_revolute').title).toContain('Shift+R')
   for (const id of ['r_gear', 'group', 'interference', 'linear_pattern', 'circular_pattern', 'bom', 'explode', 'section']) {
     expect(desk(id).disabled).toBe(true)
     expect(desk(id).title).toBe('Desktop only for now')
@@ -171,7 +171,7 @@ it('Tablet: the Assembly tab has the assembly strip, and a Part Studio tab keeps
   store.stop()
 })
 
-it('Tablet: the Mate group lists the eight types from the route, off with the S10 note; Insert is on and the relations are the desktop\'s', async () => {
+it('Tablet: the Mate group lists the eight types from the route, all on; Insert is on and the relations are the desktop\'s', async () => {
   const { store } = await open('tablet')
   expect(strip('insert').disabled).toBe(false)
   const group = document.querySelector('[data-group="mate"]') as HTMLButtonElement
@@ -179,7 +179,8 @@ it('Tablet: the Mate group lists the eight types from the route, off with the S1
   fireEvent.click(group, { detail: 0 })
   const list = await screen.findByRole('menu', { name: 'Mate' })
   expect([...list.querySelectorAll('.group-name')].map((e) => e.textContent)).toEqual(MATES.map((m) => m[1]))
-  expect([...list.querySelectorAll('.group-note')].map((e) => e.textContent)).toEqual(MATES.map(() => S10_NOTE))
+  expect(list.querySelectorAll('.group-note').length).toBe(0)
+  expect(list.querySelectorAll('[aria-disabled]').length).toBe(0)
   expect(list.querySelector('.pin-button')).toBeNull()
   store.stop()
 })

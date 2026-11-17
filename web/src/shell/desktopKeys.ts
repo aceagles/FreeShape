@@ -38,6 +38,8 @@ export interface DesktopKeyContext {
   assemblyRedo: () => void
   /** Open or close the Assembly's Insert panel (the toolbar's Insert button). */
   toggleInsert: () => void
+  /** Open the mate dialog for a type, or change the open one's type (the mate tools; card I10.6). */
+  startMate: (type: string) => void
   /** The Sketch tool: on the selected plane or planar face, else the plane chooser. */
   beginSketch: () => void
   /** Open a feature's create dialog with the selection as its picks. */
@@ -106,6 +108,12 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
     if (!c.readOnly) c.toggleInsert()
     return true
   }
+  // Shift+F, Shift+R and Shift+L on an Assembly tab (card I10.6): the Fastened, Revolute and Slider mates; the Part Studio's keys decline there
+  const mate = (type: string) => (): boolean => {
+    if (c.tabKind !== 'assembly') return false
+    if (!c.readOnly) c.startMate(type)
+    return true
+  }
   const fromSketch = (type: string) => (): boolean => {
     if (c.readOnly || !studio) return false
     if (sk !== null) c.featureFromSketch(type)
@@ -117,6 +125,9 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
   const menu = (command: string) => (): boolean => c.runMenu(command)
   const commands: Record<string, KeyCommand> = {
     'assembly.insert': insert,
+    'assembly.mate.fastened': mate('fastened'),
+    'assembly.mate.revolute': mate('revolute'),
+    'assembly.mate.slider': mate('slider'),
     'edit.undo': undo(false),
     'edit.redo': undo(true),
     'document.save': menu('document.save'),
@@ -136,7 +147,7 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
     },
     'feature.extrude': fromSketch('extrude'),
     'feature.revolve': fromSketch('revolve'),
-    // in an Assembly Shift+F is the Fastened mate (card I10.6): nothing yet
+    // in an Assembly Shift+F is the Fastened mate (assembly.mate.fastened, which has the chord after this one)
     'feature.fillet': () => {
       if (!studio || c.readOnly || !idle()) return false
       c.startTool('fillet')

@@ -102,8 +102,12 @@ export const BINDINGS: readonly Binding[] = [
   { chord: 'Shift+S', command: 'feature.sketch', label: 'New sketch', where: ['studio'] },
   { chord: 'Shift+E', command: 'feature.extrude', label: 'Extrude', where: ['studio', 'sketch'] },
   { chord: 'Shift+W', command: 'feature.revolve', label: 'Revolve', where: ['studio', 'sketch'] },
-  { chord: 'Shift+F', command: 'feature.fillet', label: 'Fillet (Fastened mate in an Assembly)', where: ['studio', 'assembly'] },
+  { chord: 'Shift+F', command: 'feature.fillet', label: 'Fillet', where: ['studio'] },
   { chord: 'I', command: 'assembly.insert', label: 'Insert parts', where: ['assembly'] },
+  // the mate keys (card I10.6; mainwindow.py `_build_assembly_toolbar`): Shift+F is Fillet in a Part Studio and Fastened here; each command returns false where it does not apply
+  { chord: 'Shift+F', command: 'assembly.mate.fastened', label: 'Fastened mate', where: ['assembly'] },
+  { chord: 'Shift+R', command: 'assembly.mate.revolute', label: 'Revolute mate', where: ['assembly'] },
+  { chord: 'Shift+L', command: 'assembly.mate.slider', label: 'Slider mate', where: ['assembly'] },
 
   { chord: 'N', command: 'view.normal', label: 'Normal to', where: ['studio', 'sketch'] },
   { chord: 'F', command: 'view.fit', label: 'Zoom to fit', where: VIEWS },

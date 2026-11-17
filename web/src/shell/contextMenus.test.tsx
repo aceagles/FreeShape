@@ -253,7 +253,7 @@ it('on an Assembly instance, Fix sends set_fixed and Hide sends set_hidden; Add 
   store.stop()
 })
 
-it('Rename in the instance menu sends rename, and a mate row has a menu with every item off', async () => {
+it('Rename in the instance menu sends rename, and a mate row has a menu with Edit, Rename, Suppress and Delete on (I10.6)', async () => {
   const { store, edits } = await assembly()
   rightClick(document.querySelector<HTMLElement>('[data-instance="I1"]')!)
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename…' }))
@@ -268,7 +268,15 @@ it('Rename in the instance menu sends rename, and a mate row has a menu with eve
   const menu = await screen.findByRole('menu', { name: 'Mate menu' })
   const items = within(menu).getAllByRole('menuitem') as HTMLButtonElement[]
   expect(items.map((b) => b.textContent)).toEqual(['Edit…', 'Rename…', 'Suppress', 'Delete'])
-  expect(items.every((b) => b.disabled && b.title === DESKTOP_ONLY)).toBe(true)
+  expect(items.every((b) => !b.disabled)).toBe(true)
+  // Suppress and Delete send their edits; Rename opens the prompt
+  fireEvent.click(items[2]!)
+  await waitFor(() => expect(edits().length).toBe(2))
+  expect(edits()[1]?.body).toEqual({ op: 'set_suppressed', mate: 'M4', value: true })
+  rightClick(document.querySelector<HTMLElement>('[data-mate-row]')!)
+  fireEvent.click(within(await screen.findByRole('menu', { name: 'Mate menu' })).getByRole('menuitem', { name: 'Delete' }))
+  await waitFor(() => expect(edits().length).toBe(3))
+  expect(edits()[2]?.body).toEqual({ op: 'delete_mates', ids: ['M4'] })
   store.stop()
 })
 

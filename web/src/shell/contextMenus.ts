@@ -245,19 +245,28 @@ export function instanceMenu(i: { name: string; hidden: boolean; fixed: boolean 
 /** Mate types that have a value to set or animate (freeshape/assembly.py `MATE_VALUE_DOFS`: every type with a freedom). */
 const VALUED_MATES: ReadonlySet<string> = new Set(['revolute', 'slider', 'cylindrical', 'planar', 'pin_slot', 'parallel'])
 
+export interface MateActions {
+  edit: () => void
+  rename: () => void
+  setSuppressed: (suppressed: boolean) => void
+  remove: () => void
+}
+
 /**
  * An Assembly mate (`mate_menu`): Edit, Rename, Suppress or Unsuppress, Set value and Animate for a mate with a freedom, Delete, and
- * the mate's error. The client has no mate editing yet: every item is the desktop's only. Apply limit position is not listed (the
- * client does not know a mate's limits).
+ * the mate's error. Edit, Rename, Suppress and Delete are the client's (card I10.6) when `c` gives them; Set value and Animate are the
+ * desktop's only. Apply limit position is not listed (the client does not know a mate's limits).
  */
-export function mateMenu(m: { type: string; suppressed: boolean }, error: string | undefined): ContextMenuData {
+export function mateMenu(m: { type: string; suppressed: boolean }, error: string | undefined, c?: { busy: boolean; actions: MateActions }): ContextMenuData {
   const b = new Builder()
-  b.item('mate.edit', 'Edit…')
-  b.item('mate.rename', 'Rename…')
-  b.item('mate.suppress', m.suppressed ? 'Unsuppress' : 'Suppress')
+  const a = c?.actions
+  const on = { enabled: () => c !== undefined && !c.busy }
+  b.item('mate.edit', 'Edit…', a?.edit, on)
+  b.item('mate.rename', 'Rename…', a?.rename, on)
+  b.item('mate.suppress', m.suppressed ? 'Unsuppress' : 'Suppress', a && (() => a.setSuppressed(!m.suppressed)), on)
   if (VALUED_MATES.has(m.type)) b.item('mate.value', 'Set value…').item('mate.animate', 'Animate…')
   b.sep()
-  b.item('mate.delete', 'Delete')
+  b.item('mate.delete', 'Delete', a?.remove, on)
   if (error !== undefined) b.sep().note('mate.error', `⚠ ${error}`)
   return b.done()
 }

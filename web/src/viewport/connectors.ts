@@ -91,6 +91,9 @@ export function studioTriads(outputs: StudioOutputs): TriadSpec[] {
     .map((c) => ({ kind: 'connector', id: c.id, ...axesOf(c.frame), color: null, sizePx: TRIAD_PX, width: TRIAD_WIDTH }))
 }
 
+/** The id of the mate a mate dialog is making or editing (card I10.6): its two ends are drawn while the dialog is open, whether J is on or not. */
+export const PREVIEW_MATE = '__mate_dialog__'
+
 /** Which of an Assembly's triads to draw: K draws the instances' connectors, J the ends of the mates. */
 export interface AssemblyTriadFlags {
   readonly connectors: boolean
@@ -108,9 +111,10 @@ export function assemblyTriads(outputs: AssemblyOutputs, flags: AssemblyTriadFla
       }
     }
   }
-  if (flags.mates) {
+  if (flags.mates || outputs.mates.some((m) => m.id === PREVIEW_MATE)) {
     const shown = new Set(outputs.instances.filter((i) => !i.hidden).map((i) => i.id))
     for (const m of outputs.mates) {
+      if (!flags.mates && m.id !== PREVIEW_MATE) continue
       ;(['a', 'b'] as const).forEach((end) => {
         const fr = end === 'a' ? m.ends[0] : m.ends[1]
         const instance = end === 'a' ? m.a : m.b

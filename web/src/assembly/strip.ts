@@ -7,9 +7,6 @@ import { space } from '../theme/tokens'
 import type { ToolbarCommand } from '../tools/DesktopToolbar'
 import type { ToolState } from '../tools/useToolTypes'
 
-/** Why the mate buttons are off until the mate card (I10.6) lands. */
-export const S10_NOTE = 'Comes with assembly authoring (S10)'
-
 /** The mate and relation types of the Assembly tab on screen, from the server; null until it has answered (or when it cannot). */
 export type AssemblyTypes = Pick<AssemblyTypesReply, 'mates' | 'relations'>
 
@@ -64,9 +61,6 @@ export function assemblyStrip(types: AssemblyTypes | null): StripDef[] {
   ]
 }
 
-/** Which tools of the Assembly strips are off until a later card, and why. A mate waits for S10; the rest are the desktop's. */
-export const isAuthoringTool = (id: string): boolean => id.startsWith('m_')
-
 /** The instances an Assembly selection holds: each instance with anything selected on it, in the order first met. */
 export const instancesOf = (items: readonly { instance?: string }[]): string[] => [...new Set(items.flatMap((i) => (i.instance !== undefined && i.instance !== '' ? [i.instance] : [])))]
 
@@ -90,11 +84,17 @@ export interface AssemblyToolbarEnv {
   toggleInsert: () => void
   /** Tell the person why a button did nothing. */
   say: (title: string, text: string) => void
+  /** The type of the mate dialog that is open (it shows pressed), or null. */
+  mateType: string | null
+  /** Why a mate tool is off now (fewer than two parts, another dialog open, a read-only Document), or null when they are on. */
+  mateOff: string | null
+  /** Open the mate dialog for a type, or change the type of the one that is open (card I10.6). */
+  startMate: (type: string) => void
 }
 
 /**
  * The Assembly toolbar's buttons the client can do: Undo, Redo, Insert, Fix, Move, Export, Fit and Iso (Iso has a place in the Desktop row
- * only), and the mate types, which are there but off until S10 enables them. Anything else of the row is not
+ * only), and the eight mate types, which open the mate dialog (card I10.6). Anything else of the row is not
  * here, so the row disables it as "Desktop only for now". Both modes use the same commands.
  */
 export function assemblyCommands(env: AssemblyToolbarEnv): Record<string, ToolbarCommand> {
@@ -106,7 +106,7 @@ export function assemblyCommands(env: AssemblyToolbarEnv): Record<string, Toolba
     fit: { run: () => env.view('fit') },
     iso: { run: () => env.view('iso') },
     export: { run: env.openExport },
-    insert: { run: env.toggleInsert, enabled: !env.readOnly, pressed: env.insertOpen },
+    insert: { run: env.toggleInsert, enabled: !env.readOnly && env.mateType === null, pressed: env.insertOpen },
     asm_fix: {
       enabled: !env.readOnly,
       // every selected instance fixed: free them; otherwise fix the ones that are free
@@ -131,14 +131,20 @@ export function assemblyCommands(env: AssemblyToolbarEnv): Record<string, Toolba
   }
   for (const id of MATE_IDS) {
     const info = named.get(`m_${id}`)
-    out[`m_${id}`] = { run: () => {}, enabled: false, note: S10_NOTE, label: info === undefined ? undefined : `${info.label} mate`, tip: info === undefined ? undefined : `${info.label} mate — ${info.help}` }
+    out[`m_${id}`] = {
+      run: () => env.startMate(id),
+      enabled: env.mateOff === null,
+      pressed: env.mateType === id,
+      note: env.mateOff ?? undefined,
+      label: info === undefined ? undefined : `${info.label} mate`,
+      tip: info === undefined ? undefined : `${info.label} mate — ${info.help}`,
+    }
   }
   return out
 }
 
-/** The state of a tool of the Tablet Assembly strip: the mates wait for S10, the relations are the desktop's. */
+/** The state of a tool of the Tablet Assembly strip: the mates are on or off by the shell's reason, the relations are the desktop's. */
 export function assemblyToolState(id: string, commands: Readonly<Record<string, ToolbarCommand>>): ToolState {
-  if (isAuthoringTool(id)) return 'off'
   const cmd = commands[id]
   return cmd === undefined ? 'desktop' : cmd.enabled === false ? 'off' : 'ok'
 }

@@ -2948,6 +2948,117 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I10.6: Tablet mode, the Revolute mate dialog over the left column on the hinge Assembly, nothing picked yet: the First field is active
+    name: 'mate-dialog-empty',
+    mock: 'dialog',
+    steps: async (page) => {
+      const m = await import('./support/mates.ts')
+      await m.hingeWithoutMates(page, 'edit')
+      await page.locator('[data-group="mate"]').click({ position: { x: 20, y: 20 } })
+      await page.getByRole('menuitem', { name: /Revolute/ }).click()
+      await m.mateDialog(page).waitFor()
+      await page.locator('[data-testid="sel-a"][data-active]').waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.6: Tablet mode, both pin holes picked: the Arm drawn where the dialog previews it, the Mate value shown, Limits off
+    name: 'mate-dialog',
+    mock: 'dialog',
+    steps: async (page) => {
+      const m = await import('./support/mates.ts')
+      await m.hingeWithoutMates(page, 'edit')
+      await page.locator('[data-group="mate"]').click({ position: { x: 20, y: 20 } })
+      await page.getByRole('menuitem', { name: /Revolute/ }).click()
+      await m.pickBothHoles(page)
+      await page.getByTestId('mate-values').waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.6: Tablet mode, a Fastened mate with Flip on and the pad open on Offset (numbers are set on the pad, as in every dialog)
+    name: 'mate-dialog-offset',
+    mock: 'dialog',
+    steps: async (page) => {
+      const m = await import('./support/mates.ts')
+      await m.hingeWithoutMates(page, 'edit')
+      await page.locator('[data-group="mate"]').click({ position: { x: 20, y: 20 } })
+      await page.getByRole('menuitem', { name: /Fastened/ }).click()
+      await m.pickBothHoles(page)
+      await m.mateDialog(page).getByRole('button', { name: /Flip/ }).click()
+      await m.mateDialog(page).getByRole('button', { name: /^Offset/ }).click()
+      await page.getByTestId('pad').waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.6: Tablet mode, the long-press popover of a mate row: Edit, Rename, Suppress, Delete
+    name: 'mate-popover',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 2)
+      const box = (await page.locator('[data-mate-row]').last().boundingBox())!
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.down()
+      await page.getByRole('menu').waitFor()
+      await page.mouse.up()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.6: Desktop mode, the Revolute dialog floating at (12, 12) with both pin holes picked, beside the desktop program's feature dialog (it has no mate dialog shot)
+    name: 'desktop-mate-dialog',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      const m = await import('./support/mates.ts')
+      await m.hingeWithoutMates(page)
+      await page.keyboard.press('Shift+R')
+      await m.pickBothHoles(page)
+      await page.getByTestId('mate-values').waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.6: Desktop mode, a Fastened mate (Shift+F): Flip on, Rotate 90 pressed once (Angle 90), an Offset typed
+    name: 'desktop-mate-dialog-fastened',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      const m = await import('./support/mates.ts')
+      await m.hingeWithoutMates(page)
+      await page.keyboard.press('Shift+F')
+      await m.pickBothHoles(page)
+      await m.mateDialog(page).getByRole('button', { name: /Flip/ }).click()
+      await m.mateDialog(page).getByRole('button', { name: /Rotate 90/ }).click()
+      const offset = m.mateDialog(page).getByRole('textbox', { name: 'Offset' })
+      await offset.fill('5')
+      await offset.press('Tab')
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.6: Desktop mode, a mate row's right-click menu with Edit, Rename, Suppress and Delete on, beside the desktop program's context menu
+    name: 'desktop-mate-menu',
+    mode: 'desktop',
+    desktop: 'desktop-context',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 2)
+      await page.locator('[data-mate-row]').last().click({ button: 'right' })
+      await page.getByRole('menuitem', { name: 'Edit…' }).waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

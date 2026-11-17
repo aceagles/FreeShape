@@ -1,0 +1,111 @@
+/* The mate dialog (card I10.6): the type buttons, the options row and the Mate values, in the dialog area's own look. */
+.mate-types {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+}
+.mate-type {
+  width: var(--touch);
+  height: var(--touch);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-ink);
+  cursor: pointer;
+}
+.mate-type[aria-checked='true'] {
+  border-color: var(--c-accentLine);
+  background: var(--c-accentPinned);
+}
+.mate-help b {
+  color: var(--c-ink);
+}
+.mate-options {
+  flex: none;
+  display: flex;
+  gap: var(--sp-8);
+}
+.mate-option {
+  min-height: var(--touch);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: 0 var(--sp-12);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font: inherit;
+  cursor: pointer;
+}
+.mate-option[aria-pressed='true'] {
+  border-color: var(--c-accentLine);
+  background: var(--c-accentPinned);
+  color: var(--c-accentDark);
+}
+.mate-values {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.mate-value {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-8);
+  color: var(--c-muted);
+}
+.mate-value-label {
+  width: 60px;
+  flex: none;
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+.mate-value-number {
+  flex: none;
+  color: var(--c-ink);
+}
+.mate-value-unit {
+  flex: none;
+}
+.mate-limits:disabled {
+  color: var(--c-muted);
+  cursor: default;
+}
+.mate-limits-note {
+  font-size: var(--fs-small);
+  color: var(--c-muted);
+}
+
+/* Desktop mode: the desktop's 300 px dialog, 28 px buttons */
+.shell[data-mode='desktop'] .mate-type {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+}
+.shell[data-mode='desktop'] .mate-types {
+  gap: 2px;
+}
+.shell[data-mode='desktop'] .mate-option {
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: var(--fs-tab);
+}
+.shell[data-mode='desktop'] .mate-values,
+.shell[data-mode='desktop'] .mate-value {
+  font-size: var(--fs-tab);
+}
+.shell[data-mode='desktop'] .mate-limits {
+  min-height: 26px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: var(--fs-tab);
+}

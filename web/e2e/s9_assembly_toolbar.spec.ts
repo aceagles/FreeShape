@@ -56,8 +56,9 @@ test.describe('Desktop mode', () => {
     const bar = page.locator('.desktop-toolbar[data-strip="assembly"]')
     await expect(bar).toBeVisible()
     await expect(page.locator('[data-strip="feature"]')).toHaveCount(0)
-    await expect(bar.locator('[data-tool="m_fastened"]')).toBeDisabled()
-    await expect(bar.locator('[data-tool="m_fastened"]')).toHaveAttribute('title', 'Comes with assembly authoring (S10)')
+    // the mate tools are live since I10.6: the title is the type's label and help from the types route, and its key
+    await expect(bar.locator('[data-tool="m_fastened"]')).toBeEnabled()
+    await expect(bar.locator('[data-tool="m_fastened"]')).toHaveAttribute('title', /^Fastened mate/)
     await expect(bar.locator('[data-tool="insert"]')).toBeEnabled()
     await expect(bar.locator('[data-tool="bom"]')).toHaveAttribute('title', 'Desktop only for now')
     await fixAndMove(page, bar.locator('[data-tool="asm_fix"]'), bar.locator('[data-tool="move"]'))

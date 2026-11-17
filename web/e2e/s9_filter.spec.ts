@@ -35,8 +35,8 @@ test('with Faces unticked a box over the bracket selects edges only', async ({ p
   await openApp(page)
   // the Select menu shows the desktop's defaults
   await page.getByRole('button', { name: 'Select' }).click()
-  const ticks = await page.getByRole('menuitemcheckbox').evaluateAll((els) => els.map((e) => `${e.textContent!.trim()}=${e.getAttribute('aria-checked')}`))
-  expect(ticks).toEqual(['Vertices=false', 'Edges=true', 'Faces=true', 'Solids (whole parts)=false', 'Sketches=true', 'Planes=true', 'Axes=true'])
+  const ticks = () => page.getByRole('menuitemcheckbox').evaluateAll((els) => els.map((e) => `${e.textContent!.trim()}=${e.getAttribute('aria-checked')}`))
+  await expect.poll(ticks).toEqual(['Vertices=false', 'Edges=true', 'Faces=true', 'Solids (whole parts)=false', 'Sketches=true', 'Planes=true', 'Axes=true'])
   await page.keyboard.press('Escape')
 
   await boxOverModel(page)

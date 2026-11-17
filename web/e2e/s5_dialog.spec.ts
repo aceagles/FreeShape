@@ -93,7 +93,7 @@ test('Fillet 1: tap the edge field, pick another edge with the pen, see its chip
   // tapping the field makes it the active one: the view now picks edges for it
   await field.getByRole('button', { name: /Tap, then pick/ }).click()
   await expect(field).toHaveAttribute('data-active', '')
-  expect((await readViewport(page)).selection.multi).toBe(true)
+  await expect.poll(async () => (await readViewport(page)).selection.multi).toBe(true)
   // the view draws the model before Fillet 1 (card F3), and picks resolve against it: the field's own edge is there
   await page.locator('[data-dialog-base]').waitFor()
   const had = await chips.allTextContents()
@@ -108,7 +108,7 @@ test('Fillet 1: tap the edge field, pick another edge with the pen, see its chip
   await expect(chips).toHaveCount(had.length + 1)
   // chips read "Edge 7 of Part 1", never the encoded Element name; the new one numbers the edge as the view drew it
   for (const t of await chips.allTextContents()) expect(t).toMatch(/^(Edge \d+ of .+|Edge)$/)
-  expect((await chips.allTextContents()).some((t) => t.startsWith(`Edge ${spot.edge + 1} of `))).toBe(true)
+  await expect.poll(async () => (await chips.allTextContents()).some((t) => t.startsWith(`Edge ${spot.edge + 1} of `))).toBe(true)
   // the pick went to the field, not to the general selection: the chip of the view counts the field's items
   await page.waitForFunction((n) => (window.__freeshapeViewport?.preview ?? 0) > n, before)
   expect((await readViewport(page)).tintedFeature).not.toBeNull()

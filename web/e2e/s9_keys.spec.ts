@@ -75,7 +75,8 @@ async function selectTop(page: Page): Promise<void> {
 
 test('Shift+S sketches on the selected Top plane, Esc leaves it (asking once something is drawn), Shift+7 then F gives the fitted isometric view', async ({ page }) => {
   await openApp(page)
-  expect(await page.getByTestId('shell').getAttribute('data-mode')).toBe('desktop')
+  await expect.poll(() => page.getByTestId('shell').getAttribute('data-mode')).toBe('desktop')
+  await expect.poll(() => page.locator('.panel-row[data-feature]').count()).toBeGreaterThan(0)
   const features = await page.locator('.panel-row[data-feature]').count()
 
   await selectTop(page)
@@ -108,9 +109,9 @@ test('Shift+S sketches on the selected Top plane, Esc leaves it (asking once som
   await expect(page.locator('.panel-row[data-feature]')).toHaveCount(features)
 
   await page.keyboard.press('Shift+7')
-  const iso = (await settled(page)).camera
   const s = Math.sqrt(3)
-  expect(near(iso.back, [1 / s, -1 / s, 1 / s])).toBe(true)
+  await expect.poll(async () => near((await settled(page)).camera.back, [1 / s, -1 / s, 1 / s])).toBe(true)
+  const iso = (await settled(page)).camera
   // move the view off, then F fits it again
   await page.keyboard.press('Control+Shift+ArrowRight')
   await page.keyboard.press('Control+Shift+ArrowUp')

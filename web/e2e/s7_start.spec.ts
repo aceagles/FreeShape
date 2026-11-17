@@ -20,6 +20,7 @@ const features = (page: Page) => page.locator('.panel-row[data-feature]')
 
 test('Sketch with nothing selected asks for a plane; draw, Done, pick the region with the pen, and Extrude takes it', async ({ page }) => {
   await openApp(page)
+  await expect.poll(() => features(page).count()).toBeGreaterThan(0)
   const before = await features(page).count()
   await page.locator('[data-tool="sketch"]').click()
   const ask = page.getByRole('dialog', { name: 'Sketch on which plane?' })

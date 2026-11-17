@@ -22,7 +22,7 @@ async function openFreed(page: Page): Promise<void> {
   await expect.poll(async () => (await readSketch(page)).selected).toEqual([{ kind: 'dimension', id: 'k19' }])
   await page.locator('[data-tool="delete"]').click()
   await expect.poll(async () => (await readSketch(page)).stats.labels).toBe(before - 1)
-  expect((await readSketch(page)).selected).toEqual([])
+  await expect.poll(async () => (await readSketch(page)).selected).toEqual([])
   await settledSketch(page)
 }
 
@@ -78,15 +78,15 @@ test('a finger drag that starts on a point pans the view; the point moves only b
   const p2 = await screenOf(page, 'point', 'p2')
   const origin = await screenOf(page, 'point', 'origin')
   await fingerDrag(page, p2, { x: p2.x - 40, y: p2.y + 20 })
+  await expect.poll(async () => (await screenOf(page, 'point', 'origin')).x - origin.x).toBeCloseTo(-40, 3)
   const panned = await screenOf(page, 'point', 'origin')
-  expect(panned.x - origin.x).toBeCloseTo(-40, 3)
   // select it with a tap, then take its handle
   const p2b = await screenOf(page, 'point', 'p2')
   await fingerTap(page, p2b)
   await expect.poll(async () => (await readSketch(page)).selected).toEqual([{ kind: 'point', id: 'p2' }])
   await settledSketch(page)
+  await expect.poll(() => handleOf(page, 'point', 'p2')).not.toBeNull()
   const h = await handleOf(page, 'point', 'p2')
-  expect(h).not.toBeNull()
   await fingerDrag(page, h!, { x: h!.x + 50, y: h!.y }, { moves: 10 })
   await expect.poll(async () => (await screenOf(page, 'point', 'p2')).x).toBeGreaterThan(p2b.x + 25)
   // the view did not pan under it
@@ -151,11 +151,12 @@ test('a mouse drag on the rim of a circle with a diameter dimension moves the wh
   await expect(page.getByTestId('pad')).toHaveCount(0)
   await page.locator('[data-strip="sketch"] [data-tool="select"]').click()
   await settledSketch(page)
+  await expect.poll(() => radiusOf(page, centre, circle)).toBeCloseTo(7.5, 2)
   const c0 = (await uvAt(page, ...Object.values(await screenOf(page, 'point', centre)) as [number, number]))!
   const r0 = await radiusOf(page, centre, circle)
   expect(r0).toBeCloseTo(7.5, 2)
   const from = await screenOf(page, 'entity', circle)
-  expect(await pickSketchAt(page, from.x, from.y, 'mouse')).toEqual({ kind: 'entity', id: circle })
+  await expect.poll(() => pickSketchAt(page, from.x, from.y, 'mouse')).toEqual({ kind: 'entity', id: circle })
   const to = { x: from.x + 50, y: from.y + 30 }
   const u0 = (await uvAt(page, from.x, from.y))!
   const u1 = (await uvAt(page, to.x, to.y))!
@@ -176,7 +177,7 @@ test('a mouse drag on the rim of a circle with a free radius resizes it, as on t
   const c0 = await screenOf(page, 'point', centre)
   const r0 = await radiusOf(page, centre, circle)
   const from = await screenOf(page, 'entity', circle)
-  expect(await pickSketchAt(page, from.x, from.y, 'mouse')).toEqual({ kind: 'entity', id: circle })
+  await expect.poll(() => pickSketchAt(page, from.x, from.y, 'mouse')).toEqual({ kind: 'entity', id: circle })
   // the middle of the stroke is the rim point farthest left: dragging left grows the circle
   await mouseDrag(page, 0, from, { x: from.x - 40, y: from.y }, { moves: 10 })
   await expect.poll(async () => (await radiusOf(page, centre, circle)) - r0).toBeGreaterThan(1)

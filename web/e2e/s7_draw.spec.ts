@@ -94,8 +94,8 @@ test('a line from two pen Commits: the preview shows the snap, the points land w
   // Aim 2 degrees off level: the preview says level, and the mark is on the level
   const to = await screenFor(page, 20, 10 + 50 * Math.tan((2 * Math.PI) / 180))
   await sendPointer(page, [down({ x: to.x - 20, y: to.y }), move(to)])
+  await expect.poll(async () => (await settledSketch(page)).draw.aim?.infer).toBe('H')
   const aim = (await settledSketch(page)).draw.aim!
-  expect(aim.infer).toBe('H')
   await expect(page.locator('[data-kind="aim"][data-infer="H"]')).toBeVisible()
   const shown = aim.at
   await sendPointer(page, [up(to)])
@@ -107,10 +107,14 @@ test('a line from two pen Commits: the preview shows the snap, the points land w
   const [p0, p1] = await Promise.all(ends.map((id) => screenOf(page, 'point', id)))
   const end = Math.hypot(p0!.x - shown.x, p0!.y - shown.y) < Math.hypot(p1!.x - shown.x, p1!.y - shown.y) ? p0! : p1!
   expect(Math.hypot(end.x - shown.x, end.y - shown.y)).toBeLessThan(1)
-  const v0 = (await uvAt(page, p0!.x, p0!.y))![1]
-  const v1 = (await uvAt(page, p1!.x, p1!.y))![1]
-  expect(Math.abs(v0 - v1)).toBeLessThan(1e-6)
-  expect((await settledSketch(page)).stats.glyphs).toBeGreaterThan(0) // the horizontal constraint's glyph
+  await expect
+    .poll(async () => {
+      const v0 = (await uvAt(page, p0!.x, p0!.y))![1]
+      const v1 = (await uvAt(page, p1!.x, p1!.y))![1]
+      return Math.abs(v0 - v1)
+    })
+    .toBeLessThan(1e-6)
+  await expect.poll(async () => (await settledSketch(page)).stats.glyphs).toBeGreaterThan(0) // the horizontal constraint's glyph
 })
 
 test('a line that chains ends on a point it meets: the points are joined, not doubled', async ({ page }) => {
@@ -128,7 +132,7 @@ test('a line that chains ends on a point it meets: the points are joined, not do
   // back to the first point, a little off: it snaps there (a coincident), closing the triangle without a new point
   const near = { x: a.x + 4, y: a.y - 3 }
   await sendPointer(page, [down({ x: near.x + 20, y: near.y }), move(near)])
-  expect((await settledSketch(page)).draw.aim!.snap).toBe('point')
+  await expect.poll(async () => (await settledSketch(page)).draw.aim?.snap).toBe('point')
   await sendPointer(page, [up(near)])
   await expect.poll(async () => (await stats(page)).lines).toBe(3)
   await expect(page.locator('.sketch-layer circle[data-kind="point"]')).toHaveCount(4) // the origin and the triangle's three corners

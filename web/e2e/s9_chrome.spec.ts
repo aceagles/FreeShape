@@ -60,6 +60,6 @@ test('the splitter resizes the left column and keeps the width on the device', a
   await page.mouse.down()
   await page.mouse.move(bar.x + 130, 300, { steps: 4 })
   await page.mouse.up()
-  expect(Math.round((await column.boundingBox())!.width)).toBe(400)
-  expect(await page.evaluate(() => window.localStorage.getItem('freeshape.leftWidth'))).toBe('400')
+  await expect.poll(async () => Math.round((await column.boundingBox())!.width)).toBe(400)
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem('freeshape.leftWidth'))).toBe('400')
 })

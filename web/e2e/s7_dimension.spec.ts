@@ -83,6 +83,7 @@ test('two points with the label above them give a horizontal distance, typed on 
 test('a double tap on a label changes its value; 0 is refused in the words of the server and the sketch stays as it was', async ({ page }) => {
   await openApp(page)
   await openSketchFeature(page, 'Bracket profile')
+  await expect.poll(async () => (await labels(page)).length).toBe(4)
   const before = await labels(page)
   expect(before.length).toBe(4)
   // a double tap on a label opens the pad on its value, in any tool
@@ -103,13 +104,14 @@ test('a double tap on a label changes its value; 0 is refused in the words of th
   await page.keyboard.press('Enter')
   await expect(page.getByTestId('pad')).toHaveCount(0)
   await expect.poll(async () => (await labels(page)).includes('50 mm'), { message: JSON.stringify(await labels(page)) }).toBe(true)
-  expect((await readSketch(page)).stats.labels).toBe(4)
+  await expect.poll(async () => (await readSketch(page)).stats.labels).toBe(4)
   await page.getByTestId('sketch-cancel').click()
 })
 
 test('a new dimension that the others already fix is refused in words and changes nothing', async ({ page }) => {
   await openApp(page)
   await openSketchFeature(page, 'Bracket profile')
+  await expect.poll(async () => (await labels(page)).length).toBeGreaterThan(0)
   const before = await labels(page)
   await dimensionTool(page).click()
   await settledSketch(page)

@@ -39,14 +39,14 @@ test('P hides the default planes in the 3D view and P again shows them; the View
   expect(await page.getByTestId('shell').getAttribute('data-mode')).toBe('desktop')
   // the default planes are drawn faint in the view, and the menu's Show planes is ticked
   expect(await planes(page)).toBe(3)
-  expect(await planesTick(page)).toBe('true')
+  await expect.poll(() => planesTick(page)).toBe('true')
   const canvas = (await viewCanvas(page).boundingBox())!
   const spot = await overPart(page)
   await page.mouse.move(canvas.x + spot.x, canvas.y + spot.y)
 
   await page.keyboard.press('p')
   await expect.poll(() => planes(page)).toBe(0)
-  expect(await planesTick(page)).toBe('false')
+  await expect.poll(() => planesTick(page)).toBe('false')
   // a hidden plane is not picked either: no pick of the view lands on a plane any more
   const cam = (await settled(page)).camera
   const grid: Spot[] = []
@@ -59,7 +59,7 @@ test('P hides the default planes in the 3D view and P again shows them; the View
   await expect.poll(() => planes(page)).toBe(1)
   expect((await readViewport(page)).hiddenDefaultPlanes).toEqual(expect.not.arrayContaining(['Front']))
   await expect(page.locator('[data-origin-row="Front"]')).not.toHaveAttribute('data-hidden', '')
-  expect(await planesTick(page)).toBe('true')
+  await expect.poll(() => planesTick(page)).toBe('true')
   // one plane shows, so P hides all again, and P once more shows all
   await page.mouse.move(canvas.x + spot.x, canvas.y + spot.y)
   await page.keyboard.press('p')
@@ -68,13 +68,13 @@ test('P hides the default planes in the 3D view and P again shows them; the View
   await page.keyboard.press('p')
   await expect.poll(() => planes(page)).toBe(3)
   await expect(page.locator('[data-origin-row][data-hidden]')).toHaveCount(0)
-  expect(await planesTick(page)).toBe('true')
+  await expect.poll(() => planesTick(page)).toBe('true')
 
   // the menu item does the same as the key
   await page.getByRole('button', { name: 'View', exact: true }).click()
   await page.getByRole('menuitemcheckbox', { name: /Show planes/ }).click()
   await expect.poll(() => planes(page)).toBe(0)
-  expect(await planesTick(page)).toBe('false')
+  await expect.poll(() => planesTick(page)).toBe('false')
   await page.keyboard.press('p')
   await expect.poll(() => planes(page)).toBe(3)
 
@@ -107,7 +107,7 @@ test('Y hides the clicked part, the part under the pointer when nothing is selec
   await expect(page.getByRole('button', { name: `Show ${name}` })).toBeVisible()
   // what Y changed on the server: the part's eye (set_part_override) as an edit of the tab, so the Document is marked unsaved,
   // as it is after a click on the eye in the Parts list; the desktop does not mark it
-  expect(await dirty()).toBe(true)
+  await expect.poll(dirty).toBe(true)
 
   // 2. Shift+Y shows every part again
   await page.keyboard.press('Shift+Y')

@@ -15,7 +15,7 @@ const option = (page: Page, name: 'Desktop' | 'Tablet') => page.getByTestId('mod
 
 test('a page with nothing stored opens in Desktop mode', async ({ page }) => {
   await openApp(page)
-  expect(await shellMode(page)).toBe('desktop')
+  await expect.poll(() => shellMode(page)).toBe('desktop')
   await expect(option(page, 'Desktop')).toHaveAttribute('aria-pressed', 'true')
   await expect(option(page, 'Tablet')).toHaveAttribute('aria-pressed', 'false')
 })
@@ -25,19 +25,20 @@ test('the toggle switches Tablet and back with the open tab and the selection ke
   const tab = page.locator('.tab-button[aria-current="page"]')
   const tabName = await tab.textContent()
   await partRow(page, /./).first().click()
+  await expect(page.getByTestId('selection-count')).not.toHaveText('Nothing selected')
   const selected = await page.getByTestId('selection-count').textContent()
   expect(selected).not.toBe('Nothing selected')
   const canvas = await page.locator('[data-region="viewport"] canvas').first().evaluateHandle((c) => c)
 
   await option(page, 'Tablet').click()
-  expect(await shellMode(page)).toBe('tablet')
-  expect(await page.evaluate(() => window.localStorage.getItem('freeshape.mode'))).toBe('tablet')
+  await expect.poll(() => shellMode(page)).toBe('tablet')
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem('freeshape.mode'))).toBe('tablet')
   await expect(tab).toHaveText(tabName ?? '')
   await expect(page.getByTestId('selection-count')).toHaveText(selected ?? '')
   expect(await canvas.evaluate((c) => c.isConnected)).toBe(true)
 
   await option(page, 'Desktop').click()
-  expect(await shellMode(page)).toBe('desktop')
+  await expect.poll(() => shellMode(page)).toBe('desktop')
   await expect(tab).toHaveText(tabName ?? '')
   await expect(page.getByTestId('selection-count')).toHaveText(selected ?? '')
 
@@ -46,5 +47,5 @@ test('the toggle switches Tablet and back with the open tab and the selection ke
   // the reload may land on the home screen: open the Document again
   await expect(page.getByTestId('home').or(page.getByTestId('shell'))).toBeVisible({ timeout: 30_000 })
   if (await page.getByTestId('home').isVisible()) await openFromHome(page, 'Bracket')
-  expect(await shellMode(page)).toBe('tablet')
+  await expect.poll(() => shellMode(page)).toBe('tablet')
 })

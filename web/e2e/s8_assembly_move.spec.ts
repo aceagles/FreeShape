@@ -109,10 +109,12 @@ test('a mouse drag on a ring moves the leaf before the button is released', asyn
   await page.mouse.down()
   await page.mouse.move(at(0.35).x, at(0.35).y, { steps: 4 })
   // still held: the leaf has moved already
+  await expect.poll(async () => differs(await pose(page), before)).toBe(true)
   const held = await pose(page)
-  expect((await readAssembly(page)).gizmo?.active?.kind).toBe('turn')
+  await expect.poll(async () => (await readAssembly(page)).gizmo?.active?.kind).toBe('turn')
   expect(differs(held, before)).toBe(true)
   await page.mouse.move(at(0.7).x, at(0.7).y, { steps: 4 })
+  await expect.poll(async () => differs(await pose(page), held)).toBe(true)
   const further = await pose(page)
   expect(differs(further, held)).toBe(true)
   await page.mouse.up()

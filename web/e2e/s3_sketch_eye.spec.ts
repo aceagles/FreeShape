@@ -88,6 +88,6 @@ test('with the rollback bar just after a sketch, the sketch can be shown and its
   await setEye(page, id, true)
   await expect.poll(() => regionsDrawn(page)).toBeGreaterThan(0)
   const rolled = await outputs(page.request)
-  expect(rolled.rollback).toBeLessThanOrEqual(out.features.findIndex((f) => f.id === id) + 1)
+  await expect.poll(async () => (await outputs(page.request)).rollback).toBeLessThanOrEqual(out.features.findIndex((f) => f.id === id) + 1)
   expect(await pickable(page, rolled, id)).toBeGreaterThan(0)
 })

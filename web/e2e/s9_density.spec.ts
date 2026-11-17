@@ -17,8 +17,8 @@ const MATE = 26
 
 /** No element of `rows` is taller than `max` + 1, and there is at least one. */
 async function noneTaller(rows: Locator, max: number, what: string): Promise<void> {
+  await expect.poll(() => rows.count(), { message: `${what} rows` }).toBeGreaterThan(0)
   const n = await rows.count()
-  expect(n, `${what} rows`).toBeGreaterThan(0)
   for (let i = 0; i < n; i++) {
     const box = (await rows.nth(i).boundingBox())!
     expect(box.height, `${what} row ${i}: ${await rows.nth(i).textContent()}`).toBeLessThanOrEqual(max + 1)
@@ -30,7 +30,7 @@ const mode = (page: Page) => page.getByTestId('shell').getAttribute('data-mode')
 
 test('Part Studio (bracket): feature and part rows are at the desktop height and the rollback bar is 8 px in a 12 px row', async ({ page }) => {
   await openApp(page)
-  expect(await mode(page)).toBe('desktop')
+  await expect.poll(() => mode(page)).toBe('desktop')
   await noneTaller(page.locator('[aria-label="Features"] > li[data-row]'), FEATURE, 'feature')
   await noneTaller(page.getByTestId('parts-list').locator('li'), PART, 'part')
   const bar = page.getByTestId('rollback-bar')

@@ -19,6 +19,7 @@ const strip = (page: Page) => page.locator('.tool-strip')
 
 test('select a face, tap Extrude: the create dialog has it in its profile field; Accept adds a feature', async ({ page, request }) => {
   await openApp(page)
+  await expect.poll(() => features(page).count()).toBeGreaterThan(0)
   const before = await features(page).count()
   const [spot] = await faceSpots(page, request, 'touch')
   await fingerTap(page, spot!)

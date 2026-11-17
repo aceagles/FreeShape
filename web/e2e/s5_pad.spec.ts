@@ -45,10 +45,10 @@ test('every pad key is at least 44 x 44 CSS pixels, and the pad fits the screen'
 test('taps enter 12.5 mm and Enter commits it once', async ({ page }) => {
   await openPad(page, { value: '' })
   await tap(page, '1', '2', 'Decimal point', '5', 'mm')
-  expect(await fieldText(page)).toBe('12.5 mm')
+  await expect.poll(() => fieldText(page)).toBe('12.5 mm')
   await tap(page, 'Enter')
   await expect(page.getByTestId('pad')).toHaveCount(0)
-  expect(await page.evaluate(() => window.__freeshape?.padResult())).toEqual({ committed: true, text: '12.5 mm' })
+  await expect.poll(() => page.evaluate(() => window.__freeshape?.padResult())).toEqual({ committed: true, text: '12.5 mm' })
 })
 
 test('the pad is not a native input, and the # key inserts a variable', async ({ page }) => {
@@ -57,18 +57,18 @@ test('the pad is not a native input, and the # key inserts a variable', async ({
   await page.getByRole('button', { name: 'Variables' }).click()
   await page.getByRole('option', { name: '#wall' }).click()
   await tap(page, 'Multiply', '2')
-  expect(await fieldText(page)).toBe('#wall*2')
+  await expect.poll(() => fieldText(page)).toBe('#wall*2')
   await tap(page, 'Cancel')
-  expect(await page.evaluate(() => window.__freeshape?.padResult())).toEqual({ committed: false, text: '25 mm' })
+  await expect.poll(() => page.evaluate(() => window.__freeshape?.padResult())).toEqual({ committed: false, text: '25 mm' })
 })
 
 test('a hardware keyboard types into the same field', async ({ page }) => {
   await openPad(page, { value: '25 mm' })
   await page.keyboard.type('7.5mm')
-  expect(await fieldText(page)).toBe('7.5mm')
+  await expect.poll(() => fieldText(page)).toBe('7.5mm')
   await page.keyboard.press('Backspace')
   await page.keyboard.press('Enter')
-  expect(await page.evaluate(() => window.__freeshape?.padResult())).toEqual({ committed: true, text: '7.5m' })
+  await expect.poll(() => page.evaluate(() => window.__freeshape?.padResult())).toEqual({ committed: true, text: '7.5m' })
 })
 
 test('a tap on the pad moves no camera and changes no selection', async ({ page }) => {

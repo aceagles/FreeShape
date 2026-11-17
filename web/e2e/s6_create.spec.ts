@@ -48,7 +48,7 @@ async function open(page: Page, solid: boolean): Promise<void> {
 
 test('a sketch with no solid: Extrude starts with an empty profile field, and the first solid made from its region shows as one part', async ({ page }) => {
   await open(page, false)
-  expect((await readViewport(page)).parts).toBe(0)
+  await expect.poll(async () => (await readViewport(page)).parts).toBe(0)
   await expect(features(page)).toHaveCount(1)
   await startTool(page, 'Create', /^Extrude/)
   // nothing is selected and the view has no region to pick: the field is waiting for a pick, and its preview has no model
@@ -69,6 +69,7 @@ test('a sketch with no solid: Extrude starts with an empty profile field, and th
 
 test('select a face with a pen aim-and-release, tap Extrude, set the depth on the pad, Accept: a feature is added', async ({ page, request }) => {
   await open(page, true)
+  await expect.poll(() => features(page).count()).toBeGreaterThan(0)
   const before = await features(page).count()
   const rev = (await readViewport(page)).revision!
   const [spot] = await faceSpots(page, request, 'pen')
@@ -90,6 +91,7 @@ test('select a face with a pen aim-and-release, tap Extrude, set the depth on th
 
 test('start Extrude on another face and drag the arrow handle: the previewed depth changes and Accept adds the feature', async ({ page, request }) => {
   await open(page, true)
+  await expect.poll(() => features(page).count()).toBeGreaterThan(0)
   const before = await features(page).count()
   const rev = (await readViewport(page)).revision!
   const spots = await faceSpots(page, request, 'pen')
@@ -148,7 +150,7 @@ test('a tool the client cannot draw is disabled and shows its note', async ({ pa
   // a row reads 'off' until the types route has answered
   await expect.poll(() => list.locator('.group-row[data-state="off"]').count()).toBe(0)
   const rows = list.locator('.group-row[data-state="desktop"]')
-  expect(await rows.count()).toBeGreaterThan(0)
+  await expect.poll(() => rows.count()).toBeGreaterThan(0)
   const row = rows.first()
   await expect(row).toContainText('Desktop only for now')
   await expect(list.getByRole('menuitem', { name: /Desktop only for now/ }).first()).toBeDisabled()

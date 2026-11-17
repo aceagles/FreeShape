@@ -95,6 +95,7 @@ test('a conflict shows a message and changes nothing; Delete on a selected glyph
   expect(w.got.filter((m) => m['type'] === 'sketch.changed')).toHaveLength(0)
 
   // Delete: tap the horizontal glyph and press Delete
+  await expect.poll(() => glyphs(page, 'horizontal').count()).toBeGreaterThan(0)
   const n = await glyphs(page, 'horizontal').count()
   expect(n).toBeGreaterThan(0)
   const at = await screenOf(page, 'constraint', horizontal.id)

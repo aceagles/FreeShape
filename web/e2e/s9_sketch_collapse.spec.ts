@@ -25,6 +25,7 @@ const viewportWidth = async (page: Page) => (await page.locator('[data-region="v
 test('in a sketch the column collapses, the view widens, a line is drawn, the column expands, and the sketch finishes', async ({ page }) => {
   await openApp(page)
   const features = page.locator('.panel-row[data-feature]')
+  await expect.poll(() => features.count()).toBeGreaterThan(0)
   const before = await features.count()
   await openNewSketch(page, 'Top')
   const wide = await viewportWidth(page)

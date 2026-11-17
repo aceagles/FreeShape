@@ -26,6 +26,7 @@ const click = (page: Page, p: Point) =>
 test('a sketch on Top: the toolbar has the desktop row, Line draws with mouse clicks, Finish sketch puts the sketch in the feature list', async ({ page }) => {
   await openApp(page)
   const features = page.locator('.panel-row[data-feature]')
+  await expect.poll(() => features.count()).toBeGreaterThan(0)
   const before = await features.count()
   await openNewSketch(page, 'Top')
 

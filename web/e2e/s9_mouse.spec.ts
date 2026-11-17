@@ -27,7 +27,7 @@ async function modelBox(page: Page): Promise<{ x0: number; y0: number; x1: numbe
 
 test('a box selects the edges and faces of the left of the bracket, Shift-click adds one more edge, the count shows by the cursor, and a click on empty space clears', async ({ page }) => {
   await openApp(page)
-  expect(await page.getByTestId('shell').getAttribute('data-mode')).toBe('desktop')
+  await expect.poll(() => page.getByTestId('shell').getAttribute('data-mode')).toBe('desktop')
   // Desktop mode has no Multi on the selection chip
   await expect(page.getByTestId('selection-multi')).toHaveCount(0)
   const canvas = (await viewCanvas(page).boundingBox())!
@@ -93,7 +93,7 @@ test('a box dragged right to left is drawn dashed and also takes what it crosses
   await page.mouse.move(canvas.x + from.x, canvas.y + from.y)
   await page.mouse.down()
   await page.mouse.move(canvas.x + to.x, canvas.y + to.y, { steps: 8 })
-  expect(await page.getByTestId('select-box').getAttribute('data-crossing')).toBe('')
+  await expect.poll(() => page.getByTestId('select-box').getAttribute('data-crossing')).toBe('')
   await page.mouse.up()
   const [crossing, window_] = await page.evaluate(
     (b) => [window.__freeshapeViewport!.boxHits(b.from.x, b.from.y, b.to.x, b.to.y), window.__freeshapeViewport!.boxHits(b.to.x, b.from.y, b.from.x, b.to.y)],

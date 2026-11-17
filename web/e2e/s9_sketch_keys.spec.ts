@@ -55,7 +55,7 @@ test('in a sketch on Top, G and two clicks draw a rectangle; D, a click on a sid
   // Esc leaves the Dimension tool for Select; the sketch has a 30 mm side
   await keyboard.press('Escape')
   await pressed(page, 'Select')
-  expect((await settledSketch(page)).stats.labels).toBe(1)
+  await expect.poll(async () => (await settledSketch(page)).stats.labels).toBe(1)
   // the bottom side is 30 mm now, not the 50 it was drawn with: the distances between the sketch's points tell
   const dots = await page.locator('.sketch-layer circle[data-kind="point"]').evaluateAll((els) => els.map((e) => ({ x: e.getBoundingClientRect().x + e.getBoundingClientRect().width / 2, y: e.getBoundingClientRect().y + e.getBoundingClientRect().height / 2 })))
   const box0 = (await viewCanvas(page).boundingBox())!

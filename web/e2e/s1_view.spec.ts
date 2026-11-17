@@ -89,7 +89,7 @@ test('an edit posted to the server reaches the page without a reload', async ({ 
     const after = await readViewport(page)
     expect(after.parts).toBe(before.parts)
     expect(after.faces).toBe(before.faces)
-    expect(after.frames).toBeGreaterThan(before.frames)
+    await expect.poll(async () => (await readViewport(page)).frames).toBeGreaterThan(before.frames)
     expect(await page.evaluate(() => (window as unknown as { __stillHere?: boolean }).__stillHere), 'the page was not reloaded').toBe(true)
   } finally {
     await request.post(`/documents/${doc}/tabs/${tab}/edit`, { data: { ...EDIT, value: ORIGINAL_DIAMETER } })

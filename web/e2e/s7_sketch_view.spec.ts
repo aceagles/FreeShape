@@ -21,6 +21,7 @@ test('opening a sketch faces its plane, makes the solids see-through and draws t
   await expect(page.locator('[data-strip="sketch"] > .strip-button .strip-label')).toHaveText(['Select', 'Draw', 'Dimension', 'Constrain', 'Construct', 'Delete'])
   await expect(page.getByTestId('nav-2d')).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByTestId('sketch-status')).toContainText('Bracket profile')
+  await expect.poll(async () => (await settledSketch(page)).stats.lines).toBeGreaterThan(0)
   const s = await settledSketch(page)
   console.log(`sketch: ${JSON.stringify({ name: s.name, stats: s.stats, tilt: s.tilt })}`)
   expect(s.nav).toBe('2d')
@@ -40,7 +41,7 @@ test('opening a sketch faces its plane, makes the solids see-through and draws t
   await page.getByTestId('sketch-cancel').click()
   await expect(page.locator('[data-strip="feature"]')).toBeVisible()
   await expect(page.locator('.sketch-layer')).toHaveCount(0)
-  expect((await readViewport(page)).sketch).toBeNull()
+  await expect.poll(async () => (await readViewport(page)).sketch).toBeNull()
 })
 
 test('2D: one finger pans and a two-finger twist turns the sketch on screen, the camera staying normal to the plane', async ({ page }) => {
@@ -85,14 +86,13 @@ test('3D: one finger orbits, picks and points still lie on the sketch plane; 2D 
   expect(Math.hypot(uv0[0], uv0[1])).toBeLessThan(1e-6)
   expect(Math.hypot(...(await uvAt(page, o.x + 40, o.y + 30))!)).toBeGreaterThan(0.1)
   await page.getByTestId('normal-to').click()
-  expect((await settledSketch(page)).tilt).toBeLessThan(1e-6)
+  await expect.poll(async () => (await settledSketch(page)).tilt).toBeLessThan(1e-6)
   await expect(page.getByTestId('nav-3d')).toHaveAttribute('aria-pressed', 'true')
   await fingerDrag(page, c, { x: c.x - 70, y: c.y + 80 })
   expect((await settledSketch(page)).tilt).toBeGreaterThan(0.1)
   await page.getByTestId('nav-2d').click()
-  const back = await settledSketch(page)
-  expect(back.tilt).toBeLessThan(1e-6)
-  expect(back.nav).toBe('2d')
+  await expect.poll(async () => (await settledSketch(page)).tilt).toBeLessThan(1e-6)
+  await expect.poll(async () => (await settledSketch(page)).nav).toBe('2d')
 })
 
 test('a tap selects a sketch item and the chip says so; a tap on empty space clears it', async ({ page }) => {
@@ -118,5 +118,5 @@ test('a new sketch on the Top plane opens empty, in 2D and square to the plane; 
   await expect(page.locator('[data-strip="feature"]')).toBeVisible()
   // the part selection works again once the sketch is gone
   await settled(page)
-  expect((await readViewport(page)).sketch).toBeNull()
+  await expect.poll(async () => (await readViewport(page)).sketch).toBeNull()
 })

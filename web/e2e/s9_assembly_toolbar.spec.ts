@@ -33,7 +33,7 @@ async function fixAndMove(page: Page, fix: ReturnType<Page['locator']>, move: Re
   await expect(page.locator(`[data-instance-row="${LEAF}"]`)).not.toHaveAttribute('data-fixed', /.*/)
   await move.click()
   await page.getByTestId('gizmo').waitFor()
-  expect((await settledAssembly(page)).gizmo?.instance).toBe(LEAF)
+  await expect.poll(async () => (await settledAssembly(page)).gizmo?.instance).toBe(LEAF)
   expect((await readAssembly(page)).instances).toBe(3)
 }
 

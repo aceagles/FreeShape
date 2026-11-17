@@ -44,7 +44,7 @@ test('a sketch: a double click on a dimension, a value typed in the inline box a
   await openSketchFeature(page, 'Bracket profile')
   const labels = () => page.locator('.sketch-layer g[data-kind="dimension"] text').evaluateAll((els) => els.map((e) => e.textContent ?? ''))
   await settledSketch(page)
-  expect(await labels()).toContain('60 mm')
+  await expect.poll(() => labels()).toContain('60 mm')
   const at = await screenOf(page, 'dimension', 'k19')
   const canvas = (await viewCanvas(page).boundingBox())!
   await page.mouse.dblclick(canvas.x + at.x, canvas.y + at.y)
@@ -60,6 +60,6 @@ test('a sketch: a double click on a dimension, a value typed in the inline box a
   await page.keyboard.press('Enter')
   await expect(page.getByTestId('dimension-inline')).toHaveCount(0)
   await expect.poll(async () => (await labels()).includes('50 mm'), { message: JSON.stringify(await labels()) }).toBe(true)
-  expect((await readSketch(page)).stats.labels).toBe(4)
+  await expect.poll(async () => (await readSketch(page)).stats.labels).toBe(4)
   // the sketch is left as it is: afterEach closes every Document without saving
 })

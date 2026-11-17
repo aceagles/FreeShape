@@ -16,7 +16,7 @@ const BRACKET_FEATURES = ['Bracket profile', 'Extrude 1', 'Fillet 1', 'Hole posi
 
 test('the panel lists the fixture\'s features; suppressing the fillet from its menu changes the face count, undo restores it', async ({ page }) => {
   await openApp(page)
-  expect(await page.locator('.panel-row[data-feature] .row-name').allTextContents()).toEqual(BRACKET_FEATURES)
+  await expect.poll(() => page.locator('.panel-row[data-feature] .row-name').allTextContents()).toEqual(BRACKET_FEATURES)
   const before = await drawn(page)
   const edits: string[] = []
   page.on('request', (r) => r.url().endsWith('/edit') && edits.push(r.postData() ?? ''))

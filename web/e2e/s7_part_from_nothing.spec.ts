@@ -250,8 +250,8 @@ test('from the home screen to a filleted solid: create, sketch with the pen, dim
   const sides = lineIds(sk)
   expect(sides).toHaveLength(4)
   const keepsDimensions = async (a: string, b: string, apart: number) => {
-    expect((await labels(page)).sort()).toEqual(['10 mm', '20 mm'])
-    expect(dist(await screenOf(page, 'point', a), await screenOf(page, 'point', b))).toBeCloseTo(apart, 0)
+    await expect.poll(async () => (await labels(page)).sort()).toEqual(['10 mm', '20 mm'])
+    await expect.poll(async () => dist(await screenOf(page, 'point', a), await screenOf(page, 'point', b))).toBeCloseTo(apart, 0)
   }
   // a rectangle that is 20 by 10 and has no other constraint on its place: a corner dragged takes all four with it
   const corner = sk.entities[sides[0]!]!.p1!
@@ -263,6 +263,8 @@ test('from the home screen to a filleted solid: create, sketch with the pen, dim
   const n0 = await screenOf(page, 'point', next)
   await penStroke(page, c0, { x: c0.x + 30, y: c0.y + 20 }, { moves: 10 })
   await expect.poll(async () => (await screenOf(page, 'point', corner)).x).toBeGreaterThan(c0.x + 15)
+  // the other corner follows only when the server's solve comes back
+  await expect.poll(async () => (await screenOf(page, 'point', next)).x - n0.x).toBeCloseTo(30, 0)
   await settledSketch(page)
   const c1 = await screenOf(page, 'point', corner)
   const n1 = await screenOf(page, 'point', next)
@@ -276,8 +278,8 @@ test('from the home screen to a filleted solid: create, sketch with the pen, dim
   await fingerTap(page, c1)
   await expect.poll(async () => (await readSketch(page)).selected).toEqual([{ kind: 'point', id: corner }])
   await settledSketch(page)
+  await expect.poll(() => handleOf(page, 'point', corner)).not.toBeNull()
   const h = await handleOf(page, 'point', corner)
-  expect(h).not.toBeNull()
   await fingerDrag(page, h!, { x: h!.x - 25, y: h!.y + 15 }, { moves: 10 })
   await expect.poll(async () => (await screenOf(page, 'point', corner)).x).toBeLessThan(c1.x - 12)
   await settledSketch(page)
@@ -299,6 +301,8 @@ test('from the home screen to a filleted solid: create, sketch with the pen, dim
   await fingerTap(page, { x: 8, y: (await page.getByTestId('viewport').boundingBox())!.height - 8 })
   await penStroke(page, grip, { x: grip.x - 20, y: grip.y + 35 }, { moves: 10 })
   await expect.poll(async () => (await screenOf(page, 'point', t1)).y).toBeGreaterThan(s1.y + 15)
+  // the other end of the side follows only when the server's solve comes back
+  await expect.poll(async () => (await screenOf(page, 'point', t2)).y - s2.y).toBeCloseTo(35, 0)
   await settledSketch(page)
   const e1 = await screenOf(page, 'point', t1)
   const e2 = await screenOf(page, 'point', t2)
@@ -364,9 +368,8 @@ test('one finger pans an open sketch without tipping it; after the 3D toggle it 
 
   // 2D squares the view to the plane again
   await page.getByTestId('nav-2d').click()
-  const back = await settledSketch(page)
-  expect(back.nav).toBe('2d')
-  expect(back.tilt).toBeLessThan(1e-6)
+  await expect.poll(async () => (await settledSketch(page)).nav).toBe('2d')
+  await expect.poll(async () => (await settledSketch(page)).tilt).toBeLessThan(1e-6)
 })
 
 test('a socket that closes in the middle of a sketch brings back the rectangle that was drawn and not finished', async ({ page }) => {
@@ -386,6 +389,6 @@ test('a socket that closes in the middle of a sketch brings back the rectangle t
   expect(Object.values(back.entities).filter((e) => e.type === 'line')).toHaveLength(4)
   await expect(page.getByTestId('link-status')).toHaveText('Connected', { timeout: 30_000 })
   await expect(page.locator('[data-strip="sketch"]')).toBeVisible()
-  expect((await settledSketch(page)).stats.lines).toBe(4)
+  await expect.poll(async () => (await settledSketch(page)).stats.lines).toBe(4)
   await expect(page.locator('.sketch-layer path[data-kind="line"]')).toHaveCount(4)
 })

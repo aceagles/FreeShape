@@ -43,6 +43,11 @@ Routes (an exact table; no part of a request is ever joined to a file path):
                                 "export_roots": [{"name", "max_bytes"}]} (I11.2, I11.13; see "File roots" below)
     GET  /files/<root>[?dir=<folder>&q=<words>&offset=&limit=]  one folder of the root, or the search results
     POST /files/<root>/rescan                  rebuild the root's index; reply {"root", "files"}
+    GET  /documents/<id>/archive[?save=1]      the Document's saved folder as one .fsdoc download (I11.5; see "Archive"
+                                below); 409 unsaved, 423, 404, 422
+    POST /documents/archive?name=<file name>   body: the .fsdoc bytes (application/octet-stream, up to MAX_ARCHIVE, this
+                                route and import only); a Documents root only; reply 201 {"id", "name"}; 422 refused,
+                                413, 404 on a single-Document server
     GET  /documents/<id>/tabs/<tab>/export?format=step|stl[&parts=<ids>&preset=&defl=&angle=&ascii=]  the tab as a
                                 STEP or STL download (I11.3; see "Export" below)
     POST /documents/<id>/tabs/<tab>/export  body: {"root", "format", ...}; saves the same export into an export root
@@ -76,6 +81,31 @@ Studio only; absent is every part), and for an STL `preset` (Coarse, Medium, Fin
 Studio tab, a format that is not step or stl, an unknown or repeated parameter, an unknown part id and an option out of
 range are a 400. A read-only Document exports too (nothing in it changes). The making of an export is one method,
 `_Server._make_export`, which a route that saves the bytes elsewhere calls as well.
+
+Archive (I11.5; freeshape/doc_archive.py, ADR 0017). A Document travels as one `.fsdoc` file.
+  GET  /documents/<id>/archive[?save=1]  the Document as it is saved in its folder (never the unsaved state of the open
+                         session), Content-Type application/octet-stream (so Safari does not unzip it), Content-Disposition
+                         attachment with `<Document name>.fsdoc` (built as the export's is; the name is the registry's, made
+                         safe by `export_options.export_file_name`). Works on an open or a closed Document, on a Documents
+                         root and on a single-Document server. The only query key is `save` (1 or 0), given once. When the
+                         Document is open here with unsaved edits the reply is 409 {"error": "unsaved", "document"} and
+                         nothing is saved; with save=1 the server saves first by the route of POST .../save (the lock holder's
+                         route: `save=1` is refused with 423 {"error", "document", "holder"} when this server no longer
+                         holds the Document's lock, even when nothing is unsaved) and then packs. The archive is packed under
+                         the Document's session lock, so a save cannot change the folder while it is read. 404 for an id
+                         nothing knows or whose folder is gone; 422 {"error": reason} when `doc_archive.pack` refuses the
+                         folder (a tab file name with a colon or a leading dot, a blob that is not its key, ...).
+  POST /documents/archive?name=<name>  a Documents-root server only (404 on a single-Document server, before the body is
+                         read). Body application/octet-stream, Content-Length required (411), over MAX_ARCHIVE (256 MiB) is
+                         413 from the header, before any of it is read; the whole body must arrive within ARCHIVE_DEADLINE
+                         (300 s, else 408). Query: `name` (required, once; a trailing `.fsdoc` is dropped) names the folder
+                         by `folder_name_for` (400 for a name it refuses; `<name> 2`, `<name> 3` on a clash) and nothing
+                         else is accepted. `doc_archive.unpack` runs off the event loop under the server's create lock,
+                         into the Documents root, with a fresh Document id, registered as one this app made. 201 {"id",
+                         "name": the Document's name from its manifest}; the Document then shows in GET /documents. 422
+                         {"error": reason} for an archive `unpack` refuses (not a zip, zip-slip, too many or too large
+                         entries, a bad manifest, ...); a refused archive leaves nothing in the root or the registry.
+                         507 when the disk is full. 415 for another Content-Type. No reply names a server path.
 
 Assembly types (I9.5). GET .../tabs/<tab>/assembly/types answers what the Assembly toolbar draws, read from
 freeshape/assembly.py: 200 {"document", "tab", "mates": [{"id", "label", "help", "freedoms": [name, ...]}],
@@ -437,6 +467,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import json
 import os
 import re
@@ -471,10 +502,10 @@ MAX_FOLDER = 80                 # longest folder name made from it
 _DOC_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _TAB_PATH = re.compile(r"^/tabs/([A-Za-z0-9_-]{1,64})/(outputs|mesh\.json|edit)$")
 _DOC_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})"
-                       r"(?:/(open|close|take-over|save|tabs|recover|discard-autosave)"
+                       r"(?:/(open|close|take-over|save|tabs|recover|discard-autosave|archive)"
                        r"|/tabs/([A-Za-z0-9_-]{1,64})(?:/(outputs|mesh\.json|edit|rename|refs|assembly/types))?)$")
 _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POST", "tabs": "GET", "recover": "POST",
-              "discard-autosave": "POST"}
+              "discard-autosave": "POST", "archive": "GET"}
 _DIALOG_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})"
                           r"(?:/features/(?:([A-Za-z0-9_.-]{1,64})/(dialog)|(dialog|types))"
                           r"|/dialog/([0-9a-f]{16})/(update|accept|cancel|preview|base))$")
@@ -842,6 +873,8 @@ class _Open:
 MAX_UPLOAD = 64 * 1024 * 1024   # the body limit of POST .../import alone (the component library's largest file is 52 MB)
 UPLOAD_DEADLINE = 120.0         # seconds for the whole body of that upload
 _IMPORT_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/import$")
+MAX_ARCHIVE = 256 * 1024 * 1024     # the body limit of POST /documents/archive (I11.5), the other one besides MAX_UPLOAD
+ARCHIVE_DEADLINE = 300.0        # seconds for the whole body of that upload
 _FILES_PATH = re.compile(r"^/files(?:/([a-z0-9-]{1,32})(/rescan)?)?\Z")       # I11.2
 _EXPORT_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/export$")      # I11.3
 MAX_EXPORT_PARTS = 1000         # part ids one export may name
@@ -1330,6 +1363,8 @@ class _Server:
         single-Document server and carry doc_id None (the caller fills in the one Document)."""
         if path == "/documents":
             return "documents", None, None, None             # GET lists, POST creates
+        if path == "/documents/archive":
+            return "archive.upload", None, None, "POST"      # I11.5: the body is the archive's bytes, not JSON
         m = _MATE_PATH.match(path)
         if m is not None:
             return "mates." + (m.group(4) or "open"), m.group(1), m.group(2), "POST"
@@ -1401,7 +1436,7 @@ class _Server:
         if method != want:
             return self._fail(405, "method not allowed", [("Allow", want)])
         body = None
-        if method == "POST" and route != "import":
+        if method == "POST" and route not in ("import", "archive.upload"):
             body = await self._body(request)
             if not isinstance(body, dict):
                 return body                                        # the refusal response
@@ -1477,6 +1512,10 @@ class _Server:
             return await self._create_document(body)
         if route.startswith("files."):
             return await self._files(route[6:], body, request)
+        if route == "archive.upload":
+            return await self._archive_upload(request)
+        if route == "archive":
+            return await self._archive(doc_id, request)
         d = None
         if doc_id is None:                                       # an old route: it means the single Document
             d = self._single
@@ -1924,6 +1963,134 @@ class _Server:
             "document": d.id, "tab": next(t for t in tabs if t["id"] == tab), "rebuilt": rebuilt, "tabs": tabs,
             "feature": None if made is None else {"id": made.id, "name": made.name, "error": made.error},
             "parts": [{"id": p.id, "name": p.name} for p in after.parts if p.id not in held]})
+
+    # ------------------------------------------------------------------ archive (I11.5)
+    def _archive_source(self, doc_id, d):
+        """Pool thread. `(folder, Document name)` of the Document `doc_id` (`d`: its `_Open`, or None when it is not
+        open here), or None when nothing knows it or its folder is gone. The name is the registry's."""
+        if d is not None:
+            folder = d.folder
+        else:
+            folder = self.registry.trusted_path(doc_id) if self.registry is not None else None
+        if not folder or not os.path.isdir(folder):
+            return None
+        name = d.name if d is not None else None
+        if self.registry is not None:
+            row = next((r for r in self.registry.list_documents() if r["id"] == doc_id), None)
+            name = row["name"] if row is not None else name
+        return folder, name or os.path.basename(folder.rstrip(os.sep))
+
+    async def _archive(self, doc_id, request):
+        """GET /documents/<id>/archive[?save=1] (see "Archive" in the module docstring)."""
+        from urllib.parse import quote
+        from . import doc_archive as DA
+        from . import export_options as EO
+        from . import kernel as K
+
+        def pack(folder):                       # the store's own refusals are KernelErrors, not ArchiveErrors
+            try:
+                return DA.pack(folder)
+            except DA.ArchiveError:
+                raise
+            except K.KernelError as e:
+                raise DA.ArchiveError(str(e)) from None
+        q = request.query
+        for k in q:
+            if k != "save" or len(q.getall(k)) != 1:
+                return self._fail(400, f"query {k!r}: only save=1 or save=0, once")
+        save = q.get("save", "0")
+        if save not in ("0", "1"):
+            return self._fail(400, "save must be 1 or 0")
+        client, _ = self._edit_meta(request.headers.get("X-Client-Id"), None)
+        d = self.docs.get(doc_id)
+        found = await self._off_loop(self._archive_source, doc_id, d)
+        if found is None:
+            return self._fail(404, "not found")
+        folder, name = found
+        try:
+            if d is None:
+                data = await self._off_loop(pack, folder)
+            else:
+                if save == "1":                                    # the save route's own check, then its own save
+                    def check():
+                        d.check_writable()
+                        return d.session.has_unsaved()
+                    try:
+                        unsaved = await self._in_session(d, check)
+                    except DocumentLocked:
+                        if d.lost:
+                            await self._lost(d)
+                        raise
+                    if unsaved:
+                        await self._save(d, client)                # raises DocumentLocked itself: 423
+
+                def work():                                        # check and pack under one hold of the session lock
+                    if save != "1" and d.session.has_unsaved():
+                        return None
+                    return pack(folder)
+                data = await self._in_session(d, work)
+                if data is None:
+                    return self._fail(409, "unsaved", document=doc_id)
+        except DA.ArchiveError as e:
+            return self._fail(422, str(e))
+        fname = EO.export_file_name(name, "step")[:-len(".step")] + DA.EXTENSION
+        ascii_name = "".join(c if c.isascii() and (c.isalnum() or c in " ._-") else "_" for c in fname)
+        return self._send(200, data, "application/octet-stream", [
+            ("Content-Disposition", f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(fname, safe='')}")])
+
+    async def _archive_upload(self, request):
+        """POST /documents/archive?name=<name>, the body the .fsdoc bytes (see "Archive" in the module docstring)."""
+        from . import doc_archive as DA
+        if self.registry is None:
+            return self._fail(404, "this server serves a single Document; it cannot open an archive")
+        q = request.query
+        for k in q:
+            if k != "name" or len(q.getall(k)) != 1:
+                return self._fail(400, f"query {k!r}: only name, once")
+        name = q.get("name")
+        if name is None:
+            return self._fail(400, "name is required")
+        if name.lower().endswith(DA.EXTENSION):
+            name = name[:-len(DA.EXTENSION)]
+        try:
+            folder_name_for(name)
+        except ValueError as e:
+            return self._fail(400, str(e))
+        ctype = (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/octet-stream":
+            return self._fail(415, "Content-Type must be application/octet-stream")
+        raw = request.headers.get("Content-Length")
+        if request.headers.get("Transfer-Encoding") is not None or raw is None:
+            return self._fail(411, "Content-Length is required")
+        raw = raw.strip()
+        if not raw.isascii() or not raw.isdigit():
+            return self._fail(400, "Content-Length is not a number")
+        n = int(raw)
+        if n > MAX_ARCHIVE:
+            return self._fail(413, f"body over {MAX_ARCHIVE} bytes")
+        try:
+            data = await asyncio.wait_for(request.content.readexactly(n), ARCHIVE_DEADLINE) if n else b""
+        except asyncio.TimeoutError:
+            return self._fail(408, "request body too slow")
+        except asyncio.IncompleteReadError:
+            return self._fail(400, "body shorter than Content-Length")
+
+        def work():
+            with self._create_lock:
+                folder = DA.unpack(data, self.root, name, registry=self.registry)
+                row = next((r for r in self.registry.list_documents() if r["path"] == folder), None)
+                if row is None:
+                    raise DA.ArchiveError("the new Document could not be recorded in the registry")
+                return row["id"], row["name"]
+        try:
+            doc_id, doc_name = await self._off_loop(work)
+        except DA.ArchiveError as e:
+            return self._fail(422, str(e))
+        except OSError as e:
+            if e.errno == errno.ENOSPC:
+                return self._fail(507, "the Documents folder is full")
+            raise
+        return self._json(201, {"id": doc_id, "name": doc_name})
 
     # ------------------------------------------------------------------ file roots (I11.2)
     def _file_root(self, name):

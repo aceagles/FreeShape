@@ -44,6 +44,25 @@ folder. If the lock is taken from serve while the Document is open, the next hea
 the Document turns read-only and its sockets get a `lock` message. Closing releases the lock. At most one Document is
 open at a time; opening a second answers 409 naming the open one.
 
+## Documents as one file
+
+A Document travels as one `.fsdoc` file (`freeshape/doc_archive.py`, ADR 0017). Two routes carry it.
+
+- `GET /documents/<id>/archive[?save=1]` downloads the Document as it is saved in its folder, as
+  `application/octet-stream` (Safari would unzip a zip type) with `Content-Disposition: attachment` and the file name
+  `<Document name>.fsdoc`. It works for a closed Document and for an open one. When the Document is open here with
+  unsaved edits the reply is 409 `{"error": "unsaved"}` and nothing is saved. With `save=1` the server saves first, by the
+  same check and code as `POST /documents/<id>/save`: a client that does not hold the lock gets 423 with the holder, even
+  when nothing is unsaved. A folder the archive code refuses is a 422 with the reason; an unknown id is a 404.
+- `POST /documents/archive?name=<file name>` takes the `.fsdoc` bytes as `application/octet-stream` and makes a new
+  Document in the Documents root. It needs a Documents root: a single-Document server answers 404. The body may be up to
+  `MAX_ARCHIVE` (256 MiB, refused from `Content-Length` with a 413 before it is read) and must arrive within 300 seconds
+  (408). These two routes and the STEP import are the only ones with a body above 1 MiB. `name` (a trailing `.fsdoc`
+  is dropped) makes the folder name by the rule above, so a clash gets `<name> 2`. The Document gets a fresh id, is
+  registered as one this app made and shows in `GET /documents`. Reply 201 `{"id", "name"}`. An archive the unpacker refuses
+  (not a zip, a path that leaves the folder, too many or too large entries, a bad manifest) is a 422 with the reason and
+  leaves nothing in the root or the registry. The unpacking runs off the event loop.
+
 ## Reaching it from the iPad
 
 The iPad cannot reach a loopback port, so a tunnel sits in front of serve and gives it a public HTTPS name:

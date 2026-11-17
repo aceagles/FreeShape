@@ -101,6 +101,8 @@ test('a dimension label moves by a pen drag and stays where it was dropped', asy
   await settledSketch(page)
   const l = await screenOf(page, 'dimension', 'k19')
   await penStroke(page, l, { x: l.x + 50, y: l.y + 40 }, { moves: 8 })
+  // wait for the last of the stroke's moves, not only for most of the way down: the label follows each move
+  await expect.poll(async () => Math.abs((await screenOf(page, 'dimension', 'k19')).x - (l.x + 50))).toBeLessThan(0.5)
   await expect.poll(async () => (await screenOf(page, 'dimension', 'k19')).y).toBeGreaterThan(l.y + 30)
   const after = await screenOf(page, 'dimension', 'k19')
   expect(after.x).toBeCloseTo(l.x + 50, 0)

@@ -293,12 +293,16 @@ class ModelState:
     axes: dict = field(default_factory=dict)
     # surface bodies made through new_part(surface=True) so far: numbers `Surface n`, apart from `Part n`
     surface_counter: int = 0
+    # extrude feature id -> the unit direction its first end went, after every flip the runner applies (a negative
+    # depth, Opposite direction, a cut going into the part). The dialog's drag arrow reads it from the preview.
+    extrude_dirs: dict = field(default_factory=dict)
 
     def copy(self):
         return ModelState(dict(self.parts), dict(self.sketches), dict(self.planes), self.part_counter,
                           dict(self.vars), dict(self.sheet), dict(self.feature_part_counts), dict(self.old_ids),
                           set(self.recovered), {k: v for k, v in self.names.items() if k in self.parts},
-                          dict(self.connectors), dict(self.history), dict(self.axes), self.surface_counter)
+                          dict(self.connectors), dict(self.history), dict(self.axes), self.surface_counter,
+                          dict(self.extrude_dirs))
 
     def named(self, pid):
         """The element map of part `pid`, or None when it has none or the part's shape has since been
@@ -1293,6 +1297,19 @@ def apply_body(state: ModelState, body, op: str, fid: str, scope=None, named=Non
         raise K.KernelError("Feature does not intersect any part")
 
 
+def removed_material(before, after):
+    """The solid material in `before` that `after` no longer has, as one shape, or None when nothing went.
+    Parts both states share untouched are skipped, so only the parts a feature cut are compared."""
+    gone = [p.shape for p in before.parts.values() if not p.reference and K.solids(p.shape)
+            and not any(q.shape.IsSame(p.shape) for q in after.parts.values())]
+    if not gone:
+        return None
+    kept = [q.shape for q in after.parts.values() if K.solids(q.shape)
+            and not any(p.shape.IsSame(q.shape) for p in before.parts.values())]
+    out = K.compound(gone) if not kept else K.cut(K.compound(gone), K.compound(kept))
+    return out if out is not None and K.solids(out) else None
+
+
 def _apply_surfaces(state, surfs, op, fid, targets, tool):
     """The surface bodies of a tool body (new / add): `new` makes one `Surface n` part each; `add` sews each
     to the surface parts in `targets` it shares an edge with (the first keeps its id) and makes a new part
@@ -2192,6 +2209,11 @@ def _drafted_two_ways(state, fid, p, profs, direction, depth, depth2, symmetric,
     return body, name_feature(state, fid, [n for _, n in pieces], body, fused, "fuse_all", stamp=False)
 
 
+def _unit_tuple(v):
+    v = np.asarray(v, float)
+    return tuple(float(x) for x in v / (np.linalg.norm(v) or 1.0))
+
+
 def run_extrude(state, f):
     p = legacy_up_to(f["params"])
     creation = p.get("creation", "solid")
@@ -2269,15 +2291,18 @@ def run_extrude(state, f):
     if end in UP_TO:
         dist = _up_to_blind(state, p, profs, n)
         if dist is not None:
+            state.extrude_dirs[f["id"]] = _unit_tuple(n if dist > 0 else -n)
             body, hist = K.extrude(profs, n if dist > 0 else -n, abs(dist), with_history=True)
             named = name_feature(state, f["id"], _profile_names(state, p) + thin_seeds, body,
                                  K._chain(thin_hist, hist) if thin else hist, "extrude")
             apply_body(state, body, op, f["id"], p.get("scope"), named)
             return
+        state.extrude_dirs[f["id"]] = _unit_tuple(d)
         body, named = _named_up_to(state, f["id"], p, profs, "extrude", d, (thin_hist, thin_seeds))
         apply_body(state, body, op, f["id"], p.get("scope"), named)
         return
     body, hist = make(d)
+    used = d
     if cutting and end == "blind" and not p.get("second") and state.parts:
         # like Onshape, a cut that misses everything is tried in the other direction
         targets = [state.parts[i] for i in (p.get("scope") or state.parts) if i in state.parts]
@@ -2285,10 +2310,11 @@ def run_extrude(state, f):
             first = dict(drafted)
             alt, alt_hist = make(-d)
             if any(K.intersects(t.shape, alt) for t in targets):
-                body, hist = alt, alt_hist
+                body, hist, used = alt, alt_hist, -d
             else:
                 drafted.clear()
                 drafted.update(first)
+    state.extrude_dirs[f["id"]] = _unit_tuple(used)
     if "named" in drafted:
         named = drafted["named"]
     else:

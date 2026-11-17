@@ -1414,6 +1414,7 @@ class MainWindow(QMainWindow):
 
     def show_preview(self, feature, index, overlays):
         st, err = self.doc.preview(feature, index)
+        self.preview_state = st          # the feature dialog reads its drag arrow and cut ghost from it
         p = feature["params"]
         # sketches a feature uses stay visible while it is being edited
         show = {r["sketch"] for r in p.get("regions", [])}
@@ -1489,6 +1490,10 @@ class MainWindow(QMainWindow):
         vp.overlays = []
         vp.manipulators = []
         vp._manip_drag = None
+        if getattr(self, "_cut_ghosts", None) is not None and vp.ghosts is self._cut_ghosts:
+            vp.ghosts = []           # the dialog's removed-material ghost; another panel's ghosts are left alone
+        self._cut_ghosts = None
+        self.preview_state = None
         vp.clear_selection()
         self._populate_lists()
 

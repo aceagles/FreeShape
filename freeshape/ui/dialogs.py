@@ -3129,22 +3129,20 @@ class FeatureDialog(_ResizableFrame):
                 profs = F._profiles(self.base_state, p)
                 if not profs:
                     return []
-                n = np.asarray(F._profile_normal(self.base_state, p, profs), float)
-                if p.get("op") in ("remove", "intersect") and not p.get("regions"):
-                    n = -n                   # cuts from a face go into the part
                 infos = [K.face_info(f) for f in profs]
                 area = sum(i["area"] for i in infos) or 1.0
                 origin = sum(np.array(i["c"]) * i["area"] for i in infos) / area
                 symmetric = p.get("end") == "symmetric"
                 depth, flip = F.signed_extent(p.get("depth", 10), p.get("flip"))
-                value = depth / 2 if symmetric else (-depth if flip else depth)
+                n = self._extrude_dir(p, profs, flip)
+                value = depth / 2 if symmetric else depth       # the arrow points the way the extrude went
 
-                def on_drag(v, symmetric=symmetric):
+                def on_drag(v, symmetric=symmetric, flip=flip):
                     if symmetric:
                         self._set_quiet("depth", round(abs(v) * 2, 6))
-                    else:
+                    else:                    # dragged back past the start: the other way from where it went
                         self._set_quiet("depth", round(abs(v), 6))
-                        self._set_quiet("flip", v < 0)
+                        self._set_quiet("flip", flip if v >= 0 else not flip)
                     self.main.viewport.manipulators[0]["label"] = fmt(self.feature["params"]["depth"]) + " mm"
                     self.schedule_preview()
                 return [{"origin": origin, "dir": n, "value": value, "on_drag": on_drag,
@@ -3173,6 +3171,40 @@ class FeatureDialog(_ResizableFrame):
             return []
         return []
 
+    def _extrude_dir(self, p, profs, flip):
+        """The way the extrude being edited went: the runner's own record in the preview state, which includes
+        a cut turned round to go into the part, so arrow, preview and result agree. Before the first preview it
+        is worked out from the profile as the runner starts out."""
+        st = getattr(self.main, "preview_state", None)
+        got = getattr(st, "extrude_dirs", {}).get(self.feature["id"]) if st is not None else None
+        if got is not None:
+            return np.asarray(got, float)
+        n = np.asarray(F._profile_normal(self.base_state, p, profs), float)
+        if p.get("op") in ("remove", "intersect") and not p.get("regions"):
+            n = -n                       # cuts from a face go into the part
+        return -n if flip else n
+
+    def _cut_ghost(self):
+        """A red see-through ghost of the material a Remove or Intersect extrude takes away, as Onshape shows it."""
+        main, vp = self.main, self.main.viewport
+        ghosts = []
+        st = getattr(main, "preview_state", None)
+        if self.ftype == "extrude" and self.feature["params"].get("op") in ("remove", "intersect") and st is not None:
+            try:
+                gone = F.removed_material(self.base_state, st)
+                if gone is not None:
+                    from .. import history as H
+                    ghosts = [(K.tessellate(gone), H.GHOST_COLORS["removed"])]
+            except Exception:
+                ghosts = []
+        mine = getattr(main, "_cut_ghosts", None)
+        if ghosts:
+            if mine is None or vp.ghosts is mine or not vp.ghosts:
+                main._cut_ghosts = vp.ghosts = ghosts
+        elif mine is not None and vp.ghosts is mine:
+            vp.ghosts = []
+            main._cut_ghosts = None
+
     # ------------------------------------------------------------------ preview / commit
     def schedule_preview(self):
         self._timer.start(90)
@@ -3180,11 +3212,13 @@ class FeatureDialog(_ResizableFrame):
     def _do_preview(self):
         self.feature["name"] = self.title.text().strip() or self.feature["name"]
         vp = self.main.viewport
-        if vp._manip_drag is None:          # don't rebuild the arrow while it's being dragged
-            vp.manipulators = self.manipulators()
         if self.ftype == "fill":
             self._gap_points = []
         err = self.main.show_preview(self.feature, self.index, self.overlays())
+        if vp._manip_drag is None:          # don't rebuild the arrow while it's being dragged
+            vp.manipulators = self.manipulators()     # after the preview: the arrow follows the way it went
+        self._cut_ghost()
+        vp.update()
         if self.ftype == "fill":             # an open boundary: mark the two open ends and hold OK back
             gap = bool(err) and err.startswith(K.FILL_GAP)
             if gap:

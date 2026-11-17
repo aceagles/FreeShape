@@ -432,4 +432,29 @@ def _stop_leaked_autosave_timers():
     stop_leaked_autosave_timers()
 
 
+# --------------------------------------------------------------------------- Document lock isolation
+# A window that opens a Document folder holds its lock, and a plain thread ("freeshape-doc-lock") rewrites the lock
+# file every few seconds. A window a test module leaves alive keeps that thread running for the rest of the process,
+# where it opens "<other test's folder>/.freeshape-lock" in the middle of tests that record every open
+# (test_pyfeature_outputs, test_docstore, test_blobstore, test_memory_store, test_mainwindow_store): seen on CI as a
+# failure of one of those on one OCP build only. Let go of the lock of every window still alive when a MODULE ends:
+# windows are shared between the tests of one module (module-scoped fixtures), never between modules.
+def release_leaked_document_locks():
+    mw = sys.modules.get("freeshape.ui.mainwindow")     # not imported: no window can exist, and don't pull in Qt
+    qw = sys.modules.get("PySide6.QtWidgets")
+    if mw is None or qw is None or qw.QApplication.instance() is None:
+        return
+    for w in qw.QApplication.topLevelWidgets():
+        if isinstance(w, mw.MainWindow):
+            hold, w._lock_hold = getattr(w, "_lock_hold", None), None
+            if hold is not None:
+                hold.close()                             # stops the thread (joined) and releases the lock
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _release_leaked_document_locks():
+    yield
+    release_leaked_document_locks()
+
+
 __all__ = [n for n in dir() if not n.startswith("_")]

@@ -34,9 +34,9 @@ def _counting(monkeypatch):
         calls["brep"] += 1
         return brep_text(shape)
 
-    def count_mesh(shape, bases=None):
+    def count_mesh(shape, bases=None, model_diag=None):
         calls["mesh"] += 1
-        return mesh_out(shape, bases)
+        return mesh_out(shape, bases, model_diag)
     monkeypatch.setattr(encode, "brep_text", count_brep)
     monkeypatch.setattr(encode, "mesh_out", count_mesh)
     return calls

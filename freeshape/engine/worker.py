@@ -132,6 +132,7 @@ class _WorkerEngine(InProcessEngine):
 
     def __init__(self, meshes=True, placed=False):
         super().__init__(meshes=meshes, placed=placed)
+        self.encoder.release = True      # I2.3: the worker drops a shape's triangulation once it has the mesh
         self.upstream = {}       # parent tab id -> _StudioView / _AssemblyView
         self.upstream_key = None
         self._shapes = {}        # hash -> shape rebuilt from its BREP, so an unchanged part stays the same object

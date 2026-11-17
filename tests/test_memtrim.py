@@ -94,5 +94,7 @@ def test_import_timing_reports_steady_memory(tmp_path, monkeypatch):
         assert all(v > 0 and not math.isnan(v) for v in nums.values()), text
     edit = re.findall(r"edit_s=(\S+)", text)
     assert len(edit) == 1 and 0 < float(edit[0]) < 60, text
+    tris = re.findall(r"\btriangles=(\d+) window_mesh_mb=(\d+)", text)      # I2.3
+    assert len(tris) == 1 and int(tris[0][0]) > 0 and int(tris[0][1]) > 0, text
     for field in ("reopen_s", "reopen_blocked_s", "reopen_parts"):
         assert len(re.findall(rf"\b{field}=", text)) == 1, text

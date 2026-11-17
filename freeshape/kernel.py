@@ -2255,26 +2255,40 @@ def location_matrix(loc) -> np.ndarray:
     return M
 
 
+MODEL_DEFL = 2e-4      # display meshes: a part's linear deflection is at least this fraction of its model's diagonal
+MODEL_ANGLE = 0.35     # ... and where that raises it, the angular deflection is too: at 0.2 rad it, not the linear
+#                        deflection, sets a small round part's triangle count, so the linear limit alone saved none
+
+
 def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.2, edges_too: bool = True,
-               bases: dict | None = None) -> Mesh:
+               bases: dict | None = None, model_diag: float | None = None) -> Mesh:
     """Triangulate every face. edges_too=False skips the edge polylines (mesh export does not need them).
     A placed shape (a non-identity location, as every occurrence of an imported assembly's part is) is meshed
     in its own coordinates and the mesh moved into place, with the deflection of the unplaced shape so every
     copy is triangulated alike. `bases` ({key: (unplaced shape, mesh)}, the caller's) keeps those meshes, so
-    the same geometry placed many times is meshed once."""
+    the same geometry placed many times is meshed once.
+    `model_diag` (the diagonal of the whole model the shape belongs to; ignored when `lin_defl` is given) makes
+    the faces' linear deflection max(0.001 * the shape's diagonal, MODEL_DEFL * model_diag), so a screw in a
+    large assembly is not meshed as finely as the frame it bolts to (#66); where that raises the deflection the
+    angular deflection becomes at least MODEL_ANGLE (about 18 sides to a circle, not 31). The edge outlines keep the shape's own
+    0.001 * diagonal: they are cheap, and a coarse outline of a small round part looks chunky."""
     loc = shape.Location()
     if not loc.IsIdentity() and loc.Transformation().IsNegative() is False:   # (a mirror is meshed in place)
         base = shape.Located(TopLoc_Location())
-        key = (hash(base), lin_defl, ang_defl, edges_too)
+        key = (hash(base), lin_defl, ang_defl, edges_too, model_diag)
         hit = bases.get(key) if bases is not None else None
         if hit is None or not hit[0].IsSame(base):
-            hit = (base, tessellate(base, lin_defl, ang_defl, edges_too))
+            hit = (base, tessellate(base, lin_defl, ang_defl, edges_too, model_diag=model_diag))
             if bases is not None:
                 bases[key] = hit
         return moved_mesh(hit[1], location_matrix(loc))
+    edge_defl = lin_defl
     if lin_defl is None:
         lo, hi = bbox(shape)
-        lin_defl = max(np.linalg.norm(hi - lo) * 0.001, 1e-3)
+        edge_defl = lin_defl = max(np.linalg.norm(hi - lo) * 0.001, 1e-3)
+        if model_diag and MODEL_DEFL * model_diag > lin_defl:
+            lin_defl = MODEL_DEFL * model_diag
+            ang_defl = max(ang_defl, MODEL_ANGLE)
     BRepMesh_IncrementalMesh(shape, lin_defl, False, ang_defl, True)
     V, N, T, TF, ranges = [], [], [], [], []
     base = 0
@@ -2326,7 +2340,7 @@ def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.2, edge
     polys = []
     for i, e in enumerate(edges(shape) if edges_too else []):
         # seam edges (where a cylinder closes on itself) aren't shown or pickable, as in Onshape
-        polys.append(np.zeros((0, 3), np.float32) if i in seams else discretize_edge(e, lin_defl))
+        polys.append(np.zeros((0, 3), np.float32) if i in seams else discretize_edge(e, edge_defl))
     vpts = np.array(_vertices_np(shape), np.float32).reshape(-1, 3)
     fe = face_edge_lists(shape)
     if V:

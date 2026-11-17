@@ -15,7 +15,8 @@ held at once (sampled), `window_peak_mb` the window's own, `worker_peak_mb` the 
 `window_steady_mb` and `worker_steady_mb` are what the window and the tab's engine worker hold once the import has
 settled: the window keeps handling events for 30 s (FREESHAPE_STEADY_WAIT seconds, if set), then each process runs
 gc and memtrim.release_memory() and reads its own memory. Run with FREESHAPE_NO_MEMTRIM=1 to see them without the
-release. `edit_s` is then the seconds from adding a datum plane to the model until the engine has sent the
+release. `triangles` and `window_mesh_mb` are the display triangles drawn and the MB of mesh arrays the window holds for them
+(I2.3; the window's meshes are coarser for small parts in a big model). `edit_s` is then the seconds from adding a datum plane to the model until the engine has sent the
 model back, as adding one by hand does. Then the tab is saved and closed: `after_close_mb` is what the window holds once that has settled (5 s at
 most), read the same way, and `idle_mb` what it held before the first import; the two should be close (#63). Then
 the saved file is opened again (`_reopen_pass`, #64): `reopen_s` is seconds until the reopened parts are drawn,
@@ -119,6 +120,26 @@ def steady_mb():
     release_memory()
     me = os.getpid()
     return me, tree_mb(me).get(me, 0.0)
+
+
+def mesh_stats(w):
+    """(triangles, mesh_mb) of the open Part Studio in the window (I2.3): `triangles` the display triangles of
+    every part drawn (a placed copy counts its own), `mesh_mb` the MB of the distinct numpy arrays the window
+    holds for those meshes (a placed copy shares its base's triangles, so those count once). (0, 0.0) with no engine."""
+    rec = w.studio_engine._recs.get(id(w.doc)) if w.studio_engine is not None else None
+    if rec is None:
+        return 0, 0.0
+    seen, nbytes, tris = set(), 0, 0
+    for key, (_shape, mesh) in rec.cache.items():
+        if mesh is None:
+            continue
+        if not str(key).startswith("base:"):
+            tris += len(mesh.tris)
+        for a in (mesh.verts, mesh.normals, mesh.tris, mesh.tri_face, mesh.vertices, *mesh.edge_polys):
+            if id(a) not in seen:
+                seen.add(id(a))
+                nbytes += a.nbytes
+    return tris, nbytes / 1e6
 
 
 def _settle_wait(app, seconds):
@@ -343,6 +364,7 @@ def run(out_path, *sources, steady_wait=None):
             err = "; ".join(str(e) for e in w.doc.errors.values()) or "; ".join(str(x) for x in warned)
             _settle_wait(app, steady_wait)
             window_steady = steady_mb()[1]
+            triangles, mesh_mb = mesh_stats(w)
             worker_steady = float("nan")
             if w.studio_engine is not None and w.studio_engine.attached(w.doc):
                 worker_steady = w.studio_engine.in_engine(
@@ -362,7 +384,7 @@ def run(out_path, *sources, steady_wait=None):
                          f"longest_freeze={gaps['max']:.2f} peak_mb={mem.peak:.0f} "
                          f"window_peak_mb={mem.window_peak:.0f} worker_peak_mb={mem.other_peak:.0f} "
                          f"window_steady_mb={window_steady:.0f} worker_steady_mb={worker_steady:.0f} "
-                         f"edit_s={edit_s:.1f} after_close_mb={after_close:.0f} idle_mb={idle:.0f} "
+                         f"triangles={triangles} window_mesh_mb={mesh_mb:.0f} edit_s={edit_s:.1f} after_close_mb={after_close:.0f} idle_mb={idle:.0f} "
                          f"settled={settled}" + reopen + (f" error={err}" if err else "")
                          + (f" reopen_error={reopen_err}" if reopen_err else ""))
             ok = ok and settled and not err and not reopen_err

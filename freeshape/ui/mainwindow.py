@@ -5025,19 +5025,24 @@ class MainWindow(QMainWindow):
     def _prefetch_imports(self, path, prog):
         """Read the STEP files a .fshape imports in the background first (big ones only). False = cancelled. A file
         written since I4.9 names each by blob key (`params.blob`, in `blobs/` beside the file); an older one carries
-        it inline (`params.data`)."""
+        it inline (`params.data`). An import with a stored build that will be used instead (#64) is not read."""
         import json
         from .progress import read_step_in_background
         try:
             with open(path) as fh:
-                feats = json.load(fh).get("features", [])
+                d = json.load(fh)
+            feats = d.get("features", [])
+            builds = d.get("python_builds") if isinstance(d.get("python_builds"), dict) else {}
         except Exception:
             return True
+        store = blobstore.store_for(path)
         for f in feats:
             p = f.get("params", {}) if f.get("type") == "import" and not f.get("suppressed") else {}
+            if F.stored_import_build(f, builds.get(f.get("id")), store.has) is not None:
+                continue
             if (p.get("blob") or p.get("data")) and not F.is_brep_name(p.get("filename", "")):
                 try:
-                    raw = blobstore.store_for(path).get(p["blob"]) if p.get("blob") else base64.b64decode(p["data"])
+                    raw = store.get(p["blob"]) if p.get("blob") else base64.b64decode(p["data"])
                 except Exception:
                     continue
                 if not read_step_in_background(raw, prog, self):

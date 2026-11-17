@@ -90,7 +90,7 @@ def _build_blobs(doc):
                     pass
     for key, data in doc._context_blobs().items():      # the captures of its Context features: the worker has no other way to read them
         out.setdefault(key, data)
-    for key, data in doc._import_blobs().items():       # the STEP files its imports read: an unsaved tab's live nowhere else
+    for key, data in doc.import_build_blobs().items():  # what its imports build from: a stored build, else the STEP file (#64)
         out.setdefault(key, data)
     return out
 
@@ -518,10 +518,15 @@ class StudioEngine(QObject):
         return res
 
     def _plugin_copies(self, rec, snap):
-        """({feature id: entry}, {blob key: bytes}) of the saved copies of the tab's plugin features, as the worker
-        that built them writes them into its tab data; None when the tab has no plugin feature. The window's
-        Document keeps them for its next save (PartStudioDoc.take_plugin_copies)."""
+        """({feature id: entry}, {blob key: bytes}) of the saved copies of the tab's plugin features, and the stored
+        builds of its imports that the window does not hold for the file as it is now (#64), as the worker that
+        built them writes them into its tab data; None when there is nothing to fetch. The window's Document keeps
+        them for its next save (PartStudioDoc.take_plugin_copies)."""
         fids = {f["id"] for f in snap["features"] if plugins.is_plugin_type(f.get("type"))}
+        held_builds = snap.get("python_builds") or {}
+        fids |= {f["id"] for f in snap["features"] if f.get("type") == "import" and not f.get("suppressed")
+                 and (f.get("params") or {}).get("blob") and not F.stored_import_build(
+                     f, held_builds.get(f["id"]), lambda _k: True)}
         if not fids or self._engine is None or rec.tab is None:
             return None
         held = docstore.HeldBlobs({})
@@ -529,8 +534,10 @@ class StudioEngine(QObject):
             builds = json.loads(self._engine.tab_data(rec.tab, blobs=held)).get("python_builds") or {}
         except Exception:           # noqa: BLE001 -- the window keeps the copies it has; the next build tries again
             return None
-        entries = {fid: e for fid, e in builds.items() if fid in fids and plugins.is_copy(e)}
-        return entries, {k: held.held[k] for e in entries.values() for k in e["breps"] if k in held.held}
+        entries = {fid: e for fid, e in builds.items()
+                   if fid in fids and (plugins.is_copy(e) or F.is_import_build(e))}
+        keys = [k for e in entries.values() for k in (e["breps"] if plugins.is_copy(e) else e["bases"])]
+        return entries, {k: held.held[k] for k in keys if k in held.held}
 
     def reload_plugins(self):
         """The window loaded the plugins folder again: each Part Studio's worker starts again (it replays the

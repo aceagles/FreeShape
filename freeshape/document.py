@@ -240,6 +240,7 @@ class PartStudioDoc:
         self._blob_bytes: dict = {}                 # blob key -> bytes read while restoring a stored build
         self._build_memo: dict = {}                 # feature id -> (state, entry, blobs) of its last record
         self._import_keys: dict = {}                # id(base64 text) -> (text, key) of an inline import; memory only
+        self._import_built: dict = {}               # (import feature id, its stamp) -> the state right after it ran here
         self.hidden_parts: set = set()
         self.hidden_features: set = set()         # sketches / planes hidden in the view
         # feature-list folders: id -> {"name": str, "open": bool}; a feature in one has f["folder"] = that id.
@@ -493,6 +494,8 @@ class PartStudioDoc:
 
     link_inputs = None  # (source dict) -> links.StudioPackage of the Part Studio it names; raises KernelError if none
 
+    import_brep = None  # (shape) -> its compressed BREP for a stored import build; an engine worker sets its encoder's
+
     def _ref_inputs(self, f):
         """The variables a "variable_studio_ref" feature consumes (None if its link finds nothing)."""
         src = (f.get("params") or {}).get("source")
@@ -542,8 +545,14 @@ class PartStudioDoc:
             h.update(b"1" if self._has_blob(key) else b"0")      # a capture blob that appears on a save rebuilds
             return dict(f, params=dict(f["params"], resolved=self._blob_get))
         if f.get("type") == "import" and not f.get("suppressed") and (f.get("params") or {}).get("blob"):
-            h.update(b"1" if self._has_blob(f["params"]["blob"]) else b"0")   # the STEP file's blob (I4.9)
-            return dict(f, params=dict(f["params"], resolved=self._import_get))
+            # the STEP file's blob (I4.9), or the stored build that stands in for it (#64): either gives the same
+            # parts, so which one is used stays out of the key
+            entry = self._stored_import(f)
+            h.update(b"1" if entry is not None or self._has_blob(f["params"]["blob"]) else b"0")
+            params = dict(f["params"], resolved=self._import_get)
+            if entry is not None:
+                params.update(stored=entry, stored_get=self._blob_get)
+            return dict(f, params=params)
         if f.get("type") not in links.SOURCE_FEATURES or f.get("suppressed"):
             return f
         if f.get("type") == "variable_studio_ref":
@@ -573,6 +582,12 @@ class PartStudioDoc:
         if isinstance(entry, dict) and entry.get("key") == saved_copy_key(f):
             return entry
         return None
+
+    def _stored_import(self, f):
+        """The stored build of the "import" feature `f` that it builds from instead of its file (#64): one whose
+        stamp matches `f` as it is now and whose blobs are all here; else None."""
+        from .features import stored_import_build
+        return stored_import_build(f, self.python_builds.get(f.get("id")), self._has_blob)
 
     def _has_blob(self, key):
         if key in self._blob_bytes:
@@ -747,6 +762,8 @@ class PartStudioDoc:
                         # remembered so later features (feature patterns, mirror) can repeat what this one did
                         state.history[f["id"]] = (prior, state)
             new_cache[key] = (state, err)
+            if f.get("type") == "import" and not f.get("suppressed") and err is None:
+                self._remember_import(f, state)
             if errors is not None and err:
                 errors[f["id"]] = str(err)
                 if getattr(err, "refs", None):
@@ -755,6 +772,15 @@ class PartStudioDoc:
         if len(self._cache) > 400:
             self._cache = new_cache
         return state
+
+    def _remember_import(self, f, state):
+        """Keep `state`, the model right after the "import" feature `f` built in this process, as what a save stores
+        as that import's build (#64); only the latest file of each import is kept."""
+        from .features import import_stamp
+        key = (f["id"], import_stamp(f.get("params") or {}))
+        if self._import_built.get(key) is not state:
+            self._import_built = {k: v for k, v in self._import_built.items() if k[0] != f["id"]}
+            self._import_built[key] = state
 
     def _stored_build(self, f):
         """The stored build to lock `f` on: only when its plugin is (still) not installed."""
@@ -962,6 +988,9 @@ class PartStudioDoc:
             if _P.is_plugin_type(f.get("type")) and not f.get("suppressed"):
                 self._plugin_build(f, builds, blobs)
                 continue
+            if f.get("type") == "import":      # suppressed or rolled back too: the build it holds is kept
+                self._import_build(self._file_feature(f), builds, blobs)
+                continue
             if not pyfeature.is_python_type(f.get("type")) or f.get("suppressed"):
                 continue
             fid = f["id"]
@@ -1032,13 +1061,70 @@ class PartStudioDoc:
                 except (blobstore.BlobError, ValueError, TypeError):
                     pass
 
+    def _import_build(self, f, builds, blobs):
+        """Add the stored build of the "import" feature `f` to `builds` and `blobs` (#64): the one held (read from
+        the file, or brought back from the engine worker that built it) while its stamp matches and its blobs read,
+        else one made from the parts this process built from the file as it is now. Nothing when neither exists:
+        this process never reads the file just to store a build."""
+        from .features import import_build_record, import_stamp
+        fid = f["id"]
+        entry = self._stored_import(f)
+        if entry is not None:
+            try:
+                got = {k: self._blob_get(k) for k in entry["bases"]}
+            except (blobstore.BlobError, ValueError, TypeError):
+                entry = None
+            else:
+                builds[fid] = entry
+                blobs.update(got)
+                return
+        stamp = import_stamp(f.get("params") or {})
+        state = self._import_built.get((fid, stamp))
+        if state is None:
+            return
+        memo = self._build_memo.get(fid)
+        if memo is None or memo[0] is not state:
+            try:
+                rec = import_build_record(state, fid, stamp, self.import_brep)
+            except Exception:       # noqa: BLE001 -- a part that will not write: the file stays the only source
+                traceback.print_exc()
+                rec = None
+            memo = self._build_memo[fid] = (state, *(rec or (None, {})))
+        if memo[1] is not None:
+            builds[fid] = memo[1]
+            blobs.update(memo[2])
+
+    def import_build_blobs(self):
+        """{key: bytes} that the engine worker needs to build this tab's imports: an import's stored build's BREP
+        blobs when they all read (#64), else its STEP file. The STEP file is only read when it is needed."""
+        from .features import stored_import_build
+        out = {}
+        for f in self.features:
+            f = self._file_feature(f)
+            key = (f.get("params") or {}).get("blob") if f.get("type") == "import" else None
+            if not isinstance(key, str):
+                continue
+            entry = stored_import_build(f, self.python_builds.get(f["id"]), self._has_blob)
+            if entry is not None:
+                try:
+                    out.update({k: self._blob_get(k) for k in entry["bases"]})
+                    continue
+                except (blobstore.BlobError, ValueError, TypeError):
+                    pass
+            try:
+                out[key] = self._import_get(key)
+            except blobstore.BlobError:
+                continue
+        return out
+
     def take_plugin_copies(self, entries, blobs):
         """Keep the saved copies of plugin features that another process built ({feature id: entry}, their
         {blob key: bytes}): an engine worker, whose tab data brings them back. The next save writes them."""
         from . import plugins as _P
+        from .features import is_import_build
         self._blob_bytes.update(blobs)
         for fid, entry in entries.items():
-            if _P.is_copy(entry):
+            if _P.is_copy(entry) or is_import_build(entry):     # an import's stored build comes back this way too
                 self.python_builds[fid] = entry
 
     def _import_key(self, text):
@@ -1067,13 +1153,16 @@ class PartStudioDoc:
                 return dict(f, params=_import_params_with_blob(p, key))
         return f
 
-    def _import_blobs(self):
+    def _import_blobs(self, has=None):
         """{key: bytes} of the STEP file of every "import" feature that can be read now (a missing one stays
-        missing; its feature is red)."""
+        missing; its feature is red). One that `has(key)` says is there already, and is not held in memory, is
+        left out rather than read (#64: a save to the folder that holds it never loads the file)."""
         out = {}
         for f in self.features:
             key = (self._file_feature(f).get("params") or {}).get("blob") if f.get("type") == "import" else None
             if isinstance(key, str):
+                if key not in self._blob_bytes and has is not None and has(key):
+                    continue
                 try:
                     out[key] = self._import_get(key)
                 except blobstore.BlobError:
@@ -1108,11 +1197,11 @@ class PartStudioDoc:
         Returns the builds."""
         builds, blobs = self._python_builds()
         blobs.update(self._context_blobs())
-        blobs.update(self._import_blobs())
-        if blobs and (store is not None or path or self.path):     # nowhere to write: they stay held
-            store = store if store is not None else blobstore.store_for(path or self.path)
+        where = store if store is not None else blobstore.store_for(path or self.path) if (path or self.path) else None
+        blobs.update(self._import_blobs(getattr(where, "has", None)))
+        if blobs and where is not None:     # nowhere to write: they stay held
             for data in blobs.values():
-                store.put(data)
+                where.put(data)
         self.python_builds = builds
         return builds
 

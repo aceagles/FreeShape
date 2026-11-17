@@ -204,6 +204,11 @@ class StudioTab(_Tab):
     kind = "studio"
     OPS = STUDIO_OPS
 
+    def __init__(self, engine, tab, doc, consumes=()):
+        super().__init__(engine, tab, doc, consumes)
+        # an import's stored build (#64) names the very BREP bytes the outputs wrote for each geometry: no second write
+        doc.import_brep = lambda shape, enc=engine.encoder: enc.base(shape)[0]
+
     def _refs(self):
         return [f for f in self.doc.features if links.feature_source(f) is not None and not f.get("suppressed")]
 

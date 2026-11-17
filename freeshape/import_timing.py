@@ -13,9 +13,11 @@ held at once (sampled), `window_peak_mb` the window's own, `worker_peak_mb` the 
 `window_steady_mb` and `worker_steady_mb` are what the window and the tab's engine worker hold once the import has
 settled: the window keeps handling events for 30 s (FREESHAPE_STEADY_WAIT seconds, if set), then each process runs
 gc and memtrim.release_memory() and reads its own memory. Run with FREESHAPE_NO_MEMTRIM=1 to see them without the
-release. Then the tab is closed: `after_close_mb` is what the window holds once that has settled (5 s at most), read
-the same way, and `idle_mb` what it held before the first import; the two should be close (#63). Used by the Windows
-test build on GitHub (.github/workflows/mac.yml); from source:
+release. Then the tab is saved and closed: `after_close_mb` is what the window holds once that has settled (5 s at
+most), read the same way, and `idle_mb` what it held before the first import; the two should be close (#63). Then
+the saved file is opened again (`_reopen_pass`, #64): `reopen_s` is seconds until the reopened parts are drawn,
+`reopen_blocked_s` how long File > Open held the window, `window_steady_after_reopen_mb` the window's settled memory
+after it. Used by the Windows test build on GitHub (.github/workflows/mac.yml); from source:
 python -m freeshape --import-timing out.txt synthetic:400
 """
 import math
@@ -224,6 +226,41 @@ def write_synthetic(path, copies):
     return path
 
 
+# ---------------------------------------------------------------------------- the reopen pass (#64)
+
+def _save_for_reopen(w, folder):
+    """Save the open (imported) tab into `folder` as a person would; its path, or None when the save failed."""
+    from . import tabkinds
+    doc = w.doc
+    doc.path = os.path.join(folder, f"reopen-{id(doc)}" + tabkinds.get("studio").ext)
+    return doc.path if w.save() else None
+
+
+def _reopen_pass(w, app, path, parts, steady_wait):
+    """Open the saved, closed import `path` again, as a person would. Returns (fields, error): fields is the text
+    added to the RESULT line, error is "" or why the reopen went wrong. `reopen_s` is seconds from File > Open until
+    the parts are drawn, `reopen_blocked_s` how long `open_file` kept the window from returning to its event loop,
+    `window_steady_after_reopen_mb` the window's memory once the reopen has settled (measured as `window_steady_mb`
+    is), `reopen_parts` how many parts the reopened tab holds."""
+    if path is None:
+        return "", "the imported tab could not be saved"
+    t0 = time.monotonic()
+    w.open_file(path)
+    blocked = time.monotonic() - t0
+    settled = w.studio_engine.settle(3600) if w.studio_engine is not None else True
+    took = time.monotonic() - t0
+    n = len(w.doc.state.parts)
+    err = "; ".join(str(e) for e in w.doc.errors.values())
+    _settle_wait(app, steady_wait)
+    steady = steady_mb()[1]
+    if not settled:
+        err = err or "the reopened tab did not settle"
+    elif n != parts:
+        err = err or f"the reopened tab has {n} parts, the import had {parts}"
+    return (f" reopen_s={took:.1f} reopen_blocked_s={blocked:.1f} window_steady_after_reopen_mb={steady:.0f} "
+            f"reopen_parts={n}"), err
+
+
 # ---------------------------------------------------------------------------- the run
 
 def run(out_path, *sources, steady_wait=None):
@@ -283,18 +320,23 @@ def run(out_path, *sources, steady_wait=None):
             if w.studio_engine is not None and w.studio_engine.attached(w.doc):
                 worker_steady = w.studio_engine.in_engine(
                     w.doc, lambda eng, tab: eng.run_in_worker(tab, steady_mb))[1]
+            saved = _save_for_reopen(w, tmp) if not err else None     # saved before the close, for the reopen (#64)
             w.close_tab(w._tab_index(w.doc))           # what the window keeps of a closed tab (#63)
             if w.studio_engine is not None:
                 w.studio_engine.settle(60)
             _settle_wait(app, min(steady_wait, 5))
             after_close = steady_mb()[1]
+            reopen, reopen_err = "", ""
+            if not err:
+                reopen, reopen_err = _reopen_pass(w, app, saved, n, steady_wait)
             lines.append(f"RESULT {src} file_mb={mb:.1f} parts={n} total={total:.1f} "
                          f"longest_freeze={gaps['max']:.2f} peak_mb={mem.peak:.0f} "
                          f"window_peak_mb={mem.window_peak:.0f} worker_peak_mb={mem.other_peak:.0f} "
                          f"window_steady_mb={window_steady:.0f} worker_steady_mb={worker_steady:.0f} "
                          f"after_close_mb={after_close:.0f} idle_mb={idle:.0f} "
-                         f"settled={settled}" + (f" error={err}" if err else ""))
-            ok = ok and settled and not err
+                         f"settled={settled}" + reopen + (f" error={err}" if err else "")
+                         + (f" reopen_error={reopen_err}" if reopen_err else ""))
+            ok = ok and settled and not err and not reopen_err
         except Exception as e:      # noqa: BLE001
             import traceback
             lines.append(f"RESULT {src} failed: " + "".join(traceback.format_exception(e)))

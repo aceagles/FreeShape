@@ -33,6 +33,7 @@ from freeshape import blobstore  # noqa: E402
 from freeshape import doc_folder as DF  # noqa: E402
 from freeshape import docstore as DS  # noqa: E402
 from freeshape import drawing as DW  # noqa: E402
+from freeshape import features as F  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
 from freeshape import links as L  # noqa: E402
 from freeshape.document import PartStudioDoc  # noqa: E402
@@ -534,9 +535,9 @@ def test_a_loose_assembly_autosaves_its_blobs_and_recovers(make_window, tmp_path
 
 
 def test_an_autosave_writes_each_blob_once_and_dropping_it_drops_its_blobs(make_window, tmp_path, monkeypatch):
-    """Two Document tabs and a loose Part Studio import the same STEP file: one blob in the autosave folder. A
-    second autosave tick writes no blob. Dropping an autosave keeps the blobs another one names; dropping the last
-    removes them and the blobs folder."""
+    """Two Document tabs and a loose Part Studio import the same STEP file: one STEP blob in the autosave folder, plus
+    each import's stored build (#64). A second autosave tick writes no blob. Dropping an autosave keeps the blobs
+    another one names; dropping the last removes them and the blobs folder."""
     raw = _step_raw(tmp_path, "one.step", [_mkbox(3, 4, 5)])
     key = blobstore.key_of(raw)
     loose_path = str(tmp_path / "loose.fshape")
@@ -557,7 +558,10 @@ def test_an_autosave_writes_each_blob_once_and_dropping_it_drops_its_blobs(make_
         doc.dirty = True
     w.autosave()
     folder = tmp_path / "autosave" / "pid"
-    assert os.listdir(folder / "blobs") == [key]
+
+    def named(*docs):       # the STEP blob and the stored builds' BREP blobs that these tabs name
+        return {key} | {k for d in docs for e in d.python_builds.values() if F.is_import_build(e) for k in e["bases"]}
+    assert set(os.listdir(folder / "blobs")) == named(loose, one.doc, two.doc)
     assert len([n for n in os.listdir(folder) if n != "blobs"]) == 3
 
     puts = []
@@ -567,9 +571,9 @@ def test_an_autosave_writes_each_blob_once_and_dropping_it_drops_its_blobs(make_
     assert puts == []                                               # already there: not written again
 
     w._drop_autosave(one.doc)
-    assert os.listdir(folder / "blobs") == [key]
+    assert set(os.listdir(folder / "blobs")) == named(loose, two.doc)
     w._drop_autosave(loose)
-    assert os.listdir(folder / "blobs") == [key]
+    assert set(os.listdir(folder / "blobs")) == named(two.doc)
     w._drop_autosave(two.doc)
     assert os.listdir(folder) == []                                 # no autosave, no blob, no blobs folder
 

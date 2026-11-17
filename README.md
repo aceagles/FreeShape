@@ -28,8 +28,7 @@ upstream's, written by Richard Willmott.
 | Export | DXF and PDF drawings; STEP, binary STL, BREP. | Also SVG and PNG drawings, 3MF, OBJ, STL resolution options, and DXF from any sketch or flat face. |
 | Releases | 2.0.0 installers; listed in the AM package manager. | Its own installers, built by CI from a `v<version>-fork.<n>` tag, including a `.deb`. Not in the AM package manager. |
 
-Upstream has one fix the fork has not taken yet: the Configurations window opens again once a part has
-configurations (upstream commit `41f303d`).
+The fork carries every upstream code change to date. The only upstream changes it lacks are two README edits.
 
 What else this fork adds:
 

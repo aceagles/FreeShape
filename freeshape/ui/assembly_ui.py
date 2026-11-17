@@ -32,6 +32,33 @@ ROLE_KIND = Qt.UserRole
 SKETCH_ROLE_WORD = {"point": "point", "centre": "centre", "end1": "end 1", "end2": "end 2", "mid": "middle"}
 SKETCH_SNAP_KIND = {"end1": "vertex", "end2": "vertex", "point": "vertex", "mid": "mid", "centre": "center"}
 ROLE_NOTICE = Qt.UserRole + 2        # a Standard part instance's version notice text (marker in the list)
+ROLE_CONN = Qt.UserRole + 3          # a mate connector row under its instance: (instance id, connector id)
+CONN_OPEN, CONN_SHUT = "▾ ", "▸ "      # the caret of an instance row that has mate connectors
+
+
+class _InstanceList(QListWidget):
+    """The Instances list. An instance with mate connectors has a caret; a click on its swatch or caret (or Right /
+    Left on the row) shows or hides the connectors as rows under it, like Onshape's dropdown."""
+    toggled = Signal(str)
+
+    CARET_ZONE = 40                  # px from the row's left edge: the swatch and the caret
+
+    def mousePressEvent(self, e):
+        it = self.itemAt(e.position().toPoint())
+        if it is not None and it.data(ROLE_KIND) == "has_connectors" \
+                and e.position().x() - self.visualItemRect(it).left() < self.CARET_ZONE:
+            self.toggled.emit(it.data(ROLE_ID))
+            return
+        super().mousePressEvent(e)
+
+    def keyPressEvent(self, e):
+        it = self.currentItem()
+        if it is not None and it.data(ROLE_KIND) == "has_connectors" and e.key() in (Qt.Key_Right, Qt.Key_Left):
+            opened = it.text().startswith(CONN_OPEN)
+            if opened != (e.key() == Qt.Key_Right):
+                self.toggled.emit(it.data(ROLE_ID))
+            return
+        super().keyPressEvent(e)
 NOTICE_MARK = "   ↻"
 
 
@@ -349,6 +376,7 @@ class AssemblyPanel(QWidget):
     instanceClicked = Signal(str)
     instanceDouble = Signal(str)
     instanceContext = Signal(str, object)
+    connectorClicked = Signal(str, str)      # instance id, published connector id
     mateClicked = Signal(str)
     mateDouble = Signal(str)
     mateContext = Signal(str, object)
@@ -400,14 +428,18 @@ class AssemblyPanel(QWidget):
         self.vis_btn.setMenu(vm)
         hl.addWidget(self.vis_btn)
         lay.addWidget(head)
-        self.instances = QListWidget()
+        self.instances = _InstanceList()
+        self.open_connectors = set()     # instance ids whose mate connectors are listed under them
+        self._doc, self._editing = None, None
+        self.instances.toggled.connect(self.toggle_connectors)
         self.instances.setIconSize(QSize(14, 14))
         self.instances.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.instances.setContextMenuPolicy(Qt.CustomContextMenu)
         self.instances.customContextMenuRequested.connect(
             lambda pos: self._ctx(self.instances, pos, self.instanceContext))
-        self.instances.itemClicked.connect(lambda it: self.instanceClicked.emit(it.data(ROLE_ID)))
-        self.instances.itemDoubleClicked.connect(lambda it: self.instanceDouble.emit(it.data(ROLE_ID)))
+        self.instances.itemClicked.connect(self._instance_item_clicked)
+        self.instances.itemDoubleClicked.connect(
+            lambda it: it.data(ROLE_ID) is not None and self.instanceDouble.emit(it.data(ROLE_ID)))
         lay.addWidget(self.instances, 3)
         sep = QFrame()
         sep.setFixedHeight(1)
@@ -459,9 +491,29 @@ class AssemblyPanel(QWidget):
         lay.addWidget(self.status)
         self.setMinimumWidth(220)
 
+    def _instance_item_clicked(self, it):
+        conn = it.data(ROLE_CONN)
+        if conn is not None:
+            self.connectorClicked.emit(*conn)
+        elif it.data(ROLE_ID) is not None:
+            self.instanceClicked.emit(it.data(ROLE_ID))
+
+    def toggle_connectors(self, iid):
+        """Show or hide instance `iid`'s mate connectors as rows under it."""
+        self.open_connectors ^= {iid}
+        if self._doc is not None:
+            self.populate(self._doc, self._editing)
+
+    @staticmethod
+    def _connectors_of(doc, iid):
+        try:
+            return doc.published_connectors(iid) or []
+        except Exception:               # a studio that can't be read lists no connectors
+            return []
+
     def _ctx(self, lst, pos, sig):
         it = lst.itemAt(pos)
-        if it is not None:
+        if it is not None and it.data(ROLE_ID) is not None:
             sig.emit(it.data(ROLE_ID), lst.viewport().mapToGlobal(pos))
 
     def populate(self, doc, editing=None):
@@ -470,12 +522,19 @@ class AssemblyPanel(QWidget):
         sel_g = set(self.selected_groups())
         sel_i = set(self.selected_instances())
         sel_m = set(self.selected_mates())
+        self._doc, self._editing = doc, editing
         self.instances.clear()
         notices = doc.standard_notices()
         for inst in doc.instances:
+            conns = self._connectors_of(doc, inst["id"])
+            opened = inst["id"] in self.open_connectors
             label = inst["name"] + ("   ⚓" if inst.get("fixed") else "") + (NOTICE_MARK if inst["id"] in notices else "")
+            if conns:
+                label = (CONN_OPEN if opened else CONN_SHUT) + label
             it = QListWidgetItem(swatch(doc.instance_color(inst)), label)
             it.setData(ROLE_ID, inst["id"])
+            if conns:
+                it.setData(ROLE_KIND, "has_connectors")
             tips = []
             if inst.get("fixed"):
                 tips.append("Fixed — it won't move (right-click → Unfix to let it move)")
@@ -512,6 +571,14 @@ class AssemblyPanel(QWidget):
             self.instances.addItem(it)
             if inst["id"] in sel_i:
                 it.setSelected(True)
+            for c in conns if opened else []:
+                name = c.get("name") or "Mate connector"
+                row = QListWidgetItem("        " + name)
+                row.setData(ROLE_CONN, (inst["id"], str(c["id"])))
+                row.setForeground(QColor("#5f6b7a"))
+                row.setToolTip(f"Mate connector “{name}” of {inst['name']}, from its Part Studio\n"
+                               "Click it while adding a mate to use it as one end")
+                self.instances.addItem(row)
         self.groups.clear()
         for g in doc.groups:
             names = [doc.instance(i)["name"] for i in g["instances"] if doc.instance(i) is not None]
@@ -631,7 +698,7 @@ class AssemblyPanel(QWidget):
         return [it.data(ROLE_ID) for it in self.groups.selectedItems()]
 
     def selected_instances(self):
-        return [it.data(ROLE_ID) for it in self.instances.selectedItems()]
+        return [it.data(ROLE_ID) for it in self.instances.selectedItems() if it.data(ROLE_ID) is not None]
 
     def selected_mates(self):
         return [it.data(ROLE_ID) for it in self.mates.selectedItems()]
@@ -2059,6 +2126,7 @@ class AssemblyController:
         p.instanceClicked.connect(self._instance_clicked)
         p.instanceDouble.connect(self.open_source)
         p.instanceContext.connect(self.instance_menu)
+        p.connectorClicked.connect(self._connector_row_clicked)
         p.mateClicked.connect(self._mate_clicked)
         p.mateDouble.connect(self.edit_mate)
         p.mateContext.connect(self.mate_menu)
@@ -2204,6 +2272,7 @@ class AssemblyController:
                 self.w.btn_interf.setChecked(False)
         editing = self.mate_dialog.mate["id"] if self.mate_dialog is not None and not self.mate_dialog.is_new \
             else None
+        self._wire_connector_resolver()                 # the list shows each instance's mate connectors
         self.panel.populate(self.doc, editing)
         if self.w.mode == "idle":
             self.show_scene()
@@ -2815,6 +2884,14 @@ class AssemblyController:
         doc.notify()
 
     # ------------------------------------------------------------------ menus
+    def _connector_row_clicked(self, iid, cid):
+        """A mate connector row in the Instances list: one end of the mate being made, else its instance."""
+        if self.mate_dialog is not None:
+            self.mate_dialog.pick_named(iid, cid)
+            return
+        self.panel.select_instances({iid})
+        self._instance_clicked(iid)
+
     def _instance_clicked(self, iid):
         if self.w.mode == "idle":
             self.vp.clear_selection()

@@ -192,8 +192,8 @@
   font-size: var(--fs-small);
   color: var(--c-muted);
 }
-.dlg-text {
-  cursor: text;
+.dlg-text-empty {
+  color: var(--c-muted);
 }
 .dlg-number {
   display: flex;

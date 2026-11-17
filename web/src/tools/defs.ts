@@ -64,7 +64,7 @@ export const FEATURE_STRIP: readonly StripDef[] = [
     kind: 'group',
     key: 'copy',
     name: 'Copy',
-    tools: [t('mirror', 'Mirror'), t('linear_pattern', 'Linear'), t('circular_pattern', 'Circular'), t('axis', 'Axis'), t('boolean', 'Boolean'), t('split', 'Split'), t('move', 'Move')],
+    tools: [t('mirror', 'Mirror'), t('linear_pattern', 'Linear'), t('circular_pattern', 'Circular'), t('axis', 'Axis'), t('boolean', 'Boolean'), t('split', 'Split'), t('move', 'Move'), t('mate_connector', 'Mate connector')],
   },
 ]
 
@@ -180,7 +180,7 @@ export const DESKTOP_TOOLBAR: DesktopLayout = {
     fromStrip('boolean'),
     fromStrip('split'),
     fromStrip('move'),
-    feature(t('mate_connector', 'Mate connector')),
+    fromStrip('mate_connector'),
     SEP,
     command(t('import', 'Import STEP')),
     fromStrip('canvas'),

@@ -1079,7 +1079,7 @@ def startable_feature_types():
 # in the browser saves the bytes the desktop saves for the same choices. Only a source in this Document: another
 # Document and a Version pin stay on the desktop.
 
-SERVED_TYPES = ("derived",)         # hand-built on the desktop, all standard rows in the server's dialog
+SERVED_TYPES = ("derived", "mate_connector")         # hand-built on the desktop, all standard rows in the server's dialog
 
 DESKTOP_ONLY = "Desktop only for now"
 # the desktop's notes, word for word (freeshape/ui/dialogs.py)
@@ -1286,6 +1286,69 @@ def derived_set(key, value, params, ctx):
         _write_placement(p, ctx, base=value)
         return DerivedSet("", None, False)
     raise KeyError(key)
+
+
+# ---------------------------------------------------------------------- Mate connector in the Browser client (I10.4)
+# One block. The desktop draws the Owner part row by hand (ui/dialogs.py `owner_part`); the server's dialog describes
+# it as a standard choice filled with this Part Studio's parts and sketches. The element field says to click: the
+# hover snap points stay on the desktop. A pick carries its stamp (click, snap, X reference) from the refs route.
+
+MATE_ELEMENT_LABEL = "Face or edge (click it in the view)"
+MATE_STAMP_KEYS = ("click", "snap", "x_ref")
+
+
+def mate_owner_options(params, parts, sketches):
+    """[[id, label]] for the Owner part choice, as the desktop's combo: the first option, id "", is "no owner chosen"
+    (the picked element's part; the origin connector has no default), then every part, then every sketch."""
+    first = OWNER_PICK if (params.get("ref") or {}).get("origin") else OWNER_SAME
+    return [["", first]] + [[str(i), str(n)] for i, n in parts] + [[str(i), f"{n} (sketch)"] for i, n in sketches]
+
+
+def mate_describe(params, owners):
+    """describe("mate_connector", params) with the Owner part row a standard choice over `owners` (mate_owner_options
+    for the dialog's model) and the element row's label saying to click."""
+    out = describe("mate_connector", params)
+    fields = []
+    for f in out["fields"]:
+        if f["key"] == "owner":
+            f = {"key": "owner", "kind": "choice", "standard": True, "visible": f["visible"], "label": f["label"],
+                 "options": [list(o) for o in owners]}
+        elif f["key"] == "element":
+            f = dict(f, label=MATE_ELEMENT_LABEL)
+        fields.append(f)
+    return {"type": "mate_connector", "fields": fields, "custom": [f["key"] for f in fields if not f["standard"]]}
+
+
+def mate_owner_value(params, owners):
+    """What the Owner part row shows: the stored owner if the dialog lists it, else the first option (the desktop
+    combo's rule; a part since deleted stays stored, and the preview says it is gone)."""
+    ids = [o[0] for o in owners]
+    return params.get("owner") if params.get("owner") in ids and params.get("owner") else ""
+
+
+def mate_set_owner(value, params):
+    """The Owner part row changed: "" is no owner chosen, stored as None as the desktop stores it."""
+    params["owner"] = value or None
+
+
+def mate_stamp(raw):
+    """A client's stamp ({click, snap, x_ref} from a refs answer) checked: click None or three finite numbers, snap
+    None (hover snap points are not offered yet), x_ref None or two finite numbers. Returns the stamp as stored, or
+    raises ValueError naming what is wrong."""
+    import math
+    if not isinstance(raw, dict) or set(raw) != set(MATE_STAMP_KEYS):
+        raise ValueError("a stamp is {click, snap, x_ref}")
+
+    def nums(v, n, what):
+        if v is None:
+            return None
+        if not isinstance(v, list) or len(v) != n or not all(isinstance(c, (int, float)) and not isinstance(c, bool)
+                                                              and math.isfinite(c) for c in v):
+            raise ValueError(f"{what} must be null or {n} numbers")
+        return [float(c) for c in v]
+    if raw["snap"] is not None:
+        raise ValueError("snap must be null")
+    return {"click": nums(raw["click"], 3, "click"), "snap": None, "x_ref": nums(raw["x_ref"], 2, "x_ref")}
 
 
 # ---------------------------------------------------------------------- behaviour (I5.2)

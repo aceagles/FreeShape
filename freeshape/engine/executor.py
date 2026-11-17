@@ -766,7 +766,14 @@ class _StudioRefs:
         item = PK.make_item({p: q.shape for p, q in st.parts.items()}, st.sketches, kind, key, want,
                             st.named, names)
         if item is not None:
-            return PK.result_of(item)
+            got = PK.result_of(item)
+            if kind in ("face", "edge") and "element" in want and item[0] == kind:
+                # I10.4 (one block): a Mate connector's pick carries its stamp (click, snap, X reference), made
+                # from the click point as the desktop's dialog makes it; a face keeps the click, an edge has none
+                click = pick["point"] if kind == "face" else None
+                got["stamp"] = DSC.connector_stamp(st, item, click, None, {p: q.shape for p, q in st.parts.items()},
+                                                   pid)
+            return got
         code, reason = PK.refusal(kind, want, shape=part.shape if kind == "face" and part else None)
         return {"ok": False, "code": code, "reason": reason}
 
@@ -995,6 +1002,15 @@ class AssemblyTab(_ConsumerTab):
             doc.undo()
             doc._redo.clear()
             refuse("; ".join(errors))
+
+    # -- I10.4 (one block): the origin connector edit
+    def _add_origin_connector(self, edit):
+        """A mate connector at the origin of an instance's part (AssemblyDoc.add_instance_origin_connector, which the
+        desktop's context menu runs): one undo step, none when the instance has one already."""
+        name = edit.get("name")
+        if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 200):
+            raise EngineError("name must be text of 1 to 200 characters")
+        self.doc.add_instance_origin_connector(self._instance(_need(edit, "instance")), name.strip() if name else None)
 
     def _rename(self, edit):
         oid = _need(edit, "id")

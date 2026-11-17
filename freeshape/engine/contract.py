@@ -105,6 +105,11 @@ ASSEMBLY_OPS = {
                    "instance per solid of the file in one undo step, placed as a whole Part Studio is (at the origin in "
                    "an empty Assembly, else beside what is there); the file is kept as a blob that the next save writes. "
                    "Refused, changing nothing, for data that is not a STEP file or has no solid",
+    # I10.4 (one block): the Assembly edit that adds an origin connector
+    "add_origin_connector": "instance, name (optional): a mate connector at the instance's part origin "
+                            "(AssemblyDoc.add_instance_origin_connector), one undo step. An instance that already "
+                            "has one gets nothing new (the desktop's rule: no undo step either). Refused, changing "
+                            "nothing, for an unknown instance",
     "rename": "id (instance or mate), name",
     "delete_instances": "ids",
     "delete_mates": "ids",

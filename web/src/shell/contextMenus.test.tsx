@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { LONG_PRESS_MS } from './longPress'
 import { MODE_KEY } from './mode'
 import { DESKTOP_ONLY } from './menus'
-import { assemblyViewMenu, featureMenu, instanceMenu, mateMenu, partMenu, sketchViewMenu, studioViewMenu, tabMenu, WAITS_FOR_I10_4 } from './contextMenus'
+import { assemblyViewMenu, featureMenu, instanceMenu, mateMenu, partMenu, sketchViewMenu, studioViewMenu, tabMenu } from './contextMenus'
 import type { ContextMenuData } from './contextMenus'
 import { Shell } from './Shell'
 import { ContextMenu } from './Menu'
@@ -225,7 +225,7 @@ async function assembly() {
   return { store, edits }
 }
 
-it('on an Assembly instance, Fix sends set_fixed and Hide sends set_hidden; the Add mate connector item waits for I10.4', async () => {
+it('on an Assembly instance, Fix sends set_fixed and Hide sends set_hidden; Add mate connector sends add_origin_connector (I10.4)', async () => {
   const { store, edits } = await assembly()
   const row = () => document.querySelector<HTMLElement>('[data-instance="I2"]')!
   rightClick(row())
@@ -234,8 +234,8 @@ it('on an Assembly instance, Fix sends set_fixed and Hide sends set_hidden; the 
     'Rename…', 'Fix', 'Hide', 'Isolate', 'Suppress', 'Change colour…', 'Add mate connector to instance origin', 'Move / rotate…', 'Group', 'Duplicate', 'Mass properties', 'Delete',
   ])
   const connector = within(menu).getByRole('menuitem', { name: 'Add mate connector to instance origin' }) as HTMLButtonElement
-  expect(connector.disabled).toBe(true)
-  expect(connector.title).toBe(WAITS_FOR_I10_4)
+  expect(connector.disabled).toBe(false)
+  expect(connector.title).toBe('')
   expect((within(menu).getByRole('menuitem', { name: 'Group' }) as HTMLButtonElement).title).toBe(DESKTOP_ONLY)
   fireEvent.click(within(menu).getByRole('menuitem', { name: 'Fix' }))
   await waitFor(() => expect(edits().length).toBe(1))
@@ -245,6 +245,11 @@ it('on an Assembly instance, Fix sends set_fixed and Hide sends set_hidden; the 
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Hide' }))
   await waitFor(() => expect(edits().length).toBe(2))
   expect(edits()[1]?.body).toEqual({ op: 'set_hidden', instance: 'I2', value: true })
+  await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+  rightClick(row())
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Add mate connector to instance origin' }))
+  await waitFor(() => expect(edits().length).toBe(3))
+  expect(edits()[2]?.body).toEqual({ op: 'add_origin_connector', instance: 'I2' })
   store.stop()
 })
 
@@ -280,7 +285,7 @@ it('the menus as data: the desktop items in the desktop order', () => {
   expect(labels(tabMenu({ rename: () => {}, close: () => {} }))).toEqual(['Rename…', 'Duplicate', '|', 'Close'])
   expect(labels(sketchViewMenu({ normalTo: () => {}, finish: () => {}, cancel: () => {} }))).toEqual(['Normal to sketch', 'Finish sketch', 'Cancel sketch'])
   expect(labels(mateMenu({ type: 'revolute', suppressed: true }, 'x'))).toEqual(['Edit…', 'Rename…', 'Unsuppress', 'Set value…', 'Animate…', '|', 'Delete', '|', '⚠ x'])
-  expect(labels(instanceMenu({ name: 'I', hidden: true, fixed: true }, { busy: false, actions: { rename: () => {}, setFixed: () => {}, setHidden: () => {}, isolate: () => {}, move: () => {}, remove: () => {} } }))).toContain('Unfix')
+  expect(labels(instanceMenu({ name: 'I', hidden: true, fixed: true }, { busy: false, actions: { rename: () => {}, setFixed: () => {}, setHidden: () => {}, isolate: () => {}, addConnector: () => {}, move: () => {}, remove: () => {} } }))).toContain('Unfix')
   const view = { fit: () => {}, view: () => {}, showAll: () => {} }
   expect(labels(assemblyViewMenu({ anyHidden: true, readOnly: false, ...view }))).toEqual(['Insert parts…', 'Mass properties', 'Zoom to fit', 'Views', 'Show all'])
   const actions = { setPartsHidden: () => {}, isolate: () => {}, selectPart: () => {}, editSketch: () => {}, hideSketch: () => {}, hidePlane: () => {}, hideAxis: () => {}, showAll: () => {}, fit: () => {}, view: () => {} }

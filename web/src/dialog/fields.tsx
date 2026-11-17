@@ -4,6 +4,7 @@ import { NumberPad, PadField } from '../pad/NumberPad'
 import { usePadEditor } from '../pad/usePadEditor'
 import { Icon, paths } from '../shell/icons'
 import { MenuButton } from '../shell/Menu'
+import { TextPrompt } from '../shell/TextPrompt'
 import type { MenuItem } from '../shell/menus'
 import type { FieldSpec, FieldValue, SelItem } from './dialogApi'
 import { fieldKeyDown, InlineNumber } from './InlineNumber'
@@ -248,25 +249,33 @@ export function InfoRow({ text }: { text: string }) {
   return text === '' ? null : <div className="dlg-info dlg-info-row">{text}</div>
 }
 
-/** A text row. It is the one native input of a dialog (a name is words, not a number); the change is sent when the person is done. */
+/**
+ * A text row in Tablet mode (a Mate connector's Name): a button that shows the text and opens the client's text prompt, as the
+ * names of tabs and parts are typed, so the dialog holds no native input under the pen. An empty answer is not taken by the
+ * prompt: the name stays as it was.
+ */
 export function TextRow({ spec, value, error, onCommit }: { spec: FieldSpec; value: string; error: string | null; onCommit: (text: string) => void }) {
-  const [draft, setDraft] = useState<string | null>(null)
+  const [asking, setAsking] = useState(false)
   const label = labelOf(spec)
-  const done = () => {
-    if (draft !== null && draft !== value) onCommit(draft)
-    setDraft(null)
-  }
   return (
     <Row label={label} message={error}>
-      <input
-        className="dlg-field dlg-text"
-        aria-label={label}
-        placeholder={spec.placeholder ?? ''}
-        value={draft ?? value}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={done}
-        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-      />
+      <button type="button" className="dlg-field dlg-field-choice dlg-text" aria-haspopup="dialog" aria-label={`${label}, ${value === '' ? 'empty' : value}`} onClick={() => setAsking(true)}>
+        <span className={value === '' ? 'dlg-text-empty' : undefined}>{value === '' ? (spec.placeholder ?? '') : value}</span>
+        <Icon d={paths.sketch} px={20} stroke="var(--c-muted)" />
+      </button>
+      {asking && (
+        <TextPrompt
+          title={label}
+          label={label}
+          initial={value}
+          confirmLabel="Done"
+          onSubmit={(text) => {
+            setAsking(false)
+            if (text !== value) onCommit(text)
+          }}
+          onCancel={() => setAsking(false)}
+        />
+      )}
     </Row>
   )
 }

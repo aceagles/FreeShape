@@ -305,7 +305,7 @@ def test_types_marks_the_types_with_custom_fields_as_not_all_standard(root):
     rows = {t["type"]: t for t in got["types"]}
     assert [t["type"] for t in got["types"]] == sorted(rows) and set(rows) == set(DSC.startable_feature_types())
     custom = set(DSC.custom_feature_types())
-    assert custom >= {"hole", "split", "mate_connector"}
+    assert custom >= {"hole", "split"} and "mate_connector" not in custom       # served since I10.4
     for t, row in rows.items():
         assert set(row) == {"type", "label", "standard", "can_start"} and row["label"]
         assert row["standard"] is (t not in custom) and row["can_start"] is True        # no selection: all start

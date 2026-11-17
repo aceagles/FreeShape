@@ -29,6 +29,8 @@ export interface AssemblyEdits {
   insert(tab: string, part: string | null): Promise<boolean>
   /** The fixed toggle of several instances: one set_fixed each, one after the other; stops at the first that fails. */
   setFixedAll(instances: readonly string[], fixed: boolean): Promise<void>
+  /** A mate connector at an instance's part origin (add_origin_connector, card I10.4): one undo step, nothing new when it has one; resolves false when it failed. */
+  addOriginConnector(instance: string): Promise<boolean>
   /** Delete one instance and the mates on it (delete_instances); resolves false when it failed. */
   deleteInstance(instance: string): Promise<boolean>
   /** Rename an instance or a mate (rename); resolves with a message in plain words when the server refused (the rename dialog shows it). */
@@ -259,6 +261,7 @@ export function useAssembly({ store, tab, tabKind, readOnly, documentName, onErr
           setBusy(false)
         }
       },
+      addOriginConnector: (instance) => act('Could not add the mate connector', { op: 'add_origin_connector', instance }),
       deleteInstance: (instance) => act('Could not delete the instance', { op: 'delete_instances', ids: [instance] }),
     }),
     [busy, disabled, act, drag, store, mine, documentName],

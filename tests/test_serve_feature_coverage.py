@@ -347,6 +347,13 @@ def case_derived(s):
     assert near(s.volume(p), BOX)                            # the box, brought into the other Part Studio
 
 
+def case_mate_connector(s):
+    pid = s.box()
+    s.drive("mate_connector", [pick(pid, "face", s.face(pid, Z))], {"name": "Top pin"})
+    (c,) = s.outputs().connectors
+    assert c.name == "Top pin" and c.part == pid and near(c.frame["o"][2], 20)     # on the top face, owned by the box
+
+
 def case_draft(s):
     pid = s.box()
     side = s.face(pid, (1, 0, 0))

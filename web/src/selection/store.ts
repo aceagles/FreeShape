@@ -25,6 +25,8 @@ export interface SelectionItem {
   readonly key: string | null
   /** Id of the Assembly instance the item is on (card I8.1); absent in a Part Studio. `part` is then the part's hash. */
   readonly instance?: string
+  /** Where the pick hit, in the studio's mm (a face, an edge's nearest point, a vertex): a dialog sends it with a face for a Mate connector's frame (card I10.4). Not part of the item's identity. */
+  readonly point?: readonly [number, number, number]
 }
 
 export const idOfItem = (kind: PickKind, part: string | null, name: string | null, index: number, key: string | null, instance?: string): string => {
@@ -41,7 +43,7 @@ export const idOfItem = (kind: PickKind, part: string | null, name: string | nul
 export function itemOf(hit: PickHit): SelectionItem {
   const key = 'key' in hit ? hit.key : null
   const instance = 'instance' in hit ? hit.instance : undefined
-  const item = { id: idOfItem(hit.kind, hit.part, hit.name, hit.index, key, instance), kind: hit.kind, part: hit.part, index: hit.index, name: hit.name, key }
+  const item = { id: idOfItem(hit.kind, hit.part, hit.name, hit.index, key, instance), kind: hit.kind, part: hit.part, index: hit.index, name: hit.name, key, point: hit.point }
   return instance === undefined ? item : { ...item, instance }
 }
 
@@ -156,7 +158,11 @@ export class SelectionStore {
 
   /** Set what is under the pen (Aim). Nothing is published when it is the item that is already there. */
   aim(item: SelectionItem | null): void {
-    if ((item?.id ?? null) === (this.aimedItem?.id ?? null)) return
+    if ((item?.id ?? null) === (this.aimedItem?.id ?? null)) {
+      // the same item under a moved pointer: it keeps the Aim (nothing is published) but takes the new hit point, which a Commit sends
+      if (item !== null && item.point !== undefined) this.aimedItem = item
+      return
+    }
     this.aimedItem = item
     this.publish(false)
   }

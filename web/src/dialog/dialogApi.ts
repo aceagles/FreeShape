@@ -53,6 +53,8 @@ export interface SelItem {
   kind?: string
   ref?: unknown
   name?: string | null
+  /** A Mate connector's pick (card I10.4): the click, snap and X reference the refs route made from the click point. Sent back as it came. */
+  stamp?: unknown
 }
 
 /** The open reply, and the part of the update reply that changes what the dialog shows. */

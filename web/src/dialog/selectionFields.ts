@@ -45,7 +45,10 @@ export function refPick(item: SelectionItem, want: readonly string[]): Record<st
   if (item.part === null) return null
   if (item.kind === 'part') return { part: item.part, kind: 'part', want }
   if (item.kind !== 'face' && item.kind !== 'edge' && item.kind !== 'vertex' && item.kind !== 'region') return null
-  return { part: item.part, kind: item.kind, index: item.index + 1, want }
+  const pick: Record<string, unknown> = { part: item.part, kind: item.kind, index: item.index + 1, want }
+  // a field that takes a face or an edge as a Mate connector's frame (card I10.4) is sent where the face was hit, so the frame lands there
+  if (item.kind === 'face' && item.point !== undefined && want.includes('element')) pick['point'] = [...item.point]
+  return pick
 }
 
 export const NOT_IN_MODEL = 'That element is not in the model this feature is built on, so it cannot be picked here.'
@@ -93,7 +96,7 @@ export function readableError(text: string | null): string | null {
 }
 
 export interface RefsReply {
-  items: Array<{ ok: true; kind: string; ref: unknown; name: string | null } | { ok: false; code: string; reason: string }>
+  items: Array<{ ok: true; kind: string; ref: unknown; name: string | null; stamp?: unknown } | { ok: false; code: string; reason: string }>
 }
 
 /**
@@ -107,9 +110,9 @@ export const fetchRefs = (doc: string, tab: string, picks: Record<string, unknow
  * A refs answer as the items a field holds. A face picked for an edge field comes back as kind "edges" with a list of
  * edge refs: each edge becomes its own item (the server stores one ref per edge, and the person removes them one by one).
  */
-export function itemsOfAnswer(kind: string, ref: unknown, name: string | null): SelItem[] {
+export function itemsOfAnswer(kind: string, ref: unknown, name: string | null, stamp?: unknown): SelItem[] {
   if (kind === 'edges' && Array.isArray(ref)) return ref.map((r) => ({ ok: true, kind: 'edge', ref: r, name: nameOfRef(r) }))
-  return [{ ok: true, kind, ref, name }]
+  return [stamp === undefined ? { ok: true, kind, ref, name } : { ok: true, kind, ref, name, stamp }]
 }
 
 const asRecord = (x: unknown): Record<string, unknown> | null => (typeof x === 'object' && x !== null && !Array.isArray(x) ? (x as Record<string, unknown>) : null)
@@ -141,7 +144,7 @@ export function afterPick(items: readonly SelItem[], added: readonly SelItem[], 
 }
 
 /** The item as it is sent back to the server: only what the update route reads. */
-export const asSent = (i: SelItem): SelItem => ({ ok: true, kind: i.kind ?? 'item', ref: i.ref, name: i.name ?? null })
+export const asSent = (i: SelItem): SelItem => ({ ok: true, kind: i.kind ?? 'item', ref: i.ref, name: i.name ?? null, ...(i.stamp === undefined ? {} : { stamp: i.stamp }) })
 
 const KIND_WORD: Record<string, string> = { face: 'Face', edge: 'Edge', vertex: 'Vertex', plane: 'Plane', axis: 'Axis', part: 'Part', path: 'Path', region: 'Region', sketch: 'Sketch curve', sketch_line: 'Sketch line', sketch_point: 'Sketch point', connector: 'Connector' }
 

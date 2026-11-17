@@ -16,9 +16,6 @@ export interface ContextMenuData {
   commands: Commands
 }
 
-/** The tooltip of the one item that waits for a named card, in place of "Desktop only for now". */
-export const WAITS_FOR_I10_4 = 'Waits for the mate connector card (I10.4)'
-
 class Builder {
   readonly entries: MenuEntry[] = []
   readonly commands: Record<string, () => void> = {}
@@ -213,14 +210,16 @@ export interface InstanceActions {
   setFixed: (fixed: boolean) => void
   setHidden: (hidden: boolean) => void
   isolate: () => void
+  /** Add a mate connector at the instance's part origin (card I10.4). */
+  addConnector: () => void
   move: () => void
   remove: () => void
 }
 
 /**
  * An Assembly instance (`instance_menu`): Rename, Fix or Unfix, Hide or Show, Isolate, Suppress, Change colour, Add mate connector
- * to instance origin (off until I10.4), Move / rotate, Group, Duplicate, Mass properties, Delete. The client wires Rename, Fix or
- * Unfix, Hide or Show, Isolate, Move and Delete. Select other, Use the part's colour, Open Part Studio, Edit in context, the
+ * to instance origin, Move / rotate, Group, Duplicate, Mass properties, Delete. The client wires Rename, Fix or
+ * Unfix, Hide or Show, Isolate, Add mate connector to instance origin, Move and Delete. Select other, Use the part's colour, Open Part Studio, Edit in context, the
  * standard part items and the degrees of freedom line are not listed: the client does not know what they depend on.
  */
 export function instanceMenu(i: { name: string; hidden: boolean; fixed: boolean }, c: { busy: boolean; actions: InstanceActions }): ContextMenuData {
@@ -233,7 +232,7 @@ export function instanceMenu(i: { name: string; hidden: boolean; fixed: boolean 
   b.item('instance.suppress', 'Suppress')
   b.item('instance.colour', 'Change colour…')
   b.sep()
-  b.item('instance.connector', 'Add mate connector to instance origin', undefined, { note: WAITS_FOR_I10_4 })
+  b.item('instance.connector', 'Add mate connector to instance origin', a.addConnector, { enabled: () => !busy })
   b.item('instance.move', 'Move / rotate…', a.move, { enabled: () => !busy })
   b.item('instance.group', 'Group')
   b.item('instance.duplicate', 'Duplicate')

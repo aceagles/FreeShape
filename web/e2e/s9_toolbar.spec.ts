@@ -21,9 +21,10 @@ test('Extrude on the toolbar, with a face of the bracket selected, opens its dia
   const box = (await extrude.boundingBox())!
   expect([Math.round(box.width), Math.round(box.height)]).toEqual([26, 26])
   await expect(extrude).toHaveAttribute('title', 'Extrude (Shift+E)')
-  // the types route answers: Mate connector has a row only the desktop draws
-  await expect(toolbar(page).getByRole('button', { name: 'Mate connector' })).toBeDisabled()
-  await expect(toolbar(page).getByRole('button', { name: 'Mate connector' })).toHaveAttribute('title', 'Desktop only for now')
+  // the types route answers: Mate connector is a standard dialog since I10.4; Hole still has rows only the desktop draws
+  await expect(toolbar(page).getByRole('button', { name: 'Mate connector' })).toBeEnabled()
+  await expect(toolbar(page).getByRole('button', { name: 'Hole', exact: true })).toBeDisabled()
+  await expect(toolbar(page).getByRole('button', { name: 'Hole', exact: true })).toHaveAttribute('title', 'Desktop only for now')
 
   // click a face with the mouse, then Extrude
   const [face] = await faceSpots(page, request, 'mouse')

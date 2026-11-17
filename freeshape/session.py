@@ -127,6 +127,12 @@ MAX_DIALOG_ITEMS = 200            # items one selection field of a dialog may ho
 MAX_DIALOG_TEXT = 500             # longest text a dialog's text or expression field takes
 
 
+class _Items(list):
+    """The items of a selection row as `check` parses them. `stamp` (I10.4) is the stamp a Mate connector's pick came
+    with, or None."""
+    stamp = None
+
+
 class FeatureDialog:
     """The state of one open feature dialog (I5.3): the feature's params, its selection fields and what the person
     typed in each number field. It holds no shape and no engine call: the model is only needed to open it
@@ -138,11 +144,12 @@ class FeatureDialog:
     rejected input, else absent) and {key: {"value"}} for the other single-value rows. `fields()` is {key: [item]}
     for the selection rows; an item is {"ok": true, "kind", "ref", "name"}, as the refs route answers."""
 
-    def __init__(self, tab, feature, variables, defaults, fields=None, extra=None, context=None):
+    def __init__(self, tab, feature, variables, defaults, fields=None, extra=None, context=None, owners=None):
         """`feature` without an "id" is a NEW feature (I6.1, create mode): `fid` is None, the engine gives it its id
         when it is added, and a preview asks for a new feature. `fields` ({key: [(kind, ref)]}) and `extra` (params)
         are what the picks it was started with chose (apply_preselection). `context` (a Derived, I10.2) is a
-        callable params -> dialog_schema.DerivedContext: what the Document offers the dialog's rows."""
+        callable params -> dialog_schema.DerivedContext: what the Document offers the dialog's rows. `owners` (a Mate
+        connector, I10.4) is [(part id, name)], [(sketch id, name)]: what its Owner part row lists."""
         self.tab = tab
         self.fid = feature.get("id")
         self.is_new = self.fid is None
@@ -168,6 +175,7 @@ class FeatureDialog:
         self.errors = {}                                   # key -> why the last input to it was refused
         self.specs = {s["key"]: s for s in DSC._schema_for(self.type, p) if s.get("key")}
         self.preview = None      # the newest preview answered (I5.4): {"n", "data": wire bytes or None, "error"}
+        self.owners = owners if self.type == "mate_connector" else None      # I10.4: (parts, sketches) of the model
         self.context = context if self.type == "derived" else None
         self.derived = None      # the DerivedContext the rows show (I10.2); read again when the source changes
         self.note = None         # the Derived's note after an untick (None: the standing note)
@@ -179,6 +187,8 @@ class FeatureDialog:
     def description(self):
         if self.derived is not None:
             return DSC.derived_describe(self.params, self.derived, self.note)
+        if self.owners is not None:
+            return DSC.mate_describe(self.params, DSC.mate_owner_options(self.params, *self.owners))
         return DSC.describe(self.type, self.params)
 
     def values(self):
@@ -190,6 +200,9 @@ class FeatureDialog:
         out = {}
         for key, spec in self.specs.items():
             kind = spec["t"]
+            if kind == "owner_part" and self.owners is not None:           # I10.4: a choice in the server's dialog
+                out[key] = {"value": DSC.mate_owner_value(self.params, DSC.mate_owner_options(self.params, *self.owners))}
+                continue
             if kind not in ("num", "choice", "ops", "check", "text"):
                 continue
             raw = self.params.get(key)
@@ -267,6 +280,9 @@ class FeatureDialog:
             elif kind == "text":
                 if not isinstance(value, str) or len(value) > MAX_DIALOG_TEXT:
                     raise SessionError(f"{at}: must be text of at most {MAX_DIALOG_TEXT} characters")
+            elif kind == "owner_part" and self.owners is not None:        # I10.4
+                if not isinstance(value, str) or value not in [o[0] for o in DSC.mate_owner_options(self.params, *self.owners)]:
+                    raise SessionError(f"{at}: not one of the options")
             elif kind == "sel":
                 if spec.get("number"):
                     raise SessionError(f"{at}: a field with a number per item cannot be set yet")
@@ -312,13 +328,18 @@ class FeatureDialog:
     def _items(at, value):
         if not isinstance(value, list) or len(value) > MAX_DIALOG_ITEMS:
             raise SessionError(f"{at}: must be a list of at most {MAX_DIALOG_ITEMS} items")
-        items = []
+        items = _Items()
         for i, it in enumerate(value):
-            if not isinstance(it, dict) or set(it) - {"kind", "ref", "ok", "name"} or "kind" not in it \
+            if not isinstance(it, dict) or set(it) - {"kind", "ref", "ok", "name", "stamp"} or "kind" not in it \
                     or "ref" not in it:
                 raise SessionError(f"{at}[{i}]: an item is {{\"kind\", \"ref\"}}")
             if not isinstance(it["kind"], str) or not 1 <= len(it["kind"]) <= 20:
                 raise SessionError(f"{at}[{i}].kind: must be a short text")
+            if it.get("stamp") is not None:             # I10.4: a Mate connector's pick brings its click and X
+                try:
+                    items.stamp = DSC.mate_stamp(it["stamp"])
+                except ValueError as e:
+                    raise SessionError(f"{at}[{i}].stamp: {e}") from e
             items.append((it["kind"], it["ref"]))
         return items
 
@@ -332,8 +353,16 @@ class FeatureDialog:
             spec = self.specs[key]
             self.errors.pop(key, None)
             if spec["t"] == "sel":
+                was = list(self.fields_.get(key, []))
                 self.fields_[key] = value
                 DSC.fields_to_params(self.type, self._field_dict(), self.params)
+                stamp = getattr(value, "stamp", None)
+                if self.type == "mate_connector" and key == "element" and value and (stamp or list(value) != was):
+                    # I10.4: the stamp of the pick (or none: a stale click and X reference belong to the old element)
+                    self.params.update(stamp or {k: None for k in DSC.MATE_STAMP_KEYS})
+                continue
+            if spec["t"] == "owner_part" and self.owners is not None:     # I10.4
+                DSC.mate_set_owner(value, self.params)
                 continue
             if spec["t"] == "num":
                 try:
@@ -662,7 +691,8 @@ class DocumentSession:
         except EngineError as e:
             raise SessionError(f"tab {tab!r}: {e}") from e
         return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"),
-                             context=self._derived_context(tab, fid, got["feature"]["type"]))
+                             context=self._derived_context(tab, fid, got["feature"]["type"]),
+                             owners=self._mate_owners(tab, fid, got["feature"]["type"]))
 
     def start_dialog(self, tab, ftype, picks=(), image=None):
         """A FeatureDialog in create mode for a new feature of `ftype` at the rollback position, its selection
@@ -679,7 +709,8 @@ class DocumentSession:
             raise SessionError(f"tab {tab!r}: {e}") from e
         dialog = FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"),
                                {k: [tuple(i) for i in v] for k, v in got["fields"].items()}, got["params"],
-                               context=self._derived_context(tab, None, got["feature"]["type"]))
+                               context=self._derived_context(tab, None, got["feature"]["type"]),
+                               owners=self._mate_owners(tab, None, got["feature"]["type"]))
         if image is not None:
             dialog.set_image(image["blob"], image["filename"], image["width"], image["height"])
         return dialog
@@ -702,6 +733,18 @@ class DocumentSession:
             return self._retry(tab, lambda: self._eng.get_blob(tab, key))
         except EngineError as e:
             raise SessionError(f"tab {tab!r}: {e}") from e
+
+    def _mate_owners(self, tab, fid, ftype):
+        """For a Mate connector dialog (I10.4), ([(part id, name)], [(sketch id, name)]) of the model it picks against
+        (the parts and sketches before the feature, as the desktop's Owner part row lists them); None for any other
+        type. A model that cannot be read lists none."""
+        if ftype != "mate_connector":
+            return None
+        try:
+            base = self._retry(tab, lambda: self._eng.base_outputs(tab, fid))
+        except (EngineError, SessionError):
+            return [], []
+        return [(p.id, p.name) for p in base.parts], [(s.id, s.name) for s in base.sketches]
 
     def _derived_context(self, tab, fid, ftype):
         """For a Derived dialog on `tab` (the feature `fid`, None for a new one), a callable params ->

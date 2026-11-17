@@ -225,7 +225,7 @@ def test_types_reports_derived_standard_and_every_other_type_as_before(srv):
     before = {t for t, spec in DSC.SCHEMAS.items() if any(r["t"] not in plain for r in spec)}
     assert "derived" in before
     for t, row in rows.items():
-        if t != "derived":
+        if t not in ("derived", "mate_connector"):           # mate_connector is served since I10.4
             assert row["standard"] is (t not in before), t
 
 

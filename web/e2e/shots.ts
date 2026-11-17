@@ -2878,6 +2878,76 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I10.4: Tablet mode, the Mate connector dialog on the bracket: a face tapped, Name, Owner part and Flip under it
+    name: 'mate-connector-dialog',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.locator('.tool-strip').getByRole('button', { name: /^Copy/ }).click()
+      await page.getByRole('menuitem', { name: /^Mate connector/ }).click()
+      await page.getByRole('dialog', { name: /^Mate connector/ }).waitFor()
+      await page.getByTestId('shell-viewport').and(page.locator('[data-dialog-base]')).waitFor()
+      const spots = await faceSpots(page, page.request, 'touch')
+      const at = spots.find((f) => f.face === 7) ?? spots[0]!
+      await fingerTap(page, at)
+      await page.getByTestId('sel-chip').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.4: Desktop mode, the same dialog beside the desktop program's feature dialog: a face clicked, the Name typed
+    name: 'desktop-mate-connector-dialog',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.locator('.desktop-toolbar').getByRole('button', { name: 'Mate connector', exact: true }).click()
+      await page.getByRole('dialog', { name: /^Mate connector/ }).waitFor()
+      await page.getByTestId('shell-viewport').and(page.locator('[data-dialog-base]')).waitFor()
+      const spots = await faceSpots(page, page.request, 'mouse')
+      const at = spots.find((f) => f.face === 7) ?? spots[0]!
+      const canvas = (await page.locator('[data-region="viewport"] canvas').first().boundingBox())!
+      await page.mouse.click(canvas.x + at.x, canvas.y + at.y)
+      await page.getByTestId('sel-chip').waitFor()
+      const name = page.getByRole('dialog', { name: /^Mate connector/ }).getByRole('textbox', { name: 'Name' })
+      await name.fill('Hinge pin')
+      await name.press('Tab')
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.4: Tablet mode, the hinge Assembly with the long-press popover of an instance row: Origin connector
+    name: 'instance-popover',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 2)
+      const box = (await page.locator('[data-instance="I1"]').boundingBox())!
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.down()
+      await page.getByRole('menu').waitFor()
+      await page.mouse.up()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.4: Desktop mode, the instance's right-click menu with Add mate connector to instance origin on, beside the desktop program's context menu
+    name: 'desktop-instance-menu',
+    mode: 'desktop',
+    desktop: 'desktop-context',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 2)
+      await page.locator('[data-instance="I1"]').click({ button: 'right' })
+      await page.getByRole('menuitem', { name: 'Add mate connector to instance origin' }).waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

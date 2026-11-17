@@ -733,6 +733,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           setFixed: (fixed) => e.setFixed(inst.id, fixed),
           setHidden: (hidden) => e.setHidden(inst.id, hidden),
           isolate: () => void tabView.toggleIsolate([inst.id]),
+          addConnector: () => void e.addOriginConnector(inst.id),
           // the gizmo shows on the one free instance that is selected; the menu selects it and says why when it cannot
           move: () => (inst.fixed ? failText('Move', `${inst.name} is fixed. Free it first, then move it.`) : inst.hidden ? failText('Move', `${inst.name} is hidden. Show it first, then move it.`) : undefined),
           remove: () => askDeleteInstance(inst.id),

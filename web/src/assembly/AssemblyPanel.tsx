@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { Icon, paths } from '../shell/icons'
 import { ConfirmDialog } from '../shell/Modal'
 import { useMode } from '../shell/mode'
-import { useRightClick } from '../shell/rightClick'
+import { anchorOf, Popover, PopoverItem } from '../shell/Popover'
+import type { Anchor } from '../shell/Popover'
+import { useMenuPress, useRightClick } from '../shell/rightClick'
 import { size } from '../theme/tokens'
 import { cssColor } from '../features/partPalette'
 import type { AssemblyOutputs, InstanceEntry, MateEntry } from '../wire'
@@ -29,14 +31,15 @@ interface Props {
 /** Mate types as the desktop spells them in its list ("revolute" -> "Revolute"). */
 const typeLabel = (t: string): string => (t.length === 0 ? t : t[0]!.toUpperCase() + t.slice(1).replace(/_/g, ' '))
 
-function InstanceRow({ inst, error, selected, edits, onSelect, onContext }: { inst: InstanceEntry; error: string | undefined; selected: boolean; edits: AssemblyEdits; onSelect: () => void; onContext: (x: number, y: number) => void }) {
+function InstanceRow({ inst, error, selected, edits, onSelect, onMenu, onContext }: { inst: InstanceEntry; error: string | undefined; selected: boolean; edits: AssemblyEdits; onSelect: () => void; onMenu: (el: HTMLElement) => void; onContext: (x: number, y: number) => void }) {
   const state = error !== undefined ? 'failed' : undefined
   const off = edits.disabled || edits.busy
   const eyeOf = useRowEye(inst.hidden)
-  const right = useRightClick(onContext)
+  // Tablet mode: a long press opens the popover; Desktop mode: a right click opens the context menu (the shell's)
+  const right = useMenuPress(!edits.disabled, onMenu, onContext)
   return (
     <li {...eyeOf.bind} className="part-row instance-row" data-instance-row={inst.id} data-hidden={inst.hidden ? '' : undefined} data-fixed={inst.fixed ? '' : undefined} data-selected={selected ? '' : undefined}>
-      <button type="button" className="panel-row part-select" data-instance={inst.id} data-state={state} aria-current={selected ? 'true' : undefined} onClick={onSelect} {...right}>
+      <button type="button" className="panel-row part-select" data-instance={inst.id} data-state={state} aria-current={selected ? 'true' : undefined} aria-haspopup={edits.disabled ? undefined : 'menu'} onClick={onSelect} {...right}>
         <Icon d={paths.cube} px={size.iconSmall} stroke="var(--c-inkSoft)" />
         <span className="row-text">
           <span className="row-name">{inst.name}</span>
@@ -95,6 +98,7 @@ function MateRow({ mate, names, error, onContext }: { mate: MateEntry; names: Re
  */
 export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onSelect, onContext, onCollapsedChange }: Props) {
   const [deleting, setDeleting] = useState<InstanceEntry | null>(null)
+  const [menu, setMenu] = useState<{ instance: InstanceEntry; anchor: Anchor } | null>(null)
   const desktop = useMode() === 'desktop'
   if (collapsed) {
     return (
@@ -142,7 +146,7 @@ export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onS
             )}
             <ul className="parts-list" aria-labelledby="instances-heading" data-testid="instance-list">
               {outputs.instances.map((inst) => (
-                <InstanceRow key={inst.id} inst={inst} error={errors[inst.id]} selected={inst.id === selected} edits={edits} onSelect={() => onSelect(inst)} onContext={(x, y) => onContext?.({ kind: 'instance', instance: inst }, x, y)} />
+                <InstanceRow key={inst.id} inst={inst} error={errors[inst.id]} selected={inst.id === selected} edits={edits} onSelect={() => onSelect(inst)} onMenu={(el) => setMenu({ instance: inst, anchor: anchorOf(el) })} onContext={(x, y) => onContext?.({ kind: 'instance', instance: inst }, x, y)} />
               ))}
             </ul>
             {!desktop && canDelete && (
@@ -170,6 +174,20 @@ export function AssemblyPanel({ collapsed, locked, outputs, selected, edits, onS
           </>
         )}
       </div>
+      {menu && (
+        <Popover anchor={menu.anchor} label={`${menu.instance.name} menu`} onClose={() => setMenu(null)}>
+          <PopoverItem
+            label="Origin connector"
+            icon={<Icon d={paths.plus} />}
+            disabled={edits.busy}
+            onClick={() => {
+              const id = menu.instance.id
+              setMenu(null)
+              void edits.addOriginConnector(id)
+            }}
+          />
+        </Popover>
+      )}
       {deleting && (
         <ConfirmDialog
           title={`Delete "${deleting.name}"?`}

@@ -134,7 +134,7 @@ export function useSelectionFields({ selection, outputs, base, dialog, documentI
             return
           }
           setRefusal(null)
-          commitItems(key, afterPick(itemsOf(key), itemsOfAnswer(got.kind, got.ref, got.name), spec.multi === true))
+          commitItems(key, afterPick(itemsOf(key), itemsOfAnswer(got.kind, got.ref, got.name, got.stamp), spec.multi === true))
         } catch (e) {
           setRefusal({ key, text: explainError(e, latest.current.documentName) })
         }

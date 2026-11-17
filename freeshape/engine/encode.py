@@ -19,6 +19,7 @@ import hashlib
 import io
 import json
 import zlib
+from collections import OrderedDict
 
 import numpy as np
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
@@ -30,7 +31,7 @@ from .contract import MateConnectorOut, MeshOut, PartOut, SketchOut, plain
 
 _BREP_VERSION = TopTools_FormatVersion.TopTools_FormatVersion_VERSION_1
 _KIND_OF_LETTER = {"F": "face", "E": "edge", "V": "vertex"}
-_CACHE_LIMIT = 512
+_CACHE_MIN = 512      # the least each Encoder cache keeps; `Encoder.fit` raises it to twice the model's parts
 
 
 def brep_text(shape) -> bytes:
@@ -82,58 +83,85 @@ def mesh_out(shape, bases=None) -> MeshOut:
                    face_ranges=[(int(a), int(b)) for a, b in m.face_ranges])
 
 
+def _touch(cache, key):
+    """The entry under `key`, now the most recently used, or None."""
+    hit = cache.get(key)
+    if hit is not None:
+        cache.move_to_end(key)
+    return hit
+
+
 class Encoder:
     """Shape -> (BREP bytes, hash) and hash -> mesh, cached so an unchanged part is neither written nor
-    meshed again on the next `outputs`. Entries hold the shape itself, so its id() cannot be reused."""
+    meshed again on the next `outputs`. Entries hold the shape itself, so its id() cannot be reused.
+
+    Each cache drops its least recently used entries past `limit`. `fit(n)` sets the limit from the model:
+    twice its part count, never under _CACHE_MIN, so one `outputs` never evicts what it is about to read
+    again. A fixed 512 used to clear the caches partway through a model with more parts than that, and every
+    edit then encoded the whole model again (I1.2)."""
 
     def __init__(self, meshes=True, placed=False):
         self.meshes = meshes
         self.placed = placed     # `part(placed=True)` may send a placed part (PartOut.loc) -- the window reads it
-        self._brep = {}      # id(shape) -> (shape, compressed brep, hash)
-        self._mesh = {}      # hash -> MeshOut
-        self._bases = {}     # hash(unplaced shape) -> (unplaced shape, compressed brep, hash)
-        self._mesh_bases = {}  # unplaced geometry -> its mesh, so a placed copy is not meshed again (K.tessellate)
+        self.limit = _CACHE_MIN
+        self._brep = OrderedDict()       # id(shape) -> (shape, compressed brep, hash)
+        self._mesh = OrderedDict()       # hash -> MeshOut
+        self._bases = OrderedDict()      # hash(unplaced shape) -> (unplaced shape, compressed brep, hash)
+        self._mesh_bases = OrderedDict()  # unplaced geometry -> its mesh, so a placed copy is not meshed again
+        #                                   (K.tessellate)
+
+    def fit(self, parts):
+        """Size the caches for a model of `parts` parts (StudioTab.outputs calls it before encoding)."""
+        self.limit = max(_CACHE_MIN, 2 * int(parts))
+        for cache in (self._brep, self._mesh, self._bases, self._mesh_bases):
+            self._trim(cache)
+
+    def _trim(self, cache):
+        while len(cache) > self.limit:
+            cache.popitem(last=False)
+
+    def _put(self, cache, key, value):
+        cache[key] = value
+        cache.move_to_end(key)
+        self._trim(cache)
 
     def brep(self, shape):
-        hit = self._brep.get(id(shape))
+        hit = _touch(self._brep, id(shape))
         if hit is None or hit[0] is not shape:
-            text = brep_text(shape)
-            hit = (shape, zlib.compress(text, 6), hashlib.sha256(text).hexdigest())
-            if len(self._brep) >= _CACHE_LIMIT:
-                self._brep.clear()
-            self._brep[id(shape)] = hit
+            hit = (shape, *self._write(shape))
+            self._put(self._brep, id(shape), hit)
         return hit[1], hit[2]
+
+    @staticmethod
+    def _write(shape):
+        """(compressed BREP, hash) of a shape, uncached."""
+        text = brep_text(shape)
+        return zlib.compress(text, 6), hashlib.sha256(text).hexdigest()
 
     def seed(self, shape, data, digest):
         """Record a shape rebuilt from (compressed BREP `data`, `digest`) -- a part another tab sent -- so it
         is passed on with the very bytes and hash it came with, never re-written."""
-        if len(self._brep) >= _CACHE_LIMIT:
-            self._brep.clear()
-        self._brep[id(shape)] = (shape, data, digest)
+        self._put(self._brep, id(shape), (shape, data, digest))
 
     def mesh(self, shape, digest):
         if not self.meshes:
             return None
-        hit = self._mesh.get(digest)
+        hit = _touch(self._mesh, digest)
         if hit is None:
             hit = mesh_out(shape, self._mesh_bases)
-            if len(self._mesh) >= _CACHE_LIMIT:
-                self._mesh.clear()
-                self._mesh_bases.clear()
-            self._mesh[digest] = hit
+            self._put(self._mesh, digest, hit)
+            self._trim(self._mesh_bases)
         return hit
 
     def base(self, shape):
         """(BREP bytes, hash) of a shape with its location taken off: the same object for every placed copy of
-        one geometry, so it is written, hashed and sent once."""
+        one geometry, so it is written, hashed and sent once. Kept here only: `shape` is a fresh unplaced copy
+        on every call, so filing it under its id() in the BREP cache would never be hit again."""
         key = hash(shape)
-        hit = self._bases.get(key)
+        hit = _touch(self._bases, key)
         if hit is None or not hit[0].IsSame(shape):
-            data, digest = self.brep(shape)
-            hit = (shape, data, digest)
-            if len(self._bases) >= 4 * _CACHE_LIMIT:
-                self._bases.clear()
-            self._bases[key] = hit
+            hit = (shape, *self._write(shape))
+            self._put(self._bases, key, hit)
         return hit[1], hit[2]
 
     def _placement(self, shape):

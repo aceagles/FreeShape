@@ -154,14 +154,14 @@ class MemorySampler:
 # ---------------------------------------------------------------------------- a synthetic assembly
 
 def write_synthetic(path, copies, distinct=8):
-    """An assembly STEP like a CAD export: `distinct` screw variants (about 1000 faces each) and 2 boards with 100
-    holes, in modules of a board and 10 screws, the modules placed until there are `copies` screws. There are 20
-    distinct modules, or as many as it takes to use every screw variant."""
+    """An assembly STEP like a CAD export: `distinct` screw variants (the first 8 about 1000 faces each, the rest
+    122-faced pins) and 2 boards with 100 holes, in modules of a board and 10 screws, the modules placed until there
+    are `copies` screws. There are 20 distinct modules, or as many as it takes to use every screw variant."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakePolygon
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
     from OCP.BRepOffsetAPI import BRepOffsetAPI_ThruSections
-    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
     from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
     from OCP.STEPCAFControl import STEPCAFControl_Writer
     from OCP.STEPControl import STEPControl_AsIs
@@ -172,14 +172,26 @@ def write_synthetic(path, copies, distinct=8):
     from OCP.TopoDS import TopoDS_Compound
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
 
+    def pin(v):
+        """A lighter screw for variants past the first 8: a fluted prism of 120 planar sides, its height its own."""
+        pol = BRepBuilderAPI_MakePolygon()
+        for s in range(120):
+            a, r = 2 * math.pi * s / 120, 3.0 if s % 2 == 0 else 2.6
+            pol.Add(gp_Pnt(r * math.cos(a), r * math.sin(a), 0))
+        pol.Close()
+        face = BRepBuilderAPI_MakeFace(pol.Wire()).Face()
+        return BRepPrimAPI_MakePrism(face, gp_Vec(0, 0, 8 + 0.013 * v)).Shape()
+
     def screw(v):
+        if v >= 8:
+            return pin(v)
         ts = BRepOffsetAPI_ThruSections(True, True)
         for k in range(40):
             r = 3.0 if k % 2 == 0 else 2.6
             pol = BRepBuilderAPI_MakePolygon()
             for s in range(24):
                 a = 2 * math.pi * s / 24 + k * 0.13
-                pol.Add(gp_Pnt(r * math.cos(a), r * math.sin(a), (10 + (v % 40) * 0.37 + v // 40 * 0.011) * k / 39))
+                pol.Add(gp_Pnt(r * math.cos(a), r * math.sin(a), (10 + v * 0.37) * k / 39))
             pol.Close()
             ts.AddWire(pol.Wire())
         ts.Build()

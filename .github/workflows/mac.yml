@@ -86,7 +86,21 @@ jobs:
             check || { cat selftest.txt; exit 1; }
           fi
           cat selftest.txt
-      - name: Build the installer
+      - name: Time opening a small Document (issue 52; information only)
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          # each run: start FreeShape, wait the given seconds on Home, open a one-Part-Studio Document as a card
+          # click does, and wait for its first rebuild from the worker. The first run is a first-ever start.
+          for spec in "cold 0" "cold 0" "cold 20" "prewarm 0" "prewarm 20"; do
+            set -- $spec
+            rm -f open-timing.txt
+            start=$(date +%s.%N)
+            dist/FreeShape/FreeShape.exe --open-timing "$PWD/open-timing.txt" $1 $2 || true
+            echo "== $1, $2 s on Home (whole run $(python -c "import time; print(round(time.time() - $start, 1))") s)"
+            cat open-timing.txt || echo "(no output)"
+          done
         run: |
           ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
           if [ ! -f "$ISCC" ]; then choco install innosetup -y --no-progress; fi

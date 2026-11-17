@@ -30,6 +30,7 @@ import subprocess
 import tempfile
 
 from . import kernel as K
+from . import timing
 
 MIN_GIT = (2, 38)
 IDENTITY = ("FreeShape", "freeshape@localhost")
@@ -104,8 +105,11 @@ def _run(args, cwd, allow_file, check, text, input=None):
     if _state["recorder"] is not None:
         _state["recorder"](argv, cwd, env)
     feed = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+    t0 = timing.since_begin() if timing.ON else 0.0
     try:
         r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=text, **feed)
+        if timing.ON:
+            timing.mark(f"git {' '.join(map(str, args[:2]))}: {timing.since_begin() - t0:.3f} s")
     except FileNotFoundError as e:
         raise GitUnavailable(f"git is not installed on this computer. {NEEDS_GIT}") from e
     except OSError as e:

@@ -40,6 +40,7 @@ from . import docstore as DS
 from . import gitstore as G
 from . import kernel as K
 from . import tabkinds as TK
+from . import timing
 from .links import LinkResolver, migrate_links_to_tab_ids, tab_sources
 
 MANIFEST_NAME = DS.MANIFEST_NAME
@@ -345,8 +346,11 @@ class FolderDocument:
         rec, store = TK.get(tab.kind), self.store
         store.place_tab(tab.id, tab.file)
         if rec.from_data is None:
-            return rec.load(store.checked_tab_path(tab.id))
-        return rec.from_data(store.read_tab(tab.id), path=store.tab_path(tab.id), blobs=store.blobs(tab.id))
+            doc = rec.load(store.checked_tab_path(tab.id))
+        else:
+            doc = rec.from_data(store.read_tab(tab.id), path=store.tab_path(tab.id), blobs=store.blobs(tab.id))
+        timing.mark(f"open: tab loaded ({tab.kind} {tab.name!r})")
+        return doc
 
     @staticmethod
     def peek_manifest(path):

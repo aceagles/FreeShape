@@ -30,7 +30,8 @@ test('Construct with nothing selected makes the next line construction in one un
   expect(box.height).toBeGreaterThanOrEqual(44)
   await expect(construct(page)).toHaveAttribute('aria-pressed', 'false')
   await chooseDraw(page, 'line')
-  expect(await tool(page)).toBe('line')
+  // the tap takes effect a moment later on a slow runner: wait for the tool, as the reads further down do
+  await expect.poll(() => tool(page)).toBe('line')
   await construct(page).tap()
   await expect(construct(page)).toHaveAttribute('aria-pressed', 'true')
   // pressing it changed no tool

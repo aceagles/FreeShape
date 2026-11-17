@@ -1,7 +1,6 @@
 """Main window: ties the document, viewport, panels, toolbars and dialogs together."""
 from __future__ import annotations
 
-import base64
 import copy
 import os
 import sys
@@ -2323,13 +2322,17 @@ class MainWindow(QMainWindow):
             return self.folder
         if not self._close_document():
             return None
+        unbuilt = self._engine_takes_studios()      # its Part Studios are built by the engine, not here (#64)
         try:
-            fd = doc_folder.FolderDocument.open_document(path, registry=doc_registry.default_registry())
+            fd = doc_folder.FolderDocument.open_document(path, registry=doc_registry.default_registry(),
+                                                         build=not unbuilt)
         except (K.KernelError, OSError, ValueError) as e:
             QMessageBox.critical(self, APP_NAME, f"Could not open the Document {path}:\n{e}")
             return None
         timing.mark("open: document read (manifest, tabs, git)")
         self._adopt_document(fd)
+        if unbuilt and [self._build_unless_engine_took(fd.tab(t).doc) for t in fd.unbuilt_studios()].count(True):
+            fd.refresh_links()          # some were built here after all: what reads them reads them now
         timing.mark("open: tabs added")
         self.show_workspace()
         self._note_git_problem(fd)
@@ -2792,7 +2795,9 @@ class MainWindow(QMainWindow):
         kind = info.get("kind")
         if kind not in doc_folder.LOADERS:
             return False
-        doc = self.folder.recover_tab(kind, os.path.basename(path), info.get("tab"), os.path.dirname(path))
+        unbuilt = kind == "studio" and self._engine_takes_studios()      # built by the engine, not here (#64)
+        doc = self.folder.recover_tab(kind, os.path.basename(path), info.get("tab"), os.path.dirname(path),
+                                      build=not unbuilt)
         doc.name = info.get("tab_name") or meta.get("name") or doc.name
         doc.dirty = True
         old = None
@@ -2806,7 +2811,8 @@ class MainWindow(QMainWindow):
         self._add_tab(doc)
         if old is not None:
             self._remove_tab_silently(old)
-        self.folder.refresh_links()
+        waits = unbuilt and not self._build_unless_engine_took(doc)
+        self.folder.refresh_links(pending=[tab.id] if waits else ())
         return True
 
     # ================================================================== autosave & recovery
@@ -2953,15 +2959,18 @@ class MainWindow(QMainWindow):
                         self.folder.discard_autosave(os.path.basename(f), os.path.dirname(f))
                         continue
                     kind = TK.kind_for_path(f)
+                    unbuilt = kind in (None, "studio") and self._engine_takes_studios()     # built by the engine
                     doc = AssemblyDoc.load(f, resolver=self._resolve_source) if kind == "assembly" \
                         else DrawingDoc.load(f, resolver=self._resolve_drawing_source,
                                                       hlr_async=self.dwg.request_exact) if kind == "drawing" \
-                        else TK.get(kind or "studio").load(f)
+                        else TK.get(kind or "studio").load(f, **({"build": False} if unbuilt else {}))
                     doc_folder.hold_blobs(doc)                  # its blobs are beside `f`, removed below
                     doc.path = meta.get("path")
                     doc.name = (meta.get("name") or "Recovered") + " (recovered)"
                     doc.dirty = True
                     self._open_in_tab(doc)
+                    if unbuilt:
+                        self._build_unless_engine_took(doc)
                 except Exception as e:
                     QMessageBox.warning(self, APP_NAME, f"Couldn't recover {os.path.basename(f)}:\n{e}")
             try:
@@ -4795,15 +4804,43 @@ class MainWindow(QMainWindow):
         for d in self.studio_docs():
             if d.path and os.path.abspath(d.path) == os.path.abspath(path):
                 return d
+        build = not self._engine_takes_studios()
         try:
-            doc = PartStudioDoc.load(path)
+            doc = PartStudioDoc.load(path, build=build)
         except Exception as e:
             QMessageBox.critical(self, APP_NAME, f"Could not open {path}:\n{e}")
             return None
         doc.name = os.path.splitext(os.path.basename(path))[0]
         self._add_tab(doc, switch=False)
+        if not build and not self._build_unless_engine_took(doc):
+            # the caller inserts its parts next: wait for the worker's build, with the window live
+            from .progress import ImportProgress
+            prog = ImportProgress(self, f"Opening {os.path.basename(path)}")
+            try:
+                prog.stage("Building the parts…")
+                label = prog.d.labelText()
+                self.studio_engine.wait(doc, tick=lambda t: prog.d.setLabelText(f"{label}  ({int(t)} s)"))
+            finally:
+                prog.close()
         self._add_recent(path)
         return doc
+
+    def _engine_takes_studios(self):
+        """True when a Part Studio opened now is built by the engine, not here (#64): the engine is on and has
+        not failed. Its file is then loaded unbuilt (`PartStudioDoc.load(build=False)`) and attached at once."""
+        eng = self.studio_engine
+        return eng is not None and not eng.broken and not eng._closed
+
+    def _build_unless_engine_took(self, doc):
+        """After `_add_tab` of a document loaded unbuilt: a Part Studio the engine did not take (a read-only
+        version, or the engine failed meanwhile) is built here, as with the engine off. True if it was."""
+        if getattr(doc, "kind", "studio") != "studio":
+            return False
+        eng = self.studio_engine
+        if eng is not None and eng.attached(doc):
+            return False
+        doc.rebuild()
+        return True
 
     def open_dialog(self):
         self._leave_modes()
@@ -4826,9 +4863,8 @@ class MainWindow(QMainWindow):
         prog = ImportProgress(self, f"Opening {os.path.basename(path)}")
         try:
             kind = TK.kind_for_path(path)
-            if kind in (None, "studio") and not self._prefetch_imports(path, prog):
-                self.status.showMessage("Opening cancelled", 5000)
-                return
+            # with the engine on, a Part Studio is attached before it builds: its worker builds it, never the window
+            unbuilt = kind in (None, "studio") and self._engine_takes_studios()
             prog.stage("Rebuilding the model…")
             self.viewport.progress_cb = prog.step
             try:
@@ -4839,7 +4875,7 @@ class MainWindow(QMainWindow):
                     doc = DrawingDoc.load(path, resolver=self._resolve_drawing_source,
                                           hlr_async=self.dwg.request_exact)
                 else:
-                    doc = TK.get(kind or "studio").load(path)
+                    doc = TK.get(kind or "studio").load(path, **({"build": False} if unbuilt else {}))
             except Exception as e:
                 prog.close()
                 prog = None
@@ -4847,6 +4883,8 @@ class MainWindow(QMainWindow):
                 return
             doc.name = os.path.splitext(os.path.basename(path))[0]
             self._open_in_tab(doc)
+            if unbuilt:
+                self._build_unless_engine_took(doc)
             QTimer.singleShot(400, lambda d=doc: self._update_thumbnail(d))
         finally:
             self.viewport.progress_cb = None
@@ -5021,33 +5059,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, f"The import stopped: the engine failed ({failed[0]})")
             return "failed"
         return "ok"
-
-    def _prefetch_imports(self, path, prog):
-        """Read the STEP files a .fshape imports in the background first (big ones only). False = cancelled. A file
-        written since I4.9 names each by blob key (`params.blob`, in `blobs/` beside the file); an older one carries
-        it inline (`params.data`). An import with a stored build that will be used instead (#64) is not read."""
-        import json
-        from .progress import read_step_in_background
-        try:
-            with open(path) as fh:
-                d = json.load(fh)
-            feats = d.get("features", [])
-            builds = d.get("python_builds") if isinstance(d.get("python_builds"), dict) else {}
-        except Exception:
-            return True
-        store = blobstore.store_for(path)
-        for f in feats:
-            p = f.get("params", {}) if f.get("type") == "import" and not f.get("suppressed") else {}
-            if F.stored_import_build(f, builds.get(f.get("id")), store.has) is not None:
-                continue
-            if (p.get("blob") or p.get("data")) and not F.is_brep_name(p.get("filename", "")):
-                try:
-                    raw = store.get(p["blob"]) if p.get("blob") else base64.b64decode(p["data"])
-                except Exception:
-                    continue
-                if not read_step_in_background(raw, prog, self):
-                    return False
-        return True
 
     def _stl_options(self, path):
         """Mesh options from the dialog for STL, 3MF and OBJ (no ASCII choice for the last two); None for any

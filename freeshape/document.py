@@ -819,9 +819,24 @@ class PartStudioDoc:
         out = pyfeature.notices(self.features, self.locked_builds())
         for f in self.features:
             if f.get("type") == "derived" and not f.get("suppressed") and f["id"] not in self.errors \
-                    and self._on_copy.get(f["id"]):
+                    and self._derived_on_copy(f):
                 out[f["id"]] = saved_copy_notice(f)
         return out
+
+    def _derived_on_copy(self, f):
+        """True while the derived feature `f` builds from its saved copy (its source is missing). A build here
+        records it (`_with_consumed_inputs`); a Part Studio the engine builds (opened with `build=False`, #64)
+        has had none, so it is worked out the same way once."""
+        if f["id"] not in self._on_copy:
+            from . import links
+            src, pkg = links.feature_source(f), None
+            if src is not None and self.link_inputs is not None:
+                try:
+                    pkg = self.link_inputs(src)
+                except K.KernelError:
+                    pass
+            self._on_copy[f["id"]] = pkg is None and self._saved_copy(f) is not None
+        return self._on_copy[f["id"]]
 
     # ------------------------------------------------------------------ folders
     def folder_members(self, folder_id):
@@ -1224,16 +1239,18 @@ class PartStudioDoc:
         self.dirty = False
 
     @staticmethod
-    def load(path) -> "PartStudioDoc":
+    def load(path, build=True) -> "PartStudioDoc":
         with open(path, "rb") as fh:
             data = fh.read()
-        return PartStudioDoc.from_data(data, path=path)
+        return PartStudioDoc.from_data(data, path=path, build=build)
 
     @staticmethod
-    def from_data(data, path=None, blobs=None) -> "PartStudioDoc":
+    def from_data(data, path=None, blobs=None, build=True) -> "PartStudioDoc":
         """A Part Studio from its bytes. `path` is the file they came from, if any: it names the file in errors,
         becomes the studio's `path` and places its blobs beside it. Without one, `blobs` (an object with
-        `get`, `has` and `put`, see docstore.DocumentStore.blobs) holds them."""
+        `get`, `has` and `put`, see docstore.DocumentStore.blobs) holds them. `build=False` (#64) leaves it unbuilt,
+        with no parts: only a window that attaches it to the engine at once asks for that, so the worker builds
+        it and the window never does; the window must build it itself (`rebuild`) if the engine does not take it."""
         d = json.loads(bytes(data).decode("utf-8"))
         fmt = d.get("format") if isinstance(d, dict) else None
         kinds = {"freeshape-assembly": "an Assembly", "freeshape-drawing": "a Drawing",
@@ -1271,7 +1288,10 @@ class PartStudioDoc:
         doc.blob_view = blobs
         nums = [int("".join(c for c in f["id"] if c.isdigit()) or 0) for f in doc.features]
         doc._counter = max(nums + [0])
-        doc.rebuild()
+        if build:
+            doc.rebuild()
+        else:
+            doc._prune_folders()           # what `rebuild` does first, so the engine gets the same snapshot
         return doc
 
     def visible_parts(self):

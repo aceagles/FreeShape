@@ -105,6 +105,21 @@ export interface HoldHandler {
   dismiss(): void
 }
 
+/**
+ * Ruler mode (card I12.6): the handlers that stand in for selection while a Canvas is being calibrated. The pen's Aim and
+ * Commit on release, the mouse's hover, press and click, a finger tap and a Drag handle (an end of the line) go to the ruler
+ * instead of the selection; navigation is unchanged (a finger orbits, two fingers pan, zoom and roll, the mouse's right
+ * and middle buttons orbit and pan). The `mouse` handler has no `doubleClick`, so two clicks close together are two clicks
+ * here (a double click exists only for a handler that has the method), and the `tap` handler takes the second of two quick taps
+ * as a tap (its `doubleTap` returns true, its `undoTap` does nothing), so no double tap fits the view.
+ */
+export interface RulerHandlers {
+  pen: PenHandler
+  mouse: PenHandler
+  tap: TapHandler
+  handle: HandleHandler
+}
+
 export const HOLD_TIME = 400
 export const HOLD_SLOP = 10
 
@@ -182,6 +197,8 @@ export class PointerModule {
   /** The last plain left click of the mouse in Desktop mode (where and when it was released), for a double click. */
   private lastClick: { x: number; y: number; t: number } | null = null
   private cursorAt: ((p: { x: number; y: number } | null) => void) | null = null
+  /** Ruler mode (I12.6): what it installed and the handlers it took the place of. */
+  private ruled: { on: RulerHandlers; saved: { pen: PenHandler | null; mouse: PenHandler | null; tap: TapHandler | null; handle: HandleHandler | null } } | null = null
 
   constructor(
     private readonly el: HTMLElement,
@@ -264,6 +281,28 @@ export class PointerModule {
       this.tapping = null
       this.mode = { kind: 'settling' }
     }
+  }
+
+  /**
+   * Ruler mode (card I12.6): takes the pen, mouse, tap and Drag handle slots, and puts back what they held when it is turned
+   * off with null. A slot that something else took meanwhile is left as that one has it.
+   */
+  setRulerMode(handlers: RulerHandlers | null): void {
+    const was = this.ruled
+    this.ruled = null
+    if (was) {
+      if (this.pen === was.on.pen) this.pen = was.saved.pen
+      if (this.mousePick === was.on.mouse) this.mousePick = was.saved.mouse
+      if (this.tapHandler === was.on.tap) this.tapHandler = was.saved.tap
+      if (this.handle === was.on.handle) this.handle = was.saved.handle
+    }
+    if (handlers === null) return
+    this.ruled = { on: handlers, saved: { pen: this.pen, mouse: this.mousePick, tap: this.tapHandler, handle: this.handle } }
+    this.pen = handlers.pen
+    this.mousePick = handlers.mouse
+    this.tapHandler = handlers.tap
+    this.handle = handlers.handle
+    this.lastClick = null
   }
 
   /** A finger tap Commits through this handler. */

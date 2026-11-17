@@ -3059,6 +3059,66 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I12.6: Tablet mode, Calibrate with a pen: the pen is down on the picture and dragged from the first end towards the second: the line, its live length and the magnifier above the tip
+    name: 'canvas-calibrate-pen',
+    mock: 'dialog',
+    steps: async (page) => {
+      await calibrateShot(page, false)
+      const { a, b } = await calibrateEnds(page)
+      await sendPointer(page, [
+        { phase: 'down', kind: 'pen', id: 7, ...a },
+        { phase: 'move', kind: 'pen', id: 7, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+        { phase: 'move', kind: 'pen', id: 7, ...b },
+      ])
+      await page.getByTestId('ruler-loupe').waitFor()
+      await settled(page)
+    },
+    after: calibrateAfter,
+  },
+  {
+    // I12.6: Tablet mode, both ends set: the distance on the pad, prefilled with the measured length
+    name: 'canvas-calibrate-distance',
+    mock: 'dialog',
+    steps: async (page) => {
+      await calibrateShot(page, false)
+      const { a, b } = await calibrateEnds(page)
+      await sendPointer(page, [{ phase: 'down', kind: 'pen', id: 7, ...a }, { phase: 'move', kind: 'pen', id: 7, ...b }, { phase: 'up', kind: 'pen', id: 7, ...b, pressure: 0 }])
+      await page.getByTestId('ruler-pad').waitFor()
+      await settled(page)
+    },
+    after: calibrateAfter,
+  },
+  {
+    // I12.6: Desktop mode, Calibrate with the mouse: the first end placed and the line following the mouse, its length live
+    name: 'desktop-canvas-calibrate-ruler',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await calibrateShot(page, true)
+      const { a, b } = await calibrateEnds(page)
+      await sendPointer(page, [{ phase: 'move', kind: 'mouse', id: 1, ...a }, { phase: 'down', kind: 'mouse', id: 1, ...a }, { phase: 'up', kind: 'mouse', id: 1, ...a, pressure: 0 }])
+      await page.waitForFunction(() => document.querySelector('[data-testid="calibrate"]')?.getAttribute('data-phase') === 'second')
+      await sendPointer(page, [{ phase: 'move', kind: 'mouse', id: 1, ...b }])
+      await page.waitForFunction(() => Number(document.querySelector('[data-testid="ruler-length"]')?.getAttribute('data-mm')) > 39)
+      await settled(page)
+    },
+    after: calibrateAfter,
+  },
+  {
+    // I12.6: Desktop mode, both ends set: the distance in the inline box, prefilled with the measured length
+    name: 'desktop-canvas-calibrate-distance',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await calibrateShot(page, true)
+      const { a, b } = await calibrateEnds(page)
+      for (const p of [a, b]) await sendPointer(page, [{ phase: 'move', kind: 'mouse', id: 1, ...p }, { phase: 'down', kind: 'mouse', id: 1, ...p }, { phase: 'up', kind: 'mouse', id: 1, ...p, pressure: 0 }])
+      await page.getByRole('textbox', { name: 'Distance' }).waitFor()
+      await settled(page)
+    },
+    after: calibrateAfter,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */
@@ -3216,4 +3276,45 @@ async function commitRectangleAndPickRegion(page: Page): Promise<void> {
   await penStroke(page, at, at)
   await page.getByTestId('selection-count').getByText('1 region').waitFor()
   await settled(page)
+}
+
+/** I12.6: the Canvas dialog open on the uploaded PNG at Width 100 (Height 50), the Calibrate ruler started. */
+async function calibrateShot(page: Page, desktop: boolean): Promise<void> {
+  const { CANVAS_PNG, emptyDocument } = await import('./support/canvas.ts')
+  await emptyDocument(page, 'Canvas shot')
+  await openApp(page, { document: 'Canvas shot', model: false })
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    desktop
+      ? page.locator('.desktop-toolbar [data-tool="canvas"]').click()
+      : (async () => {
+          await page.locator('.tool-strip').getByRole('button', { name: /^Create/ }).click()
+          await page.getByRole('menuitem', { name: /^Canvas/ }).click()
+        })(),
+  ])
+  await chooser.setFiles(CANVAS_PNG)
+  await page.getByTestId('calibrate-start').waitFor()
+  if (desktop) {
+    const width = page.getByRole('textbox', { name: 'Width' })
+    await width.fill('100')
+    await width.blur()
+  } else {
+    await padKeys(page, '1', '0', '0', 'Enter')
+  }
+  await page.waitForFunction(() => window.__freeshapeViewport!.canvasFrames().some((f) => f.preview && Math.abs(f.width - 100) < 1e-6))
+  await page.getByTestId('calibrate-start').click()
+  await settled(page)
+}
+
+/** I12.6: both ends of a 40 mm line along the picture, in view pixels. */
+async function calibrateEnds(page: Page): Promise<{ a: { x: number; y: number }; b: { x: number; y: number } }> {
+  return page.evaluate(() => {
+    const c = window.__freeshapeViewport!.canvasFrames().find((f) => f.preview)!
+    return { a: c.at(-20, 0), b: c.at(20, 0) }
+  })
+}
+
+async function calibrateAfter(page: Page): Promise<void> {
+  await closeAll(page.request)
+  ;(await import('./support/docs.ts')).removeDocument('Canvas shot')
 }

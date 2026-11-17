@@ -1,0 +1,117 @@
+/* Calibrate (card I12.6): the controls under the Canvas dialog's rows, and the ruler drawn over the view. */
+.calibrate {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  padding-top: var(--sp-10);
+  border-top: 1px solid var(--c-line);
+}
+.calibrate-title {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--c-muted);
+}
+.calibrate-button {
+  box-sizing: border-box;
+  min-height: var(--touch);
+  padding: 0 var(--sp-14);
+  border: 1px solid var(--c-accentDark);
+  border-radius: var(--r-sm);
+  background: var(--c-accent);
+  color: var(--c-white);
+  font: inherit;
+  cursor: pointer;
+}
+.calibrate-button[data-quiet] {
+  border-color: var(--c-line);
+  background: var(--c-white);
+  color: var(--c-ink);
+}
+.calibrate-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.calibrate-help {
+  margin: 0;
+  color: var(--c-inkSoft);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+.calibrate-length {
+  color: var(--c-ink);
+  font-weight: 600;
+}
+.calibrate-note {
+  margin: 0;
+  color: var(--c-danger);
+  font-size: var(--fs-small);
+  line-height: 1.35;
+}
+.calibrate-actions {
+  display: flex;
+  gap: var(--sp-6);
+}
+.shell[data-mode='desktop'] .calibrate-button {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: var(--d-font);
+  border-radius: var(--d-row-radius);
+}
+
+/* The ruler over the view: marks only, the pointer module takes every press. */
+.ruler-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+  font: 600 13px Inter, system-ui, sans-serif;
+}
+.ruler-layer svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.ruler-line {
+  stroke: #155bb0;
+  stroke-width: 2;
+  fill: none;
+}
+.ruler-halo {
+  stroke: #fff;
+  stroke-width: 4.5;
+  fill: none;
+  opacity: 0.85;
+}
+.ruler-end {
+  fill: #fff;
+  stroke: #155bb0;
+  stroke-width: 2;
+}
+.ruler-tag {
+  fill: #155bb0;
+  paint-order: stroke;
+  stroke: #fff;
+  stroke-width: 4;
+  stroke-linejoin: round;
+}
+.ruler-loupe {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  box-sizing: border-box;
+  border: 3px solid #155bb0;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.ruler-loupe canvas,
+.ruler-loupe svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}

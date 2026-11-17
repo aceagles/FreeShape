@@ -4,7 +4,8 @@ import type { ConnectionStore, PreviewMessage } from '../net/connection'
 import { explainError } from '../shell/errors'
 import { decodeOutputs, isStudio } from '../wire'
 import type { StudioOutputs } from '../wire'
-import { acceptFeatureDialog, cancelFeatureDialog, fetchBaseBytes, fetchPreviewBytes, openCreateDialog, openFeatureDialog, updateFeatureDialog } from './dialogApi'
+import type { CalibrateBody } from '../canvas/ruler'
+import { acceptFeatureDialog, calibrateCanvasDialog, cancelFeatureDialog, fetchBaseBytes, fetchPreviewBytes, openCreateDialog, openFeatureDialog, updateFeatureDialog } from './dialogApi'
 import type { DialogView, OpenReply } from './dialogApi'
 
 /** The feature types whose preview carries drag arrows (dialog_schema.manipulators). */
@@ -36,6 +37,8 @@ export interface FeatureDialogState {
   /** Accept is on its way. */
   accepting: boolean
   set(values: Record<string, unknown>): void
+  /** A Canvas dialog's Calibrate (card I12.6): sent after every change already on its way; true once the dialog shows the new size. */
+  calibrate(body: CalibrateBody): Promise<boolean>
   accept(): Promise<void>
   cancel(): void
 }
@@ -206,6 +209,33 @@ export function useFeatureDialog({ store, documentId, documentName, tab, feature
     [flush],
   )
 
+  const calibrate = useCallback(
+    (body: CalibrateBody): Promise<boolean> => {
+      const run = queue.current.then(async () => {
+        if (over.current || dialog.current === null) return false
+        try {
+          const r = await calibrateCanvasDialog(documentId, tab, dialog.current, client, body)
+          if (over.current) return false
+          setView(r)
+          // the new size (and X, Y and Rotation) replace what was refused before; what the server still refuses stays
+          setErrors((old) => {
+            const next = { ...old }
+            for (const k of ['width', 'height', 'x', 'y', 'rotation']) delete next[k]
+            return { ...next, ...r.errors }
+          })
+          setProblem(null)
+          return true
+        } catch (e) {
+          if (!over.current) setProblem(explainError(e, latest.current.documentName))
+          return false
+        }
+      })
+      queue.current = run.then(() => undefined)
+      return run
+    },
+    [documentId, tab, client],
+  )
+
   // The server previews on an update, not on open. A dialog of a feature that has drag arrows (or a Canvas) sends its first number back
   // unchanged once it is open, so the preview (and the arrows it carries) is there from the start, as on the desktop.
   useEffect(() => {
@@ -247,5 +277,5 @@ export function useFeatureDialog({ store, documentId, documentName, tab, feature
     latest.current.onDone({ accepted: false, revision: null })
   }, [documentId, tab, client])
 
-  return { phase, failure, opened, view, errors, sent, previewError, problem, accepting, set, accept, cancel }
+  return { phase, failure, opened, view, errors, sent, previewError, problem, accepting, set, calibrate, accept, cancel }
 }

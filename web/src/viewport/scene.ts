@@ -167,6 +167,9 @@ export interface BuiltScene {
   triads: readonly TriadSpec[]
   /** The canvases a pick can take (card I12.5), and what puts their pictures on once the cache has them. */
   canvases: readonly CanvasSpec[]
+  /** Every canvas drawn and the ones a dialog's preview changes (card I12.6: the ruler's canvas is the one being edited). */
+  canvasesDrawn: readonly CanvasSpec[]
+  canvasesPreviewed: readonly CanvasSpec[]
   /** Put the textures that have arrived since the build on the canvases. */
   refreshCanvases(): void
   /** Ids of the canvases drawn with their picture (test hook). */
@@ -573,6 +576,8 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     fitBounds: hasModel ? fitBoundsFor(bounds, half) : bounds,
     triads,
     canvases: canvasLayer.specs,
+    canvasesDrawn: canvasLayer.drawn,
+    canvasesPreviewed: canvasLayer.previewed,
     refreshCanvases: () => canvasLayer.refresh(),
     canvasPictures: () => canvasLayer.pictured(),
     update(width, height, scale) {

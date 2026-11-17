@@ -24,6 +24,8 @@ import { DEFAULT_VIEW, shapeStudio } from './visibility'
 import type { ViewState } from './visibility'
 import type { BuiltScene, SceneStats } from './scene'
 import { setSeeThrough } from './seeThrough'
+import { endOnScreen } from '../canvas/ruler'
+import type { RulerView } from '../canvas/ruler'
 import { TextureCache } from './canvases'
 import type { ImageFetcher } from './canvases'
 
@@ -53,6 +55,8 @@ export interface ViewportReport extends SceneStats {
   connectorScreens(): ConnectorScreen[]
   /** Test hook (I12.5): each drawn canvas's centre on screen (CSS pixels from the top left), whether its picture is on it, and why its image failed, if it did. */
   canvasScreens(): CanvasScreen[]
+  /** Test hook (I12.6): the frame of every canvas drawn, a dialog's preview ones too: its size, whether it is the preview, and where a point of its frame (mm from the centre along its drawn x and y) is on screen. */
+  canvasFrames(): CanvasFrame[]
   /** Test hook (I9.9): what a selection box dragged from (x0, y0) to (x1, y1) would take, with the selection's filter. */
   boxHits(x0: number, y0: number, x1: number, y1: number): SelectionItemReport[]
 }
@@ -74,6 +78,18 @@ export interface CanvasScreen {
   inside: { x: number; y: number }
   pictured: boolean
   error: string | null
+}
+
+/** A canvas's frame for the tests (card I12.6). */
+export interface CanvasFrame {
+  id: string
+  preview: boolean
+  width: number
+  height: number
+  /** The drawn x direction, a unit vector, Rotation and flips applied. */
+  xdir: [number, number, number]
+  /** Where the point (u, v) of the frame, in mm from the image centre along the drawn x and y, is on screen. */
+  at(u: number, v: number): { x: number; y: number }
 }
 
 /** An item of the selection as the test hook reports it. */
@@ -216,6 +232,8 @@ export class ViewportController implements NavHost {
   private imageSource: ImageFetcher | null = null
   /** Desktop mode's right click (card I9.10): the shell opens a menu for what is under the pointer; coordinates are the window's. */
   private contextHandler: ((e: ViewContextEvent) => void) | null = null
+  /** Called after each frame is drawn (the ruler's marks and magnifier, I12.6). */
+  private readonly frameListeners = new Set<() => void>()
   /** What setOutputs was last given, so a change of `vis` draws it again. */
   private lastShown: { shown: StudioOutputs; preview: PreviewLook | null } | null = null
 
@@ -560,6 +578,31 @@ export class ViewportController implements NavHost {
     return (this.built?.canvases ?? []).map((c) => ({ id: c.id, ...this.view.project([c.origin.x, c.origin.y, c.origin.z]), inside: this.view.project(c.origin.clone().addScaledVector(c.x, c.width / 4).addScaledVector(c.y, c.height / 4).toArray()), pictured: pictured.has(c.id), error: this.images?.failure(blobOf(c.id)) ?? null }))
   }
 
+  private canvasFrames(): CanvasFrame[] {
+    const previewed = new Set((this.built?.canvasesPreviewed ?? []).map((c) => c.id))
+    return (this.built?.canvasesDrawn ?? []).map((c) => ({ id: c.id, preview: previewed.has(c.id), width: c.width, height: c.height, xdir: [c.x.x, c.x.y, c.x.z], at: (u, v) => endOnScreen(c, this.view, { u, v }) }))
+  }
+
+  /**
+   * What the ruler of Calibrate (card I12.6) measures on and draws over. The canvas it works on is the one being edited: the
+   * dialog's preview canvas (the one that differs from the committed model), else the drawn canvas of the feature being edited.
+   */
+  rulerHost(editing: string | null): RulerView | null {
+    if (this.disposed) return null
+    return {
+      pointer: this.pointer,
+      view: this.view,
+      canvas: () => this.built?.canvasesPreviewed[0] ?? (editing === null ? null : (this.built?.canvasesDrawn.find((c) => c.id === editing) ?? null)),
+      element: this.canvas.parentElement ?? document.body,
+      surface: this.canvas,
+      onFrame: (fn) => {
+        this.frameListeners.add(fn)
+        return () => this.frameListeners.delete(fn)
+      },
+      requestRender: () => this.requestRender(),
+    }
+  }
+
   private connectorScreens(): ConnectorScreen[] {
     return (this.built?.triads ?? []).filter((t) => t.kind === 'connector').map((t) => ({ id: t.id, ...this.view.project(t.o) }))
   }
@@ -580,6 +623,7 @@ export class ViewportController implements NavHost {
     this.manipulators.update()
     this.renderer.render(this.scene, this.view.camera)
     this.frames++
+    for (const fn of [...this.frameListeners]) fn()
     this.report()
   }
 
@@ -605,6 +649,7 @@ export class ViewportController implements NavHost {
       pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
       connectorScreens: () => this.connectorScreens(),
       canvasScreens: () => this.canvasScreens(),
+      canvasFrames: () => this.canvasFrames(),
       boxHits: (x0, y0, x1, y1) => this.boxHits({ x0, y0, x1, y1 }, this.selection.pickFilter).map(reportItem),
     }
   }

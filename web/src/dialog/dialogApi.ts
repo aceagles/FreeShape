@@ -1,3 +1,4 @@
+import type { CalibrateBody } from '../canvas/ruler'
 import { json, request, seg, tabPath } from '../net/api'
 
 /** One row of a feature dialog's description (freeshape/dialog_schema.py `describe`). Only the keys a kind carries are set. */
@@ -94,6 +95,9 @@ export const openCreateDialog = (doc: string, tab: string, type: string, picks: 
   json<OpenReply>('POST', `${tabPath(doc, tab)}/features/dialog`, { body: { type, ...(picks.length > 0 ? { picks } : {}), ...(params !== undefined ? { params } : {}) }, headers: as(client) })
 export const updateFeatureDialog = (doc: string, tab: string, dialog: string, client: string, values: Record<string, unknown>) =>
   json<UpdateReply>('POST', at(doc, tab, dialog, 'update'), { body: { values }, headers: as(client) })
+/** Scale an open Canvas dialog from a line drawn on its picture (card I12.2's route); answers as an update does. */
+export const calibrateCanvasDialog = (doc: string, tab: string, dialog: string, client: string, body: CalibrateBody) =>
+  json<UpdateReply>('POST', at(doc, tab, dialog, 'calibrate'), { body, headers: as(client) })
 export const acceptFeatureDialog = (doc: string, tab: string, dialog: string, client: string) =>
   json<{ rebuilt: string[]; revision: number | null }>('POST', at(doc, tab, dialog, 'accept'), { body: {}, headers: as(client) })
 export const cancelFeatureDialog = (doc: string, tab: string, dialog: string, client: string) =>

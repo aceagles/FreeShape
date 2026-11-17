@@ -1,4 +1,5 @@
 import type { SelectionItem } from '../selection/store'
+import type { RulerView } from '../canvas/ruler'
 import type { StandardView } from './camera'
 
 /** What the menus and the desktop's keys can ask of the 3D view on screen. A view without a key's method ignores that key. */
@@ -11,6 +12,8 @@ export interface ViewHandler {
   panStep?(sx: number, sy: number): boolean
   /** N: look straight at the item (or the opposite side with none). */
   normalKey?(item: SelectionItem | null): boolean
+  /** Calibrate (card I12.6): what the ruler measures on and draws over; `editing` is the feature id of the canvas being edited (null: one being made). */
+  rulerHost?(editing: string | null): RulerView | null
 }
 
 /** The view on screen, for the desktop's keys; null when none is. */

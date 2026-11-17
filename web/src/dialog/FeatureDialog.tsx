@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
+import { CalibrateControls, endRuler, rulerRunning } from '../canvas/Ruler'
 import type { ConnectionStore } from '../net/connection'
 import type { SelectionStore } from '../selection/store'
 import type { StudioOutputs } from '../wire'
@@ -113,7 +114,8 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
   // Enter and Esc of Desktop mode reach this dialog through `featureDialogKeys` (the shell's one key listener)
   const canAccept = !desktopOnly && dlg.phase === 'open' && !dlg.accepting
   useEffect(() => {
-    const keys: DialogKeys = { accept: () => canAccept && (void dlg.accept(), true), cancel: dlg.cancel }
+    // a running ruler (Canvas, card I12.6) has Enter and Esc first: Enter is for its distance box, Esc ends it and not the dialog
+    const keys: DialogKeys = { accept: () => !rulerRunning() && canAccept && (void dlg.accept(), true), cancel: () => (endRuler() ? undefined : dlg.cancel()) }
     openKeys = keys
     return () => {
       if (openKeys === keys) openKeys = null
@@ -264,6 +266,9 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
             }
           })}
           {rows.length === 0 && <p className="dlg-status">This feature has nothing to set here.</p>}
+          {description.type === 'canvas' && (
+            <CalibrateControls editing={dlg.opened?.feature ?? null} desktop={desktop} calibrate={dlg.calibrate} onBegin={() => setPadKey(null)} fieldPad={editing !== null} ready={dlg.phase === 'open' && !dlg.accepting} />
+          )}
         </div>
       )}
     </DialogArea>

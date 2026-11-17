@@ -1,5 +1,5 @@
 import { BufferAttribute, BufferGeometry, DoubleSide, Group, Mesh, MeshBasicMaterial, SRGBColorSpace, Texture, Vector3 } from 'three'
-import type { Material } from 'three'
+import type { Material, Ray } from 'three'
 import type { Canvas } from '../wire'
 
 /**
@@ -64,6 +64,29 @@ export function canvasSpec(c: Canvas): CanvasSpec {
       .addScaledVector(y, (sy * c.height) / 2),
   )
   return { id: c.id, name: c.name, origin, x, y, normal: new Vector3(...c.normal).normalize(), width: c.width, height: c.height, selectable: c.selectable, corners }
+}
+
+/** A point on a canvas in its own frame (card I12.6): millimetres from the image centre along the drawn x (left to right) and y (bottom to top), flips and Rotation applied. */
+export interface FramePoint {
+  readonly u: number
+  readonly v: number
+}
+
+/**
+ * Where a ray meets the canvas's plane, as a point of its frame (`CanvasSpec.x` and `y` already carry Rotation and both flips,
+ * so these are the numbers freeshape/canvas_calibrate.py takes as p0 and p1), and whether it is inside the rectangle. Null for a
+ * ray along the plane or one that meets it behind its origin.
+ */
+export function canvasFramePoint(spec: CanvasSpec, ray: Ray): (FramePoint & { inside: boolean }) | null {
+  const d = ray.direction
+  const denom = d.dot(spec.normal)
+  if (Math.abs(denom) < 1e-9) return null
+  const t = spec.origin.clone().sub(ray.origin).dot(spec.normal) / denom
+  if (t <= 0) return null
+  const rel = ray.origin.clone().addScaledVector(d, t).sub(spec.origin)
+  const u = rel.dot(spec.x)
+  const v = rel.dot(spec.y)
+  return { u, v, inside: Math.abs(u) <= spec.width / 2 && Math.abs(v) <= spec.height / 2 }
 }
 
 /** The canvases the scene draws: the studio's own that the eye shows, a dialog's preview ones replacing any of the same id. */
@@ -151,6 +174,10 @@ export interface CanvasLayer {
   readonly group: Group
   /** The canvases a pick can take (a dialog's preview ones are not in it); hidden ones are not drawn and so not here. */
   readonly specs: readonly CanvasSpec[]
+  /** Every canvas drawn, a dialog's preview ones too (card I12.6: the ruler works on the canvas being edited, which is the preview). */
+  readonly drawn: readonly CanvasSpec[]
+  /** The ones a dialog's preview changes: the canvas being edited while its dialog is open. */
+  readonly previewed: readonly CanvasSpec[]
   /** Put the textures that have arrived on their materials. */
   refresh(): void
   /** Ids of the canvases whose picture is on (the rest are waiting for it). */
@@ -166,6 +193,8 @@ export function buildCanvases(drawn: readonly Canvas[], previewIds: ReadonlySet<
   const group = new Group()
   group.name = 'canvases'
   const specs: CanvasSpec[] = []
+  const drawnSpecs: CanvasSpec[] = []
+  const previewed: CanvasSpec[] = []
   const materials: Material[] = []
   const geometries: BufferGeometry[] = []
   const waiting: { mesh: Mesh; material: MeshBasicMaterial; blob: string }[] = []
@@ -198,11 +227,15 @@ export function buildCanvases(drawn: readonly Canvas[], previewIds: ReadonlySet<
     geometries.push(g)
     const w = { mesh, material, blob: c.blob }
     if (!attach(w)) waiting.push(w)
-    if (!previewIds.has(c.id)) specs.push(spec)
+    drawnSpecs.push(spec)
+    if (previewIds.has(c.id)) previewed.push(spec)
+    else specs.push(spec)
   }
   return {
     group,
     specs,
+    drawn: drawnSpecs,
+    previewed,
     pictured: () => group.children.filter((m) => m.visible).map((m) => m.userData['canvasId'] as string),
     refresh() {
       for (let i = waiting.length - 1; i >= 0; i--) if (attach(waiting[i] as (typeof waiting)[number])) waiting.splice(i, 1)

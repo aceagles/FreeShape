@@ -258,3 +258,44 @@ def test_new_tab_saves_with_the_document_and_switching_documents_closes_the_firs
     assert w.folder.id != first_id and w.folder.path == b
     assert _tab_titles(w) == ["Part Studio 1"] and w.tabs.count() == 1
     assert w.open_document(a).id == first_id and sorted(_tab_titles(w)) == ["Part Studio 1", "Renamed"]
+
+
+def test_home_card_shows_the_saved_model_not_unsaved_work(make_window, tmp_path, monkeypatch):
+    """The Home card opens the saved tab, so its picture is of the saved model. Drawing a box and going Home without
+    saving, or closing with Discard, must not leave a card showing a box the studio does not have."""
+    from PySide6.QtGui import QCloseEvent
+    w = make_window()
+    path = str(tmp_path / "Test Shapes")
+    _new_document_through_home(w, path)
+    w.show_workspace()
+    shots = {"color": "#d04030"}
+
+    def render(*a, **k):
+        img = QImage(48, 30, QImage.Format_RGB32)          # the offscreen platform has no GL to render one
+        img.fill(QColor(shots["color"]))
+        return img
+
+    w.viewport.render_thumbnail = render
+    keyed = H.keyed_thumb_path(w.folder.id, w._doc_key(w.doc)[1])
+
+    _box(w.doc)
+    assert w.doc.dirty
+    w.show_home()                                           # unsaved box: no picture of it
+    assert not os.path.exists(keyed)
+
+    w.show_workspace()
+    assert w.save()                                         # saved: the card shows the box
+    assert os.path.exists(keyed) and QImage(keyed).pixelColor(0, 0) == QColor("#d04030")
+
+    shots["color"] = "#30a050"                              # the next picture would show this unsaved edit
+    w.doc.features[-1]["params"]["depth"] = 25.0
+    w.doc.dirty = True
+    w.show_home()
+    assert QImage(keyed).pixelColor(0, 0) == QColor("#d04030")
+
+    w.show_workspace()
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Discard)
+    w.closeEvent(QCloseEvent())                             # close and discard the edit
+    assert QImage(keyed).pixelColor(0, 0) == QColor("#d04030")
+    with open(os.path.join(path, "Part Studio 1.fshape")) as fh:
+        assert [f["type"] for f in json.load(fh)["features"]] == ["sketch", "extrude"]

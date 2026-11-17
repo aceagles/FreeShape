@@ -27,12 +27,15 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from . import kernel as K
+from . import timing
 
 MIN_GIT = (2, 38)
 IDENTITY = ("FreeShape", "freeshape@localhost")
+CREATE_NO_WINDOW = 0x08000000    # Windows process creation flag (subprocess.CREATE_NO_WINDOW exists only on Windows)
 DEFAULT_BRANCH = "main"
 _HEX = re.compile(r"^[0-9a-f]{40,64}$")
 NEEDS_GIT = (f"Versions and Workspaces need git {MIN_GIT[0]}.{MIN_GIT[1]} or newer; "
@@ -104,8 +107,12 @@ def _run(args, cwd, allow_file, check, text, input=None):
     if _state["recorder"] is not None:
         _state["recorder"](argv, cwd, env)
     feed = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+    feed.update(_no_console())
+    t0 = timing.since_begin() if timing.ON else 0.0
     try:
         r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=text, **feed)
+        if timing.ON:
+            timing.mark(f"git {' '.join(map(str, args[:2]))}: {timing.since_begin() - t0:.3f} s")
     except FileNotFoundError as e:
         raise GitUnavailable(f"git is not installed on this computer. {NEEDS_GIT}") from e
     except OSError as e:
@@ -114,6 +121,15 @@ def _run(args, cwd, allow_file, check, text, input=None):
         err = r.stderr if text else r.stderr.decode("utf-8", "replace")
         raise GitError(f"git {args[0] if args else ''} failed: {err.strip()}")
     return r
+
+
+def _no_console(platform=None):
+    """On Windows, run git without a console of its own. The packaged FreeShape.exe has none (a windowed app), so
+    without this Windows makes one for every git call: 0.2 s each, and 5 s for the first one after the window
+    shows -- the whole of the slow first Document open in #52."""
+    if (platform or sys.platform) == "win32":
+        return {"creationflags": CREATE_NO_WINDOW}
+    return {}
 
 
 def _check_version():

@@ -39,6 +39,7 @@ from .. import links
 from .. import naming as N
 from .. import plugins
 from .. import tabkinds as TK
+from .. import timing
 from ..engine import LinkCycleError, ProcessEngine, TabErrored
 from ..engine import process as engine_process
 from ..document import PartStudioDoc, config_row
@@ -238,6 +239,14 @@ def mesh_hash(m):
 
 # =========================================================================== per-tab record
 
+def _blank(doc):
+    """A new, empty Part Studio of no Document and no file -- the window's placeholder tab: its engine tab would
+    hold nothing, so it is opened at the first edit. Taking a worker for it at once made the next Document opened
+    wait for a cold one (#52)."""
+    return (getattr(doc, "tab_id", None) is None and not getattr(doc, "path", None)
+            and not getattr(doc, "features", None) and not getattr(doc, "read_only_version", None))
+
+
 class _Rec:
     def __init__(self, doc, kind="studio"):
         self.doc = doc
@@ -304,9 +313,14 @@ class StudioEngine(QObject):
         self.live.attach_upstream(doc)
         rec = self._recs[id(doc)] = _Rec(doc)
         rec.want_tab = self.live.tab_id(doc)
+        timing.mark(f"engine: Part Studio {getattr(doc, 'name', '')!r} attached")
         doc.rebuild = lambda rec=rec: self._rebuild(rec)
         doc.listeners.append(lambda rec=rec: self._side_changed(rec))
-        self._request(rec)
+        if _blank(doc):             # nothing to build: it takes a worker at its first edit (#52)
+            rec.side = side(doc)
+            self.prewarm()
+        else:
+            self._request(rec)
 
     def attached(self, doc):
         return id(doc) in self._recs
@@ -328,6 +342,7 @@ class StudioEngine(QObject):
                 self._engine.close_tab(rec.tab)
             except Exception:       # noqa: BLE001 -- already gone
                 pass
+            timing.mark(f"engine: tab {rec.tab} closed (its worker ended)")
             rec.tab = None
 
     # ------------------------------------------------------------------ requests
@@ -368,6 +383,24 @@ class StudioEngine(QObject):
         QCoreApplication.processEvents()
         return True
 
+    def prewarm(self):
+        """Start the warm spare worker in the background, if there is none, so the next tab opened does not wait
+        for a Python start plus `import OCP` (seconds on Windows, #52). It runs on the engine thread ahead of any
+        later tab, which then takes that spare even before it is warm, instead of starting another. Off with
+        FREESHAPE_PREWARM=0. Returns the Future, or None when off."""
+        if self._closed or self.broken or self.spares < 1 or os.environ.get("FREESHAPE_PREWARM") == "0":
+            return None
+        return self._pool.submit(self._prewarm)
+
+    def _prewarm(self):
+        if self._closed:
+            return
+        timing.mark("engine: prewarming a worker")
+        try:
+            engine_process.SPARES.fill(self._get_engine()._ctx, self.spares)
+        except Exception as e:      # noqa: BLE001 -- the next tab starts its own worker and reports the failure
+            timing.mark(f"engine: prewarm failed: {e}")
+
     # ------------------------------------------------------------------ the engine thread
     def _get_engine(self):
         if self._engine is None:
@@ -392,6 +425,7 @@ class StudioEngine(QObject):
                     self.live.submit(eng, rec.tab, edit, rebuilt)
                 rec.have = snap
                 out = eng.outputs(rec.tab)
+                timing.mark(f"engine: rebuild of {rec.tab} back from the worker")
                 break
             except TabErrored:
                 if attempt:
@@ -474,6 +508,7 @@ class StudioEngine(QObject):
         applied = []
         if rec.kind == "studio" and rec.alive and not rec.dirty:   # else a newer request is on its way: skip drawing
             applied.append(self.live.apply(rec, res))
+            timing.mark(f"open: parts drawn ({len(res.parts)} parts)")
         self.live.finished(rec, res, applied)
         self._pump(rec)
         self.prune()

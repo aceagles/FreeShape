@@ -28,6 +28,7 @@ from .. import docstore
 from .. import doc_registry
 from .. import tabkinds as TK
 from .. import links
+from .. import timing
 from ..sketch import Sketch
 from . import theme, navstyles
 from . import filedlg
@@ -2109,6 +2110,7 @@ class MainWindow(QMainWindow):
 
     def open_any(self, path):
         """Open a FreeShape document, or import a STEP file — whatever the file is."""
+        timing.begin(f"open: {os.path.basename(os.path.normpath(path))}")
         if not os.path.exists(path):
             QMessageBox.information(self, APP_NAME, f"“{os.path.basename(path)}” can't be found — it may have "
                                     "been moved or deleted.")
@@ -2326,9 +2328,12 @@ class MainWindow(QMainWindow):
         except (K.KernelError, OSError, ValueError) as e:
             QMessageBox.critical(self, APP_NAME, f"Could not open the Document {path}:\n{e}")
             return None
+        timing.mark("open: document read (manifest, tabs, git)")
         self._adopt_document(fd)
+        timing.mark("open: tabs added")
         self.show_workspace()
         self._note_git_problem(fd)
+        timing.mark("open: workspace shown")
         if fd.errors:
             QMessageBox.warning(self, APP_NAME, "Some tabs could not be opened:\n\n" + "\n".join(
                 f"• {fd.tab(t).name if fd.tab(t) else t}: {m}" for t, m in fd.errors.items()))

@@ -44,6 +44,7 @@ from .. import blobstore
 from .. import links
 from .. import migrations as M
 from .. import tabkinds as TK
+from .. import timing
 from . import worker as W
 from .contract import Engine, EngineError, TabErrored
 from .encode import Encoder
@@ -56,8 +57,11 @@ STOP_GRACE_S = 3.0           # how long a closed tab's worker gets to finish bef
 
 def _new_pool(ctx):
     """A single-worker pool whose process is started now (it imports the engine while nobody waits)."""
+    timing.mark("worker: starting a process")
     pool = ProcessPoolExecutor(max_workers=1, mp_context=ctx, initializer=W.initialize, initargs=(os.getpid(),))
-    pool.submit(W.probe)
+    fut = pool.submit(W.probe)
+    if timing.ON:
+        fut.add_done_callback(lambda f: timing.mark("worker: process warm (OCP imported)"))
     return pool
 
 
@@ -186,8 +190,10 @@ class ProcessEngine(Engine):
                 "by_tab_id": self.by_tab_id}
         t.epoch += 1
         t.error, t.lean, t.sent = None, {}, key
+        timing.mark(f"engine: tab {t.tab} needs a worker")
         t.pool = SPARES.take(self._ctx, self.spares)
         t.take_meta(self._wait(t, t.pool.submit(W.load, spec)))
+        timing.mark(f"engine: tab {t.tab} loaded in its worker")
 
     def _stop(self, t):
         pool, t.pool = t.pool, None

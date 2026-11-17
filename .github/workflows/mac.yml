@@ -86,6 +86,19 @@ jobs:
             check || { cat selftest.txt; exit 1; }
           fi
           cat selftest.txt
+      - name: Time opening a small Document (issue 52; information only)
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          # each run: start FreeShape, wait the given seconds on Home, open a one-Part-Studio Document as a card
+          # click does and wait for its first rebuild from the worker, then open a second one the same way
+          for wait in 0 0 20; do
+            rm -f open-timing.txt
+            dist/FreeShape/FreeShape.exe --open-timing "$PWD/open-timing.txt" $wait || true
+            echo "== $wait s on Home"
+            cat open-timing.txt || echo "(no output)"
+          done
       - name: Build the installer
         run: |
           ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"

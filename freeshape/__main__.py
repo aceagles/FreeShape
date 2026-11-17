@@ -148,6 +148,9 @@ def main():
         return
     if len(sys.argv) >= 3 and sys.argv[1] == "--self-test":
         sys.exit(_self_test(sys.argv[2]))
+    if len(sys.argv) >= 3 and sys.argv[1] == "--open-timing":
+        from .open_timing import run as open_timing
+        sys.exit(open_timing(sys.argv[2], *(float(a) for a in sys.argv[3:4])))
     if not getattr(sys, "frozen", False) and not _deps_ok():
         if os.environ.get("FREESHAPE_BOOTSTRAPPED"):
             print("[FreeShape] Requirements are still missing after setup; delete the .venv folder and try again.")

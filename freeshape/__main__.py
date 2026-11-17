@@ -148,6 +148,9 @@ def main():
         return
     if len(sys.argv) >= 3 and sys.argv[1] == "--self-test":
         sys.exit(_self_test(sys.argv[2]))
+    if len(sys.argv) >= 4 and sys.argv[1] == "--import-timing":
+        from .import_timing import run as import_timing
+        sys.exit(import_timing(sys.argv[2], *sys.argv[3:]))
     if len(sys.argv) >= 3 and sys.argv[1] == "--open-timing":
         from .open_timing import run as open_timing
         sys.exit(open_timing(sys.argv[2], *(float(a) for a in sys.argv[3:4])))

@@ -615,6 +615,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         runMenu,
         undo: undoCmd,
         redo: redoCmd,
+        assemblyUndo: assembly.edits.undo,
+        assemblyRedo: assembly.edits.redo,
         beginSketch: () => beginSketch(),
         startTool: (type) => startTool(type),
         featureFromSketch: (type) => {

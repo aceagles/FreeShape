@@ -33,6 +33,9 @@ export interface DesktopKeyContext {
   /** Undo and Redo as the top bar and the toolbar have them: the open sketch's, else the Part Studio's. */
   undo: { enabled: boolean; run: () => void }
   redo: { enabled: boolean; run: () => void }
+  /** The Assembly toolbar's Undo and Redo (`assembly.edits`): the same functions, so the key and the button cannot differ. */
+  assemblyUndo: () => void
+  assemblyRedo: () => void
   /** The Sketch tool: on the selected plane or planar face, else the plane chooser. */
   beginSketch: () => void
   /** Open a feature's create dialog with the selection as its picks. */
@@ -84,6 +87,11 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
   const idle = (): boolean => sk === null && c.dialog() === null && c.closeArea === null
   // the same Undo and Redo as the top bar's buttons; in a Part Studio only with nothing open over it
   const undo = (redo: boolean) => (): boolean => {
+    // on an Assembly tab (MainWindow.undo with the Assembly showing): the Assembly's step; nothing in a read-only Document
+    if (c.tabKind === 'assembly') {
+      if (!c.readOnly && idle()) (redo ? c.assemblyRedo : c.assemblyUndo)()
+      return true
+    }
     const cmd = redo ? c.redo : c.undo
     if (cmd.enabled && (sk !== null || (studio && idle() && !c.readOnly))) cmd.run()
     return true

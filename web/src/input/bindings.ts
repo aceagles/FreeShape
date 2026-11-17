@@ -86,9 +86,9 @@ const SKETCH_BINDINGS: readonly Binding[] = [
 
 /** Every desktop key, in the order a shortcut list shows them. */
 export const BINDINGS: readonly Binding[] = [
-  { chord: 'Ctrl+Z', command: 'edit.undo', label: 'Undo', where: ['studio', 'sketch'] },
-  { chord: 'Ctrl+Y', command: 'edit.redo', label: 'Redo', where: ['studio', 'sketch'] },
-  { chord: 'Ctrl+Shift+Z', command: 'edit.redo', label: 'Redo', where: ['studio', 'sketch'] },
+  { chord: 'Ctrl+Z', command: 'edit.undo', label: 'Undo', where: ['studio', 'sketch', 'assembly'] },
+  { chord: 'Ctrl+Y', command: 'edit.redo', label: 'Redo', where: ['studio', 'sketch', 'assembly'] },
+  { chord: 'Ctrl+Shift+Z', command: 'edit.redo', label: 'Redo', where: ['studio', 'sketch', 'assembly'] },
 
   { chord: 'Ctrl+S', command: 'document.save', label: 'Save', where: ALL },
   { chord: 'Ctrl+Shift+S', command: 'document.saveAs', label: 'Save as…', where: ALL, shownOnly: true },

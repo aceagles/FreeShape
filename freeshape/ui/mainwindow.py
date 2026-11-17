@@ -1102,7 +1102,7 @@ class MainWindow(QMainWindow):
             self._sketch_buttons[name] = b
         h.addWidget(_sep())
         for name, tip in (("sk_fillet", "Sketch fillet — round a corner"), ("offset", "Offset (O)"),
-                          ("slot", "Slot"), ("sk_mirror", "Mirror — select geometry, then the mirror line"),
+                          ("slot", "Slot"), ("sk_mirror", "Mirror — select the mirror line, then the entities to mirror"),
                           ("sk_lpattern", "Linear pattern — select geometry, then a direction line"),
                           ("sk_cpattern", "Circular pattern — select geometry, then the centre point")):
             self._sketch_buttons[name] = self._tb(h, name, tip, lambda _=False, n=name: self._sk_tool(n),

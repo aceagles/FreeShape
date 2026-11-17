@@ -547,13 +547,17 @@ def _geometry(sk: Sketch, ids):
     return ents
 
 
-def _copy(sk: Sketch, ents, transform, keep=frozenset(), orient_flip=False, copy_cons=()):
-    """Copy entities with transform(uv)->uv. Points in `keep` map to themselves."""
+def _copy(sk: Sketch, ents, transform, keep=frozenset(), orient_flip=False, copy_cons=(), known=None):
+    """Copy entities with transform(uv)->uv. Points in `keep` map to themselves; points in `known` map to the copy
+    already made of them (so a copy joins up with an earlier copy at a shared end)."""
+    known = known or {}
     pmap = {}
 
     def P(pid):
         if pid in keep:
             return pid
+        if pid in known and known[pid] in sk.points:
+            return known[pid]
         if pid not in pmap:
             pmap[pid] = sk.add_point(*transform(sk.P(pid)))
         return pmap[pid]
@@ -612,7 +616,15 @@ def mirror(sk: Sketch, ids, axis_line: str):
 
     pts = {p for e in ents for p in sk.entity_points(e)}
     on_axis = {p for p in pts if abs((sk.P(p) - A)[0] * d[1] - (sk.P(p) - A)[1] * d[0]) < 1e-7}
-    pmap, emap = _copy(sk, ents, refl, keep=frozenset(on_axis), orient_flip=True)
+    # a point that already has a mirror image about this line (an earlier mirror, picked one entity at a time)
+    # reuses it, so mirrored chains stay joined
+    known = {}
+    for c in sk.constraints:
+        r = c.get("refs", ())
+        if c["type"] == "symmetric" and len(r) == 3 and r[2] == axis_line:
+            known.setdefault(r[0], r[1])
+            known.setdefault(r[1], r[0])
+    pmap, emap = _copy(sk, ents, refl, keep=frozenset(on_axis), orient_flip=True, known=known)
     for old, new in pmap.items():
         sk.add_constraint("symmetric", old, new, axis_line)
     for old, new in emap.items():

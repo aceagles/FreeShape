@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 from OpenGL import GL
 from PySide6.QtCore import Qt, Signal, QTimer, QPointF, QRectF, QPoint
-from PySide6.QtGui import QPainter, QColor, QFont, QPen, QPolygonF, QSurfaceFormat, QCursor
+from PySide6.QtGui import QPainter, QColor, QFont, QPen, QPolygonF, QSurfaceFormat, QCursor, QImage
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QLabel
 
@@ -36,7 +36,7 @@ class Pick:
     def label(self):
         names = {"face": "Face", "edge": "Edge", "vertex": "Vertex", "region": "Sketch region", "plane": "Plane",
                  "axis": "Axis", "sketch_line": "Sketch line", "part": "Part", "sketch_point": "Sketch point",
-                 "connector": "Mate connector"}
+                 "connector": "Mate connector", "canvas": "Canvas"}
         return names.get(self.kind, self.kind)
 
 
@@ -135,6 +135,7 @@ class Viewport(QOpenGLWidget):
     contextRequested = Signal(object, QPoint)       # Pick or None, global pos
     doubleClicked = Signal(object)
     pickFilterRejected = Signal(str)
+    canvasPicked = Signal(str)                      # a click on a Selectable canvas: its feature id (I12.3)
 
     def __init__(self, parent=None):
         fmt = QSurfaceFormat()
@@ -201,6 +202,8 @@ class Viewport(QOpenGLWidget):
         self._part_boxes = {}     # pid -> (lo, hi) of its mesh, to skip far-away parts when picking
         self._part_segs = {}      # pid -> (A, B, edge index) segment arrays for edge picking
         self.triads = []          # mate connectors: dicts {o, x, y, z, color, size_px}
+        self.canvases = []        # Canvas images (I12.3): dicts of a CanvasOut's fields plus "image" (a QImage)
+        self._canvas_tex = {}     # blob key -> GL texture id (made on first draw; the GL context's own)
         self.pick_points = []     # [(Pick, world point)]: drawn, pickable, not a mesh (connector triads)
         self.ghosts = []          # translucent highlight meshes: [(Mesh, (r, g, b, a))]
         self.drag_handler = None  # assemblies: object with press(x, y, e) -> bool, move(x, y, e), release(x, y, e)
@@ -297,6 +300,7 @@ class Viewport(QOpenGLWidget):
         self._section_cache_key = None
         self.planes = planes
         self.axes = list(axes)
+        self.canvases = []                      # the window sets them after (set_canvases); a scene has none by default
         self.sketches = [(fid, sr, [self.mesh_for(f, "region") for f in sr.regions]) for fid, sr in sketches]
         self._segs = None
         valid = []
@@ -309,6 +313,100 @@ class Viewport(QOpenGLWidget):
         if self.hover and not self._pick_exists(self.hover):
             self.hover = None
         self.update()
+
+    def set_canvases(self, canvases):
+        """The Canvas images to draw and pick (I12.3): dicts with a CanvasOut's fields (id, blob, origin, xdir, ydir,
+        width, height, opacity, selectable) and "image", the decoded QImage (None while it cannot be read: not drawn).
+        xdir and ydir already carry the rotation and the flips, so the picture maps along them as it is."""
+        self.canvases = [c for c in canvases if c.get("image") is not None]
+        live = {c["blob"] for c in self.canvases}
+        if self._canvas_tex and not live >= set(self._canvas_tex):
+            self._free_canvas_textures(live)
+        self.update()
+
+    def _free_canvas_textures(self, keep=()):
+        for key in [k for k in self._canvas_tex if k not in keep]:
+            tex = self._canvas_tex.pop(key)
+            try:
+                GL.glDeleteTextures([tex])
+            except Exception:       # noqa: BLE001 -- no current GL context (offscreen): the texture goes with it
+                pass
+
+    def _canvas_texture(self, c):
+        """The GL texture of a canvas's image, made on first use (row 0 of the QImage is the picture's top)."""
+        tex = self._canvas_tex.get(c["blob"])
+        if tex is not None:
+            return tex
+        img = c["image"].convertToFormat(QImage.Format_RGBA8888)
+        w, h = img.width(), img.height()
+        tex = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, tex)
+        GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA, w, h, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE,
+                        bytes(img.constBits()))
+        self._canvas_tex[c["blob"]] = tex
+        return tex
+
+    @staticmethod
+    def canvas_corners(c):
+        """The four corners of a canvas, as ((x, y, z), (u, v)): the picture's bottom-left, bottom-right, top-right and
+        top-left, with the texture coordinates of an image whose first row is its top."""
+        o, x, y = (np.asarray(c[k], float) for k in ("origin", "xdir", "ydir"))
+        hw, hh = float(c["width"]) / 2, float(c["height"]) / 2
+        return [(o - hw * x - hh * y, (0.0, 1.0)), (o + hw * x - hh * y, (1.0, 1.0)),
+                (o + hw * x + hh * y, (1.0, 0.0)), (o - hw * x + hh * y, (0.0, 0.0))]
+
+    def _draw_canvases(self):
+        """Each canvas as a textured quad in its frame at its stored opacity (I12.3): drawn after the solid parts, so
+        a part in front hides it, and without writing depth, so a plane, a region or a sketch on the same plane
+        draws over it. The blend is the scene's own (source alpha), the alpha being the opacity."""
+        if not self.canvases:
+            return
+        GL.glEnable(GL.GL_DEPTH_TEST)
+        GL.glDepthMask(GL.GL_FALSE)
+        GL.glEnable(GL.GL_BLEND)
+        GL.glBlendFuncSeparate(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA, GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+        GL.glDisable(GL.GL_LIGHTING)
+        GL.glEnable(GL.GL_POLYGON_OFFSET_FILL)
+        GL.glPolygonOffset(1.0, 1.0)             # level with a face it lies on: the canvas comes out above the face
+        GL.glEnable(GL.GL_TEXTURE_2D)
+        GL.glTexEnvi(GL.GL_TEXTURE_ENV, GL.GL_TEXTURE_ENV_MODE, GL.GL_MODULATE)
+        for c in self.canvases:
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self._canvas_texture(c))
+            GL.glColor4f(1.0, 1.0, 1.0, min(100.0, max(0.0, float(c["opacity"]))) / 100.0)
+            GL.glBegin(GL.GL_QUADS)
+            for pt, (u, v) in self.canvas_corners(c):
+                GL.glTexCoord2f(u, v)
+                GL.glVertex3f(*[float(a) for a in pt])
+            GL.glEnd()
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+        GL.glDisable(GL.GL_TEXTURE_2D)
+        GL.glDisable(GL.GL_POLYGON_OFFSET_FILL)
+        GL.glDepthMask(GL.GL_TRUE)
+
+    def _pick_canvas(self, o, d):
+        """(distance along the ray, Pick) of the nearest Selectable, drawn canvas the ray meets inside its
+        rectangle; (inf, None) when none."""
+        best = (np.inf, None)
+        for c in self.canvases:
+            if not c.get("selectable", True):
+                continue
+            n = np.asarray(c["normal"], float)
+            denom = float(d @ n)
+            if abs(denom) < 1e-9:
+                continue
+            t = float((np.asarray(c["origin"], float) - o) @ n) / denom
+            if t <= 0 or t >= best[0]:
+                continue
+            rel = o + t * d - np.asarray(c["origin"], float)
+            if abs(rel @ np.asarray(c["xdir"], float)) <= c["width"] / 2 and \
+                    abs(rel @ np.asarray(c["ydir"], float)) <= c["height"] / 2:
+                best = (t, Pick("canvas", (c["id"],)))
+        return best
 
     def set_transparent(self, ids):
         """Draw the parts with these ids translucent (Onshape's Shift+T). Only the drawing changes: they are
@@ -978,6 +1076,8 @@ class Viewport(QOpenGLWidget):
             GL.glDepthMask(GL.GL_TRUE)
         if face_alpha < 1.0:
             GL.glBlendFuncSeparate(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA, GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
+
+        self._draw_canvases()
 
         # ---- edges (one draw call), then highlighted ones
         occlude = self._fill_solid_depth(face_depth)
@@ -1713,6 +1813,13 @@ class Viewport(QOpenGLWidget):
             if best[1] is not None and (through_to_regions or self.cam.view_z_of_t(best[0]) >= face_z - tol_z * 4):
                 return best[1]
 
+        # a Selectable canvas (I12.3): picked as its feature; behind a face in front of it, ahead of the plane it lies in
+        if kinds is None and self.select_filter is None and self.pick_handler is None and self.sketcher is None \
+                and self.canvases:
+            t_c, hit_c = self._pick_canvas(o, d)
+            if hit_c is not None and t_c <= best_face[0] + tol_z * 4:
+                return hit_c
+
         # planes win when they're in front of, or level with, the nearest face
         plane_hit = (np.inf, None)
         if allowed("plane") and self.show_planes and self.sketcher is None:
@@ -2166,6 +2273,8 @@ class Viewport(QOpenGLWidget):
             self.update()
             return
         h = self.pick(*xy)
+        if h is not None and h.kind == "canvas":        # a canvas is picked by a click, not hovered
+            h = None
         if h != self.hover:
             self.hover = h
             self.hoverChanged.emit(h)
@@ -2357,6 +2466,10 @@ class Viewport(QOpenGLWidget):
         if pk is None:
             if not (mods & (Qt.ShiftModifier | Qt.ControlModifier)) and self.select_filter is None:
                 self.clear_selection()
+            return
+        if pk.kind == "canvas":                     # a canvas is a feature, not a thing to select in the view
+            self.clear_selection()
+            self.canvasPicked.emit(pk.key[0])
             return
         self.toggle(pk)
 

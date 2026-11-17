@@ -782,10 +782,11 @@ class FeatureDialog(_ResizableFrame):
                 ed.setToolTip(f"Value in {unit}. Expressions, units and variables work: '25/2', '1 in', '#wall * 2'.")
 
             def done(ed=ed, k=spec["key"], unit=unit, mn=spec.get("min"), signed=spec.get("signed"),
-                     whole=bool(spec.get("int"))):
+                     whole=bool(spec.get("int")), mx=spec.get("max")):
                 txt = ed.text()
                 v = parse_number(txt, angle=(unit == "deg"), variables=self.base_state.vars)
-                bad = v is None or (mn is not None and v < mn) or (signed and abs(v) < 1e-6)
+                bad = v is None or (mn is not None and v < mn) or (mx is not None and v > mx) \
+                    or (signed and abs(v) < 1e-6)
                 ed.setProperty("invalid", "true" if bad else "false")
                 ed.style().unpolish(ed)
                 ed.style().polish(ed)
@@ -1777,6 +1778,14 @@ class FeatureDialog(_ResizableFrame):
             # an axis at the click, along the normal there.
             click = self.main.viewport.surface_point(*self.main.viewport.last_click)
             self.feature["params"]["click"] = [float(a) for a in click] if click is not None else None
+        if item is None and self.ftype == "canvas" and pick.kind == "face":
+            from ..picking import refusal
+            try:                                  # "That face is not flat", as the Browser client says
+                self.main.status.showMessage(refusal("face", fld.want, self.main.viewport.part_shapes.get(pick.key[0]))[1],
+                                             8000)
+            except Exception:
+                pass
+            return
         if item is None:
             if pick.kind == "sketch_line" and "region" in fld.want:
                 try:
@@ -1901,8 +1910,14 @@ class FeatureDialog(_ResizableFrame):
         self.schedule_preview()
 
     def _apply_preselection(self, picks):
-        got = apply_preselection(self.ftype, self._field_values(), picks,
+        fields = self._field_values()
+        default = list(fields.get("plane_sel", ())) if self.ftype == "canvas" else None
+        if default:
+            fields["plane_sel"] = []         # a new Canvas starts on Top: the pick of a plane or face replaces that
+        got = apply_preselection(self.ftype, fields, picks,
                                  _PickState(self.main.viewport, self.base_state), self.feature["params"])
+        if default and not got.fields.get("plane_sel"):
+            got.fields["plane_sel"] = default            # nothing picked fits: it stays on Top
         for key, items in got.fields.items():
             if key in self.fields and not key.endswith("_numbers"):
                 self.fields[key].items = items
@@ -1965,6 +1980,10 @@ class FeatureDialog(_ResizableFrame):
         for k in ("thickness1", "thickness2", "draft_angle"):      # seeded by the change: show them
             if k in self.widgets and p.get(k) != before.get(k):
                 self.widgets[k].setText(_show(p[k]))
+        if self.ftype == "canvas":              # Keep aspect ratio: the other size follows (not the one being typed in)
+            for k in ("width", "height"):
+                if k in self.widgets and k != key and p.get(k) != before.get(k):
+                    self.widgets[k].setText(_show(p[k]))
         for k, items in got.fields.items():
             if k in self.fields and self.fields[k].items != items:
                 self.fields[k].items = items

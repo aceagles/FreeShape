@@ -19,6 +19,7 @@ previews with `PartStudioDoc.compute`. Opening a file also builds it once in `Pa
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import itertools
 import json
@@ -77,6 +78,13 @@ def _build_blobs(doc):
                     out[key] = doc._blob_get(key)
                 except (blobstore.BlobError, ValueError, TypeError):
                     pass
+    for f in doc.features:                  # the image of each Canvas (I12.3): the worker builds the canvas from it
+        key = (doc._file_feature(f).get("params") or {}).get("blob") if f.get("type") == "canvas" else None
+        if isinstance(key, str) and key not in out:
+            try:
+                out[key] = doc._blob_get(key)
+            except (blobstore.BlobError, ValueError, TypeError):
+                pass
     for key, data in doc._context_blobs().items():      # the captures of its Context features: the worker has no other way to read them
         out.setdefault(key, data)
     return out
@@ -258,6 +266,7 @@ class _Result:
         self.connectors = list(getattr(out, "connectors", []))     # [MateConnectorOut]
         self.planes = dict(getattr(out, "planes", None) or {})     # plane feature id -> Plane.to_dict()
         self.axes = dict(getattr(out, "axes", None) or {})         # axis feature id -> {"o", "d", "span"}
+        self.canvases = list(getattr(out, "canvases", None) or [])  # [CanvasOut] (I12.1), for the 3D view (I12.3)
         self.error_refs = dict(getattr(out, "error_refs", None) or {})   # failed feature id -> refs to where
         self.rebuilt = []            # tab ids the engine rebuilt because this tab's output changed (Link graph)
         self.extra = []              # [(rec, _Result)] for the Part Studios among them
@@ -519,6 +528,8 @@ class StudioEngine(QObject):
                     F.RUNNERS[f["type"]](st, F.prepare(f, st))
                 except Exception:       # noqa: BLE001 -- the engine's `errors` already say why it failed
                     pass
+        st.canvases = {c.id: {k: v for k, v in dataclasses.asdict(c).items() if k != "hidden"}
+                       for c in getattr(res, "canvases", ())}
         doc.state = st
         doc.errors = dict(res.errors)
         doc.error_refs = dict(getattr(res, "error_refs", None) or {})

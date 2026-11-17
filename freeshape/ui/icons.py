@@ -254,6 +254,17 @@ def draw(name: str, p: QPainter):
             _arrow(p, 16, 9, 16, 22, BLUE)
         else:
             _arrow(p, 16, 22, 16, 9, ORANGE)
+    elif name == "canvas":                      # a picture on a plane (I12.3)
+        p.setPen(_pen(INK, 1.4))
+        p.setBrush(QColor("#eef3fa"))
+        p.drawRoundedRect(QRectF(5, 6, 22, 20), 2, 2)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(240, 138, 36))
+        p.drawEllipse(QPointF(21, 12), 2.6, 2.6)
+        mountains = QPolygonF([QPointF(7, 24), QPointF(13, 14), QPointF(17, 20), QPointF(20, 16), QPointF(25, 24)])
+        p.setBrush(BLUE_FILL)
+        p.setPen(_pen(BLUE, 1.3))
+        p.drawPolygon(mountains)
     elif name == "section":
         _box(p, 6, 13, 16, 13, 6)
         p.setPen(_pen(ORANGE, 1.2))

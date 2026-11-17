@@ -28,7 +28,8 @@ TOOLS = (
     "mirror", "linear_pattern", "circular_pattern", "boolean", "split", "move",
     # the Desktop-mode feature toolbar's other buttons (web/src/tools/defs.ts DESKTOP_TOOLBAR)
     "undo", "redo", "variable", "variable_studio_ref", "configs", "derived", "history", "plugin",
-    "flat", "flat_dxf", "nest", "mate_connector", "import", "export", "section", "interference", "fit", "iso",
+    "flat", "flat_dxf", "nest", "mate_connector", "import", "canvas", "export", "section", "interference", "fit",
+    "iso",
     # the Assembly toolbar (web/src/assembly/strip.ts)
     "insert", "m_fastened", "m_revolute", "m_slider", "m_cylindrical", "m_planar", "m_pin_slot", "m_parallel", "m_ball",
     "r_linear", "r_gear", "r_rack_pinion", "r_screw", "group", "bom", "explode",

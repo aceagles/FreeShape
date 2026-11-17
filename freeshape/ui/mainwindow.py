@@ -37,7 +37,7 @@ from . import theme, navstyles
 from . import filedlg
 from .icons import icon
 from .viewport import Viewport, Pick
-from .panels import LeftPanel, STD_PLANES, DocTabBar, DependenciesPanel
+from .panels import LeftPanel, STD_PLANES, DocTabBar, DependenciesPanel, ROLE_KIND, ROLE_ID
 from .dialogs import FeatureDialog, SketchDialog, pick_to_item
 from .section import SectionPanel
 from .context_bar import ContextBar
@@ -414,6 +414,7 @@ class MainWindow(QMainWindow):
         self.viewport.owner_name = self._pick_owner_name
         self.viewport.label_override = lambda pk: self.asm.row_label(pk) if self.is_asm else None
         self.viewport.doubleClicked.connect(self._viewport_double)
+        self.viewport.canvasPicked.connect(self._canvas_picked)
         self.viewport.hoverChanged.connect(self._hover_changed)
 
     def _build_topbar(self):
@@ -458,6 +459,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._add_action(m, "Import STEP / BREP (new tab)…", self.import_step)
         self._add_action(m, "Import STEP / BREP into this tab…", lambda: self.import_step(into_current=True))
+        self._add_action(m, "Insert canvas…", lambda: self.insert_canvas())
         self._add_action(m, "Component library…", self.open_step_library, "Ctrl+Shift+L")
         self._add_action(m, "Export STEP…", lambda: self.export(None, "step"))
         self._add_action(m, "Export STL…", lambda: self.export(None, "stl"))
@@ -481,7 +483,8 @@ class MainWindow(QMainWindow):
         menu_btn.setMenu(m)
         self._lock_actions = [a for a in m.actions() if a.text() in (
             "New Part Studio", "New Assembly", "New Drawing…", "Add files to Document…", "Save", "Save as…",
-            "Save Document archive…", "Import STEP / BREP (new tab)…", "Import STEP / BREP into this tab…")]
+            "Save Document archive…", "Import STEP / BREP (new tab)…", "Import STEP / BREP into this tab…",
+            "Insert canvas…")]
         h.addWidget(menu_btn)
         view_btn = QToolButton()
         view_btn.setObjectName("menuButton")
@@ -733,6 +736,8 @@ class MainWindow(QMainWindow):
               self.nest_for_cutting, "sheet metal dxf laser plasma layout stock", "File"),
             C("import", "Import STEP or BREP", "Open a STEP or BREP file in a new tab.", lambda: self.import_step(),
               "open file", "File"),
+            C("canvas", "Insert canvas", "Place a PNG or JPEG image on a plane or flat face, to sketch over.",
+              lambda: self.insert_canvas(), "image photo picture trace reference drawing", "File"),
             C("import", "Component library", "Search a folder of STEP parts, see their previews and insert one.",
               self.open_step_library, "step parts browse servo motor bearing standard catalogue insert", "File"),
             C("export", "Export", "Export the model as STEP, STL, 3MF, OBJ or BREP.",
@@ -1005,6 +1010,8 @@ class MainWindow(QMainWindow):
             self._tb(h, name, tip, lambda _=False, n=name: self.start_feature(n))
         h.addWidget(_sep())
         self._tb(h, "import", "Import STEP (opens in a new tab)", lambda: self.import_step())
+        self._tb(h, "canvas", "Canvas — place a PNG or JPEG image on a plane or flat face, to sketch over",
+                 lambda: self.insert_canvas())
         self._tb(h, "export", "Export STEP / STL / 3MF / OBJ / BREP", lambda: self.export(None, None))
         h.addStretch(1)
         self.btn_section = self._tb(h, "section", "Section view (Shift+X) — select a face or plane first to cut there",
@@ -1381,6 +1388,32 @@ class MainWindow(QMainWindow):
                 planes.append((("plane", fid), pl, f["name"] if f else "", half * 0.6))
         return planes
 
+    def _canvases_for(self, state):
+        """The Canvas images the 3D view draws (I12.3): each Canvas feature's placed image with its decoded picture,
+        none for a hidden one (the eye in the feature list). The picture is decoded once per blob."""
+        out = []
+        for fid, c in getattr(state, "canvases", {}).items():
+            if fid in self.doc.hidden_features:
+                continue
+            out.append(dict(c, id=fid, image=self._canvas_image(c.get("blob"))))
+        return out
+
+    def _canvas_image(self, key):
+        """The QImage of the blob `key` of this tab (None when it is missing or no image); kept per window."""
+        if not key:
+            return None
+        cache = self.__dict__.setdefault("_canvas_images", {})
+        if key not in cache:
+            from PySide6.QtGui import QImage
+            try:
+                img = QImage.fromData(self.doc._blob_get(key))
+            except (blobstore.BlobError, ValueError, TypeError, AttributeError):
+                img = None
+            cache[key] = None if img is None or img.isNull() else img
+            while len(cache) > 16:                  # the oldest picture goes
+                cache.pop(next(iter(cache)))
+        return cache[key]
+
     def _axes_for(self, state):
         axes = []
         if not self.show_axes:
@@ -1417,10 +1450,11 @@ class MainWindow(QMainWindow):
                 continue
             sketches.append((fid, sr))
         self.viewport.set_scene(parts, self._planes_for(state), sketches, self._axes_for(state))
+        self.viewport.set_canvases(self._canvases_for(state))
         self.viewport.triads = self._connector_triads(state)
 
     # ================================================================== feature dialogs
-    def start_feature(self, ftype, edit_fid=None, preselect=None):
+    def start_feature(self, ftype, edit_fid=None, preselect=None, params=None):
         if self._refuse_edit():
             return
         if self.is_asm or self.is_dwg:
@@ -1446,6 +1480,8 @@ class MainWindow(QMainWindow):
                 taken = {g["name"] for g in self.doc.features}
                 n = next(i for i in range(1, len(taken) + 2) if f"{F.FRONT_DOORS[door][1]} {i}" not in taken)
                 feat["name"] = f"{F.FRONT_DOORS[door][1]} {n}"
+            if params:                                   # e.g. a Canvas's image (insert_canvas)
+                feat["params"].update(params)
             index = self.doc.insert_index()
             is_new = True
             pre = list(preselect) if preselect else list(self.viewport.selection)
@@ -3893,9 +3929,9 @@ class MainWindow(QMainWindow):
         if f["type"] == "context":
             m.addAction("Update context", lambda: self.update_context(fid))
             self._add_context_hide_action(m, fid)
-        if f["type"] in ("sketch", "plane", "axis"):
+        if f["type"] in ("sketch", "plane", "axis", "canvas"):
             sel = [i for i in self.left.features.selected_feature_ids()
-                   if (self.doc.feature(i) or {}).get("type") in ("sketch", "plane", "axis")]
+                   if (self.doc.feature(i) or {}).get("type") in ("sketch", "plane", "axis", "canvas")]
             vis = sel if fid in sel and len(sel) > 1 else [fid]
             hide = any(i not in self.doc.hidden_features for i in vis)
             n = f" {len(vis)} items" if len(vis) > 1 else ""
@@ -4500,7 +4536,7 @@ class MainWindow(QMainWindow):
     def _viewport_double(self, pk):
         if self.mode != "idle" or pk is None or self.is_asm:
             return
-        if pk.kind in ("region", "sketch_line"):
+        if pk.kind in ("region", "sketch_line", "canvas"):
             self.edit_feature(pk.key[0])
         elif pk.kind == "plane" and pk.key[0] == "plane":
             self.edit_feature(pk.key[1])
@@ -5208,6 +5244,70 @@ class MainWindow(QMainWindow):
                                           doc_path=self._doc_path())
         if path:
             self.import_step_file(path, into_current)
+
+    def insert_canvas(self, path=None):
+        """Canvas (I12.3): pick a PNG or JPEG, then the Canvas dialog for it, on the selected plane or flat face (Top
+        when none is selected). The dialog is the generic FeatureDialog built from SCHEMAS["canvas"], the one the
+        Browser client serves. I12.4's Calibrate button attaches to that dialog (FeatureDialog._build, after the
+        schema's rows)."""
+        if self._refuse_edit():
+            return
+        if self.is_asm or self.is_dwg or self.doc is None or getattr(self.doc, "kind", "studio") != "studio":
+            self.status.showMessage("A canvas goes in a Part Studio", 5000)
+            return
+        if self.mode != "idle":
+            self._leave_modes()
+        path = path or self._pick_canvas_image()
+        if not path:
+            return
+        got = self.read_canvas_image(path)
+        if got is None:
+            return
+        self.start_feature("canvas", preselect=list(self.viewport.selection), params=got)
+
+    def _pick_canvas_image(self):
+        """The image file to place (a method of its own, so a test can answer for the file dialog)."""
+        path, _ = filedlg.getOpenFileName(self, "Insert canvas", "", "Images (*.png *.jpg *.jpeg);;All files (*)",
+                                          doc_path=self._doc_path())
+        return path
+
+    def read_canvas_image(self, path):
+        """The params a new Canvas starts with for the image file at `path` ({data, filename, width, height}), or None
+        after telling the person why it is refused. The refusals are the server's: the byte limit, then
+        image_info.check_upload (a PNG or JPEG read from its header, at most MAX_PIXELS); an image the header check
+        refuses is never decoded."""
+        from .. import image_info as II
+        from ..serve import MAX_IMAGE
+        try:
+            size = os.path.getsize(path)
+            if size > MAX_IMAGE:
+                raise II.ImageError(f"The image is over {MAX_IMAGE // (1024 * 1024)} MiB")
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            info = II.check_upload(raw)
+        except II.ImageError as e:
+            QMessageBox.warning(self, APP_NAME, str(e))
+            return None
+        except OSError as e:
+            QMessageBox.warning(self, APP_NAME, f"Cannot read {os.path.basename(path)}: {e.strerror or e}")
+            return None
+        width, height = info.default_size_mm()
+        return {"data": base64.b64encode(raw).decode("ascii"),
+                "filename": II.clean_file_name(os.path.basename(path), info.format), "width": width, "height": height}
+
+    def _canvas_picked(self, fid):
+        """A click on a Selectable canvas in the 3D view: its row in the feature list is selected."""
+        if self.mode != "idle" or self.is_asm or self.is_dwg:
+            return
+        lst = self.left.features
+        for i in range(lst.count()):
+            it = lst.item(i)
+            if it.data(ROLE_KIND) == "feature" and it.data(ROLE_ID) == fid:
+                lst.clearSelection()
+                lst.setCurrentItem(it)
+                it.setSelected(True)
+                lst.scrollToItem(it)
+                return
 
     def open_step_library(self):
         """The Component library browser: one window, kept so its search and scroll position survive."""

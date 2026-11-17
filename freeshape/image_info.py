@@ -136,3 +136,31 @@ def _jpeg(data: bytes) -> ImageInfo:
                 raise ImageError("The JPEG file is cut short (it has no end marker)")
             return ImageInfo("jpeg", w, h, *dpi)
         pos = end
+
+
+# ---------------------------------------------------------------------- an uploaded image (I12.2)
+MAX_PIXELS = 40_000_000         # width x height an upload may state: a header can claim any size, a browser decodes it
+MAX_FILE_NAME = 100
+
+
+class ImageTooLarge(ImageError):
+    """The image states more pixels than MAX_PIXELS (nothing is decoded, so the claim is all there is to check)."""
+
+
+def check_upload(data) -> ImageInfo:
+    """`read_info` of an uploaded image, plus the pixel limit: ImageError for a file that is not a whole PNG or
+    JPEG, ImageTooLarge for one that states more than MAX_PIXELS pixels."""
+    info = read_info(data)
+    if info.width * info.height > MAX_PIXELS:
+        raise ImageTooLarge(f"The image is {info.width} x {info.height} pixels; at most {MAX_PIXELS // 1_000_000} "
+                            f"million pixels are accepted")
+    return info
+
+
+def clean_file_name(name, fmt) -> str:
+    """`name` as shown, never as a path: what follows the last `/` or `\\`, control characters dropped, at most
+    MAX_FILE_NAME characters; "image.png" / "image.jpg" when nothing is left. `fmt` is "png" or "jpeg"."""
+    text = "".join(c for c in str(name or "").replace("\\", "/").rsplit("/", 1)[-1] if c.isprintable()).strip()
+    if not text or set(text) <= {"."}:
+        return "image.png" if fmt == "png" else "image.jpg"
+    return text[:MAX_FILE_NAME]

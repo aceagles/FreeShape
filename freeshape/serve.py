@@ -82,6 +82,32 @@ Studio tab, a format that is not step or stl, an unknown or repeated parameter, 
 range are a 400. A read-only Document exports too (nothing in it changes). The making of an export is one method,
 `_Server._make_export`, which a route that saves the bytes elsewhere calls as well.
 
+Canvas images (I12.2; freeshape/image_info.py, freeshape/canvas_calibrate.py). A Canvas feature (I12.1) places a PNG or
+JPEG on a plane; the image is a blob of the Part Studio.
+  POST /documents/<id>/tabs/<tab>/images?name=<file name>   body: the image (application/octet-stream, at most
+                         MAX_IMAGE = 20 MiB, Content-Length required; X-Client-Id required: the upload belongs to that
+                         client). 200 {"document", "tab", "blob": sha256 hex, "filename", "format": "png" | "jpeg",
+                         "pixels": [w, h], "width", "height"} (the default size in mm: the pixels at the image's own
+                         resolution, else 96 dpi). The bytes are held among the tab's blobs (engine request hold_blob):
+                         nothing is edited, no revision moves; they are written on a save only if a canvas names them.
+                         415 unless the body starts as a whole PNG or JPEG (the message says what the file is), 413 over
+                         MAX_IMAGE (from the Content-Length, before the body is read) or over image_info.MAX_PIXELS
+                         stated pixels, 423 on a read-only Document, 400 for a tab that is not a Part Studio. A refused
+                         upload leaves nothing behind (the engine is not asked to hold it). `name` is shown only.
+  GET  .../tabs/<tab>/images/<sha256>   the image's bytes, Content-Type image/png or image/jpeg, nosniff. Only a blob
+                         that a canvas feature of the tab names, or that this client uploaded (X-Client-Id, optional
+                         on this read; an image element cannot send one, and then only the first kind is served);
+                         404 for any other key, one this tab does not have included.
+  Open a dialog on an uploaded image: POST .../features/dialog {"type": "canvas", "params": {"blob", "filename"}}; the
+  blob must be one this client uploaded to this tab (404 otherwise); the dialog starts with that image and its default
+  size, and the rest of its rows are the type's defaults.
+  POST .../dialog/<did>/calibrate  body {"p0": [x, y], "p1": [x, y], "distance": mm, "centre": bool, "snap": bool}
+                         (centre and snap optional, false): freeshape/canvas_calibrate.calibrate on an open Canvas
+                         dialog, p0 and p1 in the image's own frame (mm from its centre along its drawn x and y).
+                         Answers as update does (200 {"description", "values", "fields", "active", "errors", "preview"}
+                         with the new size, and X, Y and Rotation when centre or snap). 400 for a dialog that is not a
+                         Canvas or a line it cannot measure (shorter than 1e-6 mm, a distance of 0 or less).
+
 Archive (I11.5; freeshape/doc_archive.py, ADR 0017). A Document travels as one `.fsdoc` file.
   GET  /documents/<id>/archive[?save=1]  the Document as it is saved in its folder (never the unsaved state of the open
                          session), Content-Type application/octet-stream (so Safari does not unzip it), Content-Disposition
@@ -513,7 +539,7 @@ _DOC_VERBS = {"open": "POST", "close": "POST", "take-over": "POST", "save": "POS
               "discard-autosave": "POST", "archive": "GET"}
 _DIALOG_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})"
                           r"(?:/features/(?:([A-Za-z0-9_.-]{1,64})/(dialog)|(dialog|types))"
-                          r"|/dialog/([0-9a-f]{16})/(update|accept|cancel|preview|base))$")
+                          r"|/dialog/([0-9a-f]{16})/(update|accept|cancel|preview|base|calibrate))$")
 _MATE_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/mates/dialog"
                         r"(?:/([0-9a-f]{16})/(update|accept|cancel))?$")
 MAX_PICKS_QUERY = 8000          # longest query string of GET .../features/types
@@ -880,6 +906,12 @@ UPLOAD_DEADLINE = 120.0         # seconds for the whole body of that upload
 _IMPORT_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/import$")
 MAX_ARCHIVE = 256 * 1024 * 1024     # the body limit of POST /documents/archive (I11.5), the other one besides MAX_UPLOAD
 ARCHIVE_DEADLINE = 300.0        # seconds for the whole body of that upload
+MAX_IMAGE = 20 * 1024 * 1024    # the body limit of POST .../images (I12.2), the third one besides MAX_UPLOAD and MAX_ARCHIVE
+IMAGE_DEADLINE = 60.0           # seconds for the whole body of that upload
+MAX_IMAGES = 16                 # uploaded images one client keeps a record of (the oldest goes first)
+_IMAGE_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/images(?:/([0-9a-f]{64}))?$")
+_IMAGE_TYPES = {"png": "image/png", "jpeg": "image/jpeg"}
+CALIBRATE_KEYS = ("p0", "p1", "distance", "centre", "snap")
 _FILES_PATH = re.compile(r"^/files(?:/([a-z0-9-]{1,32})(/rescan)?)?\Z")       # I11.2
 _EXPORT_PATH = re.compile(r"^/documents/([A-Za-z0-9_-]{1,64})/tabs/([A-Za-z0-9_-]{1,64})/export$")      # I11.3
 MAX_EXPORT_PARTS = 1000         # part ids one export may name
@@ -1376,6 +1408,10 @@ class _Server:
         m = _IMPORT_PATH.match(path)
         if m is not None:
             return "import", m.group(1), m.group(2), "POST"  # the body is the file's bytes, not JSON
+        m = _IMAGE_PATH.match(path)
+        if m is not None:                                    # I12.2: the upload's body is the image's bytes, not JSON
+            return ("images.get", m.group(1), m.group(2), "GET") if m.group(3) else \
+                ("images.upload", m.group(1), m.group(2), "POST")
         m = _EXPORT_PATH.match(path)
         if m is not None:
             return "export", m.group(1), m.group(2), "GET"
@@ -1441,7 +1477,7 @@ class _Server:
         if method != want:
             return self._fail(405, "method not allowed", [("Allow", want)])
         body = None
-        if method == "POST" and route not in ("import", "archive.upload"):
+        if method == "POST" and route not in ("import", "archive.upload", "images.upload"):
             body = await self._body(request)
             if not isinstance(body, dict):
                 return body                                        # the refusal response
@@ -1552,6 +1588,10 @@ class _Server:
             return await self._refs(d, tab, body, request)
         if route == "import":
             return await self._import(d, tab, request)
+        if route == "images.upload":
+            return await self._image_upload(d, tab, request)
+        if route == "images.get":
+            return await self._image_get(d, tab, request)
         if route == "export":
             return await self._export(d, tab, request)
         if route == "export.save":
@@ -1969,6 +2009,107 @@ class _Server:
             "feature": None if made is None else {"id": made.id, "name": made.name, "error": made.error},
             "parts": [{"id": p.id, "name": p.name} for p in after.parts if p.id not in held]})
 
+    # ------------------------------------------------------------------ Canvas images (I12.2)
+    def _client_images(self, client, make=False):
+        """The client's {(Document id, tab): {blob key: {"filename", "format", "pixels", "width", "height"}}} record of
+        the images it uploaded, in its registry entry (so it goes with the entry and is never global), or None."""
+        entry = self.clients.get(client)
+        if entry is None and make:
+            self.clients.attach(client)
+            self.clients.detach(client)                       # no socket: the expiry timer starts now
+            entry = self.clients.get(client)
+        return None if entry is None else entry.data.setdefault("images", {})
+
+    def _canvas_preset(self, client, d, tab, ftype, params):
+        """The `image` a create-dialog body's `params` {"blob", "filename"} names, for the session, or the refusal
+        response: only a Canvas takes params, and only an image this client uploaded to this tab."""
+        if ftype != "canvas":
+            return self._fail(400, "params: only a canvas takes params")
+        if not isinstance(params, dict) or set(params) != {"blob", "filename"} or not all(
+                isinstance(v, str) for v in params.values()):
+            return self._fail(400, "params: must be {\"blob\": the key an upload gave, \"filename\": text}")
+        have = ((self._client_images(client) or {}).get((d.id, tab)) or {}).get(params["blob"])
+        if have is None:
+            return self._fail(404, "not found")                  # not this client's upload, or not on this tab
+        return {"blob": params["blob"], "filename": have["filename"], "width": have["width"],
+                "height": have["height"]}
+
+    async def _image_upload(self, d, tab, request):
+        """POST /documents/<id>/tabs/<tab>/images?name=<file name>, the body the image's bytes (see "Canvas images" in
+        the module docstring)."""
+        from . import image_info as II
+        client = self._dialog_client(request)
+        ctype = (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ctype != "application/octet-stream":
+            return self._fail(415, "Content-Type must be application/octet-stream")
+        raw = request.headers.get("Content-Length")
+        if request.headers.get("Transfer-Encoding") is not None or raw is None:
+            return self._fail(411, "Content-Length is required")
+        raw = raw.strip()
+        if not raw.isascii() or not raw.isdigit():
+            return self._fail(400, "Content-Length is not a number")
+        n = int(raw)
+        if n > MAX_IMAGE:
+            return self._fail(413, f"body over {MAX_IMAGE} bytes")
+
+        def check():                                             # refused before the body is read
+            d.check_writable()
+            return next((t["kind"] for t in d.session.tabs() if t["id"] == tab), None)
+        if await self._in_session(d, check) != "studio":
+            return self._fail(400, "the tab is not a Part Studio")
+        try:
+            data = await asyncio.wait_for(request.content.readexactly(n), IMAGE_DEADLINE) if n else b""
+        except asyncio.TimeoutError:
+            return self._fail(408, "request body too slow")
+        except asyncio.IncompleteReadError:
+            return self._fail(400, "body shorter than Content-Length")
+        try:
+            info = await self._off_loop(II.check_upload, data)
+        except II.ImageTooLarge as e:
+            return self._fail(413, str(e))
+        except II.ImageError as e:
+            return self._fail(415, str(e))
+        filename = II.clean_file_name(request.query.get("name"), info.format)
+        key = await self._in_session(d, lambda: d.session.hold_blob(tab, data))
+        del data
+        width, height = info.default_size_mm()
+        made = {"filename": filename, "format": info.format, "pixels": [info.width, info.height],
+                "width": width, "height": height}
+        table = self._client_images(client, make=True)
+        mine = table.setdefault((d.id, tab), {})
+        mine.pop(key, None)
+        mine[key] = made
+        while sum(len(v) for v in table.values()) > MAX_IMAGES:  # the oldest record of this client goes
+            first = next(iter(table))
+            table[first].pop(next(iter(table[first])))
+            if not table[first]:
+                del table[first]
+        return self._json(200, {"document": d.id, "tab": tab, "blob": key, **made})
+
+    async def _image_get(self, d, tab, request):
+        """GET .../tabs/<tab>/images/<sha256> (see "Canvas images" in the module docstring)."""
+        from . import image_info as II
+        key = _IMAGE_PATH.match(request.raw_path.split("?", 1)[0]).group(3)
+        client = request.headers.get("X-Client-Id")
+        if client is not None:
+            client = self._edit_meta(client, None)[0]
+        mine = {} if client is None else ((self._client_images(client) or {}).get((d.id, tab)) or {})
+
+        def work():
+            named = key in mine or any(c.blob == key for c in getattr(d.session.outputs(tab), "canvases", ()))
+            return d.session.get_blob(tab, key) if named else None
+        try:
+            data = await self._in_session(d, work)
+        except self.session_error:
+            data = None
+        if data is None:
+            return self._fail(404, "not found")
+        try:
+            fmt = (await self._off_loop(II.read_info, data)).format
+        except II.ImageError:
+            return self._fail(404, "not found")                  # held bytes that are no image are not served as one
+        return self._send(200, data, _IMAGE_TYPES[fmt], [("Cache-Control", "private, max-age=31536000, immutable")])
+
     # ------------------------------------------------------------------ archive (I11.5)
     def _archive_source(self, doc_id, d):
         """Pool thread. `(folder, Document name)` of the Document `doc_id` (`d`: its `_Open`, or None when it is not
@@ -2284,6 +2425,9 @@ class _Server:
             mates = (self.clients.get(client).data or {}).get("mate_dialogs") or {}
             for did in [k for k, (doc, _) in mates.items() if doc == doc_id]:
                 del mates[did]
+            images = (self.clients.get(client).data or {}).get("images") or {}
+            for k in [k for k in images if k[0] == doc_id]:        # I12.2: the uploads' record goes with the Document
+                del images[k]
 
     # ------------------------------------------------------------------ mate dialogs (I10.5)
     def _client_mate_dialogs(self, client, make=False):
@@ -2359,7 +2503,8 @@ class _Server:
             return await self._feature_types(d, tab, request)
         client = self._dialog_client(request)
         match = _DIALOG_PATH.match(request.raw_path.split("?", 1)[0])
-        allowed = {"update": ("values",), "new": ("type", "picks")}.get(verb, ())
+        allowed = {"update": ("values",), "new": ("type", "picks", "params"),
+                   "calibrate": CALIBRATE_KEYS}.get(verb, ())
         extra = sorted(str(k) for k in (body or {}) if k not in allowed)
         if extra:
             return self._fail(400, f"{extra[0][:40]}: unknown field")
@@ -2384,10 +2529,15 @@ class _Server:
             table.pop(did, None)
             dialog.preview = None                                # the preview goes with the dialog
             return self._json(200, {"cancelled": True})
-        if verb == "update":
+        if verb in ("update", "calibrate"):
             def work():
-                parsed = dialog.check(body.get("values"))
-                errors, active = dialog.apply(parsed)
+                if verb == "update":
+                    parsed = dialog.check(body.get("values"))
+                    errors, active = dialog.apply(parsed)
+                else:                                            # I12.2: the same answer as an update's
+                    dialog.calibrate(body.get("p0"), body.get("p1"), body.get("distance"),
+                                     body.get("centre", False), body.get("snap", False))
+                    errors, active = {}, None
                 try:
                     n, fut = d.session.preview_dialog(dialog)
                 except self.session_error as e:                  # a preview that cannot be asked for: say why
@@ -2450,6 +2600,7 @@ class _Server:
 
     async def _dialog_open(self, d, tab, fid, client, body=None):
         import secrets
+        image = None
         if fid is None:                                          # create mode (I6.1): validate before taking a slot
             ftype, picks = body.get("type"), body.get("picks", [])
             if not isinstance(ftype, str) or not 1 <= len(ftype) <= 64:
@@ -2463,13 +2614,18 @@ class _Server:
                                          for p in picks])
                 except ValueError as e:
                     return self._fail(400, str(e))
+            if "params" in body:                                 # I12.2: a Canvas for an image this client uploaded
+                image = self._canvas_preset(client, d, tab, ftype, body["params"])
+                if not isinstance(image, dict):
+                    return image                                 # the refusal response
         table = self._client_dialogs(client, make=True)
         if len(table) >= MAX_DIALOGS:
             return self._fail(409, f"a client may hold at most {MAX_DIALOGS} open dialogs")
         if sum(len((self.clients.get(c).data.get("dialogs") or {})) for c in self.clients.ids()) >= MAX_DIALOGS_TOTAL:
             return self._fail(409, "too many open dialogs")
         def work():
-            dialog = d.session.open_dialog(tab, fid) if fid is not None else d.session.start_dialog(tab, ftype, picks)
+            dialog = d.session.open_dialog(tab, fid) if fid is not None else \
+                d.session.start_dialog(tab, ftype, picks, image)
             return dialog, self._dialog_view(dialog), d.revisions.get(tab)
         dialog, view, revision = await self._in_session(d, work)
         did = secrets.token_hex(8)

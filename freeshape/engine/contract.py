@@ -470,6 +470,18 @@ class Engine(abc.ABC):
         return self.submit_preview(tab, feature, type, params)[1].result()
 
     @abc.abstractmethod
+    def hold_blob(self, tab, data) -> str:
+        """Hold `data` (bytes: an image a Canvas will name, I12.2) among the blobs of the Part Studio `tab` and return
+        its key, the sha256 hex of the bytes. The bytes are written beside the tab only if a feature of the tab names
+        the key when it is saved; until then they live in memory and change nothing (no edit, no revision, not
+        dirty). Holding the same bytes twice is the same key. EngineError for a tab that is not a Part Studio."""
+
+    @abc.abstractmethod
+    def get_blob(self, tab, key) -> bytes:
+        """The bytes held (hold_blob) or stored under `key` for the Part Studio `tab`. A query. EngineError for a key
+        the tab does not have (or one that is not 64 lowercase hex characters) or a tab that is not a Part Studio."""
+
+    @abc.abstractmethod
     def base_outputs(self, tab, feature) -> "StudioOutputs":
         """The model an open feature dialog picks against (F3), as a StudioOutputs: the Part Studio built up to just
         before the stored feature `feature` (an id), or, for None (a new feature), up to the rollback bar. A QUERY,

@@ -98,6 +98,11 @@ def _axis_info(p):
     return ""
 
 
+def _canvas_info(p):
+    """The Canvas dialog's first row: the image's file name."""
+    return str(p.get("filename") or "") or "No image: upload one first"
+
+
 def _hole_info(p):
     if p.get("standard") == "sketch":
         return "Each hole is the size of the circle you drew"
@@ -113,10 +118,14 @@ def _hole_info(p):
     return t
 
 
-def _num(key, label, unit="mm", visible=None, minimum=None, signed=False):
-    """signed: a negative value is allowed and means the other way (the runner flips); only zero is rejected."""
-    return {"t": "num", "key": key, "label": label, "unit": unit, "visible": visible, "min": minimum,
+def _num(key, label, unit="mm", visible=None, minimum=None, signed=False, maximum=None):
+    """signed: a negative value is allowed and means the other way (the runner flips); only zero is rejected.
+    maximum: set only by a row that has an upper bound (a Canvas's opacity); the spec then carries a "max" key."""
+    spec = {"t": "num", "key": key, "label": label, "unit": unit, "visible": visible, "min": minimum,
             "signed": signed}
+    if maximum is not None:
+        spec["max"] = maximum
+    return spec
 
 
 def _choice(key, label, options, visible=None):
@@ -420,6 +429,21 @@ SCHEMAS = {
     ],
     "delete_part": [
         _sel("parts", "Parts to delete", {"part"}),
+    ],
+    "canvas": [                                           # I12.2: the browser's dialog; every row is standard
+        {"t": "info", "key": "_info", "text": lambda p: _canvas_info(p)},
+        _sel("plane_sel", "Plane or face", {"plane"}, multi=False,        # a "plane" pick takes a flat face too
+             tip="A plane, or a flat face; a face that is not flat is refused"),
+        _num("width", "Width", minimum=1e-6),
+        _num("height", "Height", minimum=1e-6),
+        _num("x", "X"),
+        _num("y", "Y"),
+        _num("rotation", "Rotation", unit="deg"),
+        _num("opacity", "Opacity", unit="%", minimum=0, maximum=100),
+        _check("keep_aspect", "Keep aspect ratio"),
+        _check("flip_h", "Flip horizontally"),
+        _check("flip_v", "Flip vertically"),
+        _check("selectable", "Selectable"),
     ],
     "axis": [
         _choice("type", "Axis type", F.AXIS_TYPES),
@@ -735,6 +759,10 @@ def params_to_fields(ftype, p):
         f["refs_sel"] = [(k, r) for k, r in F.plane_items(p)]
     if ftype == "axis":
         f["refs_sel"] = [(k, r) for k, r in F.axis_items(p)]
+    if ftype == "canvas":
+        pl = p.get("plane") or {}
+        f["plane_sel"] = [("plane", pl)] if pl.get("kind") in ("std", "plane") or (pl.get("kind") == "face"
+                                                                                     and pl.get("face")) else []
     if ftype == "mirror":
         f["parts"] = [("part", i) for i in p.get("parts", [])]
         f["plane_sel"] = [("plane", p["plane"])] if p.get("plane") else []
@@ -752,6 +780,30 @@ def params_to_fields(ftype, p):
         f["tools"] = [("part", i) for i in p.get("tools", [])]
         f["targets"] = [("part", i) for i in p.get("targets", [])]
     return f
+
+
+def _canvas_plane(item):
+    """The `plane` param of a Canvas for a picked plane or flat face. A face is stored as the face reference alone:
+    the origin and x direction a pick carries are left out, so the canvas follows the face when it moves (I12.1)."""
+    kind, ref = item
+    if kind == "face":
+        return {"kind": "face", "face": ref}
+    if isinstance(ref, dict) and ref.get("kind") == "face":
+        return {"kind": "face", "face": ref["face"]}
+    return ref
+
+
+def canvas_partner(p, key, value):
+    """With Keep aspect ratio on, setting `key` (width or height) to the number `value` sets the other one: it keeps
+    the ratio the two have in `p`. (other key, its new value), or None when nothing follows: keep_aspect off, `key`
+    not a size, or a size that is not a positive number yet."""
+    if key not in ("width", "height") or not p.get("keep_aspect", True):
+        return None
+    other = "height" if key == "width" else "width"
+    mine, theirs = p.get(key), p.get(other)
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0 for v in (mine, theirs, value)):
+        return None
+    return other, float(theirs) * float(value) / float(mine)
 
 
 def fields_to_params(ftype, fields, p):
@@ -896,6 +948,9 @@ def fields_to_params(ftype, fields, p):
             p["click"] = None                # the click belongs to a picked face
     if ftype in ("mirror", "linear_pattern", "circular_pattern"):
         p["parts"] = [r for k, r in fields.get("parts", [])]
+    if ftype == "canvas":
+        sel = fields.get("plane_sel", [])
+        p["plane"] = _canvas_plane(sel[0]) if sel else {"kind": "std", "name": "Top"}
     if ftype == "mirror":
         sel = fields.get("plane_sel", [])
         p["plane"] = sel[0][1] if sel else {"kind": "std", "name": "Right"}
@@ -965,6 +1020,8 @@ def _describe_field(spec, p):
         out["label"] = spec["label"]
     if kind == "num":
         out.update(unit=spec.get("unit"), min=spec.get("min"), signed=bool(spec.get("signed")))
+        if "max" in spec:
+            out["max"] = spec["max"]
     elif kind in ("choice", "ops"):
         out["options"] = _plain(spec.get("options") or [])
         if "default" in spec:
@@ -1402,6 +1459,10 @@ def on_field_set(ftype, key, value, fields, params=None):
         p["draft_angle"] = 5.0
     if key in _STD_AXIS_FIELD and value and _STD_AXIS_FIELD[key] in out:
         out[_STD_AXIS_FIELD[key]] = []
+    if ftype == "canvas":                    # with Keep aspect ratio, one size sets the other (before: the old ratio)
+        follow = canvas_partner(dict(params or {}), key, value)
+        if follow is not None:
+            p[follow[0]] = follow[1]
     fields_to_params(ftype, out, p)
     if key == "guides_on" and value and "guides" in out:
         active = "guides"

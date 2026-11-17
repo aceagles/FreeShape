@@ -341,13 +341,79 @@ class FeatureDialog:
                 except ExprError as e:
                     errors[key] = self.errors[key] = str(e)
                     continue
+            before = dict(self.params)
             got = DSC.on_field_set(self.type, key, value, self._field_dict(), self.params)
             self.params.clear()
             self.params.update(got.params)
             self.fields_ = got.fields
+            if self.type == "canvas":
+                self._couple_sizes(key, value, before)
             if got.active is not None:
                 active = got.active
         return errors, active
+
+    def _couple_sizes(self, key, value, before):
+        """Keep aspect ratio (I12.2): the other size follows `key`. A size typed as an expression that names a
+        #variable is stored as text, so on_field_set cannot follow it: its value is read here and the other size set
+        from that. The other size's typed text is dropped so the row shows the new number."""
+        if key not in ("width", "height"):
+            return
+        number = value
+        if isinstance(value, str):
+            try:
+                number = parse_number(value, variables=self.variables)
+            except (TypeError, ValueError):
+                return
+            follow = DSC.canvas_partner(before, key, number)
+            if follow is not None:
+                self.params[follow[0]] = follow[1]
+        other = "height" if key == "width" else "width"
+        if self.params.get(other) != before.get(other):
+            self.texts.pop(other, None)
+            self.errors.pop(other, None)
+
+    def set_image(self, blob, filename, width, height):
+        """A new Canvas dialog for an image the client uploaded: `blob` its key, `filename` its name, `width` and
+        `height` the default size in mm (the image at its own resolution). The blob takes the place of the `data` param, as
+        PartStudioDoc keeps a canvas made with its image inline, so both write the same bytes."""
+        if self.type != "canvas":
+            raise SessionError("an image belongs to a Canvas dialog")
+        p = self.params
+        new = {}
+        for k, v in p.items():
+            new["blob" if k == "data" else k] = blob if k == "data" else v
+        new.setdefault("blob", blob)
+        new.update(filename=filename, width=width, height=height)
+        p.clear()
+        p.update(new)
+        self.texts.clear()
+
+    def calibrate(self, p0, p1, distance, centre=False, snap=False):
+        """Calibrate the Canvas (freeshape/canvas_calibrate.py): scale its size, and optionally move and turn it, so
+        the line p0 -> p1 drawn on the image measures `distance` mm. SessionError for a dialog that is not a Canvas,
+        a size that is not a number, or a line that cannot be measured."""
+        from . import canvas_calibrate as CC
+        if self.type != "canvas":
+            raise SessionError("only a Canvas dialog can be calibrated")
+        if not isinstance(centre, bool) or not isinstance(snap, bool):
+            raise SessionError("centre and snap must be true or false")
+        have = {}
+        for key in ("width", "height", "x", "y", "rotation"):
+            raw = self.params.get(key)
+            try:
+                have[key] = parse_number(raw, angle=key == "rotation", variables=self.variables) \
+                    if raw is not None else None
+            except (TypeError, ValueError):
+                have[key] = None
+        try:
+            got = CC.calibrate(dict(self.params, **have), p0, p1, distance, centre, snap)
+        except CC.CalibrateError as e:
+            raise SessionError(str(e)) from e
+        for key in ("width", "height", "x", "y", "rotation"):
+            if got[key] != have[key]:
+                self.params[key] = got[key]
+                self.texts.pop(key, None)
+                self.errors.pop(key, None)
 
     def _field_dict(self):
         return {k: list(v) for k, v in self.fields_.items()}
@@ -363,6 +429,9 @@ class FeatureDialog:
         mn = spec.get("min")
         if mn is not None and v < mn:
             raise ExprError(f"the value must be at least {fmt(mn)}")
+        mx = spec.get("max")
+        if mx is not None and v > mx:
+            raise ExprError(f"the value must be at most {fmt(mx)}")
         if spec.get("signed") and abs(v) < 1e-6:
             raise ExprError("the value cannot be zero")
         whole = spec["key"] in ("count", "count2") or bool(spec.get("int"))
@@ -595,10 +664,12 @@ class DocumentSession:
         return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"),
                              context=self._derived_context(tab, fid, got["feature"]["type"]))
 
-    def start_dialog(self, tab, ftype, picks=()):
+    def start_dialog(self, tab, ftype, picks=(), image=None):
         """A FeatureDialog in create mode for a new feature of `ftype` at the rollback position, its selection
         fields seeded from `picks` (the refs route's picks, 1-based; see contract.Engine.start_feature). A query:
-        nothing changes. Raises SessionError for a bad pick, an unknown type or a tab that is not a Part Studio."""
+        nothing changes. Raises SessionError for a bad pick, an unknown type or a tab that is not a Part Studio.
+        `image` ({"blob", "filename", "width", "height"}, a Canvas only, I12.2) is the uploaded image the dialog
+        starts with."""
         self._need_open(tab)
         try:
             got = self._retry(tab, lambda: self._eng.start_feature(tab, ftype, list(picks)))
@@ -606,9 +677,31 @@ class DocumentSession:
             raise SessionError(str(e)) from e
         except EngineError as e:
             raise SessionError(f"tab {tab!r}: {e}") from e
-        return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"),
-                             {k: [tuple(i) for i in v] for k, v in got["fields"].items()}, got["params"],
-                             context=self._derived_context(tab, None, got["feature"]["type"]))
+        dialog = FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"),
+                               {k: [tuple(i) for i in v] for k, v in got["fields"].items()}, got["params"],
+                               context=self._derived_context(tab, None, got["feature"]["type"]))
+        if image is not None:
+            dialog.set_image(image["blob"], image["filename"], image["width"], image["height"])
+        return dialog
+
+    def hold_blob(self, tab, data):
+        """Hold `data` (an uploaded image) among the blobs of the Part Studio `tab`: its sha256 key
+        (contract.Engine.hold_blob). Nothing is edited. SessionError for an unknown tab or one that is not a Part
+        Studio."""
+        self._need_open(tab)
+        try:
+            return self._retry(tab, lambda: self._eng.hold_blob(tab, data))
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
+
+    def get_blob(self, tab, key):
+        """The bytes of the blob `key` of the Part Studio `tab` (contract.Engine.get_blob). A query. SessionError
+        when the tab does not have it."""
+        self._need_open(tab)
+        try:
+            return self._retry(tab, lambda: self._eng.get_blob(tab, key))
+        except EngineError as e:
+            raise SessionError(f"tab {tab!r}: {e}") from e
 
     def _derived_context(self, tab, fid, ftype):
         """For a Derived dialog on `tab` (the feature `fid`, None for a new one), a callable params ->

@@ -626,6 +626,15 @@ class ProcessEngine(Engine):
         """The model a feature dialog picks against, from the tab's worker (contract.Engine.base_outputs). A query."""
         return self._call(self._get(tab), "base", feature)
 
+    def hold_blob(self, tab, data):
+        """Bytes (an image a Canvas will name) held among the Part Studio's blobs by its worker; the sha256 key
+        (contract.Engine.hold_blob). Not an edit: no revision moves, the tab is not dirty."""
+        return self._call(self._get(tab), "hold_blob", bytes(data))
+
+    def get_blob(self, tab, key):
+        """The bytes under `key` in the tab's blobs, from its worker (contract.Engine.get_blob). A query."""
+        return self._call(self._get(tab), "get_blob", key)
+
     def feature(self, tab, feature):
         """One stored feature and the studio's variables (contract.Engine.feature). A query."""
         return self._call(self._get(tab), "feature", feature)

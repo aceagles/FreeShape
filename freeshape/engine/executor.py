@@ -190,6 +190,12 @@ class _Tab:
     def base_outputs(self, fid):
         raise EngineError(f"only a Part Studio has a feature dialog (this tab is a {self.kind})")
 
+    def hold_blob(self, data):
+        raise EngineError(f"only a Part Studio holds images (this tab is a {self.kind})")
+
+    def get_blob(self, key):
+        raise EngineError(f"only a Part Studio holds images (this tab is a {self.kind})")
+
     def feature_info(self, fid):
         raise EngineError(f"only a Part Studio has features (this tab is a {self.kind})")
 
@@ -467,6 +473,23 @@ class StudioTab(_Tab):
         except Exception:                                     # noqa: BLE001  (as the desktop dialog: none then)
             defaults = {}
         return {"feature": copy.deepcopy(f), "variables": plain(dict(base.vars)), "defaults": defaults}
+
+    def hold_blob(self, data):
+        """`Engine.hold_blob`: the bytes go into the Document's in-memory blobs under their sha256; the next save
+        writes them if a feature names the key (PartStudioDoc._import_blobs). Nothing else changes."""
+        if not isinstance(data, (bytes, bytearray)) or not data:
+            raise EngineError("hold_blob: data must be bytes")
+        raw = bytes(data)
+        key = blobstore.key_of(raw)
+        self.doc._blob_bytes[key] = raw
+        return key
+
+    def get_blob(self, key):
+        """`Engine.get_blob`: the bytes under `key`, held in memory or in the tab's blob store."""
+        try:
+            return bytes(self.doc._blob_get(key))
+        except blobstore.BlobError as e:
+            raise EngineError(f"no blob {str(key)[:64]!r} in this tab: {e}") from e
 
     def start_feature(self, ftype, picks):
         """`Engine.start_feature`: a new feature of `ftype` as a dialog starts it, its fields seeded from `picks` by
@@ -1316,6 +1339,12 @@ class InProcessEngine(Engine):
 
     def base_outputs(self, tab, feature):
         return self._get(tab).base_outputs(feature)
+
+    def hold_blob(self, tab, data):
+        return self._get(tab).hold_blob(data)
+
+    def get_blob(self, tab, key):
+        return self._get(tab).get_blob(key)
 
     def sketch_frame(self, tab, plane):
         return self._get(tab).sketch_frame(plane)

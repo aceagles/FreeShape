@@ -311,6 +311,28 @@ def case_shell(s):
     assert near(s.volume(p), BOX - 56 * 36 * 18)
 
 
+def case_canvas(s):
+    from test_canvas_feature import png
+    data = png(200, 100)
+    h = {"Host": f"127.0.0.1:{s.port}", "X-Client-Id": CLIENT, "Content-Type": "application/octet-stream",
+         "Content-Length": str(len(data))}
+    c = http.client.HTTPConnection("127.0.0.1", s.port, timeout=120)
+    try:
+        c.request("POST", s.tab("images?name=plan.png"), body=data, headers=h)
+        r = c.getresponse()
+        up = json.loads(r.read())
+        assert r.status == 200, up
+    finally:
+        c.close()
+    got = s.call("POST", s.tab("features/dialog"),
+                 {"type": "canvas", "params": {"blob": up["blob"], "filename": up["filename"]}}, expect=201)
+    s.call("POST", s.tab(f"dialog/{got['dialog']}/update"), {"values": {"width": 100}})
+    s.call("POST", s.tab(f"dialog/{got['dialog']}/accept"))
+    (placed,) = s.outputs().canvases
+    assert near(placed.width, 100) and near(placed.height, 50)      # 200 x 100 pixels, the height follows the width
+    assert placed.blob == up["blob"] and not s.outputs().parts
+
+
 def case_derived(s):
     pid = s.box()                                            # the source: this box in T1
     use = s.call("POST", f"/documents/{s.doc}/tabs", {"kind": "studio", "name": "Use"}, expect=201)["tab"]["id"]

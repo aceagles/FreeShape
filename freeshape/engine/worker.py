@@ -344,6 +344,10 @@ class _Worker:
             return self.engine.refs(self.tab, arg)
         if op == "base":                          # a query: the model a feature dialog picks against (F3)
             return self.engine.base_outputs(self.tab, arg)
+        if op == "hold_blob":                     # keeps bytes in this tab's blobs, changes no edit or revision (I12.2)
+            return self.engine.hold_blob(self.tab, arg)
+        if op == "get_blob":                      # a query: the bytes of one blob of this tab (I12.2)
+            return self.engine.get_blob(self.tab, arg)
         if op == "feature":                       # a query: one stored feature and the variables, changes nothing
             return self.engine.feature(self.tab, arg)
         if op == "start_feature":                 # a query: a new feature seeded from picks (I6.1)

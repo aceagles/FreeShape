@@ -101,6 +101,7 @@ jobs:
             echo "== $1, $2 s on Home (whole run $(python -c "import time; print(round(time.time() - $start, 1))") s)"
             cat open-timing.txt || echo "(no output)"
           done
+      - name: Build the installer
         run: |
           ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
           if [ ! -f "$ISCC" ]; then choco install innosetup -y --no-progress; fi

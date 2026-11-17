@@ -311,6 +311,20 @@ def case_shell(s):
     assert near(s.volume(p), BOX - 56 * 36 * 18)
 
 
+def case_derived(s):
+    pid = s.box()                                            # the source: this box in T1
+    use = s.call("POST", f"/documents/{s.doc}/tabs", {"kind": "studio", "name": "Use"}, expect=201)["tab"]["id"]
+    at = f"/documents/{s.doc}/tabs/{use}"
+    got = s.call("POST", f"{at}/features/dialog", {"type": "derived"}, expect=201)
+    for values in ({"source": "T1"}, {"parts": [pid]}):     # the parts list is the chosen source's
+        assert not s.call("POST", f"{at}/dialog/{got['dialog']}/update", {"values": values})["errors"]
+    s.call("POST", f"{at}/dialog/{got['dialog']}/accept")
+    status, raw = s.request("GET", f"{at}/outputs")
+    assert status == 200
+    (p,) = wire.from_wire(raw).parts
+    assert near(s.volume(p), BOX)                            # the box, brought into the other Part Studio
+
+
 def case_draft(s):
     pid = s.box()
     side = s.face(pid, (1, 0, 0))

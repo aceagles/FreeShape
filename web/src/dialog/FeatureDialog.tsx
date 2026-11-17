@@ -5,6 +5,8 @@ import type { StudioOutputs } from '../wire'
 import { DialogArea } from '../shell/DialogArea'
 import { Icon, paths } from '../shell/icons'
 import { useMode } from '../shell/mode'
+import { StudioChoiceRow, TickTabs } from './derivedRows'
+import type { TickList } from './derivedRows'
 import { CheckRow, ChoiceRow, DesktopCheckRow, DesktopChoiceRow, DesktopNumberRow, DesktopTextRow, FlipButton, InfoRow, NumberRow, SelectionRow, TextRow } from './fields'
 import type { RowKeys } from './fields'
 import { setManipulatorSink } from './manipulator'
@@ -141,6 +143,25 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
     onEscape: dlg.cancel,
   }
   const flipOn = (flip: { key: string | null }) => (dlg.sent[flip.key!] ?? values[flip.key!]?.value) === true
+  // tick lists (card I10.2): the lists of one group are drawn once, as the tabs of one row, where the first of them stands
+  const tickLists = (group: string | undefined): TickList[] =>
+    rows
+      .filter((r) => r.spec.kind === 'ticks' && r.spec.group === group)
+      .map(({ spec }) => {
+        const k = spec.key ?? ''
+        const ticked = dlg.sent[k] ?? values[k]?.value
+        return { spec, ticked: Array.isArray(ticked) ? ticked.filter((x): x is string => typeof x === 'string') : [], error: messageOf(k) }
+      })
+  const firstOfGroup = (i: number) => {
+    const spec = rows[i]!.spec
+    return spec.group === undefined || !rows.slice(0, i).some((r) => r.spec.kind === 'ticks' && r.spec.group === spec.group)
+  }
+  const tickRow = (i: number, key: string) => {
+    if (!firstOfGroup(i)) return null
+    const group = rows[i]!.spec.group
+    const lists = group === undefined ? tickLists(undefined).filter((l) => l.spec.key === key) : tickLists(group)
+    return <TickTabs key={`${key}:${i}`} lists={lists} desktop={desktop} empty="Nothing to tick." onTick={(k, ids) => dlg.set({ [k]: ids })} />
+  }
 
   return (
     <DialogArea title={title} onClose={dlg.cancel} actions={actions}>
@@ -172,6 +193,9 @@ export function FeatureDialog({ store, documentId, documentName, tab, feature, c
           {rows.map(({ spec, flip }, i) => {
             const key = spec.key ?? `row${i}`
             const v = values[key]
+            if (spec.kind === 'ticks') return tickRow(i, key)
+            if (spec.kind === 'choice' && spec.picker === 'studio')
+              return <StudioChoiceRow key={`${key}:${i}`} spec={spec} value={dlg.sent[key] ?? v?.value} error={messageOf(key)} store={store} documentId={documentId} onPick={(x) => dlg.set({ [key]: x })} />
             if (desktop) {
               switch (spec.kind) {
                 case 'num':

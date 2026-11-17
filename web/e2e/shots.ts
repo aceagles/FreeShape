@@ -2315,8 +2315,8 @@ export const shots: ShotState[] = [
       await openApp(page)
       await page.keyboard.press('Control+Space')
       await page.getByTestId('palette').waitFor()
-      await page.keyboard.type('der')
-      await page.getByTestId('palette').getByRole('option', { name: /^Derived/ }).waitFor()
+      await page.keyboard.type('variable studio')
+      await page.getByTestId('palette').getByRole('option', { name: /^Variable Studio reference/ }).waitFor()
     },
   },
   {
@@ -2622,6 +2622,42 @@ export const shots: ShotState[] = [
       await page.locator('li.doc-item', { has: page.locator('.doc-name', { hasText: /^Bracket$/ }) }).getByRole('button', { name: 'Document menu' }).click()
       await page.getByRole('menu', { name: 'Bracket menu' }).waitFor()
     },
+  },
+  {
+    // I10.2: the Derived dialog in Tablet mode, in a new Part Studio of the bracket: the bracket Part Studio chosen, its part ticked
+    name: 'derived-dialog',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.getByRole('button', { name: 'Add tab' }).click()
+      await page.getByRole('menuitem', { name: /^Part Studio$/ }).click()
+      await page.locator('.tab-button[aria-current="page"]', { hasNotText: /bracket/ }).waitFor()
+      await page.locator('.tool-strip').getByRole('button', { name: /^Create/ }).click()
+      await page.getByRole('menuitem', { name: /^Derived/ }).click()
+      await page.locator('[data-picker-studio="T1"]').click()
+      await page.getByRole('checkbox', { name: 'Bracket' }).click()
+      await page.getByRole('tab', { name: 'Parts (1)' }).waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.2: the Derived dialog in Desktop mode beside the desktop program's feature dialog: the same choices, checkboxes in the tabs
+    name: 'desktop-derived-dialog',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.getByRole('button', { name: 'Add tab' }).click()
+      await page.getByRole('menuitem', { name: /^Create Part Studio/ }).click()
+      await page.locator('.tab-button[aria-current="page"]', { hasNotText: /bracket/ }).waitFor()
+      await page.locator('.desktop-toolbar').getByRole('button', { name: 'Derived', exact: true }).click()
+      await page.locator('[data-picker-studio="T1"]').click()
+      await page.getByRole('checkbox', { name: 'Bracket' }).click()
+      await page.getByRole('tab', { name: 'Parts (1)' }).waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
   },
 ]
 

@@ -613,6 +613,15 @@ class ProcessEngine(Engine):
             return self._call(self._get(tab), "refs", picks)
         return self._call(self._get(tab), "refs", {"picks": picks, "base": base})
 
+    def published(self, tab):
+        """What the Part Studio tab `tab` publishes to the tabs that link it, as the worker's `upstream` call gives it
+        (the package a Derived of it is built from): {"parts": [lean parts, Context bodies and surfaces left out],
+        "sketches": [SketchOut dicts], "connectors": [MateConnectorOut dicts], "aliases", "error", ...}; None while
+        the tab is errored. A query, cached as the tab's input of other tabs is (card I10.2: the browser's Derived
+        dialog lists a source's contents from it)."""
+        hit = self._lean(self._get(tab), ())
+        return None if hit is None else hit[1]
+
     def base_outputs(self, tab, feature):
         """The model a feature dialog picks against, from the tab's worker (contract.Engine.base_outputs). A query."""
         return self._call(self._get(tab), "base", feature)
@@ -672,6 +681,9 @@ class ProcessEngine(Engine):
         t = self._get(tab)
         if t.kind != "studio":
             raise EngineError(f"only a Part Studio has a feature preview (this tab is a {t.kind})")
+        src = links.feature_source({"type": type, "params": params})
+        if src is not None and src not in t.sources:
+            t.sources.append(copy.deepcopy(src))      # a Derived's source goes with its preview, as with its edit
         with t.lock:
             t.previews += 1
             n = t.previews

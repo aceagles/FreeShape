@@ -121,6 +121,9 @@ export function FlipButton({ spec, on, onToggle }: { spec: FieldSpec; on: boolea
   )
 }
 
+/** Why an option of a choice cannot be chosen here ("Desktop only for now"), or undefined when it can. */
+const offWhy = (spec: FieldSpec, v: string): string | undefined => spec.disabled?.[v]
+
 export function ChoiceRow({ spec, value, error, onPick }: { spec: FieldSpec; value: unknown; error: string | null; onPick: (v: string) => void }) {
   const options = spec.options ?? []
   const [open, setOpen] = useState(false)
@@ -130,7 +133,7 @@ export function ChoiceRow({ spec, value, error, onPick }: { spec: FieldSpec; val
       <Row label={label} message={error}>
         <div className="dlg-segments" role="radiogroup" aria-label={label}>
           {options.map(([v, text]) => (
-            <button key={v} type="button" role="radio" aria-checked={value === v} className="dlg-segment" onClick={() => value !== v && onPick(v)}>
+            <button key={v} type="button" role="radio" aria-checked={value === v} className="dlg-segment" disabled={offWhy(spec, v) !== undefined} title={offWhy(spec, v)} onClick={() => value !== v && onPick(v)}>
               {text}
             </button>
           ))}
@@ -147,22 +150,27 @@ export function ChoiceRow({ spec, value, error, onPick }: { spec: FieldSpec; val
       </button>
       {open && (
         <div className="dlg-list" role="radiogroup" aria-label={label}>
-          {options.map(([v, text]) => (
-            <button
-              key={v}
-              type="button"
-              role="radio"
-              aria-checked={value === v}
-              className="dlg-list-item"
-              onClick={() => {
-                setOpen(false)
-                if (value !== v) onPick(v)
-              }}
-            >
-              <span>{text}</span>
-              {value === v && <Icon d={paths.check} px={20} sw={2.2} />}
-            </button>
-          ))}
+          {options.map(([v, text]) => {
+            const why = offWhy(spec, v)
+            return (
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={value === v}
+                className="dlg-list-item"
+                disabled={why !== undefined}
+                title={why}
+                onClick={() => {
+                  setOpen(false)
+                  if (value !== v) onPick(v)
+                }}
+              >
+                <span>{text}</span>
+                {why !== undefined ? <span className="dlg-list-why">{why}</span> : value === v && <Icon d={paths.check} px={20} sw={2.2} />}
+              </button>
+            )
+          })}
         </div>
       )}
     </Row>
@@ -333,8 +341,9 @@ export function DesktopChoiceRow({ spec, value, error, keys, onPick }: { spec: F
   const options = spec.options ?? []
   const label = labelOf(spec)
   const current = options.find(([v]) => v === value) ?? options[0] // an unknown value shows the first option, as the desktop combo does
-  const entries: MenuItem[] = options.map(([v, text]) => ({ command: `option:${v}`, label: text, check: true, checked: current?.[0] === v }))
-  const commands = Object.fromEntries(options.map(([v]) => [`option:${v}`, () => current?.[0] !== v && onPick(v)]))
+  // an option that cannot be chosen here has no command: the menu shows it off, with its reason as the tooltip
+  const entries: MenuItem[] = options.map(([v, text]) => ({ command: `option:${v}`, label: text, check: true, checked: current?.[0] === v, note: offWhy(spec, v) }))
+  const commands = Object.fromEntries(options.filter(([v]) => offWhy(spec, v) === undefined).map(([v]) => [`option:${v}`, () => current?.[0] !== v && onPick(v)]))
   return (
     <Row inline label={label} message={error}>
       <span

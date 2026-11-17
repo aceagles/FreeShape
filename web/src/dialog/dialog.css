@@ -603,3 +603,123 @@
 .shell[data-mode='desktop'] .dimension-inline .dimension-refusal {
   max-width: 260px;
 }
+
+/* ------------------------------------------------------------------------------------------------------------------
+ * Tick lists as the tabs of one row (card I10.2: the Derived's Parts, Sketches and Mate connectors), and the reason an
+ * option of a choice is off ("Desktop only for now").
+ */
+.dlg-list-item:disabled {
+  color: var(--c-muted);
+  cursor: default;
+}
+.dlg-list-why {
+  flex: none;
+  font-size: var(--fs-small);
+  color: var(--c-muted);
+}
+.dlg-segment:disabled {
+  color: var(--c-muted);
+  cursor: default;
+}
+.dlg-tabs {
+  display: flex;
+}
+.dlg-tab {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--touch);
+  padding: 0 var(--sp-4);
+  border: none;
+  border-bottom: 2px solid var(--c-line);
+  background: transparent;
+  color: var(--c-muted);
+  font: inherit;
+  font-size: var(--fs-tab);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.dlg-tab[aria-selected='true'] {
+  border-bottom-color: var(--c-accent);
+  color: var(--c-ink);
+  font-weight: 600;
+}
+.dlg-tick-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.dlg-tick-empty {
+  min-height: var(--touch);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-12);
+  font-size: var(--fs-small);
+  color: var(--c-muted);
+}
+.dlg-tick {
+  min-height: var(--touch);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-10);
+  padding: 0 var(--sp-12);
+  border: none;
+  border-top: 1px solid var(--c-lineSoft);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dlg-tick:first-child {
+  border-top: none;
+}
+.dlg-tick-box {
+  flex: none;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid var(--c-muted);
+  border-radius: 4px;
+  background: var(--c-white);
+}
+.dlg-tick[aria-checked='true'] .dlg-tick-box {
+  border-color: var(--c-accent);
+  background: var(--c-accent)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath d='M5 10.5l3.2 3.2L15 6.8' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 18px no-repeat;
+}
+.dlg-tick-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dlg-studio-choice .picker {
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+/* Desktop mode: the desktop's tab bar (a 2 px underline, the current tab bold with the accent) over a plain list of checkboxes */
+.shell[data-mode='desktop'] .dlg-tab {
+  min-height: 26px;
+  padding: 4px 3px;
+}
+.shell[data-mode='desktop'] .dlg-tick-list {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px 6px;
+  gap: 2px;
+  border-radius: 4px;
+}
+.shell[data-mode='desktop'] .dlg-tick-empty {
+  min-height: 22px;
+  padding: 0;
+}
+.shell[data-mode='desktop'] .dlg-studio-choice .picker {
+  border-radius: 4px;
+}

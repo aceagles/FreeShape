@@ -351,7 +351,8 @@ class StudioTab(_Tab):
     def _add_feature(self, edit):
         f = copy.deepcopy(_need(edit, "feature"))
         if not f.get("id") or self.doc.feature(f["id"]) is not None:
-            f["id"] = self.doc.new_id()
+            # a new id is the feature's first key, where the desktop puts it, so the file saves the same bytes
+            f = {"id": self.doc.new_id(), **{k: v for k, v in f.items() if k != "id"}}
         self.doc.add_feature(f, edit.get("index"))
 
     def _delete_features(self, edit):

@@ -3,7 +3,10 @@ import { json, request, seg, tabPath } from '../net/api'
 /** One row of a feature dialog's description (freeshape/dialog_schema.py `describe`). Only the keys a kind carries are set. */
 export interface FieldSpec {
   key: string | null
-  /** num, choice, ops, check, sel, info, text; a hand-built row has its own name (derived_source, split_tools, ...). */
+  /**
+   * num, choice, ops, check, sel, info, text, ticks (a list of rows to tick: `options`, its value the ids ticked); a
+   * hand-built row has its own name (split_tools, ...).
+   */
   kind: string
   /** False for a hand-built row: the client cannot draw it. */
   standard: boolean
@@ -22,6 +25,12 @@ export interface FieldSpec {
   text?: string
   placeholder?: string
   expr?: boolean
+  /** A choice's options that cannot be chosen here, each with why: {value: "Desktop only for now"}. */
+  disabled?: Record<string, string>
+  /** "studio": a choice of this Document's Part Studios, drawn as the Part Studio list with their parts (the Derived's source). */
+  picker?: string
+  /** ticks: the tick lists of one group are the tabs of one row (the Derived's Parts, Sketches and Mate connectors). */
+  group?: string
 }
 
 export interface Description {

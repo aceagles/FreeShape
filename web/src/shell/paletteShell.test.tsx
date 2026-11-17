@@ -197,9 +197,9 @@ describe('the Search tools palette in Desktop mode', () => {
   it('a tool that cannot run is listed dimmed with its reason, and Enter on it does nothing', async () => {
     const { store, calls } = await shell()
     key('Ctrl+Space')
-    // Derived is a dialog the client cannot draw: the toolbar's "Desktop only for now"
-    type('derived')
-    const row = screen.getByRole('option', { name: /^Derived/ })
+    // Variable Studio reference is a dialog the client cannot draw: the toolbar's "Desktop only for now"
+    type('variable studio')
+    const row = screen.getByRole('option', { name: /^Variable Studio reference/ })
     expect(row.getAttribute('aria-disabled')).toBe('true')
     expect(row.getAttribute('title')).toBe('Desktop only for now')
     expect(screen.getByTestId('palette-about').textContent).toContain('Desktop only for now')

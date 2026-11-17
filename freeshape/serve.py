@@ -162,6 +162,9 @@ At most MAX_DIALOGS (8) per client and MAX_DIALOGS_TOTAL (256) in all (409). Bod
           "revision", "description", "values", "fields", "active"}. Open is a query, so a read-only Document may open
           one; accept is refused there (423, the dialog stays open).
           description  freeshape.dialog_schema.describe(type, params): fields (key, kind, standard, visible, ...).
+                       A Derived's is dialog_schema.derived_describe (I10.2), filled from this Document: choices
+                       (document, source, location, base; `disabled` {value: why} marks an option only the desktop
+                       takes) and "ticks" lists (parts, sketches, connectors: `options` [[id, label]], `group`).
           values       {key: {"value", "text", "error"?}} for the number, choice, ops, check and text rows; a number
                        row's "value" is the evaluated number (or null), "text" what the person typed (or the stored
                        expression), "error" the message of the last input the dialog refused.
@@ -185,7 +188,9 @@ At most MAX_DIALOGS (8) per client and MAX_DIALOGS_TOTAL (256) in all (409). Bod
           and is evaluated by freeshape.expr (units, #variables, 1/2 in), the desktop's rule: an expression that names
           a #variable is stored as text, else as the number; below `min`, or zero where `signed`, is refused. A choice
           or ops value must be one of its options, a check a bool, a text row text, a selection row a list of
-          {"kind", "ref"} items (at most 200). Each change goes through on_field_set, then fields_to_params. Reply 200
+          {"kind", "ref"} items (at most 200), a ticks row a list of the ids it lists (a Derived: the desktop's
+          rules, dialog_schema.derived_set; a refused tick is in `errors`). Each change goes through on_field_set,
+          then fields_to_params. Reply 200
           {"description", "values", "fields", "active", "errors": {key: message}}: `active` is the field the change
           named to fill next (end "Up to face" gives "upto_face"), else null; a refused number is in `errors`, its
           last good value unchanged, the other keys of the call still applied. An unknown key or a value of the

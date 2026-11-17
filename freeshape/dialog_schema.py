@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from types import SimpleNamespace
 from typing import NamedTuple
 
 from . import assembly as AS
@@ -925,7 +926,7 @@ def fields_to_params(ftype, fields, p):
 
 # ---------------------------------------------------------------------- the schema as plain data
 
-STANDARD_KINDS = ("num", "choice", "check", "sel")      # the rows a generic client builds from the schema alone
+STANDARD_KINDS = ("num", "choice", "check", "sel", "ticks")   # the rows a generic client builds from the schema alone
 SIMPLE_KINDS = ("ops", "info", "text")                  # also plain: segmented buttons, a read-only line, a text box
 
 
@@ -997,9 +998,11 @@ def describe(ftype, params, state=None):
 
 
 def custom_feature_types():
-    """The feature types in SCHEMAS with at least one hand-built row (a row the schema cannot describe fully)."""
+    """The feature types in SCHEMAS with at least one hand-built row (a row the schema cannot describe fully), less
+    the SERVED_TYPES: their server dialog describes every row with the standard kinds (derived_describe)."""
     return sorted(t for t, rows in SCHEMAS.items()
-                  if any(r["t"] not in STANDARD_KINDS and r["t"] not in SIMPLE_KINDS for r in rows))
+                  if t not in SERVED_TYPES and any(r["t"] not in STANDARD_KINDS and r["t"] not in SIMPLE_KINDS
+                                                   for r in rows))
 
 
 def startable_feature_types():
@@ -1010,6 +1013,222 @@ def startable_feature_types():
     from .plugins import is_plugin_type
     from .pyfeature.registry import is_python_type
     return sorted(t for t in SCHEMAS if t in F.FEATURE_LABELS and not is_python_type(t) and not is_plugin_type(t))
+
+
+# ---------------------------------------------------------------------- Derived in the Browser client (I10.2)
+# The desktop draws SCHEMAS["derived"] with its own widgets (freeshape/ui/dialogs.py `_make_derived_*`). The server's
+# dialog describes the same rows with standard kinds, filled from the Document the dialog is on (a DerivedContext the
+# session makes), and changes the params with the desktop's rules, in the desktop's order of keys, so a Derived made
+# in the browser saves the bytes the desktop saves for the same choices. Only a source in this Document: another
+# Document and a Version pin stay on the desktop.
+
+SERVED_TYPES = ("derived",)         # hand-built on the desktop, all standard rows in the server's dialog
+
+DESKTOP_ONLY = "Desktop only for now"
+# the desktop's notes, word for word (freeshape/ui/dialogs.py)
+DERIVED_NO_SOURCE = "This Document has no other Part Studio to derive from."
+DERIVED_PART_FIRST = "⚠ Tick part {part} first: a connector comes in with its part."
+DERIVED_UNTICKED = "⚠ Connectors on a part you unticked were unticked too."
+DERIVED_SCOPED = ("⚠ This Derived reads another Document or a Version of this one: change that on the desktop. "
+                  "Choose a Part Studio here to read this Document instead.")
+DERIVED_TICKS = ("parts", "sketches", "connectors")    # the params the source owns, cleared when it changes
+DERIVED_GROUP = "derived_tabs"                          # the tick lists are the tabs of one row, as on the desktop
+
+
+class DerivedContext(NamedTuple):
+    studios: list           # [(tab id, name)]: the other Part Studio tabs of this Document, in manifest order
+    package: object         # what the source publishes (ProcessEngine.published: parts, sketches, connectors,
+    #                         aliases, error), or None (no source, another Document, or not open)
+    why: str                # why there is no package, "" when there is or no source is chosen
+    locations: list         # [(connector id, name)]: this Part Studio's Mate connectors above the Derived
+
+
+def _scoped(src):
+    return bool(src.get("document") or src.get("version"))
+
+
+def _published(ctx, key):
+    """{id: label} of what the source publishes under `key` (parts, sketches, connectors), in its order."""
+    pkg = ctx.package or {}
+    if key == "connectors":
+        names = {p["id"]: p["name"] for p in pkg.get("parts") or ()}
+        return {c["id"]: f"{c['name']}  ({names.get(c['part'], c['part'])})" for c in pkg.get("connectors") or ()}
+    return {x["id"]: x["name"] for x in pkg.get(key) or ()}
+
+
+def _tick_options(ctx, key, ticked):
+    """The rows of a tick list: what the source publishes, then each ticked id it no longer does (the desktop's)."""
+    pub = _published(ctx, key)
+    return [[i, label] for i, label in pub.items()] + [[i, f"{i}  (no longer published)"] for i in ticked
+                                                       if i not in pub]
+
+
+def _alias(ctx, pid):
+    return ((ctx.package or {}).get("aliases") or {}).get(pid, pid)
+
+
+def _connector_owner(ctx):
+    """{connector id: the source part it is on, through the source's aliases} (the desktop's `owner`)."""
+    return {c["id"]: _alias(ctx, c["part"]) for c in (ctx.package or {}).get("connectors") or ()}
+
+
+def _part_ticked(ctx, params, cid, owner):
+    return owner.get(cid) is None or owner[cid] in [_alias(ctx, i) for i in params.get("parts") or []]
+
+
+def derived_note(params, ctx):
+    """The note under the Part Studio chooser when nothing was just refused or unticked (the desktop's fill)."""
+    src = params.get("source") or {}
+    if _scoped(src):
+        return DERIVED_SCOPED
+    err = ctx.why or (ctx.package or {}).get("error") or ""
+    if err:
+        return "⚠ " + err
+    return "" if ctx.studios else DERIVED_NO_SOURCE
+
+
+def derived_describe(params, ctx, note=None):
+    """The Derived dialog as describe() gives a dialog, every row a standard kind:
+        document    choice: This Document; Another Document and A Version of this Document are listed with
+                    `disabled` {value: "Desktop only for now"}
+        source      choice of the other Part Studio tabs ("" none), `picker` "studio": a client may draw it as its
+                    Part Studio list
+        _note       info: the desktop's note under the chooser (`note` when given, else derived_note)
+        parts, sketches, connectors
+                    ticks: `options` [[id, label], ...] of what the source publishes, `group` "derived_tabs" (the
+                    three are the tabs of one row)
+        location    choice: "" (not placed) or one of this Part Studio's Mate connectors above the Derived
+        base        choice: "origin" or one of the ticked connectors; shown once a Location is chosen"""
+    p = params or {}
+    src = p.get("source") or {}
+    place = p.get("placement") or {}
+
+    def row(key, kind, label, **more):
+        return {"key": key, "kind": kind, "standard": True, "visible": True, "label": label, **more}
+    tab = src.get("tab")
+    studios = [[t, n] for t, n in ctx.studios]
+    if tab and (_scoped(src) or tab not in dict(ctx.studios)):
+        suffix = DESKTOP_ONLY if _scoped(src) else "not in this Document"
+        studios.append([tab, f"{src.get('studio_name') or tab} ({suffix})"])
+    locs = [[c, n] for c, n in ctx.locations]
+    want = place.get("location")
+    if want and want not in dict(ctx.locations):
+        locs.append([want, f"{want}  (not defined above this feature)"])
+    ticked_c = list(p.get("connectors") or [])
+    conns = dict(_tick_options(ctx, "connectors", ticked_c))
+    fields = [
+        row("document", "choice", "Document",
+            options=[["this", "This Document"], ["other", "Another Document"], ["version", "A Version of this Document"]],
+            disabled={"other": DESKTOP_ONLY, "version": DESKTOP_ONLY}),
+        row("source", "choice", "Part Studio", options=[["", "— choose a Part Studio —"], *studios], picker="studio",
+            disabled={tab: DESKTOP_ONLY} if tab and _scoped(src) else {}),
+        {"key": "_note", "kind": "info", "standard": True, "visible": True,
+         "text": derived_note(p, ctx) if note is None else note},
+        row("parts", "ticks", "Parts", options=_tick_options(ctx, "parts", p.get("parts") or []), group=DERIVED_GROUP),
+        row("sketches", "ticks", "Sketches", options=_tick_options(ctx, "sketches", p.get("sketches") or []),
+            group=DERIVED_GROUP),
+        row("connectors", "ticks", "Mate connectors", options=_tick_options(ctx, "connectors", ticked_c),
+            group=DERIVED_GROUP),
+        row("location", "choice", "Location", options=[["", "— not placed —"], *locs]),
+        row("base", "choice", "Placement base", options=[["origin", "Base origin"], *[[c, conns[c]] for c in ticked_c]]),
+    ]
+    fields[-2]["visible"] = len(locs) > 0           # nothing to place on: no row (the desktop's combo is then empty)
+    fields[-1]["visible"] = bool(want)
+    return {"type": "derived", "fields": fields, "custom": []}
+
+
+def derived_values(params, ctx):
+    """{key: {"value"}} of the Derived dialog's rows (what derived_describe's choices and tick lists show)."""
+    p = params or {}
+    src = p.get("source") or {}
+    place = p.get("placement") or {}
+    doc = "other" if src.get("document") else "version" if src.get("version") else "this"
+    base = place.get("base") or "origin"
+    return {"document": {"value": doc}, "source": {"value": src.get("tab") or ""},
+            **{k: {"value": list(p.get(k) or [])} for k in DERIVED_TICKS},
+            "location": {"value": place.get("location") or ""},
+            "base": {"value": base if base == "origin" or base in (p.get("connectors") or []) else "origin"}}
+
+
+class DerivedSet(NamedTuple):
+    error: str              # why the change was refused, in part or whole ("" when it was not)
+    note: object            # the note to show now (None: the standing note, derived_note)
+    reread: bool            # the source changed: the session must read its package again
+
+
+def _write_placement(p, ctx, location=None, base=None):
+    """The desktop's `_derived_write_placement`, run after every change as its Placement base list refills: no
+    Location drops `placement`; else {"location", "base"}, a base that is not a ticked connector being Base origin."""
+    place = p.get("placement") or {}
+    loc = place.get("location") if location is None else location
+    if not loc:
+        p.pop("placement", None)
+        return
+    want = (place.get("base") or "origin") if base is None else base
+    p["placement"] = {"location": loc, "base": want if want in (p.get("connectors") or []) else "origin"}
+
+
+def derived_set(key, value, params, ctx):
+    """Apply one change of the Derived dialog to `params` (changed in place, keys in the desktop's order), with the
+    desktop's rules: another source clears the tick lists; a connector whose part is not ticked is refused; unticking
+    a part unticks its connectors; the Placement base falls back to Base origin when its connector is unticked. A
+    tick list's value is the ids ticked, stored in the list's order whatever order they come in. `value` must be
+    one the description offers (FeatureDialog.check). Returns DerivedSet."""
+    p = params
+    src = p.get("source") or {}
+    if key == "document":
+        if value != "this":
+            return DerivedSet(DESKTOP_ONLY, None, False)
+        if not _scoped(src):
+            return DerivedSet("", None, False)
+        for k in DERIVED_TICKS:               # another scope: no source, parts or sketches carry over
+            p[k] = []
+        p["source"] = {}
+        _write_placement(p, ctx)
+        return DerivedSet("", None, True)
+    if key == "source":
+        if value and value == src.get("tab") and not _scoped(src):
+            return DerivedSet("", None, False)
+        names = dict(ctx.studios)
+        if value and value not in names:
+            return DerivedSet(DESKTOP_ONLY if _scoped(src) else "That Part Studio is not in this Document", None,
+                              False)
+        for k in DERIVED_TICKS:               # another source: its own parts and sketches
+            p[k] = []
+        from . import links as L
+        p["source"] = L.studio_source(SimpleNamespace(id=value, name=names[value])) if value else {}
+        _write_placement(p, ctx)
+        return DerivedSet("", None, True)
+    if key in DERIVED_TICKS:
+        order = [i for i, _label in _tick_options(ctx, key, p.get(key) or [])]
+        want = set(value)
+        error, note = "", None
+        if key == "connectors":
+            owner = _connector_owner(ctx)
+            had = set(p.get(key) or [])
+            refused = [c for c in order if c in want and c not in had and not _part_ticked(ctx, p, c, owner)]
+            if refused:
+                error = DERIVED_PART_FIRST.format(part=owner[refused[0]])
+                want -= set(refused)
+        p[key] = [i for i in order if i in want]
+        if key == "parts":
+            owner = _connector_owner(ctx)
+            kept = [c for c in p.get("connectors") or [] if _part_ticked(ctx, p, c, owner)]
+            if kept != list(p.get("connectors") or []):
+                p["connectors"] = kept
+                note = DERIVED_UNTICKED
+        _write_placement(p, ctx)
+        return DerivedSet(error, note, False)
+    if key == "location":
+        if not value:
+            p.pop("placement", None)
+        else:
+            _write_placement(p, ctx, location=value)
+        return DerivedSet("", None, False)
+    if key == "base":
+        _write_placement(p, ctx, base=value)
+        return DerivedSet("", None, False)
+    raise KeyError(key)
 
 
 # ---------------------------------------------------------------------- behaviour (I5.2)

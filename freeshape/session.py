@@ -138,10 +138,11 @@ class FeatureDialog:
     rejected input, else absent) and {key: {"value"}} for the other single-value rows. `fields()` is {key: [item]}
     for the selection rows; an item is {"ok": true, "kind", "ref", "name"}, as the refs route answers."""
 
-    def __init__(self, tab, feature, variables, defaults, fields=None, extra=None):
+    def __init__(self, tab, feature, variables, defaults, fields=None, extra=None, context=None):
         """`feature` without an "id" is a NEW feature (I6.1, create mode): `fid` is None, the engine gives it its id
         when it is added, and a preview asks for a new feature. `fields` ({key: [(kind, ref)]}) and `extra` (params)
-        are what the picks it was started with chose (apply_preselection)."""
+        are what the picks it was started with chose (apply_preselection). `context` (a Derived, I10.2) is a
+        callable params -> dialog_schema.DerivedContext: what the Document offers the dialog's rows."""
         self.tab = tab
         self.fid = feature.get("id")
         self.is_new = self.fid is None
@@ -167,12 +168,25 @@ class FeatureDialog:
         self.errors = {}                                   # key -> why the last input to it was refused
         self.specs = {s["key"]: s for s in DSC._schema_for(self.type, p) if s.get("key")}
         self.preview = None      # the newest preview answered (I5.4): {"n", "data": wire bytes or None, "error"}
+        self.context = context if self.type == "derived" else None
+        self.derived = None      # the DerivedContext the rows show (I10.2); read again when the source changes
+        self.note = None         # the Derived's note after an untick (None: the standing note)
+        if self.context is not None:
+            self.derived = self.context(p)
+            DSC._write_placement(p, self.derived)          # the desktop's Placement base list does this on open
 
     # ---------------------------------------------------------------- reading
     def description(self):
+        if self.derived is not None:
+            return DSC.derived_describe(self.params, self.derived, self.note)
         return DSC.describe(self.type, self.params)
 
     def values(self):
+        if self.derived is not None:
+            out = DSC.derived_values(self.params, self.derived)
+            for key, message in self.errors.items():
+                out[key]["error"] = message
+            return out
         out = {}
         for key, spec in self.specs.items():
             kind = spec["t"]
@@ -210,6 +224,8 @@ class FeatureDialog:
         return options[0][0] if options else raw
 
     def fields(self):
+        if self.derived is not None:
+            return {}
         out = {}
         for key, spec in self.specs.items():
             if spec["t"] == "sel":
@@ -227,6 +243,8 @@ class FeatureDialog:
         value being its text for now."""
         if not isinstance(changes, dict) or not 1 <= len(changes) <= 64:
             raise SessionError("values: must be an object of 1 to 64 field values")
+        if self.derived is not None:
+            return self._check_derived(changes)
         out = {}
         for key, value in changes.items():
             at = f"values.{str(key)[:40]}"
@@ -259,6 +277,37 @@ class FeatureDialog:
             out[key] = value
         return out
 
+    def _check_derived(self, changes):
+        """check() for a Derived: a choice takes one of its options, a tick list a list of the ids it lists."""
+        rows = {f["key"]: f for f in self.description()["fields"] if f["kind"] in ("choice", "ticks")}
+        for key, value in changes.items():
+            at = f"values.{str(key)[:40]}"
+            spec = rows.get(key)
+            if spec is None:
+                raise SessionError(f"{at}: no such field")
+            ids = [o[0] for o in spec["options"]]
+            if spec["kind"] == "choice":
+                if not isinstance(value, str) or value not in ids:
+                    raise SessionError(f"{at}: not one of the options")
+            elif not isinstance(value, list) or len(value) > MAX_DIALOG_ITEMS \
+                    or not all(isinstance(v, str) and v in ids for v in value):
+                raise SessionError(f"{at}: must be a list of the ids the list shows")
+        return dict(changes)
+
+    def _apply_derived(self, parsed):
+        errors = {}
+        self.note = None
+        for key, value in parsed.items():
+            self.errors.pop(key, None)
+            got = DSC.derived_set(key, value, self.params, self.derived)
+            if got.error:
+                errors[key] = self.errors[key] = got.error
+            if got.note is not None:
+                self.note = got.note
+            if got.reread:
+                self.derived = self.context(self.params)
+        return errors, None
+
     @staticmethod
     def _items(at, value):
         if not isinstance(value, list) or len(value) > MAX_DIALOG_ITEMS:
@@ -276,6 +325,8 @@ class FeatureDialog:
     def apply(self, parsed):
         """Apply what `check` returned, key by key. A number that does not read or is out of range is refused
         with its message and the last good value stays. Returns (errors {key: message}, active field or None)."""
+        if self.derived is not None:
+            return self._apply_derived(parsed)
         errors, active = {}, None
         for key, value in parsed.items():
             spec = self.specs[key]
@@ -541,7 +592,8 @@ class DocumentSession:
             got = self._retry(tab, lambda: self._eng.feature(tab, fid))
         except EngineError as e:
             raise SessionError(f"tab {tab!r}: {e}") from e
-        return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"))
+        return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"),
+                             context=self._derived_context(tab, fid, got["feature"]["type"]))
 
     def start_dialog(self, tab, ftype, picks=()):
         """A FeatureDialog in create mode for a new feature of `ftype` at the rollback position, its selection
@@ -555,7 +607,41 @@ class DocumentSession:
         except EngineError as e:
             raise SessionError(f"tab {tab!r}: {e}") from e
         return FeatureDialog(tab, got["feature"], got["variables"], got.get("defaults"),
-                             {k: [tuple(i) for i in v] for k, v in got["fields"].items()}, got["params"])
+                             {k: [tuple(i) for i in v] for k, v in got["fields"].items()}, got["params"],
+                             context=self._derived_context(tab, None, got["feature"]["type"]))
+
+    def _derived_context(self, tab, fid, ftype):
+        """For a Derived dialog on `tab` (the feature `fid`, None for a new one), a callable params ->
+        dialog_schema.DerivedContext (I10.2): the other Part Studio tabs of this Document, what the source the
+        params name publishes (read again on each call, so a source that changed shows its new contents) and this
+        Part Studio's Mate connectors above the Derived (read once, from the model the dialog picks against). None
+        for any other type. Called under the Document's session lock, as every dialog call is."""
+        if ftype != "derived":
+            return None
+        studios = [(t["id"], t["name"]) for t in self.tabs() if t["kind"] == "studio" and t["id"] != tab]
+        try:
+            base = self._retry(tab, lambda: self._eng.base_outputs(tab, fid))
+            locations = [(str(c.id), str(c.name or c.id)) for c in base.connectors]
+        except (EngineError, SessionError):
+            locations = []
+
+        def context(params):
+            src = params.get("source") or {}
+            names = dict(studios)
+            sid = src.get("tab")
+            if not sid or src.get("document") or src.get("version"):
+                return DSC.DerivedContext(studios, None, "", locations)
+            label = src.get("studio_name") or names.get(sid) or sid
+            if sid not in names or sid in self._failed:
+                return DSC.DerivedContext(studios, None, f"Part Studio “{label}” isn't open", locations)
+            try:
+                pkg = self._retry(sid, lambda: self._eng.published(sid))
+            except (EngineError, SessionError) as e:
+                return DSC.DerivedContext(studios, None, f"Part Studio “{label}”: {e}", locations)
+            if pkg is None:
+                return DSC.DerivedContext(studios, None, f"Part Studio “{label}” isn't open", locations)
+            return DSC.DerivedContext(studios, pkg, "", locations)
+        return context
 
     def startable_types(self, tab, picks=()):
         """{feature type: bool}: which tools can start on `tab` with `picks` (contract.Engine.startable)."""

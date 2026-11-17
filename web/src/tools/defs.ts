@@ -31,7 +31,7 @@ export const FEATURE_STRIP: readonly StripDef[] = [
     key: 'create',
     name: 'Create',
     gap: space.s10,
-    tools: [t('extrude', 'Extrude'), t('revolve', 'Revolve'), t('sweep', 'Sweep'), t('rib', 'Rib'), t('loft', 'Loft'), t('boundary_surface', 'Boundary surface'), t('import', 'Import')],
+    tools: [t('extrude', 'Extrude'), t('revolve', 'Revolve'), t('sweep', 'Sweep'), t('rib', 'Rib'), t('loft', 'Loft'), t('boundary_surface', 'Boundary surface'), t('derived', 'Derived'), t('import', 'Import')],
   },
   {
     kind: 'group',
@@ -135,7 +135,7 @@ export const DESKTOP_TOOLBAR: DesktopLayout = {
     command(t('variable', 'Variable')),
     feature(t('variable_studio_ref', 'Variable Studio reference')),
     command(t('configs', 'Configurations')),
-    feature(t('derived', 'Derived')),
+    fromStrip('derived'),
     command(t('history', 'Compare Versions')),
     command(t('plugin', 'Plugins')),
     SEP,

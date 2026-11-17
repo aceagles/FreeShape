@@ -640,6 +640,7 @@ class StudioEngine(QObject):
         doc._apply_overrides(st)
         rec.shown = {p.id: p.hash for p, *_ in res.parts}
         rec.meshes = {}
+        self.window.viewport.fit_mesh_cache(len(shown))       # room for them all before the first goes in
         for p, shape, mesh, _ref in shown:
             if mesh is not None:
                 self.window.viewport.seed_mesh(shape, mesh)

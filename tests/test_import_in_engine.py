@@ -64,6 +64,19 @@ def test_an_import_builds_in_the_worker_and_never_in_the_window(win, step_path, 
     assert len(eng.displayed(doc)) == COPIES          # every placed copy drawn from the worker's meshes
 
 
+def test_an_import_with_more_parts_than_the_mesh_cache_still_draws_the_workers_meshes(win, step_path, monkeypatch):  # noqa: F811
+    from freeshape.ui import viewport as V
+    meshed = []
+    real = V.K.tessellate
+    monkeypatch.setattr(V.K, "tessellate", lambda *a, **k: meshed.append(1) or real(*a, **k))
+    monkeypatch.setattr(V.Viewport, "MESH_CACHE_MIN", 4)     # an import of more parts than the cache's floor
+    win.viewport._mesh_cache_limit = 4
+    win.import_step_file(step_path)
+    assert win.studio_engine.settle(180)
+    assert len(win.doc.state.parts) == COPIES
+    assert not meshed                           # every part drawn from the worker's mesh, none meshed here
+
+
 def _padded(src, dst, size):
     """`src` with a comment block that takes the file past `size` bytes: the same parts, a bigger file."""
     with open(src, "rb") as fh:

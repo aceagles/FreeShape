@@ -2193,15 +2193,18 @@ class Sketcher:
         """Close any value box; a live prompt keeps the value it's showing."""
         fin = getattr(self, "_editor_finish", None)
         self._editor_finish = None
-        if fin is not None and self._editor is not None:
+        ed = self._editor
+        if fin is not None and ed is not None:
             fin()
-        else:
+        # a prompt closed with Enter leaves its finish behind, which then ignores the box open now: close that
+        # here, or it takes a second Esc. (_close_editor must not drop the finish itself: freeing the closures
+        # of a closed box at an arbitrary later moment crashed a later window's setFocus in the test suite.)
+        if ed is not None and self._editor is ed:
             self._close_editor()
 
     def _close_editor(self):
         ed = self._editor
         self._editor_users = False
-        self._editor_finish = None     # a prompt closed by Enter must not leave its finish for the next box
         if ed is not None:
             self._editor = None
             ed.hide()

@@ -2499,7 +2499,8 @@ class Viewport(QOpenGLWidget):
 
     def refresh_cursor(self):
         """The cursor for the mouse at rest: the active sketch tool's (cursors.tool_cursor), else the arrow."""
-        self.setCursor(cursors.tool_cursor(self.sketcher.tool) if self.sketcher else QCursor(Qt.ArrowCursor))
+        tool = getattr(self.sketcher, "tool", "select") if self.sketcher else "select"
+        self.setCursor(cursors.tool_cursor(tool))
 
     def keyPressEvent(self, e):
         if self.sketcher and self.sketcher.key_press(self, e):

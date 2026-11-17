@@ -57,7 +57,8 @@ it('Desktop mode: the top bar has the three menu buttons and no tab bar; the tab
   expect(within(strip).getByRole('button', { name: 'Assembly 1' })).toBeTruthy()
   expect(within(strip).getByRole('button', { name: 'Add tab' })).toBeTruthy()
   expect(strip.textContent).toContain('Units: millimetre')
-  expect(within(bar).getByRole('button', { name: 'Search tools' }).hasAttribute('disabled')).toBe(true)
+  expect(within(bar).getByRole('button', { name: 'Search tools' }).hasAttribute('disabled')).toBe(false)
+  expect(within(bar).getByRole('button', { name: 'Keyboard shortcuts' }).hasAttribute('disabled')).toBe(false)
 })
 
 it('the Document menu lists the desktop items in order; wired items run, others are disabled with the tooltip', () => {

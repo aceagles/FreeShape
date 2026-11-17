@@ -64,6 +64,10 @@ import { ShellContext } from './ShellContext'
 import type { ShellApi } from './ShellContext'
 import { TabBar } from './TabBar'
 import { TopBar } from './TopBar'
+import { Palette } from './Palette'
+import { paletteEntries } from './paletteEntries'
+import type { PaletteEnv } from './paletteEntries'
+import { Shortcuts } from './Shortcuts'
 import { ModeProvider, useMode } from './mode'
 import { clampLeftWidth, columnWidth, desktopColumnWidth, readLeftWidth, storeLeftWidth } from './layout'
 import { Splitter } from './Splitter'
@@ -104,6 +108,7 @@ type Modal =
   | { kind: 'leave' }
   | { kind: 'takeover' }
   | { kind: 'plane' }
+  | { kind: 'shortcuts' }
   | { kind: 'discard' }
   | { kind: 'message'; title: string; text: string }
   | { kind: 'confirm'; title: string; text: string; label: string; run: () => void }
@@ -227,6 +232,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   }, [copy])
   const dimensionOn = useSyncExternalStore(dimension.subscribe, dimension.getState).active
   const [modal, setModal] = useState<Modal | null>(null)
+  // the Search tools palette (card I9.11): Desktop mode only; nothing in Tablet mode opens it
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const width = useWindowWidth()
 
@@ -696,6 +703,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     // the client has no open and closed tabs: closing a tab takes it out of the Document, so it asks as Delete does
     'document.closeTab': () => currentInfo !== null && setModal({ kind: 'delete', tab: currentInfo }),
     'document.save': () => void save(),
+    'document.shortcuts': () => setModal({ kind: 'shortcuts' }),
     'document.open': back,
     'document.exportStep': () => openExport('step'),
     'document.exportStl': () => openExport('stl'),
@@ -710,6 +718,24 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     commands[command]!()
     return true
   }
+  // the Search tools palette lists the toolbar on screen (the same wiring as the row drawn below) and the menus
+  const paletteEnv: PaletteEnv = sketchHere
+    ? { workspace: 'sketch', layout: DESKTOP_SKETCH_TOOLBAR, stateOf: () => 'ok', commands: sketchCommands, onStart: () => {}, assemblyTypes, menuCommands: commands, menuState }
+    : tabKind === 'assembly'
+      ? { workspace: 'assembly', layout: ASSEMBLY_TOOLBAR, stateOf: () => 'off', commands: assemblyTools, onStart: () => {}, assemblyTypes, menuCommands: commands, menuState }
+      : tabKind === 'studio'
+        ? {
+            workspace: 'studio',
+            layout: DESKTOP_TOOLBAR,
+            stateOf: (id) => (id === 'sketch' ? 'ok' : stateOf(toolTypes, id)),
+            commands: toolbarCommands,
+            busy: editing !== null || dialog !== null || sketch.open || sketch.opening,
+            onStart: (id) => (id === 'sketch' ? beginSketch() : startTool(id)),
+            assemblyTypes,
+            menuCommands: commands,
+            menuState,
+          }
+        : { workspace: null, layout: null, stateOf: () => 'off', commands: {}, onStart: () => {}, assemblyTypes, menuCommands: commands, menuState }
   const featureNow = selectedFeature === null ? null : (studio?.features.find((f) => f.id === selectedFeature) ?? null)
   useEffect(() => {
     keys.current = {
@@ -726,6 +752,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         selectedFeature: featureNow && { id: featureNow.id, name: featureNow.name },
         selectedInstance: tabKind === 'assembly' ? selectedInstance(picked.items) : null,
         runMenu,
+        openPalette: () => setPaletteOpen(true),
         undo: undoCmd,
         redo: redoCmd,
         assemblyUndo: assembly.edits.undo,
@@ -774,6 +801,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           canExport={exportable}
           onToggleDebug={debug.toggle}
           menu={{ commands, state: menuState }}
+          palette={{ open: paletteOpen, toggle: () => setPaletteOpen((o) => !o), shortcuts: () => setModal({ kind: 'shortcuts' }) }}
           narrow={width < NARROW_BELOW}
         />
         {savedNote !== null && <SavedNote text={savedNote} onDismiss={dismissSaved} />}
@@ -946,6 +974,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         )}
         {debug.open && <DebugPopover store={store} version={version} />}
         {context.node}
+        {desktop && paletteOpen && <Palette entries={paletteEntries(paletteEnv)} anchor={viewportEl} onClose={() => setPaletteOpen(false)} />}
+        {modal?.kind === 'shortcuts' && <Shortcuts onClose={closeModal} />}
         {modal?.kind === 'rename' && (
           <TextPrompt
             title="Rename tab"

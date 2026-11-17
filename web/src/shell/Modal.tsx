@@ -6,7 +6,7 @@ import './modal.css'
  * A small dialog over the whole page, in the top half so the iPad keyboard never covers it. Escape and a tap on the
  * scrim call `onClose`. Used for confirmations, messages and one-line text prompts (see ConfirmDialog, TextPrompt).
  */
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, onClose, children, className }: { title: string; onClose: () => void; children: ReactNode; className?: string }) {
   useEffect(() => {
     const on = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
     window.addEventListener('keydown', on)
@@ -14,7 +14,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
   }, [onClose])
   return (
     <div className="modal-scrim" data-testid="modal-scrim" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
+      <div className={className === undefined ? 'modal' : `modal ${className}`} role="dialog" aria-modal="true" aria-label={title}>
         <h2 className="modal-title">{title}</h2>
         {children}
       </div>

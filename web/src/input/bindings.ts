@@ -134,6 +134,13 @@ export const BINDINGS: readonly Binding[] = [
   { chord: 'Escape', command: 'cancel', label: 'Cancel / step back', where: ALL },
   { chord: 'Enter', command: 'dialog.accept', label: 'Accept the dialog', where: ['dialog'] },
 
+  // Search tools (card I9.11; mainwindow.py `_bind_shortcuts`: Alt+C and Ctrl+Space; the card adds Alt+`). No browser keeps these:
+  // Ctrl+Space and Alt+C reach the page in Chrome, Edge, Firefox and Safari. Ctrl+Space is the input-source switch on a Mac and on
+  // some Windows and Linux setups, where the OS takes it before the page: Alt+C stays the chord that always works.
+  { chord: 'Ctrl+Space', command: 'palette.open', label: 'Search tools', where: ALL },
+  { chord: 'Alt+C', command: 'palette.open', label: 'Search tools', where: ALL },
+  { chord: 'Alt+`', command: 'palette.open', label: 'Search tools', where: ALL },
+
   ...SKETCH_BINDINGS,
 ]
 

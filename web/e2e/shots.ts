@@ -2289,6 +2289,56 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I9.11: Desktop mode, Ctrl+Space, ext typed: the Search tools palette over the Part Studio, Extrude first
+    name: 'desktop-palette',
+    mode: 'desktop',
+    desktop: 'desktop-palette',
+    steps: async (page) => {
+      await openApp(page)
+      await page.keyboard.press('Control+Space')
+      await page.getByTestId('palette').waitFor()
+      await page.keyboard.type('ext')
+      await page.getByTestId('palette').getByRole('option').first().filter({ hasText: 'Extrude' }).waitFor()
+    },
+  },
+  {
+    // I9.11: Desktop mode, the palette with a tool that cannot run chosen: dimmed, its reason on the right
+    name: 'desktop-palette-disabled',
+    mode: 'desktop',
+    desktop: 'desktop-palette',
+    steps: async (page) => {
+      await openApp(page)
+      await page.keyboard.press('Control+Space')
+      await page.getByTestId('palette').waitFor()
+      await page.keyboard.type('der')
+      await page.getByTestId('palette').getByRole('option', { name: /^Derived/ }).waitFor()
+    },
+  },
+  {
+    // I9.11: Desktop mode, the palette in an open sketch: the sketch tools
+    name: 'desktop-palette-sketch',
+    mode: 'desktop',
+    desktop: 'desktop-palette',
+    steps: async (page) => {
+      await openApp(page)
+      await openNewSketch(page, 'Top')
+      await page.keyboard.press('Alt+KeyC')
+      await page.getByTestId('palette').waitFor()
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I9.11: Desktop mode, the ? button: every key of the binding data, grouped by workspace
+    name: 'desktop-shortcuts',
+    mode: 'desktop',
+    desktop: 'desktop-shortcuts',
+    steps: async (page) => {
+      await openApp(page)
+      await page.locator('[data-region="top-bar"]').getByRole('button', { name: 'Keyboard shortcuts' }).click()
+      await page.getByTestId('shortcuts').waitFor()
+    },
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

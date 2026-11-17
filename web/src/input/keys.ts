@@ -30,7 +30,8 @@ export function chordOf(e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'altKey' | 's
   const digit = /^Digit(\d)$/.exec(e.code ?? '')
   const letter = /^Key([A-Z])$/.exec(e.code ?? '')
   const typed = e.key === ' ' ? 'Space' : e.key.length === 1 ? e.key.toUpperCase() : e.key
-  const key = digit ? digit[1]! : letter && e.altKey && !/^[A-Z]$/.test(typed) ? letter[1]! : typed
+  // Alt+` types a dead key on a Mac: named by its key position, as an Alt letter is
+  const key = e.altKey && e.code === 'Backquote' ? '`' : digit ? digit[1]! : letter && e.altKey && !/^[A-Z]$/.test(typed) ? letter[1]! : typed
   const isShiftKey = key === 'Shift' || key === 'Control' || key === 'Alt' || key === 'Meta'
   return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && !isShiftKey && 'Shift', e.metaKey && 'Meta', key].filter(Boolean).join('+')
 }

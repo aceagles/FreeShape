@@ -1,0 +1,63 @@
+/* The keyboard shortcut list (Shortcuts.tsx): a scrolling page of groups in two columns. */
+.modal.shortcuts-modal {
+  width: min(900px, 100%);
+  max-height: calc(100vh - 96px);
+  display: flex;
+  flex-direction: column;
+}
+.shortcuts {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  columns: 2 300px;
+  column-gap: var(--sp-20);
+  margin-bottom: var(--sp-12);
+}
+.shortcuts-group {
+  break-inside: avoid;
+  margin-bottom: var(--sp-12);
+}
+.shortcuts-heading {
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-small);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--c-muted);
+}
+.shortcuts-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.shortcuts-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  min-height: 26px;
+  padding: 2px 0;
+}
+.shortcuts-label {
+  flex: 1;
+  min-width: 0;
+}
+.shortcuts-row[data-shown-only] {
+  color: var(--c-muted);
+}
+.shortcuts-chords {
+  flex: none;
+  max-width: 55%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-4);
+}
+.shortcuts-key {
+  padding: 1px 6px;
+  border: 1px solid var(--c-line);
+  border-radius: 4px;
+  background: var(--c-surface);
+  font: inherit;
+  font-size: var(--fs-small);
+}

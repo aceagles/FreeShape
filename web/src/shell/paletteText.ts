@@ -1,0 +1,143 @@
+/**
+ * The words the desktop's Search tools palette matches a command by (freeshape/ui/mainwindow.py `_palette_commands`,
+ * `SKETCH_PALETTE`, `_palette_sketch_commands`, freeshape/ui/assembly_ui.py `palette_commands`, freeshape/ui/sketcher.py
+ * `TOOL_HINTS` and `CONSTRAINT_TOOLS`): name, description, extra words and group, copied so that `searchCommands` ranks as
+ * `search_commands` does. Keyed by the client's tool id (tools/defs.ts). Generated from those files; edit it by
+ * regenerating, not by hand. A tool the desktop's palette does not list has no entry and is matched by its label alone.
+ */
+export interface PaletteText {
+  name: string
+  description: string
+  keywords: string
+  group: string
+}
+
+/** The Part Studio toolbar's tools (desktop key as the client's tool id). */
+export const STUDIO_TEXT: Readonly<Record<string, PaletteText>> = {
+  sketch: { name: "Sketch", description: "Draw 2D profiles on a plane or a flat face. With vertices, edges or faces selected that define a plane, the plane is made for you.", keywords: "draw 2d profile", group: "Feature" },
+  extrude: { name: "Extrude", description: "Add or remove material by extending sketch regions or flat faces. Blind, symmetric or through all.", keywords: "boss cut pad pocket draft taper surface extrude thin extrude wall", group: "Feature" },
+  revolve: { name: "Revolve", description: "Spin a sketch region around an axis to make round parts.", keywords: "lathe turn surface revolve thin revolve wall", group: "Feature" },
+  sweep: { name: "Sweep", description: "Move a profile along a path to make a pipe or rail.", keywords: "pipe path surface sweep thin sweep profile orientation", group: "Feature" },
+  rib: { name: "Rib", description: "Add a rib, web or gusset to a part from open sketch curves, grown until it meets the part.", keywords: "gusset web stiffener support", group: "Feature" },
+  loft: { name: "Loft", description: "Blend smoothly between two or more profiles.", keywords: "blend transition end condition loft tangent normal to profile guide curves guided loft boundary surface ruled surface surface loft", group: "Feature" },
+  boundary_surface: { name: "Boundary surface", description: "A surface through curves in a U direction and, optionally, a V direction. V curves need OpenCascade 8.0.", keywords: "boundary surface gordon network surface uv surface curve network surface", group: "Feature" },
+  fillet: { name: "Fillet", description: "Round off edges or faces with a radius.", keywords: "round blend corner variable fillet variable radius", group: "Feature" },
+  variable_fillet: { name: "Variable fillet", description: "Round off edges with a radius that changes from vertex to vertex.", keywords: "fillet variable radius round blend corner", group: "Feature" },
+  chamfer: { name: "Chamfer", description: "Create beveled edges or faces with a distance.", keywords: "bevel", group: "Feature" },
+  draft: { name: "Draft", description: "Angle side faces so a part releases from a mould.", keywords: "taper", group: "Feature" },
+  shell: { name: "Shell", description: "Hollow a part, leaving walls of a thickness; chosen faces are left open.", keywords: "hollow", group: "Feature" },
+  hole: { name: "Hole", description: "Custom holes or ISO clearance, tapped, counterbore and countersink holes at sketch points.", keywords: "drill tap counterbore countersink screw", group: "Feature" },
+  thread: { name: "Thread", description: "Model real ISO metric threads on holes and shafts.", keywords: "screw bolt", group: "Feature" },
+  delete_face: { name: "Delete face", description: "Remove faces from a part. Heal closes the gap by extending the surrounding faces, Cap covers it with a flat face, or leave the void open. Useful for imported parts: removes fillets, chamfers, bosses and holes.", keywords: "defeature remove fillet chamfer protrusion step import heal cap", group: "Feature" },
+  move_face: { name: "Move face", description: "Push or pull flat faces along their normal to resize a part.", keywords: "offset face resize push pull direct edit", group: "Feature" },
+  offset_surface: { name: "Offset surface", description: "Make a new surface a set distance from selected faces (flat or curved). The result is a surface body you can use as a reference or delete faces from.", keywords: "offset face surface copy shell skin", group: "Feature" },
+  thicken: { name: "Thicken", description: "Turn surfaces or faces into a solid of a set thickness, on one or both sides or about the middle. Picking a solid's face adds to it; picking a surface makes a new part.", keywords: "thicken surface to solid offset solid", group: "Feature" },
+  enclose: { name: "Enclose", description: "Make a solid from surfaces, faces and planes that surround a volume. The surfaces are used up unless you keep them.", keywords: "enclose solid from surfaces sew stitch knit", group: "Feature" },
+  fill: { name: "Fill", description: "Make a surface across a closed ring of edges or sketch curves, to patch or cap a hole. Each edge can take Tangency; guide points pull the surface through them.", keywords: "fill patch cap hole fill surface", group: "Feature" },
+  delete_part: { name: "Delete part", description: "Remove the selected parts from the model from this point on.", keywords: "remove erase discard body", group: "Feature" },
+  sm_base: { name: "Sheet metal", description: "A flat sheet from a sketch with thickness, bend radius and K-factor.", keywords: "bracket enclosure", group: "Feature" },
+  sm_flange: { name: "Flange", description: "Bend the sheet up along edges.", keywords: "sheet metal bend", group: "Feature" },
+  sm_hem: { name: "Hem", description: "Fold sheet metal edges right back (180°).", keywords: "sheet metal fold", group: "Feature" },
+  sm_jog: { name: "Jog", description: "Step sheet metal up or down from an edge.", keywords: "sheet metal joggle offset step", group: "Feature" },
+  sm_tab: { name: "Tab", description: "Add sheet in a panel's plane from a sketch.", keywords: "sheet metal extend", group: "Feature" },
+  sm_convert: { name: "Convert to sheet metal", description: "Make a flat plate into sheet metal.", keywords: "sheet metal plate import", group: "Feature" },
+  plane: { name: "Plane", description: "Make a datum plane: offset, through a point, line and angle, three points, mid plane, normal to a curve or tangent to a surface.", keywords: "datum", group: "Feature" },
+  axis: { name: "Axis", description: "Make a construction axis: through an edge, a cylinder, two points or two planes, or perpendicular to a face.", keywords: "datum construction centreline", group: "Feature" },
+  mirror: { name: "Mirror", description: "Copy parts across a plane.", keywords: "symmetry", group: "Feature" },
+  linear_pattern: { name: "Linear pattern", description: "Repeat parts along a direction.", keywords: "array copies", group: "Feature" },
+  circular_pattern: { name: "Circular pattern", description: "Repeat parts around an axis.", keywords: "array copies polar", group: "Feature" },
+  boolean: { name: "Boolean", description: "Add, subtract or intersect parts.", keywords: "union subtract intersect combine merge", group: "Feature" },
+  split: { name: "Split", description: "Cut parts with planes, faces (flat or curved) or sketch curves; keep both sides or one.", keywords: "cut split with surface cut with surface", group: "Feature" },
+  move: { name: "Move", description: "Move, rotate or copy parts by exact amounts.", keywords: "translate", group: "Feature" },
+  mate_connector: { name: "Mate connector", description: "Put a named frame (origin, Z and X) on a face or edge, with the same snap points as an Assembly. Assemblies can mate to it.", keywords: "mate connector frame triad origin snap mate", group: "Feature" },
+  update_context: { name: "Update context", description: "Recapture the selected Context feature from its Assembly, so the neighbouring parts match the Assembly again.", keywords: "context assembly refresh recapture out of date", group: "Feature" },
+  variable: { name: "Variable", description: "Define #name values to use in any dimension.", keywords: "parameter", group: "Feature" },
+  variable_studio_ref: { name: "Variable Studio reference", description: "Use the variables of a Variable Studio tab of this Document: all of them or the ones you tick.", keywords: "variables studio link import parameter", group: "Feature" },
+  derived: { name: "Derived", description: "Bring parts and sketches from another Part Studio of this Document into this one; they follow the source when it changes.", keywords: "link import reference skeleton master", group: "Feature" },
+  configs: { name: "Configurations", description: "Sizes or versions of this Part Studio from a table of variable values.", keywords: "configuration family table sizes variants", group: "Feature" },
+  new_folder: { name: "New folder", description: "Put the features selected in the feature list into a folder.", keywords: "group organise collapse", group: "Feature" },
+  nest: { name: "Nest for cutting", description: "Lay several flat patterns out on stock sheets and export one DXF.", keywords: "sheet metal dxf laser plasma layout stock", group: "File" },
+  import: { name: "Import STEP or BREP", description: "Open a STEP or BREP file in a new tab.", keywords: "open file", group: "File" },
+  export: { name: "Export", description: "Export the model as STEP, STL, 3MF, OBJ or BREP.", keywords: "save stl step 3mf obj brep", group: "File" },
+  dxf: { name: "Export DXF", description: "Export the selected sketches and flat faces as a DXF for laser cutting, with the layers and colours of the profile you choose (e.g. K40 Whisperer).", keywords: "laser cut engrave k40 whisperer outline sketch face profile colour", group: "File" },
+  history: { name: "Compare Versions", description: "What changed between two Versions of this Document, or since one: the features added, removed and changed in each Part Studio.", keywords: "version history what changed diff", group: "File" },
+  part: { name: "Auto colour all parts", description: "Give each part a different colour; again for a different set.", keywords: "color colours appearance", group: "View" },
+  undo: { name: "Undo", description: "Undo the last change (Ctrl+Z).", keywords: "", group: "Edit" },
+  redo: { name: "Redo", description: "Redo what was undone (Ctrl+Y).", keywords: "", group: "Edit" },
+  section: { name: "Section view", description: "Cut the model open with a plane to see inside (Shift+X).", keywords: "cross", group: "View" },
+  interference: { name: "Interference detection", description: "Show where parts overlap.", keywords: "interference clash collision overlap check", group: "View" },
+  hide: { name: "Show or hide planes", description: "Show or hide the default planes and the planes you made (P).", keywords: "visibility datum", group: "View" },
+  fit: { name: "Zoom to fit", description: "Fit the whole model in the view (F).", keywords: "", group: "View" },
+  iso: { name: "Isometric view", description: "Look at the model from the isometric corner (Shift+7).", keywords: "", group: "View" },
+  assembly: { name: "Go to assembly", description: "Switch to the Assembly this Part Studio's Context was captured from.", keywords: "context tab", group: "View" },
+}
+
+/** The sketch toolbar's tools. */
+export const SKETCH_TEXT: Readonly<Record<string, PaletteText>> = {
+  select: { name: "Select", description: "Click to select; drag points or curves to move them. Double-click a dimension to edit it.", keywords: "pointer arrow", group: "Sketch" },
+  line: { name: "Line", description: "Click to start a line, click again to finish it. Lines chain — press Esc to stop.", keywords: "segment", group: "Sketch" },
+  rectangle: { name: "Corner rectangle", description: "Click two opposite corners.", keywords: "box", group: "Sketch" },
+  center_rectangle: { name: "Center rectangle", description: "Click the centre, then a corner.", keywords: "centre box", group: "Sketch" },
+  circle: { name: "Circle", description: "Click the centre, then click to set the radius.", keywords: "round", group: "Sketch" },
+  polygon: { name: "Polygon", description: "Click the centre, then a corner (hold Shift for a polygon around the circle), then type the sides.", keywords: "hexagon pentagon regular sides", group: "Sketch" },
+  arc: { name: "3-point arc", description: "Click the start point, the end point, then a point on the arc.", keywords: "three point", group: "Sketch" },
+  arc_center: { name: "Center-point arc", description: "Click the centre, the start point, then sweep to the end point.", keywords: "centre point", group: "Sketch" },
+  spline: { name: "Spline", description: "Click points for the curve to pass through. Double-click or press Enter to finish; click the first point again to close it into a loop.", keywords: "curve through points", group: "Sketch" },
+  ellipse: { name: "Ellipse", description: "Click the centre, then the end of the long axis, then click to set the width.", keywords: "oval", group: "Sketch" },
+  text: { name: "Text", description: "Click where the text should start (its bottom-left), then type the text.", keywords: "letters font engrave", group: "Sketch" },
+  point: { name: "Point", description: "Click to place a point (used by Hole).", keywords: "vertex", group: "Sketch" },
+  dimension: { name: "Dimension", description: "Click a line, circle or two items, then click to place the dimension.", keywords: "smart dimension size measure", group: "Sketch" },
+  corner_fillet: { name: "Sketch fillet", description: "Click a corner where two lines meet, then type the radius.", keywords: "round corner radius", group: "Sketch" },
+  offset: { name: "Offset", description: "Click a line, arc or circle to offset its whole chain; type the distance (negative = other side). Switch on Both sides to offset to both sides at once.", keywords: "parallel copy both sides", group: "Sketch" },
+  slot: { name: "Slot", description: "Click the two end centres of the slot, then type its width — or click an existing line, arc or chain to wrap a slot round it.", keywords: "obround stadium offset both sides bi-directional offset wall and slot from curve", group: "Sketch" },
+  sk_mirror: { name: "Mirror", description: "Select geometry, then click the line to mirror it about.", keywords: "symmetry", group: "Sketch" },
+  sk_lpattern: { name: "Linear pattern", description: "Select geometry, then click a line for the direction; type the count and spacing.", keywords: "array copies", group: "Sketch" },
+  sk_cpattern: { name: "Circular pattern", description: "Select geometry, then click the centre point; type the count and angle.", keywords: "array copies polar", group: "Sketch" },
+  use_edge: { name: "Use", description: "Click part edges to project them into the sketch.", keywords: "project convert intersect part edges", group: "Sketch" },
+  trim: { name: "Trim", description: "Click a segment of a line to remove it up to the nearest intersections.", keywords: "cut remove", group: "Sketch" },
+  extend: { name: "Extend", description: "Click near one end of a line to lengthen it to the nearest line, circle or arc beyond it.", keywords: "lengthen", group: "Sketch" },
+  insert_file: { name: "Insert DXF or SVG", description: "Pick a DXF or SVG file; set its size and layers, and its curves join this sketch.", keywords: "insert dxf or dwg import dxf import svg logo dwg file drawing", group: "Sketch" },
+  construct: { name: "Construction", description: "Turn the selected geometry into construction geometry, or back (Q).", keywords: "toggle reference helper", group: "Sketch" },
+  coincident: { name: "Coincident", description: "Select two points, or a point and a curve.", keywords: "constraint relation", group: "Constraint" },
+  horizontal: { name: "Horizontal", description: "Select a line or two points.", keywords: "constraint relation", group: "Constraint" },
+  vertical: { name: "Vertical", description: "Select a line or two points.", keywords: "constraint relation", group: "Constraint" },
+  parallel: { name: "Parallel", description: "Select two lines.", keywords: "constraint relation", group: "Constraint" },
+  perpendicular: { name: "Perpendicular", description: "Select two lines.", keywords: "constraint relation", group: "Constraint" },
+  tangent: { name: "Tangent", description: "Select a line and an arc/circle, or two arcs/circles.", keywords: "constraint relation", group: "Constraint" },
+  equal: { name: "Equal", description: "Select two lines or two arcs/circles.", keywords: "constraint relation", group: "Constraint" },
+  midpoint: { name: "Midpoint", description: "Select a point and a line.", keywords: "constraint relation", group: "Constraint" },
+  concentric: { name: "Concentric", description: "Select two arcs/circles.", keywords: "constraint relation", group: "Constraint" },
+  symmetric: { name: "Symmetric", description: "Select two points (or two circles/lines) and the line they're symmetric about.", keywords: "constraint relation", group: "Constraint" },
+  fix: { name: "Fix", description: "Select points or curves to fix in place.", keywords: "constraint relation", group: "Constraint" },
+  normal: { name: "Normal", description: "Select a line and an arc/circle: the line passes through the curve's centre.", keywords: "constraint relation", group: "Constraint" },
+  delete: { name: "Delete selected", description: "Delete the selected sketch geometry (Del).", keywords: "remove erase", group: "Sketch" },
+  normal_to: { name: "Normal to sketch", description: "Turn the view to look straight at the sketch plane (N).", keywords: "view perpendicular plane", group: "View" },
+  fit: { name: "Zoom to fit", description: "Fit the whole model in the view (F).", keywords: "", group: "View" },
+  iso: { name: "Isometric view", description: "Look at the model from the isometric corner (Shift+7).", keywords: "", group: "View" },
+  finish: { name: "Finish sketch", description: "Save the sketch and leave sketch mode.", keywords: "done accept exit close ok", group: "Sketch" },
+  undo: { name: "Undo", description: "Undo the last sketch change (Ctrl+Z).", keywords: "", group: "Edit" },
+  redo: { name: "Redo", description: "Redo what was undone (Ctrl+Y).", keywords: "", group: "Edit" },
+}
+
+/** The Assembly toolbar's tools other than the mates and relations (those come from the server's types). */
+export const ASSEMBLY_TEXT: Readonly<Record<string, PaletteText>> = {
+  insert: { name: "Insert", description: "Add parts from your Part Studios or a file (I).", keywords: "add part import component", group: "Feature" },
+  import: { name: "Component library", description: "Search a folder of STEP parts, see their previews and insert one into this Assembly.", keywords: "step parts browse servo motor bearing standard catalogue insert", group: "File" },
+  move: { name: "Move", description: "Move or rotate the selected parts by exact amounts.", keywords: "translate rotate transform triad", group: "Feature" },
+  asm_fix: { name: "Fix", description: "Fix or unfix the selected parts so they do not move.", keywords: "unfix ground lock anchor", group: "Feature" },
+  group: { name: "Group", description: "Group the selected parts so they move as one body.", keywords: "subassembly rigid", group: "Feature" },
+  animate: { name: "Animate", description: "Drive the selected mate through a range and play it back.", keywords: "motion drive play simulate", group: "Feature" },
+  suppress: { name: "Suppress", description: "Leave the selected parts out of the model without deleting them.", keywords: "disable deactivate exclude", group: "Feature" },
+  hide: { name: "Hide", description: "Hide the selected parts (Y).", keywords: "visibility", group: "Feature" },
+  interference: { name: "Interference detection", description: "Show where parts overlap.", keywords: "interference clash collision overlap check", group: "Feature" },
+  bom: { name: "Bill of materials", description: "List the parts with quantities and mass.", keywords: "bom parts list table", group: "Feature" },
+  section: { name: "Section view", description: "Cut the assembly open with a plane to see inside (Shift+X).", keywords: "cross cut", group: "View" },
+  fit: { name: "Zoom to fit", description: "Fit the whole assembly in the view (F).", keywords: "", group: "View" },
+  iso: { name: "Isometric view", description: "Look from the isometric corner (Shift+7).", keywords: "", group: "View" },
+  export: { name: "Export", description: "Export the assembly (STEP keeps the parts, names and colours).", keywords: "save step stl", group: "File" },
+  undo: { name: "Undo", description: "Undo the last change (Ctrl+Z).", keywords: "", group: "Edit" },
+  redo: { name: "Redo", description: "Redo what was undone (Ctrl+Y).", keywords: "", group: "Edit" },
+}
+
+/** The extra words of each mate type (assembly_ui.py `palette_commands`). */
+export const MATE_WORDS: Readonly<Record<string, string>> = {"fastened": "joint rigid weld lock", "revolute": "joint hinge axle pin", "slider": "joint prismatic", "cylindrical": "joint shaft bearing", "planar": "joint plane", "pin_slot": "joint pinslot pin slot", "parallel": "joint axis", "ball": "joint spherical"}

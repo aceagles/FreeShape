@@ -50,6 +50,8 @@ export interface DesktopKeyContext {
   deleteInstance: (instance: string) => void
   /** Drop the feature list's selected feature. */
   clearFeature: () => void
+  /** Open the Search tools palette (card I9.11). */
+  openPalette: () => void
   /** The 3D view on screen. */
   view: () => ViewHandler | null
   /** The visibility keys' commands (shell/visibilityCommands.ts); each returns false when it does not act here. */
@@ -113,6 +115,10 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
     'document.newAssembly': menu('document.newAssembly'),
     'document.closeTab': menu('document.closeTab'),
     'document.open': menu('document.open'),
+    'palette.open': () => {
+      c.openPalette()
+      return true
+    },
     'feature.sketch': () => {
       if (!studio || c.readOnly || !idle()) return false
       c.beginSketch()

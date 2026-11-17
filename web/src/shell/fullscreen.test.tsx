@@ -60,6 +60,7 @@ function bar() {
       canExport={false}
       onToggleDebug={noop}
       menu={{ commands: {}, state: { readOnly: false, tabKind: null, sketchOpen: false } }}
+      palette={{ open: false, toggle: () => {}, shortcuts: () => {} }}
       narrow={false}
     />,
   )

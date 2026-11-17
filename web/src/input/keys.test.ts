@@ -75,6 +75,16 @@ describe('the desktop keymap', () => {
     expect(chordOf({ key: 'ArrowRight', code: 'ArrowRight', ctrlKey: true, altKey: false, shiftKey: true, metaKey: false })).toBe('Ctrl+Shift+ArrowRight')
   })
 
+  it('Ctrl+Space, Alt+C and Alt+` open Search tools in Desktop mode only; no browser-kept chord is among them', () => {
+    for (const chord of ['Ctrl+Space', 'Alt+C', 'Alt+`']) {
+      expect(keymapFor('desktop')[chord], chord).toBe('palette.open')
+      expect(keymapFor('tablet')[chord], chord).toBeUndefined()
+    }
+    expect(chordOf({ key: 'Dead', code: 'Backquote', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false })).toBe('Alt+`')
+    expect(chordOf({ key: '`', code: 'Backquote', ctrlKey: false, altKey: true, shiftKey: false, metaKey: false })).toBe('Alt+`')
+    expect(chordOf({ key: ' ', code: 'Space', ctrlKey: true, altKey: false, shiftKey: false, metaKey: false })).toBe('Ctrl+Space')
+  })
+
   it('in Desktop mode every binding runs its command, and takes the key', () => {
     const commands = spies()
     off = attachKeys(commands, keymapFor('desktop'))

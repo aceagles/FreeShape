@@ -3,7 +3,8 @@ import { useConnection } from '../net/react'
 import { Icon, paths } from './icons'
 import { LinkStatusButton } from './LinkStatus'
 import { MenuButton } from './Menu'
-import { DESKTOP_ONLY, MENU_BAR } from './menus'
+import { chordFor } from '../input/bindings'
+import { MENU_BAR } from './menus'
 import type { Commands, MenuState } from './menus'
 import { TabBar } from './TabBar'
 import { useMode, useSetMode } from './mode'
@@ -44,6 +45,8 @@ interface Props {
   onToggleDebug: () => void
   /** Desktop mode: what the menus run, and what their enabled rules read. */
   menu: { commands: Commands; state: MenuState }
+  /** Desktop mode: the Search tools palette is open; the button opens and closes it, and the ? button opens the shortcut list. */
+  palette: { open: boolean; toggle: () => void; shortcuts: () => void }
   /** Desktop mode: the window is under 1180 px wide, so Home and Search tools show their icons only (as on the desktop). */
   narrow: boolean
 }
@@ -52,7 +55,7 @@ interface Props {
  * The top bar: back to the home screen, the Document name, the tab switcher with add tab, undo and redo (on while the current
  * Part Studio can undo or redo), save with a dot while something is unsaved, and the connection state.
  */
-export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, onUndo, onRedo, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onExport, canExport, onToggleDebug, menu, narrow }: Props) {
+export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, onUndo, onRedo, debugOpen, onSelectTab, onAddTab, onRenameTab, onDeleteTab, onBack, onSave, onExport, canExport, onToggleDebug, menu, palette, narrow }: Props) {
   const { document, tabs } = useConnection(store)
   const mode = useMode()
   const setMode = useSetMode()
@@ -111,12 +114,12 @@ export function TopBar({ store, currentTab, readOnly, saving, canUndo, canRedo, 
         {modeToggle}
         {fullscreen}
         <span className="top-bar-rule" aria-hidden="true" />
-        <button type="button" className="search-button" disabled title={DESKTOP_ONLY} aria-label="Search tools">
+        <button type="button" className="search-button" data-palette-toggle="" aria-label="Search tools" aria-expanded={palette.open} title={`Find a tool by name (${chordFor('palette.open')})`} onClick={palette.toggle}>
           <Icon d={paths.search} px={16} />
           <span className="search-text">Search tools</span>
-          <span className="search-kbd">Ctrl+Space</span>
+          <span className="search-kbd">{chordFor('palette.open')}</span>
         </button>
-        <button type="button" className="help-button" disabled title={DESKTOP_ONLY}>
+        <button type="button" className="help-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts" onClick={palette.shortcuts}>
           ?
         </button>
       </header>

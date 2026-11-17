@@ -25,6 +25,8 @@ export interface AssemblyEdits {
   /** Undo and redo of the Assembly (the engine's undo and redo ops; the outputs do not say whether there is a step to take). */
   undo(): void
   redo(): void
+  /** Insert a part of a Part Studio tab of this Document, or (`part` null) all its parts as they sit there: one undo step; resolves false when it failed (the refusal is shown). */
+  insert(tab: string, part: string | null): Promise<boolean>
   /** The fixed toggle of several instances: one set_fixed each, one after the other; stops at the first that fails. */
   setFixedAll(instances: readonly string[], fixed: boolean): Promise<void>
   /** Delete one instance and the mates on it (delete_instances); resolves false when it failed. */
@@ -235,6 +237,7 @@ export function useAssembly({ store, tab, tabKind, readOnly, documentName, onErr
       disabled,
       setHidden: (instance, hidden) => void act(hidden ? 'Could not hide the instance' : 'Could not show the instance', { op: 'set_hidden', instance, value: hidden }),
       setFixed: (instance, fixed) => void act(fixed ? 'Could not fix the instance' : 'Could not free the instance', { op: 'set_fixed', instance, value: fixed }),
+      insert: (studio, part) => act('Could not insert the parts', part === null ? { op: 'insert', tab: studio } : { op: 'insert', tab: studio, part }),
       undo: () => void act('Could not undo', { op: 'undo' }),
       redo: () => void act('Could not redo', { op: 'redo' }),
       setFixedAll: async (instances, fixed) => {

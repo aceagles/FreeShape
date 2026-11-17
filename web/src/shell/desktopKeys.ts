@@ -36,6 +36,8 @@ export interface DesktopKeyContext {
   /** The Assembly toolbar's Undo and Redo (`assembly.edits`): the same functions, so the key and the button cannot differ. */
   assemblyUndo: () => void
   assemblyRedo: () => void
+  /** Open or close the Assembly's Insert panel (the toolbar's Insert button). */
+  toggleInsert: () => void
   /** The Sketch tool: on the selected plane or planar face, else the plane chooser. */
   beginSketch: () => void
   /** Open a feature's create dialog with the selection as its picks. */
@@ -98,6 +100,12 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
     if (cmd.enabled && (sk !== null || (studio && idle() && !c.readOnly))) cmd.run()
     return true
   }
+  // I on an Assembly tab (the sketch's Coincident has the chord first and takes it in a sketch): the Insert tool, nothing in a read-only Document
+  const insert = (): boolean => {
+    if (c.tabKind !== 'assembly') return false
+    if (!c.readOnly) c.toggleInsert()
+    return true
+  }
   const fromSketch = (type: string) => (): boolean => {
     if (c.readOnly || !studio) return false
     if (sk !== null) c.featureFromSketch(type)
@@ -108,6 +116,7 @@ export function desktopCommands(c: DesktopKeyContext): Record<string, KeyCommand
   const pan = (sx: number, sy: number) => (): boolean => c.view()?.panStep?.(sx, sy) ?? false
   const menu = (command: string) => (): boolean => c.runMenu(command)
   const commands: Record<string, KeyCommand> = {
+    'assembly.insert': insert,
     'edit.undo': undo(false),
     'edit.redo': undo(true),
     'document.save': menu('document.save'),

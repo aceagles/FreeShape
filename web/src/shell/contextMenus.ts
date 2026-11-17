@@ -264,9 +264,9 @@ export function mateMenu(m: { type: string; suppressed: boolean }, error: string
 }
 
 /** The Assembly's empty view (`viewport_menu`): Insert parts, Mass properties, Zoom to fit, Views, Show all. */
-export function assemblyViewMenu(c: { anyHidden: boolean; readOnly: boolean; fit: () => void; view: (name: (typeof STANDARD_VIEW_ITEMS)[number][0]) => void; showAll: () => void }): ContextMenuData {
+export function assemblyViewMenu(c: { anyHidden: boolean; readOnly: boolean; insert?: () => void; fit: () => void; view: (name: (typeof STANDARD_VIEW_ITEMS)[number][0]) => void; showAll: () => void }): ContextMenuData {
   const b = new Builder()
-  b.item('view.insert', 'Insert parts…')
+  b.item('view.insert', 'Insert parts…', c.insert, { enabled: () => !c.readOnly })
   b.item('view.mass', 'Mass properties')
   b.item('view.fit', 'Zoom to fit', c.fit)
   viewsItem(b, c.view)

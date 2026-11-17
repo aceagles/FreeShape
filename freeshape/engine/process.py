@@ -559,7 +559,7 @@ class ProcessEngine(Engine):
         """Send one edit to the tab's worker; the Future gives the tab's new revision, or raises EngineError
         for an edit the tab refuses and TabErrored if the worker died first."""
         t = self._get(tab)
-        src = links.source_edit(edit)
+        src = links.source_edit(edit) or self._insert_source(t, edit)
         if src is not None and src not in t.sources:
             t.sources.append(copy.deepcopy(src))                     # so its input goes with the edit
         logged = copy.deepcopy(edit)
@@ -586,6 +586,17 @@ class ProcessEngine(Engine):
 
         fut.add_done_callback(done)
         return out
+
+    def _insert_source(self, t, edit):
+        """The source an Assembly's `insert` edit reads: the whole Part Studio tab it names, so the Studio's package
+        goes to the worker with the edit. None for any other edit, or a tab that is no Part Studio of this Document
+        (the worker refuses it)."""
+        if t.kind != "assembly" or not isinstance(edit, dict) or edit.get("op") != "insert":
+            return None
+        tab = edit.get("tab")
+        src = {"kind": "studio", "tab": tab, "part": None}
+        hit = self._match(src) if isinstance(tab, str) else None
+        return None if hit is None else dict(src, studio_name=str(hit.name))
 
     def submit_edit(self, tab, edit):
         revision = self.submit(tab, edit).result()

@@ -1366,6 +1366,38 @@ class AssemblyDoc:
         self.notify()
         return inst["id"]
 
+    def studio_shift(self, shapes):
+        """Where a whole Part Studio goes when this Assembly already has instances: one placement for all its parts
+        (`shapes`, in the studio's own coordinates), so they keep their places relative to each other. It puts the
+        group to the right of what is there, on its lowest side."""
+        lo, hi = self.bounds()
+        slo, shi = np.full(3, np.inf), np.full(3, -np.inf)
+        for shape in shapes:
+            a, b = K.bbox(shape)
+            slo, shi = np.minimum(slo, a), np.maximum(shi, b)
+        gap = max(0.15 * float(np.linalg.norm(shi - slo)), 5.0)
+        return translation([hi[0] + gap - slo[0], 0, lo[2] - slo[2]])
+
+    def insert_parts(self, entries, whole=False, T=None):
+        """Insert `entries` ([(source, shape)], in order) in one undo step; returns ([new instance ids], [error
+        text of each entry that could not be built]). A single part goes beside what is there (or at `T`). With
+        `whole` (every part of a Part Studio) the parts keep their places relative to each other: at the origin
+        in an empty Assembly, else all shifted by `studio_shift`; the first instance of an empty Assembly is fixed.
+        Nothing is checkpointed when `entries` is empty."""
+        if not entries:
+            return [], []
+        self.checkpoint()
+        place = T
+        if whole and place is None:
+            place = self.studio_shift([shape for _, shape in entries]) if self.instances else np.eye(4)
+        ids, errors = [], []
+        for src, _shape in entries:
+            try:
+                ids.append(self.insert(src, T=place, checkpoint=False))
+            except K.KernelError as e:
+                errors.append(str(e))
+        return ids, errors
+
     def insert_standard_part(self, type_id, params, T=None):
         """Add an instance of a Standard part. plugin and plugin_version come from the registry; the stored
         params are the cleaned ones from the part's validate(). Returns the instance id."""

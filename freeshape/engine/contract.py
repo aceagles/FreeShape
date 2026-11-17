@@ -96,6 +96,11 @@ ASSEMBLY_OPS = {
     "set_hidden": "instance, value",
     "set_fixed": "instance, value",
     "set_suppressed": "mate, value",
+    "insert": "tab (a Part Studio tab of this Document), part (a part id; None or absent: every part the tab shows, "
+              "keeping their places relative to each other), T (optional 4x4 placement): one undo step. The first "
+              "instance of an empty Assembly is fixed at the origin; others go beside what is there. Refused, "
+              "changing nothing, for a tab that is not a Part Studio of this Document, a part it does not have "
+              "(or a reference body or surface), and a Part Studio with no parts to insert",
     "rename": "id (instance or mate), name",
     "delete_instances": "ids",
     "delete_mates": "ids",

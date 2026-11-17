@@ -110,11 +110,10 @@ it('Desktop: the row runs in the order of _build_assembly_toolbar', async () => 
   store.stop()
 })
 
-it('Desktop: Insert and the mates are off with the S10 tooltip (the mates by the server\'s words), the rest are the desktop\'s', async () => {
+it('Desktop: the mates are off with the S10 tooltip (by the server\'s words), Insert is on (I10.1), the rest are the desktop\'s', async () => {
   const { store } = await open('desktop')
   await waitFor(() => expect(desk('m_fastened').getAttribute('aria-label')).toBe('Fastened mate'))
-  expect(desk('insert').disabled).toBe(true)
-  expect(desk('insert').title).toBe(S10_NOTE)
+  expect(desk('insert').disabled).toBe(false)
   for (const m of MATE_IDS) {
     expect(desk(`m_${m}`).disabled).toBe(true)
     expect(desk(`m_${m}`).title).toBe(S10_NOTE)
@@ -172,10 +171,9 @@ it('Tablet: the Assembly tab has the assembly strip, and a Part Studio tab keeps
   store.stop()
 })
 
-it('Tablet: the Mate group lists the eight types from the route, off with the S10 note; the relations are the desktop\'s', async () => {
+it('Tablet: the Mate group lists the eight types from the route, off with the S10 note; Insert is on and the relations are the desktop\'s', async () => {
   const { store } = await open('tablet')
-  expect(strip('insert').disabled).toBe(true)
-  expect(strip('insert').title).toBe(S10_NOTE)
+  expect(strip('insert').disabled).toBe(false)
   const group = document.querySelector('[data-group="mate"]') as HTMLButtonElement
   expect(group.disabled).toBe(false)
   fireEvent.click(group, { detail: 0 })

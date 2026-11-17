@@ -1,0 +1,80 @@
+/* The Insert panel (card I10.1) and the part picker it holds (PartPicker.tsx). Rows are the panel's own (features.css .panel-row),
+   so Desktop mode's density (shell.css) applies to them as it does to the feature list. */
+.insert-body {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+.insert-hint,
+.insert-note {
+  margin: 0;
+  color: var(--c-muted);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+.insert-list {
+  min-height: 96px;
+  max-height: 46vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+}
+.picker-studio-row .row-name {
+  font-weight: 600;
+}
+.picker-note {
+  padding: var(--sp-6) var(--sp-14) var(--sp-6) calc(var(--sp-14) + var(--sp-16));
+  color: var(--c-muted);
+  font-size: var(--fs-small);
+}
+.picker-empty {
+  margin: 0;
+}
+.insert-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+}
+.insert-button {
+  box-sizing: border-box;
+  min-height: var(--touch);
+  padding: 0 var(--sp-14);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font: inherit;
+  cursor: pointer;
+}
+.insert-primary {
+  border-color: var(--c-accentDark);
+  background: var(--c-accent);
+  color: var(--c-white);
+}
+.insert-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.insert-said {
+  min-height: 1.4em;
+}
+.shell[data-mode='desktop'] .insert-list {
+  min-height: 120px;
+}
+.shell[data-mode='desktop'] .insert-button {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: var(--d-font);
+  border-radius: var(--d-row-radius);
+}
+.shell[data-mode='desktop'] .insert-hint,
+.shell[data-mode='desktop'] .insert-note {
+  font-size: 12px;
+}
+.shell[data-mode='desktop'] .picker-note {
+  padding-left: calc(var(--d-row-pad-x) + var(--d-indent));
+}

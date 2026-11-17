@@ -16,6 +16,7 @@ import { AssemblyViewport } from '../assembly/AssemblyViewport'
 import { instanceItem, selectedInstance } from '../assembly/select'
 import type { ViewContextEvent } from '../selection/aimCommit'
 import { useAssembly } from '../assembly/useAssembly'
+import { InsertPanel } from '../assembly/InsertPanel'
 import { assemblyCommands, assemblyStrip, assemblyToolState, instancesOf, isAuthoringTool, S10_NOTE, useAssemblyTypes } from '../assembly/strip'
 import { FeaturePanel } from '../features/FeaturePanel'
 import { useFeatureEdits } from '../features/useFeatureEdits'
@@ -166,6 +167,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const [dialog, setDialog] = useState<DialogState | null>(null)
   // the Export dialog (card I11.9): over the panel like a feature dialog; `format` is the one a menu item names
   const [exporting, setExporting] = useState<{ tab: string; format?: ExportFormat } | null>(null)
+  // the tab whose Insert panel is open (card I10.1)
+  const [inserting, setInserting] = useState<string | null>(null)
   // where a saved export went (I11.14): a note until it is dismissed or the next export
   const [savedNote, setSavedNote] = useState<string | null>(null)
   const dismissSaved = useCallback(() => setSavedNote(null), [])
@@ -268,6 +271,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setEditing(null)
     setExporting(null)
+    setInserting(null)
   }, [currentTab, selection])
 
   const api = useMemo<ShellApi>(
@@ -525,6 +529,15 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     setExporting({ tab: currentTab, format })
   }
   const selectedParts = tabKind === 'studio' && studio !== null ? [...new Set(picked.items.flatMap((i) => (i.kind === 'part' && i.part !== null ? [i.part] : [])))].flatMap((id) => studio.parts.filter((p) => p.id === id).map((p) => ({ id, name: p.name }))) : []
+  // Insert (I10.1): the Assembly toolbar's Insert, the I key and the view menu's Insert parts… open or close the panel; it floats in Desktop mode and covers the column in Tablet mode
+  const insertOpen = inserting !== null && inserting === currentTab && tabKind === 'assembly'
+  const toggleInsert = () => {
+    if (tabKind !== 'assembly' || currentTab === null || readOnly) return
+    if (insertOpen) return setInserting(null)
+    setCollapsed(false)
+    setExporting(null)
+    setInserting(currentTab)
+  }
   const finishExport = (r: ExportResult | null) => {
     setExporting(null)
     setSavedNote(r !== null && r.root !== undefined ? `Saved ${r.name} to ${r.root}` : null)
@@ -575,6 +588,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   })
   const assemblyTools = assemblyCommands({
     openExport: () => openExport(),
+    insertOpen,
+    toggleInsert,
     types: assemblyTypes,
     instances: assembly.outputs?.instances ?? [],
     selected: instancesOf(picked.items),
@@ -631,6 +646,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
       ...assemblyViewMenu({
         anyHidden: out.instances.some((i) => i.hidden),
         readOnly,
+        insert: toggleInsert,
         fit: () => void runViewCommand('fit'),
         view: (n) => void runViewCommand(n),
         showAll: () => void visibilityKeys['view.showAll']!(),
@@ -746,7 +762,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         sketch: sketchHere ? sketchStore : null,
         constraints,
         dialog: () => (editingHere !== null ? featureDialogKeys() : null),
-        closeArea: dialog !== null ? () => setDialog(null) : exporting !== null ? () => setExporting(null) : null,
+        closeArea: dialog !== null ? () => setDialog(null) : exporting !== null ? () => setExporting(null) : insertOpen ? () => setInserting(null) : null,
         modalOpen: modal !== null,
         selection,
         selectedFeature: featureNow && { id: featureNow.id, name: featureNow.name },
@@ -757,6 +773,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         redo: redoCmd,
         assemblyUndo: assembly.edits.undo,
         assemblyRedo: assembly.edits.redo,
+        toggleInsert,
         beginSketch: () => beginSketch(),
         startTool: (type) => startTool(type),
         featureFromSketch: (type) => {
@@ -844,6 +861,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
               defs={assemblyStrip(assemblyTypes)}
               stateOf={(id) => assemblyToolState(id, assemblyTools)}
               note={(id) => (isAuthoringTool(id) ? S10_NOTE : undefined)}
+              toggled={(id) => (id === 'insert' ? insertOpen : undefined)}
               width={width}
               onStart={(id) => assemblyTools[id]?.run()}
             />
@@ -927,6 +945,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 partCount={studio?.parts.length ?? 0}
                 onDone={finishExport}
               />
+            )}
+            {insertOpen && doc && (
+              <InsertPanel key={inserting} store={store} documentId={doc.id} tabs={tabs} edits={assembly.edits} onClose={() => setInserting(null)} />
             )}
             {dialog && (
               <DialogArea title={dialog.title} onClose={() => setDialog(null)} actions={dialog.actions}>

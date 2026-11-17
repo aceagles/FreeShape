@@ -103,6 +103,7 @@ export const BINDINGS: readonly Binding[] = [
   { chord: 'Shift+E', command: 'feature.extrude', label: 'Extrude', where: ['studio', 'sketch'] },
   { chord: 'Shift+W', command: 'feature.revolve', label: 'Revolve', where: ['studio', 'sketch'] },
   { chord: 'Shift+F', command: 'feature.fillet', label: 'Fillet (Fastened mate in an Assembly)', where: ['studio', 'assembly'] },
+  { chord: 'I', command: 'assembly.insert', label: 'Insert parts', where: ['assembly'] },
 
   { chord: 'N', command: 'view.normal', label: 'Normal to', where: ['studio', 'sketch'] },
   { chord: 'F', command: 'view.fit', label: 'Zoom to fit', where: VIEWS },

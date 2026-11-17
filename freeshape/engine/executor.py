@@ -899,6 +899,41 @@ class AssemblyTab(_ConsumerTab):
     def _set_suppressed(self, edit):
         self.doc.set_suppressed(self._mate(_need(edit, "mate")), bool(_need(edit, "value")))
 
+    def _insert(self, edit):
+        """Parts of a Part Studio tab of this Document, in one undo step (AssemblyDoc.insert_parts: the desktop's
+        Insert panel runs the same code)."""
+        tab, part = _need(edit, "tab"), edit.get("part")
+        T = edit.get("T")
+        if T is not None:
+            T = np.asarray(T, float)
+            if T.shape != (4, 4):
+                raise EngineError("T must be a 4x4 matrix")
+        hit = self.engine.provide("studio", tab=tab) if isinstance(tab, str) else None
+        if hit is None:
+            raise EngineError(f"insert: {tab!r} is not a Part Studio of this Document")
+        studio = hit[1]
+        st = studio.state
+        insertable = {pid: p for pid, p in st.parts.items()
+                      if not getattr(p, "reference", False) and not K.is_surface(p.shape)}
+        if part is None:
+            pids = list(insertable)
+            if not pids:
+                raise EngineError(f"insert: “{studio.name}” has no parts to insert")
+        elif isinstance(part, str) and part in insertable:
+            pids = [part]
+        elif isinstance(part, str) and part in st.parts:
+            raise EngineError(f"insert: “{st.parts[part].name}” is a reference body or surface, which is not inserted")
+        else:
+            raise EngineError(f"insert: “{studio.name}” has no part {part!r}")
+        entries = [(links.studio_source(SimpleNamespace(id=tab, name=studio.name), pid), insertable[pid].shape)
+                   for pid in pids]
+        ids, errors = self.doc.insert_parts(entries, whole=part is None, T=T)
+        if errors:                                     # all or nothing: put back what was there
+            self.doc.undo()
+            self.doc._redo.clear()
+            raise EngineError("; ".join(errors))
+        self.sync(force=True)                          # records the new links in the Link graph
+
     def _rename(self, edit):
         oid = _need(edit, "id")
         if self.doc.instance(oid) is None and self.doc.mate(oid) is None:

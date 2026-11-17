@@ -2192,33 +2192,15 @@ class AssemblyController:
         pids = part_ids or [p.id for p in st.parts.values() if not p.reference and not K.is_surface(p.shape)]
         if not pids:
             return
-        doc.checkpoint()
-        first_new = []
-        # a whole studio keeps its parts where they sit relative to each other
-        shift = None
-        if part_ids is None and doc.instances:
-            lo, hi = doc.bounds()
-            slo, shi = np.full(3, np.inf), np.full(3, -np.inf)
-            for pid in pids:
-                a, b = K.bbox(st.parts[pid].shape)
-                slo, shi = np.minimum(slo, a), np.maximum(shi, b)
-            gap = max(0.15 * float(np.linalg.norm(shi - slo)), 5.0)
-            shift = A.translation([hi[0] + gap - slo[0], 0, lo[2] - slo[2]])
+        entries = []
         for pid in pids:
             src = self.w.studio_link(studio, pid)
             if config:
                 src["config"] = config
-            try:
-                T = shift if part_ids is None and doc.instances and shift is not None else None
-                if part_ids is None and not doc.instances:
-                    T = np.eye(4)
-                iid = doc.insert(src, T=T, checkpoint=False)
-                first_new.append(iid)
-            except K.KernelError as e:
-                QMessageBox.warning(self.w, "Insert", str(e))
-        if part_ids is None and len(first_new) > 1 and not any(
-                doc.instance(i).get("fixed") for i in first_new[1:]):
-            pass
+            entries.append((src, st.parts[pid].shape))
+        first_new, errors = doc.insert_parts(entries, whole=part_ids is None)
+        for text in errors:
+            QMessageBox.warning(self.w, "Insert", text)
         self.w.status.showMessage(f"Inserted {len(first_new)} instance(s)", 4000)
         QTimer.singleShot(0, lambda: self.vp.fit())
 

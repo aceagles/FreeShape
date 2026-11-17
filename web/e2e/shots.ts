@@ -2339,6 +2339,38 @@ export const shots: ShotState[] = [
       await page.getByTestId('shortcuts').waitFor()
     },
   },
+  {
+    // I10.1: the Insert panel over the left column in Tablet mode, on the hinge Assembly: Arm tapped and inserted, the panel still open
+    name: 'insert-panel',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.locator('[data-strip="assembly"] [data-tool="insert"]').click()
+      await page.locator('[data-picker-part]').nth(2).waitFor()
+      await page.locator('[data-picker-part]', { hasText: /^Arm$/ }).click()
+      await page.locator('[data-insert-go]').click()
+      await page.getByTestId('insert-said').filter({ hasText: 'Inserted Arm' }).waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I10.1: the Insert panel floating over the view in Desktop mode, beside the desktop program's Assembly: Pin double-clicked, so inserted
+    name: 'desktop-insert-panel',
+    mode: 'desktop',
+    desktop: 'desktop-assembly',
+    steps: async (page) => {
+      await openApp(page, { document: 'Hinge', model: false })
+      await openAssemblyTab(page, 3)
+      await page.keyboard.press('i')
+      await page.locator('[data-picker-part]').nth(2).waitFor()
+      await page.locator('[data-picker-part]', { hasText: /^Pin$/ }).dblclick()
+      await page.getByTestId('insert-said').filter({ hasText: 'Inserted Pin' }).waitFor()
+      await settledAssembly(page)
+    },
+    after: closeAllDiscard,
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

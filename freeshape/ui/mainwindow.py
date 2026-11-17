@@ -2140,6 +2140,10 @@ class MainWindow(QMainWindow):
             return
         if isinstance(key, tuple):
             self._note_document_tab(self.folder, key[1])     # the tab its recent card shows
+        if doc.dirty and (isinstance(key, tuple) or doc.path):
+            # The card opens the saved file, so it shows the saved model: a picture of unsaved work would
+            # show what is not there if the work is then discarded or lost. Saving draws the card again.
+            return
         try:
             img = self.dwg.thumbnail() if doc.kind == "drawing" else self.viewport.render_thumbnail()
             if img is not None:

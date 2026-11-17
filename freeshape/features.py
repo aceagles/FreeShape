@@ -255,6 +255,9 @@ class SketchResult:
     # face, edge and vertex, `region_names[i]` is the name of regions[i] (None if it has none).
     named: object = None
     region_names: list = field(default_factory=list)
+    # the part whose face the sketch is drawn on (None on a datum or standard plane): a mate connector on the
+    # sketch's geometry belongs to that part unless another owner is chosen
+    face_part: str = None
 
     def region_index(self, face):
         """The position of a region face in `regions`, or None."""
@@ -467,7 +470,8 @@ def resolve(state: ModelState, ref, kind, fid=None):
     return best
 
 
-def resolve_plane(state: ModelState, ref) -> K.Plane:
+def resolve_plane(state: ModelState, ref, out=None) -> K.Plane:
+    """The plane `ref` names. For a face, `out` (a dict, when given) gets "part": the id of the face's part."""
     kind = ref.get("kind")
     if kind == "std":
         return K.std_plane(ref["name"])
@@ -476,7 +480,9 @@ def resolve_plane(state: ModelState, ref) -> K.Plane:
             raise K.KernelError("Missing plane reference")
         return state.planes[ref["fid"]]
     if kind == "face":
-        _, f = resolve(state, ref["face"], "face")
+        pid, f = resolve(state, ref["face"], "face")
+        if out is not None:
+            out["part"] = pid
         pl = K.planar_face_plane(f)
         if pl is None:
             raise K.KernelError("Face is not planar")
@@ -1619,7 +1625,7 @@ def _derived_sketch(out, fid, label):
 
 def run_mate_connector(state, f):
     """A Mate connector on a face or edge of a part (or on the studio origin, owned by a part). It belongs to the
-    picked element's part unless `owner` names another part or sketch (Onshape's Owner part).
+    picked element's part (for sketch geometry: the part whose face the sketch is on, else the sketch) unless `owner` names another part or sketch (Onshape's Owner part).
     The element is found by name (`resolve`); the frame comes from assembly.connector_frame (or snap_frame for a
     snap point) and X is rebuilt from the stored `x_ref` (I1.14), so an edit that changes which face edge is
     longest does not turn X round. `flip` reverses Z and keeps X. A missing element or owner part is an error."""
@@ -1639,7 +1645,12 @@ def run_mate_connector(state, f):
                                 else "Pick the part that owns the origin connector")
         pid, fr = owner, {"o": np.zeros(3), "z": np.array([0.0, 0.0, 1.0]), "x": np.array([1.0, 0.0, 0.0])}
     elif ref.get("sketch"):
+        # on a sketch drawn on a part's face the connector is that part's, as on the face itself (Onshape's
+        # connectors always have an owner part); on a sketch on a plane it is the sketch's
         pid, sketch_fid, fr = None, ref["sketch"], _sketch_connector_frame(state, ref)
+        on = getattr(state.sketches.get(ref["sketch"]), "face_part", None)
+        if on in state.parts:
+            pid, sketch_fid = on, None
         if p.get("x_ref") is not None:
             fr = AS.apply_x_ref(fr, p["x_ref"])
     else:
@@ -1943,7 +1954,8 @@ def refresh_used_edges(state, plane, sk, lost=None) -> bool:
 
 def run_sketch(state, f):
     p = f["params"]
-    plane = resolve_plane(state, p["plane"])
+    on = {}
+    plane = resolve_plane(state, p["plane"], on)
     sk = Sketch.from_dict(p["sketch"])
     # dimensions driven by variables are re-evaluated and the sketch re-solved
     driven = [c for c in sk.constraints if isinstance(c.get("expr"), str)]
@@ -1957,6 +1969,7 @@ def run_sketch(state, f):
     if refresh_used_edges(state, plane, sk) or driven:
         sk.solve()
     state.sketches[f["id"]] = sketch_result(f["id"], plane, sk)
+    state.sketches[f["id"]].face_part = on.get("part")
 
 
 def sketch_result(fid, plane, sk) -> SketchResult:

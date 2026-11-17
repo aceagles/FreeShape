@@ -42,6 +42,7 @@ from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID, Top
 from OCP.TopExp import TopExp  # noqa: E402
 
 from freeshape import features as F  # noqa: E402
+from freeshape import gui_gc  # noqa: E402
 from freeshape import kernel as K  # noqa: E402
 from freeshape.document import Document  # noqa: E402
 from freeshape.sketch import ORIGIN, Sketch  # noqa: E402
@@ -261,6 +262,7 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    gui_gc.install()            # as the app does: cyclic garbage (Qt widgets among it) is freed on this thread only
     _UPDATE["on"] = bool(config.getoption("--update-golden"))
     _REPORT["path"] = config.getoption("--golden-diff-report")
     config.addinivalue_line("markers", "golden: compares against stored golden values")
@@ -424,6 +426,13 @@ def stop_leaked_autosave_timers():
     for w in qw.QApplication.topLevelWidgets():
         if isinstance(w, mw.MainWindow):
             w._autosave_timer.stop()
+
+
+@pytest.fixture(autouse=True)
+def _collect_garbage_on_this_thread():
+    """Automatic collection is off (`gui_gc`): run the collection that is due after each test, on this thread."""
+    yield
+    gui_gc.collect_if_due()
 
 
 @pytest.fixture(autouse=True)

@@ -27,7 +27,9 @@ spare worker is kept warm (`Spares`): a pool already started, its initializer ru
 no tab. Opening or restarting a tab takes the spare and starts the next one in the background.
 
 Threads: call the engine from one thread. `submit` returns a Future that completes on the pool's own thread;
-that callback only updates the tab's own record.
+that callback only updates the tab's own record. With Qt up, the cyclic garbage collector runs only on the GUI
+thread (`gui_gc`): the pools' threads allocate while that thread waits on them, and a Qt widget they collected
+would wait for the GUI thread in turn (issue #72).
 """
 from __future__ import annotations
 
@@ -44,6 +46,7 @@ from concurrent.futures import wait as wait_futures
 from concurrent.futures.process import BrokenProcessPool
 
 from .. import blobstore
+from .. import gui_gc
 from .. import links
 from .. import migrations as M
 from .. import tabkinds as TK
@@ -235,6 +238,7 @@ class ProcessEngine(Engine):
         t.epoch += 1
         t.error, t.lean, t.sent = None, {}, key
         timing.mark(f"engine: tab {t.tab} needs a worker")
+        gui_gc.guard()
         t.pool = SPARES.take(self._ctx, self.spares)
         t.take_meta(self._wait(t, t.pool.submit(W.load, spec)))
         timing.mark(f"engine: tab {t.tab} loaded in its worker")
@@ -272,6 +276,7 @@ class ProcessEngine(Engine):
             return fut.result()
         cpu, since = None, time.monotonic()
         while not wait_futures([fut], WATCH_EVERY_S).done:
+            gui_gc.collect_if_due()
             procs = list((getattr(t.pool, "_processes", None) or {}).keys()) if t.pool is not None else []
             now = [cpu_seconds(p) for p in procs]
             if not procs or None in now:        # no worker yet, or its CPU time can't be read: no watchdog
@@ -296,6 +301,7 @@ class ProcessEngine(Engine):
             raise
 
     def _submit(self, t, op, arg=None, seen=(), blobs=None):
+        gui_gc.guard()
         self._check_alive(t)
         upstream, key = self._upstream(t, seen)
         self._record_inputs(t, upstream)

@@ -88,6 +88,8 @@ def _build_blobs(doc):
                     pass
     for key, data in doc._context_blobs().items():      # the captures of its Context features: the worker has no other way to read them
         out.setdefault(key, data)
+    for key, data in doc._import_blobs().items():       # the STEP files its imports read: an unsaved tab's live nowhere else
+        out.setdefault(key, data)
     return out
 
 
@@ -265,6 +267,11 @@ class _Rec:
         self.shown = {}              # part id -> engine hash of the part on screen
         self.meshes = {}             # part id -> hash of the mesh on screen
         self.revision = None
+        self.cancelled = False       # `StudioEngine.cancel`: the running build was stopped on purpose
+
+
+class Cancelled(Exception):
+    """A build stopped by `StudioEngine.cancel`: not a failure of the engine."""
 
 
 class _Result:
@@ -301,6 +308,7 @@ class StudioEngine(QObject):
         self._closed = False
         self._finished.connect(self._on_finished)
         self.live = LiveTabs(self)   # Variable Studio / Assembly / Drawing tabs and the Link graph (I3.8)
+        self.fail_hooks = []         # called with the reason when the engine fails, before tabs rebuild here
 
     # ------------------------------------------------------------------ tabs
     def attach(self, doc):
@@ -372,6 +380,36 @@ class StudioEngine(QObject):
     def idle(self):
         return not any(r.busy or r.dirty for r in self._recs.values())
 
+    def cancel(self, doc):
+        """Stop the build running for `doc` now: its worker is ended rather than waited for, and the tab is
+        built again from scratch on its next request. False when nothing is running for it."""
+        rec = self._recs.get(id(doc))
+        if rec is None or not rec.busy:
+            return False
+        tab = rec.tab
+        if self._engine is None or tab is None:     # still opening: its result is simply superseded
+            return False
+        rec.cancelled = True
+        self._engine.abort(tab)
+        return True
+
+    def wait(self, doc, cancelled=lambda: False, tick=None, poll=0.02):
+        """Run the Qt event loop until `doc`'s build is back, so the window stays live meanwhile. `tick(seconds)`
+        is called as it goes (a progress line); once `cancelled()` is true the build is stopped (`cancel`) and
+        False is returned. True also when the engine fails or the tab goes: the caller then reads `broken`."""
+        rec = self._recs.get(id(doc))
+        t0 = time.monotonic()
+        while rec is not None and rec.alive and not self._closed and not self.broken and (rec.busy or rec.dirty):
+            if cancelled():
+                self.cancel(doc)
+                return False
+            QCoreApplication.processEvents()
+            time.sleep(poll)
+            if tick is not None:
+                tick(time.monotonic() - t0)
+        QCoreApplication.processEvents()
+        return True
+
     def settle(self, timeout=120.0):
         """Run the Qt event loop until every request has come back; False if `timeout` s pass first."""
         end = time.monotonic() + timeout
@@ -404,7 +442,7 @@ class StudioEngine(QObject):
     # ------------------------------------------------------------------ the engine thread
     def _get_engine(self):
         if self._engine is None:
-            self._engine = ProcessEngine(spares=self.spares)
+            self._engine = ProcessEngine(spares=self.spares, placed=True)   # placed copies come once (PartOut.loc)
         return self._engine
 
     def _job(self, rec, snap):
@@ -428,6 +466,13 @@ class StudioEngine(QObject):
                 timing.mark(f"engine: rebuild of {rec.tab} back from the worker")
                 break
             except TabErrored:
+                if rec.cancelled:   # stopped on purpose: drop the worker, never build the same thing again
+                    try:
+                        eng.close_tab(rec.tab)
+                    except Exception:   # noqa: BLE001
+                        pass
+                    rec.tab, rec.have = None, _EMPTY
+                    raise Cancelled() from None
                 if attempt:
                     raise
                 try:                # the worker died: start the tab again from what the window holds
@@ -445,6 +490,15 @@ class StudioEngine(QObject):
         for into, outs in ((parts, out.parts), (ctx, getattr(out, "context", None) or ())):
             for p in outs:
                 hit = rec.cache.get(p.hash) or cache.get(p.hash)
+                if hit is None and getattr(p, "loc", None) is not None:
+                    # a placed part: its geometry (shared by every copy) is read once, then moved into place
+                    key = "base:" + p.base
+                    base = rec.cache.get(key) or cache.get(key)
+                    if base is None:
+                        shape = K.shape_from_brep(p.brep)
+                        base = (shape, kernel_mesh(p.mesh, len(K.faces(shape))) if p.mesh is not None else None)
+                    cache[key] = base
+                    hit = (K.located(base[0], p.loc), K.moved_mesh(base[1], p.loc) if base[1] is not None else None)
                 if hit is None:
                     shape = K.shape_from_brep(p.brep)
                     hit = (shape, kernel_mesh(p.mesh, len(K.faces(shape))) if p.mesh is not None else None)
@@ -499,6 +553,11 @@ class StudioEngine(QObject):
         rec.busy = False
         try:
             res = fut.result()
+        except Cancelled:               # the Document as it is now goes to a new worker
+            rec.cancelled = False
+            if rec.alive and not self._closed:
+                self._request(rec)
+            return
         except BaseException as e:      # noqa: BLE001 -- the engine failed: the tab goes back to rebuilding here
             if rec.kind != "studio":    # only this tab's engine copy is lost: it refreshes on every change instead
                 self.live.mirror_failed(rec, e)
@@ -515,6 +574,8 @@ class StudioEngine(QObject):
 
     def _failed(self, rec, exc):
         self.broken = f"{type(exc).__name__}: {exc}"
+        for hook in list(self.fail_hooks):    # e.g. an import being waited on takes itself out first (see wait)
+            hook(self.broken)
         msg = f"The engine failed ({self.broken}); this Part Studio now rebuilds in the window"
         recs, self._recs = list(self._recs.values()), {}
         for r in recs:
@@ -579,6 +640,8 @@ class StudioEngine(QObject):
         doc._apply_overrides(st)
         rec.shown = {p.id: p.hash for p, *_ in res.parts}
         rec.meshes = {}
+        if any(mesh is not None for _p, _s, mesh, _r in shown):    # room for them all before the first goes in
+            self.window.viewport.fit_mesh_cache(len(shown))
         for p, shape, mesh, _ref in shown:
             if mesh is not None:
                 self.window.viewport.seed_mesh(shape, mesh)

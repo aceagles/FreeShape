@@ -4920,11 +4920,14 @@ class MainWindow(QMainWindow):
         with open(path, "rb") as fh:
             raw = fh.read()
         prog = ImportProgress(self, f"Importing {fname}")
+        eng = self.studio_engine
+        in_engine = eng is not None and not eng.broken and not into_current
         try:
-            if not F.is_brep_name(fname) and not read_step_in_background(raw, prog, self):
+            # the background read warms this process's STEP cache for a build here; an engine tab's worker reads
+            # the file itself, so on that path it would only read a big file twice
+            if not in_engine and not F.is_brep_name(fname) and not read_step_in_background(raw, prog, self):
                 self.status.showMessage("Import cancelled", 5000)
                 return
-            data = base64.b64encode(raw).decode()
             if into_current:
                 doc = self.doc
             else:
@@ -4932,14 +4935,24 @@ class MainWindow(QMainWindow):
                 doc.name = os.path.splitext(fname)[0]
             f = doc.make_feature("import")
             f["name"] = "Import " + fname
-            f["params"] = {"data": data, "filename": fname}
+            key = blobstore.key_of(raw)
+            doc._blob_bytes[key] = raw          # held as the file's blob (I4.9), never as base64 text in the feature
+            f["params"] = {"blob": key, "filename": fname}
             prog.stage("Building the parts…")
             self.viewport.progress_cb = prog.step
             if not into_current:
                 doc._thumb_for = os.path.abspath(path)
-            doc.add_feature(f)
-            if not into_current:
-                self._open_in_tab(doc)
+            if in_engine:
+                self._open_in_tab(doc)      # an engine tab first: the import then builds in its worker, not here
+            if eng is not None and eng.attached(doc):
+                how = self._build_import_in_engine(eng, doc, f, prog)
+                if how != "ok":
+                    self.status.showMessage("Import cancelled" if how == "cancelled" else "Import failed", 5000)
+                    return
+            else:
+                doc.add_feature(f)
+                if not into_current:
+                    self._open_in_tab(doc)
         finally:
             self.viewport.progress_cb = None
             prog.close()
@@ -4951,6 +4964,36 @@ class MainWindow(QMainWindow):
         if not doc.errors.get(f["id"]):
             self._add_recent(path)
             QTimer.singleShot(500, lambda d=doc: self._update_thumbnail(d))
+
+    def _build_import_in_engine(self, eng, doc, f, prog):
+        """Add the import feature `f` to `doc`, an engine tab, and wait for its worker to build it with the window
+        live: the progress window counts the time and Cancel stops the worker. Should the engine fail meanwhile,
+        the import takes itself out before the tabs fall back to building in the window, and says why (a 300 MB
+        assembly is not rebuilt on the window's thread behind the person's back). "ok", "cancelled" or "failed"."""
+        failed = []
+
+        def drop(why):
+            if f in doc.features:
+                doc.features.remove(f)
+            failed.append(why)
+        eng.fail_hooks.append(drop)
+        try:
+            doc.add_feature(f)
+            prog.stage("Building the parts…", cancellable=True)
+            label = prog.d.labelText()
+            ok = eng.wait(doc, cancelled=prog.d.wasCanceled,
+                          tick=lambda s: prog.d.setLabelText(f"{label}  ({int(s)} s)"))
+        finally:
+            eng.fail_hooks.remove(drop)
+        if not ok:
+            if f in doc.features:
+                doc.features.remove(f)
+                doc.rebuild()
+            return "cancelled"
+        if failed:
+            QMessageBox.warning(self, APP_NAME, f"The import stopped: the engine failed ({failed[0]})")
+            return "failed"
+        return "ok"
 
     def _prefetch_imports(self, path, prog):
         """Read the STEP files a .fshape imports in the background first (big ones only). False = cancelled. A file

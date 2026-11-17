@@ -99,6 +99,21 @@ jobs:
             echo "== $wait s on Home"
             cat open-timing.txt || echo "(no output)"
           done
+      - name: Time importing big STEP assemblies (issue 60; information only)
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        timeout-minutes: 40
+        run: |
+          # a synthetic assembly (8 screws and 2 boards placed many times over) and a public Fusion export
+          # (Voron Switchwire, GPL-3.0, 90 MB, about 1000 parts), each imported into a new tab as File > Import does
+          curl -sSL -o switchwire.zip https://raw.githubusercontent.com/VoronDesign/Voron-Switchwire/master/CAD/Switchwire_Assembly_v1_STEP.zip
+          mkdir -p switchwire && python -c "import zipfile; zipfile.ZipFile('switchwire.zip').extractall('switchwire')"
+          SW="$(find "$PWD/switchwire" -iname "*.st*p" | head -1)"
+          for src in synthetic:100 synthetic:400 "$SW"; do
+            rm -f import-timing.txt
+            timeout 1500 dist/FreeShape/FreeShape.exe --import-timing "$PWD/import-timing.txt" "$src" || true
+            cat import-timing.txt || echo "(no output for $src)"
+          done
       - name: Build the installer
         run: |
           ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"

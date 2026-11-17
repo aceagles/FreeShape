@@ -543,7 +543,7 @@ class PartStudioDoc:
             return dict(f, params=dict(f["params"], resolved=self._blob_get))
         if f.get("type") == "import" and not f.get("suppressed") and (f.get("params") or {}).get("blob"):
             h.update(b"1" if self._has_blob(f["params"]["blob"]) else b"0")   # the STEP file's blob (I4.9)
-            return dict(f, params=dict(f["params"], resolved=self._blob_get))
+            return dict(f, params=dict(f["params"], resolved=self._import_get))
         if f.get("type") not in links.SOURCE_FEATURES or f.get("suppressed"):
             return f
         if f.get("type") == "variable_studio_ref":
@@ -580,7 +580,7 @@ class PartStudioDoc:
         store = self._blob_store()
         return bool(store is not None and isinstance(key, str) and store.has(key))
 
-    def _blob_get(self, key):
+    def _blob_get(self, key, max_bytes=blobstore.DEFAULT_MAX_BYTES):
         """Bytes of one blob: held in memory (a capture not yet saved), else read from the blob store
         beside the tab file (hash-checked) and kept so a save elsewhere can write it. Raises BlobError."""
         data = self._blob_bytes.get(key)
@@ -588,8 +588,12 @@ class PartStudioDoc:
             store = self._blob_store()
             if store is None:
                 raise blobstore.BlobError("the Part Studio has no folder")
-            data = self._blob_bytes[key] = store.get(key)
+            data = self._blob_bytes[key] = store.get(key, max_bytes=max_bytes)
         return data
+
+    def _import_get(self, key):
+        """An imported STEP file's bytes: `_blob_get` with the import size limit."""
+        return self._blob_get(key, max_bytes=blobstore.IMPORT_MAX_BYTES)
 
     def store_context(self, capture):
         """Keep a capture (assembly.capture_context) as blobs, written by the next save; returns the blob key
@@ -1071,7 +1075,7 @@ class PartStudioDoc:
             key = (self._file_feature(f).get("params") or {}).get("blob") if f.get("type") == "import" else None
             if isinstance(key, str):
                 try:
-                    out[key] = self._blob_get(key)
+                    out[key] = self._import_get(key)
                 except blobstore.BlobError:
                     continue
         return out

@@ -68,7 +68,8 @@ def fetch_blobs(obj, lookup, have):
     """{key: bytes} of the blobs `lookup` holds that `obj` (decoded JSON: tab data or an edit) names and `have`
     does not hold yet, followed through blobs that are JSON themselves (a Context capture's listing names its
     neighbours' blobs). A blob key is any 64-hex string the lookup has, so a kind that adds blob keys to its data
-    needs nothing here."""
+    needs nothing here. Blobs are read with the import size limit (an imported STEP file is one of them): the tab
+    itself still refuses any other blob over the usual limit when it reads it."""
     found, todo = {}, [obj]
     while todo:
         x = todo.pop()
@@ -79,7 +80,7 @@ def fetch_blobs(obj, lookup, have):
             todo.extend(x)
         elif isinstance(x, str) and len(x) == 64 and x not in have and x not in found \
                 and _BLOB_KEY.fullmatch(x) and lookup.has(x):
-            b = found[x] = bytes(lookup.get(x))
+            b = found[x] = bytes(lookup.get(x, max_bytes=blobstore.IMPORT_MAX_BYTES))   # an imported STEP file can be big; the tab reads every other blob with the usual limit
             if b[:1] in (b"{", b"["):
                 try:
                     todo.append(json.loads(b.decode("utf-8")))
@@ -357,9 +358,9 @@ class StudioTab(_Tab):
         for p in st.parts.values():     # I3.7: hand each part its element-name map (encode.element_names reads it)
             if getattr(p, "named", None) is None:
                 p.named = st.named(p.id)
-        parts = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
+        parts = [enc.part(p, hidden=p.id in doc.hidden_parts, placed=enc.placed) for p in st.parts.values()
                  if not p.reference]     # I5.3: a Context body never leaves the studio ...
-        context = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
+        context = [enc.part(p, hidden=p.id in doc.hidden_parts, placed=enc.placed) for p in st.parts.values()
                    if p.reference]       # ... except to its own window, in `context`, so it can show and mark them
         sketches = []
         for fid, res in st.sketches.items():
@@ -558,9 +559,9 @@ _TAB_CLASS = {"studio": StudioTab, "assembly": AssemblyTab, "drawing": DrawingTa
 class InProcessEngine(Engine):
     LINKS = True         # record the Link graph and rebuild dependents (off in a worker: the parent owns the graph)
 
-    def __init__(self, meshes=True):
+    def __init__(self, meshes=True, placed=False):
         self.generation = 0
-        self.encoder = Encoder(meshes=meshes)
+        self.encoder = Encoder(meshes=meshes, placed=placed)
         self.inputs = CrossTabInputs(self)
         self.links = self.inputs.resolver
         self.document_id = None        # the Document these tabs belong to (`use_document`)

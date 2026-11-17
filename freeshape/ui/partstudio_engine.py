@@ -330,6 +330,7 @@ class StudioEngine(QObject):
                 self._engine.close_tab(rec.tab)
             except Exception:       # noqa: BLE001 -- already gone
                 pass
+            timing.mark(f"engine: tab {rec.tab} closed (its worker ended)")
             rec.tab = None
 
     # ------------------------------------------------------------------ requests

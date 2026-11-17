@@ -74,6 +74,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt "pyinstaller>=6.16"
+      - name: TEMPORARY git timing diagnostic (issue 52)
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        run: python scripts/diag_git_timing.py
       - name: Build FreeShape.exe and check it starts
         run: |
           build() { python -m PyInstaller packaging/freeshape.spec --noconfirm --clean --distpath dist --workpath build; }

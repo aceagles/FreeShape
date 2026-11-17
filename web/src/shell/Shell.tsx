@@ -11,6 +11,9 @@ import { ExportDialog } from '../files/ExportDialog'
 import { Explorer } from '../files/Explorer'
 import type { ExplorerMode } from '../files/Explorer'
 import { SavedNote } from '../files/SavedNote'
+import { UploadProgress } from '../files/UploadProgress'
+import type { UploadState } from '../files/UploadProgress'
+import { fetchUploadLimit, importDevice, importFailure } from '../files/filesApi'
 import type { ExportFormat, ExportResult, ImportReply } from '../files/filesApi'
 import type { PreviewState } from '../dialog/useFeatureDialog'
 import { AssemblyPanel } from '../assembly/AssemblyPanel'
@@ -54,6 +57,7 @@ import { DiscardSketch, PlaneChooser } from '../sketch/StartDialogs'
 import { startSketch } from '../sketch/start'
 import { DESKTOP_SKETCH_TOOLBAR, runSketchTool, SKETCH_STRIP, sketchRowCommands, sketchToolState, stripActive } from '../sketch/strip'
 import { StudioViewport } from '../viewport/StudioViewport'
+import { planDrop, useFileDrop } from '../viewport/fileDrop'
 import type { PreviewLook } from '../viewport/controller'
 import type { InstanceEntry, StudioOutputs } from '../wire'
 import { DialogArea, DialogHost } from './DialogArea'
@@ -547,6 +551,47 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     store.setTabs(reply.tabs)
     if (newTab) setSelected(reply.tab.id)
   }
+  // A file dropped on the page (I11.8, planDrop says what each drop comes to): in Desktop mode STEP and BREP files on the view import
+  // into new Part Studios one after the other, with the progress and Cancel over the view; everything else says why it did nothing.
+  const [dropping, setDropping] = useState<UploadState | null>(null)
+  const dropCtl = useRef<AbortController | null>(null)
+  useEffect(() => () => dropCtl.current?.abort(), [])
+  const importDropped = async (list: File[]) => {
+    if (!doc || currentTab === null) return
+    const ctl = new AbortController()
+    dropCtl.current = ctl
+    let current = list[0]!
+    try {
+      const limit = await fetchUploadLimit()
+      for (const f of list) {
+        current = f
+        setDropping({ name: f.name, sent: 0, total: f.size })
+        const r = await importDevice(doc.id, currentTab, f, true, { limit, signal: ctl.signal, onProgress: (sent, total) => setDropping({ name: f.name, sent, total }) })
+        importedFile(r, true)
+        if (r.feature?.error) failText('Import', `${f.name}: ${r.feature.error}`)
+        else setSavedNote(`Imported ${f.name}`)
+      }
+    } catch (x) {
+      if (!(x instanceof DOMException && x.name === 'AbortError')) failText('Import', `${current.name}: ${importFailure(x)}`)
+    } finally {
+      if (dropCtl.current === ctl) dropCtl.current = null
+      setDropping(null)
+    }
+  }
+  useFileDrop(viewportEl, (files, onView) => {
+    const blocked = readOnly
+      ? 'This Document is open read-only here, so nothing can be imported.'
+      : currentTab === null
+        ? 'This Document has no tab to import into.'
+        : explorerBusy
+          ? 'Close the dialog or finish the sketch first, then drop the file again.'
+          : dropCtl.current !== null
+            ? 'A file is still uploading. Wait for it, or cancel it.'
+            : null
+    const plan = planDrop(files, { desktop, onView, blocked })
+    if (plan.say !== null) failText('Import', plan.say)
+    if (plan.import.length > 0) void importDropped(plan.import)
+  })
   const selectedParts = tabKind === 'studio' && studio !== null ? [...new Set(picked.items.flatMap((i) => (i.kind === 'part' && i.part !== null ? [i.part] : [])))].flatMap((id) => studio.parts.filter((p) => p.id === id).map((p) => ({ id, name: p.name }))) : []
   // Insert (I10.1): the Assembly toolbar's Insert, the I key and the view menu's Insert parts… open or close the panel; it floats in Desktop mode and covers the column in Tablet mode
   const insertOpen = inserting !== null && inserting === currentTab && tabKind === 'assembly'
@@ -845,6 +890,11 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
           narrow={width < NARROW_BELOW}
         />
         {savedNote !== null && <SavedNote text={savedNote} onDismiss={dismissSaved} />}
+        {dropping !== null && (
+          <div className="export-saved up-note" data-testid="drop-upload">
+            <UploadProgress upload={dropping} onCancel={() => dropCtl.current?.abort()} />
+          </div>
+        )}
         {readOnly && <ReadOnlyBanner name={name} holder={holder} onTakeOver={() => setModal({ kind: 'takeover' })} />}
         {sketchHere && desktop ? (
           <DesktopToolbar strip="sketch" layout={DESKTOP_SKETCH_TOOLBAR} stateOf={() => 'ok'} commands={sketchCommands} onStart={() => {}} />

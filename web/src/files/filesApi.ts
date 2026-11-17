@@ -1,5 +1,6 @@
 import { ApiError, json, request, tabPath } from '../net/api'
 import type { TabInfo } from '../net/connection'
+import { UploadTooLarge, uploadFile } from '../net/upload'
 
 /** The STL resolution presets of the desktop's STL dialog (freeshape/export_options.py PRESETS), then Custom. */
 export type ExportPreset = 'coarse' | 'medium' | 'fine' | 'custom'
@@ -136,6 +137,58 @@ export interface ImportReply {
  */
 export function importEntry(doc: string, tab: string, root: string, entry: string, newTab: boolean): Promise<ImportReply> {
   return json<ImportReply>('POST', `${tabPath(doc, tab)}/import${newTab ? '?new_tab=1' : ''}`, { body: { root, entry } })
+}
+
+/** The extensions the import takes, as the desktop's drop does (freeshape/ui/home.py IMPORT_EXTS): STEP, then BREP. */
+export const IMPORT_EXTENSIONS: readonly string[] = ['.step', '.stp', '.brep', '.brp']
+
+/** The picker's `accept` for a device import. */
+export const IMPORT_ACCEPT = IMPORT_EXTENSIONS.join(',')
+
+/** Whether a file's name ends in one of the import's extensions (the server checks the bytes). */
+export const isImportName = (name: string): boolean => IMPORT_EXTENSIONS.some((x) => name.toLowerCase().endsWith(x))
+
+/**
+ * The largest file the import route takes, as GET /files says it per root (every root gets the one server limit). A device upload
+ * has no root, so this is the smallest `max_upload` listed; null when the server lists no root, then the server's 413 is the check.
+ */
+export function uploadLimitOf(roots: readonly FileRoot[]): number | null {
+  const sizes = roots.map((r) => r.max_upload).filter((n) => typeof n === 'number' && n > 0)
+  return sizes.length === 0 ? null : Math.min(...sizes)
+}
+
+/** `uploadLimitOf` for the server's roots, asked now; null when it cannot be asked. */
+export async function fetchUploadLimit(): Promise<number | null> {
+  try {
+    return uploadLimitOf((await fetchFiles()).roots)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Imports a file from the device (I11.8): the route of I11.1 with the bytes as application/octet-stream and the name in `?name=`.
+ * The reply is the one `importEntry` gets. Refusals are an ApiError with the server's text (415 not STEP or BREP, 413 too big, 423
+ * read-only), a file over `limit` is an UploadTooLarge before any request, and an abort is an AbortError.
+ */
+export async function importDevice(
+  doc: string,
+  tab: string,
+  file: File,
+  newTab: boolean,
+  o: { limit?: number | null; onProgress?: (sent: number, total: number) => void; signal?: AbortSignal } = {},
+): Promise<ImportReply> {
+  return (await uploadFile(file, {
+    url: `${tabPath(doc, tab)}/import`,
+    query: { name: file.name, ...(newTab ? { new_tab: '1' } : {}) },
+    ...o,
+  })) as ImportReply
+}
+
+/** What to tell the person about a device import that did not go through. */
+export function importFailure(e: unknown, fallback = 'The import failed.'): string {
+  if (e instanceof UploadTooLarge) return `${e.fileName} is ${(e.size / 1e6).toFixed(1)} MB; the server takes files up to ${(e.limit / 1e6).toFixed(0)} MB.`
+  return e instanceof Error ? e.message : fallback
 }
 
 /** Where an export goes: the browser's download, or a file saved into a server folder (`replace` lets it take the place of one of that name). */

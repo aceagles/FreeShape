@@ -7,8 +7,10 @@ import { DialogArea } from '../shell/DialogArea'
 import { Icon, paths } from '../shell/icons'
 import type { Mode } from '../shell/mode'
 import { TextPrompt } from '../shell/TextPrompt'
-import { fetchFiles, fetchFolder, importEntry } from './filesApi'
+import { IMPORT_ACCEPT, fetchFiles, fetchFolder, importDevice, importEntry, importFailure, uploadLimitOf } from './filesApi'
 import type { FileEntry, FileRoot, FolderRef, ImportReply } from './filesApi'
+import { UploadProgress } from './UploadProgress'
+import type { UploadState } from './UploadProgress'
 import './files.css'
 
 /** The root that lists the Documents (a file root's name is lower case, so none can be called this). */
@@ -91,6 +93,12 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
   const [docs, setDocs] = useState<{ rows: DocumentRow[] } | { error: string } | null>(null)
   const [opening, setOpening] = useState<string | null>(null)
   const top = useRef<HTMLDivElement>(null)
+  // From this device… (I11.8): the hidden file input, the picker's destination, the upload in flight and how the last one ended
+  const input = useRef<HTMLInputElement>(null)
+  const pickNew = useRef(false)
+  const sending = useRef<AbortController | null>(null)
+  const [upload, setUpload] = useState<UploadState | null>(null)
+  const [deviceStatus, setDeviceStatus] = useState<Status | null>(null)
   // the key of the request whose next page is being fetched, so a scroll does not start the same page twice
   const pageKey = useRef<string | null>(null)
 
@@ -111,6 +119,8 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
     loadFiles()
   }, [loadFiles])
   useEffect(() => top.current?.focus(), [])
+  // closing the explorer cancels an upload it started
+  useEffect(() => () => sending.current?.abort(), [])
 
   const isFiles = root !== null && root !== DOCUMENTS_ROOT
   const key = `${root}|${dir}|${q}`
@@ -200,6 +210,33 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
     }
   }
 
+  const sendFile = async (file: File, newTab: boolean) => {
+    if (target === null || target.tab === null) return
+    const ctl = new AbortController()
+    sending.current = ctl
+    setDeviceStatus(null)
+    setUpload({ name: file.name, sent: 0, total: file.size })
+    try {
+      const r = await importDevice(target.document, target.tab, file, newTab, {
+        limit: files !== null && 'roots' in files ? uploadLimitOf(files.roots) : null,
+        signal: ctl.signal,
+        onProgress: (sent, total) => setUpload({ name: file.name, sent, total }),
+      })
+      const why = r.feature?.error
+      setDeviceStatus(why ? { kind: 'error', text: `${file.name}: ${why}` } : { kind: 'ok', text: `Imported ${file.name}` })
+      onImported(r, newTab)
+    } catch (x) {
+      setDeviceStatus(aborted(x) ? { kind: 'ok', text: `Cancelled ${file.name}.` } : { kind: 'error', text: importFailure(x) })
+    } finally {
+      if (sending.current === ctl) sending.current = null
+      setUpload(null)
+    }
+  }
+  const pickFile = (newTab: boolean) => {
+    pickNew.current = newTab
+    input.current?.click()
+  }
+
   const openDocument = (row: DocumentRow) => {
     if (row.id === currentDocument) return onClose()
     setOpening(row.id)
@@ -219,6 +256,50 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
           : !target.studio
             ? 'Select a Part Studio tab to add to it; a new Part Studio works from any tab.'
             : null
+
+  const deviceNew = mode === 'new' || !canAdd
+  const device = target !== null && (
+    <div className="ex-device" data-testid="ex-device">
+      <input
+        ref={input}
+        type="file"
+        className="ex-file-input"
+        accept={IMPORT_ACCEPT}
+        tabIndex={-1}
+        aria-hidden="true"
+        data-testid="ex-device-input"
+        onChange={(e) => {
+          const f = e.currentTarget.files?.[0]
+          e.currentTarget.value = ''
+          if (f !== undefined) void sendFile(f, pickNew.current)
+        }}
+      />
+      {upload !== null ? (
+        <UploadProgress upload={upload} onCancel={() => sending.current?.abort()} />
+      ) : (
+        <>
+          <div className="ex-device-row">
+            <button type="button" className="ex-action" data-kind="plain" disabled={!canNew} onClick={() => pickFile(deviceNew)}>
+              From this device…
+            </button>
+            {canAdd && canNew && (
+              <button type="button" className="ex-action" data-kind="plain" onClick={() => pickFile(!deviceNew)}>
+                {deviceNew ? 'From this device into this Part Studio…' : 'From this device into a new Part Studio…'}
+              </button>
+            )}
+          </div>
+          <div className="ex-detail-line ex-why">
+            {canNew ? `A STEP or BREP file from this device ${deviceNew ? 'opens in a new Part Studio' : 'is added to this Part Studio'}.` : why}
+          </div>
+        </>
+      )}
+      {deviceStatus !== null && (
+        <div className="ex-status" role={deviceStatus.kind === 'error' ? 'alert' : 'status'} data-kind={deviceStatus.kind} data-testid="ex-device-status">
+          {deviceStatus.text}
+        </div>
+      )}
+    </div>
+  )
 
   const segments = dir === '' ? [] : dir.split('/')
   const crumb = (
@@ -461,6 +542,7 @@ export function Explorer({ mode, placement, uiMode, target, onOpenDocument, onIm
             </>
           )}
           {root === DOCUMENTS_ROOT && <div className="ex-list" data-testid="ex-list">{documents}</div>}
+          {device}
         </div>
       </div>
       {asking &&

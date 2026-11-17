@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchHealth } from './health'
 import { installSurfaceGuards } from './input/surface'
+import { installDropGuard } from './viewport/fileDrop'
 import { Home } from './home/Home'
 import { listDocuments, openDocument } from './net/api'
 import type { DocumentReply } from './net/api'
@@ -24,6 +25,7 @@ export function App({ store }: { store: ConnectionStore }) {
   const { ended } = useConnection(store)
 
   useEffect(() => installSurfaceGuards(), [])
+  useEffect(() => installDropGuard(), [])
 
   useEffect(() => {
     let live = true

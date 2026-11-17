@@ -379,3 +379,85 @@
 .explorer[data-mode='desktop'] .ex-row {
   min-height: 36px;
 }
+
+/* An upload in flight (I11.8): the file's name and percent, a bar, and Cancel; in the explorer and in the note over the view. */
+.up {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--sp-4) var(--sp-8);
+  min-width: 0;
+}
+.up-text {
+  grid-column: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  min-width: 0;
+  font-size: var(--fs-small);
+}
+.up-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.up-pct {
+  flex: none;
+  color: var(--c-muted);
+}
+.up-track {
+  grid-column: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--c-lineSoft);
+  overflow: hidden;
+}
+.up-bar {
+  height: 100%;
+  background: var(--c-accent);
+}
+.up-cancel {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 var(--sp-10);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-sm);
+  background: var(--c-white);
+  color: var(--c-ink);
+  font: inherit;
+  cursor: pointer;
+}
+.export-saved.up-note {
+  width: min(92vw, 420px);
+}
+.export-saved.up-note .up {
+  flex: 1;
+}
+.ex-device {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  padding-top: var(--sp-6);
+  border-top: 1px solid var(--c-lineSoft);
+}
+.ex-device-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+}
+.ex-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.explorer[data-mode='desktop'] .up-cancel {
+  min-width: 0;
+  min-height: 28px;
+}

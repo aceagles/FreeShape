@@ -2465,6 +2465,100 @@ export const shots: ShotState[] = [
       await settled(page)
     },
   },
+  {
+    // I11.8: Tablet mode, From this device… under the list, and the status after a picked STEP went in
+    name: 'device-imported',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.locator('.tool-strip').getByRole('button', { name: /^Create/ }).click()
+      await page.getByRole('menuitem', { name: /^Import/ }).click()
+      const explorer = page.getByRole('dialog', { name: 'Files' })
+      await explorer.getByTestId('ex-device-input').setInputFiles(new URL('./fixtures/box.step', import.meta.url).pathname)
+      await explorer.getByTestId('ex-device-status').filter({ hasText: 'Imported box.step' }).waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I11.8: Tablet mode, an upload in flight (the server never answers): the progress bar and Cancel in the explorer
+    name: 'device-progress',
+    mock: 'dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.route(/\/tabs\/[^/]+\/import/, () => {})
+      await page.locator('.tool-strip').getByRole('button', { name: /^Create/ }).click()
+      await page.getByRole('menuitem', { name: /^Import/ }).click()
+      await page.getByRole('dialog', { name: 'Files' }).getByTestId('ex-device-input').setInputFiles(new URL('./fixtures/box.step', import.meta.url).pathname)
+      await page.getByRole('dialog', { name: 'Files' }).getByTestId('upload-progress').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I11.8: Desktop mode, From this device… in the floating explorer after a picked STEP went in
+    name: 'desktop-device-imported',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.keyboard.press('Control+Shift+L')
+      const explorer = page.getByRole('dialog', { name: 'Files' })
+      await explorer.getByTestId('ex-device-input').setInputFiles(new URL('./fixtures/box.step', import.meta.url).pathname)
+      await explorer.getByTestId('ex-device-status').filter({ hasText: 'Imported box.step' }).waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I11.8: Desktop mode, an upload in flight in the explorer
+    name: 'desktop-device-progress',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.route(/\/tabs\/[^/]+\/import/, () => {})
+      await page.keyboard.press('Control+Shift+L')
+      await page.getByRole('dialog', { name: 'Files' }).getByTestId('ex-device-input').setInputFiles(new URL('./fixtures/box.step', import.meta.url).pathname)
+      await page.getByRole('dialog', { name: 'Files' }).getByTestId('upload-progress').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I11.8: Desktop mode, a STEP dropped on the view while the server is still taking it: the progress note over the view
+    name: 'desktop-drop-progress',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.route(/\/tabs\/[^/]+\/import/, () => {})
+      await page.evaluate(() => {
+        const dt = new DataTransfer()
+        dt.items.add(new File([new Uint8Array(2000)], 'bracket-clip.step'))
+        document.querySelector('[data-testid="shell-viewport"]')!.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }))
+      })
+      await page.getByTestId('drop-upload').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I11.8: Desktop mode, a .png dropped on the view: the message that says why nothing happened
+    name: 'desktop-drop-refused',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      await openApp(page)
+      await page.evaluate(() => {
+        const dt = new DataTransfer()
+        dt.items.add(new File([new Uint8Array(10)], 'photo.png'))
+        document.querySelector('[data-testid="shell-viewport"]')!.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }))
+      })
+      await page.getByRole('dialog', { name: 'Import' }).waitFor()
+      await settled(page)
+    },
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

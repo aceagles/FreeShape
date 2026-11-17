@@ -102,10 +102,12 @@ def test_mirror_takes_the_chosen_stacked_line_as_its_axis():
     n = len(s.sk.entities)
     s.open_select_other(VP, *MID)
     _choose(made, stacked[1])
-    assert len(s.sk.entities) == n + 1 and s.tool == "select"
+    assert len(s.sk.entities) == n + 1
+    assert s.tool == "sk_mirror" and s.mirror_axis == stacked[1]   # Mirror stays on for more picks (#39)
     copy = next(e for i, e in s.sk.entities.items() if i not in (lone, *stacked))
     ys = sorted(round(s.sk.P(copy[k])[1], 6) for k in ("p1", "p2"))
     assert ys == [-20.0, -20.0]                              # the lone line at y = 20, mirrored about y = 0
+    assert s.key_press(VP, _Key(Qt.Key_Escape)) and s.tool == "select"
 
 
 def test_dimension_first_pick_is_the_chosen_row():

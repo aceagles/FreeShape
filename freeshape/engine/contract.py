@@ -101,6 +101,10 @@ ASSEMBLY_OPS = {
               "instance of an empty Assembly is fixed at the origin; others go beside what is there. Refused, "
               "changing nothing, for a tab that is not a Part Studio of this Document, a part it does not have "
               "(or a reference body or surface), and a Part Studio with no parts to insert",
+    "insert_step": "data (the STEP file's bytes, base64), filename (shown only; a path is cut to its last part): one "
+                   "instance per solid of the file in one undo step, placed as a whole Part Studio is (at the origin in "
+                   "an empty Assembly, else beside what is there); the file is kept as a blob that the next save writes. "
+                   "Refused, changing nothing, for data that is not a STEP file or has no solid",
     "rename": "id (instance or mate), name",
     "delete_instances": "ids",
     "delete_mates": "ids",

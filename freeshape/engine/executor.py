@@ -962,6 +962,40 @@ class AssemblyTab(_ConsumerTab):
             raise EngineError("; ".join(errors))
         self.sync(force=True)                          # records the new links in the Link graph
 
+    def _insert_step(self, edit):
+        """The solids of a STEP file, one instance each, in one undo step (AssemblyDoc.insert_step_parts: the desktop's
+        Insert from file runs the same code). The file is held as a blob only if it is inserted."""
+        import base64
+        import binascii
+        from .. import step_import
+        text = _need(edit, "data")
+        try:
+            raw = base64.b64decode(text, validate=True) if isinstance(text, str) else None
+        except (binascii.Error, ValueError):
+            raw = None
+        if raw is None or step_import.sniff(raw) != "step":
+            raise EngineError("insert_step: the data is not a STEP file (ISO-10303-21;)")
+        fname = step_import.clean_file_name(edit.get("filename"), "step")
+        doc = self.doc
+        kept = set(doc.blobs)
+        key = doc.add_step_blob(raw)
+
+        def refuse(text):
+            if key not in kept:
+                doc.blobs.pop(key, None)
+            raise EngineError(text)
+        try:
+            n = len(doc._step_parts({"blob": key}))
+        except Exception as e:                           # noqa: BLE001 -- the kernel's reader says why
+            refuse(f"insert_step: couldn't read {fname}: {e}")
+        if not n:
+            refuse(f"insert_step: {fname} has no solid to insert")
+        ids, errors = doc.insert_step_parts(key, fname)
+        if errors:                                       # all or nothing: put back what was there
+            doc.undo()
+            doc._redo.clear()
+            refuse("; ".join(errors))
+
     def _rename(self, edit):
         oid = _need(edit, "id")
         if self.doc.instance(oid) is None and self.doc.mate(oid) is None:

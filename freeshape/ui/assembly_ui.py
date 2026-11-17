@@ -2261,22 +2261,10 @@ class AssemblyController:
         finally:
             if prog is not None:
                 prog.close()
-        doc.checkpoint()
-        empty = not doc.instances
-        shift = None
-        if not empty:
-            lo, hi = doc.bounds()
-            slo, shi = np.full(3, np.inf), np.full(3, -np.inf)
-            for s, *_ in sols:
-                a, b = K.bbox(s)
-                slo, shi = np.minimum(slo, a), np.maximum(shi, b)
-            gap = max(0.15 * float(np.linalg.norm(shi - slo)), 5.0)
-            shift = A.translation([hi[0] + gap - slo[0], 0, lo[2] - slo[2]])
-        n = 0
-        for i in range(len(sols)):
-            src = {"kind": "step", "blob": key, "index": i, "filename": os.path.basename(path)}
-            doc.insert(src, T=np.eye(4) if empty else shift, checkpoint=False)
-            n += 1
+        ids, errors = doc.insert_step_parts(key, os.path.basename(path))
+        for text in errors:
+            QMessageBox.warning(self.w, "Insert", text)
+        n = len(ids)
         QTimer.singleShot(0, lambda: self.vp.fit())
         return n
 

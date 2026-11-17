@@ -1941,7 +1941,10 @@ class _Server:
         the Part Studio `tab`, or of a new Part Studio named after the file with new_tab=1. 200 {"document", "tab",
         "feature": {"id", "name", "error"}, "parts": [{"id", "name"}], "rebuilt", "tabs"}. 415 unless the body starts
         with ISO-10303-21; (STEP) or DBRep_DrawableShape (BREP); 413 over MAX_UPLOAD, from the Content-Length, before
-        any of it is read; 423 on a read-only Document. `name` is shown only (see `step_import.clean_file_name`)."""
+        any of it is read; 423 on a read-only Document. `name` is shown only (see `step_import.clean_file_name`).
+        On an Assembly tab (I11.6) the body is a STEP file only: one `insert_step` edit, one instance per solid, one
+        undo step; 200 {"document", "tab", "rebuilt", "tabs", "instances": [{"id", "name"}]}; 400 with new_tab=1,
+        415 for a body that is not STEP (BREP too), 400 for a STEP that cannot be read or has no solid."""
         from . import step_import
         ctype = (request.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
         by_ref = ctype == "application/json"                         # I11.2: {root, entry} instead of the bytes
@@ -1971,8 +1974,10 @@ class _Server:
             d.check_writable()
             return next((t["kind"] for t in d.session.tabs() if t["id"] == tab), None)
         kind = await self._in_session(d, check)
-        if new_tab == "0" and kind != "studio":
-            return self._fail(400, "the tab is not a Part Studio")
+        if kind == "assembly" and new_tab == "1":
+            return self._fail(400, "new_tab is for a Part Studio tab; an Assembly tab takes the file's solids as instances")
+        if new_tab == "0" and kind not in ("studio", "assembly"):
+            return self._fail(400, "the tab is not a Part Studio or an Assembly")
         name = request.query.get("name")
         if by_ref:
             try:
@@ -1989,8 +1994,12 @@ class _Server:
         fmt = step_import.sniff(data)
         if fmt is None:
             return self._fail(415, "the body is not a STEP (ISO-10303-21;) or BREP (DBRep_DrawableShape) file")
+        if kind == "assembly" and fmt != "step":
+            return self._fail(415, "an Assembly takes a STEP file (ISO-10303-21;) only")
         fname = step_import.clean_file_name(name, fmt)
         client, _ = self._edit_meta(request.headers.get("X-Client-Id"), None)
+        if kind == "assembly":                                       # I11.6: the solids become instances
+            return await self._import_step_into_assembly(d, tab, fname, data, client)
         if new_tab == "1":
             if len(d.tab_ids) >= MAX_TABS:
                 return self._fail(409, f"a Document holds at most {MAX_TABS} tabs")
@@ -2008,6 +2017,20 @@ class _Server:
             "document": d.id, "tab": next(t for t in tabs if t["id"] == tab), "rebuilt": rebuilt, "tabs": tabs,
             "feature": None if made is None else {"id": made.id, "name": made.name, "error": made.error},
             "parts": [{"id": p.id, "name": p.name} for p in after.parts if p.id not in held]})
+
+    async def _import_step_into_assembly(self, d, tab, fname, data, client):
+        """The Assembly branch of `_import` (I11.6): one `insert_step` edit carrying the bytes (base64, inside the
+        engine only; the HTTP body was octet-stream, so MAX_BODY does not apply). A refused edit changes nothing."""
+        import base64
+        before = await self._in_session(d, lambda: d.session.outputs(tab))
+        edit = {"op": "insert_step", "data": base64.b64encode(data).decode(), "filename": fname}
+        del data
+        rebuilt = await self._edit(d, tab, edit, client, None)      # a refusal is the usual 400
+        after, tabs = await self._in_session(d, lambda: (d.session.outputs(tab), self._tab_view(d)))
+        held = {i.id for i in before.instances}
+        return self._json(200, {
+            "document": d.id, "tab": next(t for t in tabs if t["id"] == tab), "rebuilt": rebuilt, "tabs": tabs,
+            "instances": [{"id": i.id, "name": i.name} for i in after.instances if i.id not in held]})
 
     # ------------------------------------------------------------------ Canvas images (I12.2)
     def _client_images(self, client, make=False):

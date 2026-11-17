@@ -1398,6 +1398,17 @@ class AssemblyDoc:
                 errors.append(str(e))
         return ids, errors
 
+    def insert_step_parts(self, key, filename):
+        """Insert every solid of the STEP file held under `key` (`add_step_blob`) as one instance each, in one undo
+        step, with `filename` (a display name) in each source. Placed as a whole Part Studio is (`insert_parts`): all
+        at the origin in an empty Assembly, else all shifted by one `studio_shift` to the right of what is there.
+        Returns ([new instance ids], [error text of each solid that could not be built]); nothing is checkpointed
+        for a file with no solid. Raises K.KernelError when the file cannot be read."""
+        sols = self._step_parts({"blob": key})
+        entries = [({"kind": "step", "blob": key, "index": i, "filename": filename}, sol[0])
+                   for i, sol in enumerate(sols)]
+        return self.insert_parts(entries, whole=True)
+
     def insert_standard_part(self, type_id, params, T=None):
         """Add an instance of a Standard part. plugin and plugin_version come from the registry; the stored
         params are the cleaned ones from the part's validate(). Returns the instance id."""

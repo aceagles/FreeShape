@@ -68,7 +68,8 @@ def fetch_blobs(obj, lookup, have):
     """{key: bytes} of the blobs `lookup` holds that `obj` (decoded JSON: tab data or an edit) names and `have`
     does not hold yet, followed through blobs that are JSON themselves (a Context capture's listing names its
     neighbours' blobs). A blob key is any 64-hex string the lookup has, so a kind that adds blob keys to its data
-    needs nothing here."""
+    needs nothing here. Blobs are read with the import size limit (an imported STEP file is one of them): the tab
+    itself still refuses any other blob over the usual limit when it reads it."""
     found, todo = {}, [obj]
     while todo:
         x = todo.pop()
@@ -79,7 +80,7 @@ def fetch_blobs(obj, lookup, have):
             todo.extend(x)
         elif isinstance(x, str) and len(x) == 64 and x not in have and x not in found \
                 and _BLOB_KEY.fullmatch(x) and lookup.has(x):
-            b = found[x] = bytes(lookup.get(x))
+            b = found[x] = bytes(lookup.get(x, max_bytes=blobstore.IMPORT_MAX_BYTES))   # an imported STEP file can be big; the tab reads every other blob with the usual limit
             if b[:1] in (b"{", b"["):
                 try:
                     todo.append(json.loads(b.decode("utf-8")))

@@ -36,8 +36,11 @@ import itertools
 import multiprocessing
 import multiprocessing.connection
 import os
+import sys
 import threading
+import time
 from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import wait as wait_futures
 from concurrent.futures.process import BrokenProcessPool
 
 from .. import blobstore
@@ -53,6 +56,45 @@ from .inputs import cross_package, external_id
 from .linkgraph import key_configs, lean_package, link_key, package_digest, propagate
 
 STOP_GRACE_S = 3.0           # how long a closed tab's worker gets to finish before it is killed
+STALL_S = 300.0              # a worker with a call to answer that uses no CPU for this long is stuck: it is ended
+WATCH_EVERY_S = 5.0          # how often a waiting call checks that its worker is still working
+
+
+def cpu_seconds(pid):
+    """CPU time (user + system, all threads) process `pid` has used, or None where it can't be read (macOS, for
+    now: there Cancel is the only way out of a stuck worker). A worker
+    that is building uses CPU all the time, even while one long OCC call holds the GIL, so CPU time is how a
+    caller tells a busy worker from a stuck one."""
+    try:
+        if sys.platform.startswith("linux"):
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                f = fh.read().rsplit(b")", 1)[1].split()        # the name, in brackets, may hold spaces
+            return (int(f[11]) + int(f[12])) / os.sysconf("SC_CLK_TCK")
+        if sys.platform == "win32":
+            return _win_cpu_seconds(pid)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _win_cpu_seconds(pid):
+    import ctypes
+    from ctypes import wintypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+    k.CloseHandle.argtypes = (wintypes.HANDLE,)
+    h = k.OpenProcess(0x1000, False, int(pid))      # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        t = [wintypes.FILETIME() for _ in range(4)]   # creation, exit, kernel, user
+        if not k.GetProcessTimes(h, *(ctypes.byref(x) for x in t)):
+            return None
+        return sum((x.dwHighDateTime << 32 | x.dwLowDateTime) for x in t[2:]) / 1e7
+    finally:
+        k.CloseHandle(h)
 
 
 def _new_pool(ctx):
@@ -168,8 +210,9 @@ def _wait_exit(proc, timeout):
 class ProcessEngine(Engine):
     """`spares`: how many warm workers to keep ready for the next tab (0: start each worker on demand)."""
 
-    def __init__(self, meshes=True, spares=1, placed=False):
+    def __init__(self, meshes=True, spares=1, placed=False, stall_s=STALL_S):
         self.meshes = meshes
+        self.stall_s = stall_s                 # None: wait on a worker for as long as it takes (`_watch`)
         self.placed = placed                   # Part Studio parts may come as placed copies (contract.PartOut.loc)
         self.spares = spares
         self._ctx = multiprocessing.get_context("spawn")
@@ -221,9 +264,30 @@ class ProcessEngine(Engine):
         if t.error is not None:
             raise TabErrored(t.tab, t.error)
 
+    def _watch(self, t, fut):
+        """fut.result(), for a call the tab's worker is running. A worker that is alive but has used no CPU for
+        `stall_s` seconds will not answer: it is ended (`abort`) and the call raises TabErrored saying so. A
+        busy worker is never ended, however long the build; Cancel (`abort`) stops one nobody wants."""
+        if self.stall_s is None:
+            return fut.result()
+        cpu, since = None, time.monotonic()
+        while not wait_futures([fut], WATCH_EVERY_S).done:
+            procs = list((getattr(t.pool, "_processes", None) or {}).keys()) if t.pool is not None else []
+            now = [cpu_seconds(p) for p in procs]
+            if not procs or None in now:        # no worker yet, or its CPU time can't be read: no watchdog
+                cpu, since = None, time.monotonic()
+                continue
+            used, idle = sum(now), time.monotonic() - since
+            if cpu is None or used - cpu > max(0.1, 0.01 * idle):   # more than 1% of a core: still working
+                cpu, since = used, time.monotonic()
+            elif time.monotonic() - since > self.stall_s:
+                self.abort(t.tab, f"its worker stopped answering: it did no work for {self.stall_s:.0f} s")
+                break
+        return fut.result()
+
     def _wait(self, t, fut):
         try:
-            return fut.result()
+            return self._watch(t, fut)
         except BrokenProcessPool as e:
             self._died(t, e)
             raise TabErrored(t.tab, t.error) from e
@@ -520,7 +584,7 @@ class ProcessEngine(Engine):
         return out
 
     def submit_edit(self, tab, edit):
-        revision = self.submit(tab, edit).result()
+        revision = self._watch(self._get(tab), self.submit(tab, edit))
         self.rebuild_dependents(tab)
         return revision
 

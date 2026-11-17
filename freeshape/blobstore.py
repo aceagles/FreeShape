@@ -24,6 +24,9 @@ import stat
 import tempfile
 
 DEFAULT_MAX_BYTES = 64 * 2 ** 20
+# An imported STEP file is a blob too, and a real assembly export runs to hundreds of MB: it is read with this
+# limit instead. Its bytes go only to the STEP reader, after the hash check.
+IMPORT_MAX_BYTES = 2 * 2 ** 30
 
 _KEY_RE = re.compile(r"[0-9a-f]{64}")
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)

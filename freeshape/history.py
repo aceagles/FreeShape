@@ -154,7 +154,7 @@ def describe_params(ftype, old, new):
             out.append(f"#{new.get('name')}: {old.get('expr')} → {new.get('expr')}")
         return out
     if ftype == "import":
-        if old.get("data") != new.get("data"):
+        if old.get("data") != new.get("data") or old.get("blob") != new.get("blob"):
             out.append(f"Geometry replaced ({new.get('filename') or 'new file'})")
         return out
     for key in list(old) + [k for k in new if k not in old]:

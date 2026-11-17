@@ -9,7 +9,7 @@ sub-assemblies, the way a CAD export repeats its fasteners. One summary line per
 
 `total` is seconds until the parts are drawn; `longest_freeze` the longest the window went without handling an
 event (a 50 ms timer that could not fire); `peak_mb` the most memory the window and every process it started
-held at once (sampled), `window_peak_mb` the window's own. Used by the Windows test build on GitHub
+held at once (sampled), `window_peak_mb` the window's own, `worker_peak_mb` the most any one other process held. Used by the Windows test build on GitHub
 (.github/workflows/mac.yml); from source: python -m freeshape --import-timing out.txt synthetic:400
 """
 import math
@@ -102,6 +102,7 @@ def tree_mb(root=None):
 class MemorySampler:
     def __init__(self, every=0.2):
         self.every, self.peak, self.window_peak, self._stop = every, 0.0, 0.0, threading.Event()
+        self.other_peak = 0.0       # the most one other process (an engine worker, the STEP reader) held
         self._t = threading.Thread(target=self._run, daemon=True)
 
     def _run(self):
@@ -110,6 +111,7 @@ class MemorySampler:
             mb = tree_mb(me)
             self.peak = max(self.peak, sum(mb.values()))
             self.window_peak = max(self.window_peak, mb.get(me, 0.0))
+            self.other_peak = max([self.other_peak] + [v for k, v in mb.items() if k != me])
             self._stop.wait(self.every)
 
     def __enter__(self):
@@ -244,7 +246,7 @@ def run(out_path, *sources):
             err = "; ".join(str(e) for e in w.doc.errors.values()) or "; ".join(str(x) for x in warned)
             lines.append(f"RESULT {src} file_mb={mb:.1f} parts={n} total={total:.1f} "
                          f"longest_freeze={gaps['max']:.2f} peak_mb={mem.peak:.0f} "
-                         f"window_peak_mb={mem.window_peak:.0f} settled={settled}" + (f" error={err}" if err else ""))
+                         f"window_peak_mb={mem.window_peak:.0f} worker_peak_mb={mem.other_peak:.0f} settled={settled}" + (f" error={err}" if err else ""))
             ok = ok and settled and not err
         except Exception as e:      # noqa: BLE001
             import traceback

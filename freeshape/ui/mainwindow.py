@@ -4920,11 +4920,14 @@ class MainWindow(QMainWindow):
         with open(path, "rb") as fh:
             raw = fh.read()
         prog = ImportProgress(self, f"Importing {fname}")
+        eng = self.studio_engine
+        in_engine = eng is not None and not eng.broken and not into_current
         try:
-            if not F.is_brep_name(fname) and not read_step_in_background(raw, prog, self):
+            # the background read warms this process's STEP cache for a build here; an engine tab's worker reads
+            # the file itself, so on that path it would only read a big file twice
+            if not in_engine and not F.is_brep_name(fname) and not read_step_in_background(raw, prog, self):
                 self.status.showMessage("Import cancelled", 5000)
                 return
-            data = base64.b64encode(raw).decode()
             if into_current:
                 doc = self.doc
             else:
@@ -4932,13 +4935,14 @@ class MainWindow(QMainWindow):
                 doc.name = os.path.splitext(fname)[0]
             f = doc.make_feature("import")
             f["name"] = "Import " + fname
-            f["params"] = {"data": data, "filename": fname}
+            key = blobstore.key_of(raw)
+            doc._blob_bytes[key] = raw          # held as the file's blob (I4.9), never as base64 text in the feature
+            f["params"] = {"blob": key, "filename": fname}
             prog.stage("Building the parts…")
             self.viewport.progress_cb = prog.step
             if not into_current:
                 doc._thumb_for = os.path.abspath(path)
-            eng = self.studio_engine
-            if eng is not None and not eng.broken and not into_current:
+            if in_engine:
                 self._open_in_tab(doc)      # an engine tab first: the import then builds in its worker, not here
             if eng is not None and eng.attached(doc):
                 how = self._build_import_in_engine(eng, doc, f, prog)

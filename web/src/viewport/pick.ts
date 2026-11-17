@@ -10,6 +10,7 @@ import { axisEnds, DEFAULT_PLANES, eyeHidden } from './scene'
 import type { BuiltScene } from './scene'
 import { pickTriad } from './connectors'
 import type { TriadSpec } from './connectors'
+import type { CanvasSpec } from './canvases'
 
 /**
  * Picking: what is under a view position. A port of `Viewport.pick` in freeshape/ui/viewport.py (the desktop's order
@@ -25,6 +26,10 @@ import type { TriadSpec } from './connectors'
  *   connector ...................... here (card I10.3): a mate connector's triad, tried first (ahead of every face), as the
  *                                    desktop's `pick` does; only when the filter names `connector` (the DEFAULT_KINDS leave it out: a
  *                                    connector is picked as a field's value, never selected, in the desktop's own rule)
+ *   canvas ......................... here (card I12.5): a Selectable canvas, picked as its feature (key = the feature id). It is
+ *                                    behind a part face that is in front of it, ahead of the face it lies on and of the plane it is on
+ *                                    (a sketch region on it comes first). `DEFAULT_KINDS` has it; the Select menu has no item for it
+ *                                    (the desktop picks a canvas as a feature, whatever the menu says), so `filterKinds` adds it.
  *   sketch_line, sketch_point ....... not here: the scene has nothing to hit for them; their kinds are not in `PickKind` yet.
  *
  * INDEX BASE. `index` is 0-based, as everywhere in the client (see wire/types.ts). Add 1 when it goes back to the
@@ -35,7 +40,7 @@ import type { TriadSpec } from './connectors'
  * the pointer are skipped.
  */
 
-export type PickKind = 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region' | 'connector'
+export type PickKind = 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region' | 'connector' | 'canvas'
 
 /** `touch` is a finger (the Pointer Events name); the pointer module's pen and mouse use the same words. */
 export type PickPointer = 'pen' | 'touch' | 'mouse'
@@ -58,7 +63,7 @@ export const TOLERANCE: Readonly<Record<PickPointer, Tolerances>> = {
 }
 
 /** What a pick considers when no filter is given: everything the scene has (the desktop leaves vertices out; the card puts them first). */
-export const DEFAULT_KINDS: readonly PickKind[] = ['face', 'edge', 'vertex', 'plane', 'axis', 'region']
+export const DEFAULT_KINDS: readonly PickKind[] = ['face', 'edge', 'vertex', 'plane', 'axis', 'region', 'canvas']
 
 interface PickBase {
   /** Where, in the studio's coordinates (mm): the ray's hit on a face or plane, the nearest point of an edge or axis, the vertex. */
@@ -124,7 +129,17 @@ export interface ConnectorPick extends PickBase {
   readonly distancePx: number
 }
 
-export type PickHit = ElementPick | PartPick | DatumPick | RegionPick | ConnectorPick
+/** A Selectable canvas (card I12.5): `key` is the canvas feature's id; `point` is where the ray met its rectangle. */
+export interface CanvasPick extends PickBase {
+  readonly kind: 'canvas'
+  readonly part: null
+  readonly index: -1
+  readonly name: null
+  readonly key: string
+  readonly distancePx: null
+}
+
+export type PickHit = ElementPick | PartPick | DatumPick | RegionPick | ConnectorPick | CanvasPick
 
 /** The pick a triad stands for. */
 export function connectorHit(t: TriadSpec, distancePx: number): ConnectorPick {
@@ -239,8 +254,12 @@ export class PickIndex {
   /** The mate connector triads drawn (card I10.3). */
   private readonly triads: readonly TriadSpec[]
 
-  constructor(outputs: StudioOutputs, built: Pick<BuiltScene, 'root' | 'stats'> & Partial<Pick<BuiltScene, 'triads'>>) {
+  /** The canvases a pick can take (card I12.5): drawn, not hidden, not a dialog's preview. */
+  private readonly canvases: readonly CanvasSpec[]
+
+  constructor(outputs: StudioOutputs, built: Pick<BuiltScene, 'root' | 'stats'> & Partial<Pick<BuiltScene, 'triads' | 'canvases'>>) {
     this.triads = built.triads ?? []
+    this.canvases = (built.canvases ?? []).filter((c) => c.selectable)
     const byId = new Map<string, Part>()
     const contextIds = new Set<string>()
     for (const p of outputs.parts) byId.set(p.id, p)
@@ -565,6 +584,24 @@ export class PickIndex {
       if (region && (face === null || !faceWanted || region.depth <= faceDistance + levelSlack)) {
         const p = region.point
         return { kind: 'region', part: region.r.sketch, index: region.shape.index, name: region.r.names[region.shape.index] ?? null, point: [p.x, p.y, p.z], distancePx: null }
+      }
+    }
+    // a Selectable canvas: behind a face in front of it, and ahead of the plane it lies in (a region on it came first)
+    if (allowed.has('canvas')) {
+      let canvas: { depth: number; c: CanvasSpec; point: Vector3 } | null = null
+      const d = ray.direction
+      for (const c of this.canvases) {
+        const denom = d.dot(c.normal)
+        if (Math.abs(denom) < 1e-9) continue
+        const t = c.origin.clone().sub(ray.origin).dot(c.normal) / denom
+        if (t <= 0 || (canvas !== null && t >= canvas.depth - TIE_MM)) continue
+        const q = ray.origin.clone().addScaledVector(d, t)
+        const rel = q.clone().sub(c.origin)
+        if (Math.abs(rel.dot(c.x)) <= c.width / 2 && Math.abs(rel.dot(c.y)) <= c.height / 2) canvas = { depth: t, c, point: q }
+      }
+      if (canvas && (face === null || !faceWanted || canvas.depth <= faceDistance + levelSlack) && (plane === null || canvas.depth <= plane.depth + levelSlack)) {
+        const p = canvas.point
+        return { kind: 'canvas', part: null, index: -1, name: null, key: canvas.c.id, point: [p.x, p.y, p.z], distancePx: null }
       }
     }
     if (plane && (face === null || !faceWanted || plane.depth <= faceDistance + levelSlack)) {

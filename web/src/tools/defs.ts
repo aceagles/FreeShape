@@ -31,7 +31,7 @@ export const FEATURE_STRIP: readonly StripDef[] = [
     key: 'create',
     name: 'Create',
     gap: space.s10,
-    tools: [t('extrude', 'Extrude'), t('revolve', 'Revolve'), t('sweep', 'Sweep'), t('rib', 'Rib'), t('loft', 'Loft'), t('boundary_surface', 'Boundary surface'), t('derived', 'Derived'), t('import', 'Import')],
+    tools: [t('extrude', 'Extrude'), t('revolve', 'Revolve'), t('sweep', 'Sweep'), t('rib', 'Rib'), t('loft', 'Loft'), t('boundary_surface', 'Boundary surface'), t('derived', 'Derived'), t('import', 'Import'), t('canvas', 'Canvas')],
   },
   {
     kind: 'group',
@@ -183,6 +183,7 @@ export const DESKTOP_TOOLBAR: DesktopLayout = {
     feature(t('mate_connector', 'Mate connector')),
     SEP,
     command(t('import', 'Import STEP')),
+    fromStrip('canvas'),
     command(t('export', 'Export')),
   ],
   trailing: [command(t('section', 'Section view'), 'Shift+X'), command(t('interference', 'Interference detection')), command(t('fit', 'Zoom to fit'), 'F'), command(t('iso', 'Isometric'), 'Shift+7')],

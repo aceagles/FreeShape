@@ -2721,6 +2721,93 @@ export const shots: ShotState[] = [
     },
     after: closeAllDiscard,
   },
+  {
+    // I12.5: Tablet mode, a canvas on Top under and beside the Bracket (40 mm wide, left of the Bracket, 50 % opaque), drawn after the parts: the part hides what is behind it
+    name: 'canvas-placed',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      const { canvasOnTop, waitPictured } = await import('./support/canvas.ts')
+      await canvasOnTop(page, await idOf(page.request, 'Bracket'), { width: 40, x: -20 })
+      await waitPictured(page)
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I12.5: Tablet mode, the Canvas tool's dialog open on an uploaded PNG: its rows, the plane field, and the picture drawn as the preview
+    name: 'canvas-dialog',
+    mock: 'dialog',
+    steps: async (page) => {
+      const { CANVAS_PNG, emptyDocument } = await import('./support/canvas.ts')
+      await emptyDocument(page, 'Canvas shot')
+      await openApp(page, { document: 'Canvas shot', model: false })
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), (async () => {
+        await page.locator('.tool-strip').getByRole('button', { name: /^Create/ }).click()
+        await page.getByRole('menuitem', { name: /^Canvas/ }).click()
+      })()])
+      await chooser.setFiles(CANVAS_PNG)
+      await page.getByRole('dialog', { name: /Canvas/ }).waitFor()
+      await page.waitForFunction(() => (window.__freeshapeViewport?.canvases ?? 0) >= 1 && (window.__freeshapeViewport?.canvasScreens() ?? []).every((c) => c.pictured))
+      await settled(page)
+    },
+    after: async (page) => {
+      await closeAll(page.request)
+      ;(await import('./support/docs.ts')).removeDocument('Canvas shot')
+    },
+  },
+  {
+    // I12.5: Tablet mode, the placed canvas picked with the pen: its row selected in the list, the chip saying 1 canvas, the canvas tinted
+    name: 'canvas-selected',
+    mock: 'browsing',
+    steps: async (page) => {
+      await openApp(page)
+      const { canvasOnTop, waitPictured } = await import('./support/canvas.ts')
+      await canvasOnTop(page, await idOf(page.request, 'Bracket'), { width: 40, x: -20 })
+      await waitPictured(page)
+      const c = (await page.evaluate(() => window.__freeshapeViewport!.canvasScreens()))[0]!
+      // the visible left part of the picture: the centre is behind the Bracket's wall from this view
+      const at = { x: c.x - 45, y: c.y - 8 }
+      await penStroke(page, at, at)
+      await page.getByTestId('selection-chip').getByText('1 canvas').waitFor()
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I12.5: Desktop mode, the same placed canvas beside the desktop program's Part Studio
+    name: 'desktop-canvas-placed',
+    mode: 'desktop',
+    desktop: 'desktop-studio',
+    steps: async (page) => {
+      await openApp(page)
+      const { canvasOnTop, waitPictured } = await import('./support/canvas.ts')
+      await canvasOnTop(page, await idOf(page.request, 'Bracket'), { width: 40, x: -20 })
+      await waitPictured(page)
+      await settled(page)
+    },
+    after: closeAllDiscard,
+  },
+  {
+    // I12.5: Desktop mode, the Canvas dialog open on an uploaded PNG, floating over the view, beside the desktop program's dialog
+    name: 'desktop-canvas-dialog',
+    mode: 'desktop',
+    desktop: 'desktop-dialog',
+    steps: async (page) => {
+      const { CANVAS_PNG, emptyDocument } = await import('./support/canvas.ts')
+      await emptyDocument(page, 'Canvas shot')
+      await openApp(page, { document: 'Canvas shot', model: false })
+      const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.locator('.desktop-toolbar [data-tool="canvas"]').click()])
+      await chooser.setFiles(CANVAS_PNG)
+      await page.getByRole('dialog', { name: /Canvas/ }).waitFor()
+      await page.waitForFunction(() => (window.__freeshapeViewport?.canvases ?? 0) >= 1 && (window.__freeshapeViewport?.canvasScreens() ?? []).every((c) => c.pictured))
+      await settled(page)
+    },
+    after: async (page) => {
+      await closeAll(page.request)
+      ;(await import('./support/docs.ts')).removeDocument('Canvas shot')
+    },
+  },
 ]
 
 /** I11.14: the server lists an export root "shared" (the shots server has none); a save answers 409 exists when `taken`, else 201. */

@@ -30,6 +30,7 @@ export interface SelectionItem {
 export const idOfItem = (kind: PickKind, part: string | null, name: string | null, index: number, key: string | null, instance?: string): string => {
   // in an Assembly two instances of one part have the same Element names: the instance tells them apart
   if (kind === 'connector') return `connector|${instance ?? ''}|${key}`
+  if (kind === 'canvas') return `canvas|${key}`
   if (instance !== undefined) return `${kind}|${instance}|${name ?? `#${index}`}`
   if (kind === 'part') return `part|${part}`
   if (kind === 'plane' || kind === 'axis') return `${kind}|${key}`
@@ -58,8 +59,8 @@ export interface SelectionState {
   readonly field: boolean
 }
 
-const SINGULAR: Record<PickKind, string> = { face: 'face', edge: 'edge', vertex: 'vertex', part: 'part', plane: 'plane', axis: 'axis', region: 'region', connector: 'mate connector' }
-const PLURAL: Record<PickKind, string> = { face: 'faces', edge: 'edges', vertex: 'vertices', part: 'parts', plane: 'planes', axis: 'axes', region: 'regions', connector: 'mate connectors' }
+const SINGULAR: Record<PickKind, string> = { face: 'face', edge: 'edge', vertex: 'vertex', part: 'part', plane: 'plane', axis: 'axis', region: 'region', connector: 'mate connector', canvas: 'canvas' }
+const PLURAL: Record<PickKind, string> = { face: 'faces', edge: 'edges', vertex: 'vertices', part: 'parts', plane: 'planes', axis: 'axes', region: 'regions', connector: 'mate connectors', canvas: 'canvases' }
 
 /** The chip's text: "Nothing selected", "1 face", "3 edges", "2 faces, 1 edge" (two kinds), "5 items" (three or more kinds). */
 export function countText(items: readonly { kind: PickKind }[]): string {
@@ -291,6 +292,11 @@ export class SelectionStore {
       if (it.kind === 'connector') {
         // a connector is the studio's own (`key` is its feature id)
         if (it.key !== null && outputs.connectors.some((c) => c.id === it.key)) keep.push(it)
+        continue
+      }
+      if (it.kind === 'canvas') {
+        // a canvas is the studio's own (`key` is its feature id); one the eye hides or that stopped being selectable is not selected
+        if (it.key !== null && outputs.canvases.some((c) => c.id === it.key && !c.hidden && c.selectable)) keep.push(it)
         continue
       }
       if (it.kind === 'region') {

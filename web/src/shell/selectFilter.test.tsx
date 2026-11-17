@@ -92,7 +92,8 @@ describe('the Select menu in Desktop mode', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select' }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Reset to default/ }))
     expect(ticks()).toEqual(defaults)
-    expect(store().pickFilter).toEqual(['edge', 'face', 'region', 'plane', 'axis'])
+    // a canvas is always picked (card I12.5): the desktop picks it as a feature, whatever the menu says
+    expect(store().pickFilter).toEqual(['edge', 'face', 'region', 'plane', 'axis', 'canvas'])
   })
 
   it('has no filter in Tablet mode', async () => {

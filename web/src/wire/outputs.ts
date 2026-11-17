@@ -4,6 +4,7 @@ import { WireError } from './errors'
 import type {
   AssemblyOutputs,
   AxisOut,
+  Canvas,
   ElementKind,
   ElementNames,
   FeatureEntry,
@@ -189,6 +190,29 @@ function connector(x: unknown, where: string): MateConnector {
   }
 }
 
+function canvas(x: unknown, where: string): Canvas {
+  const f = dc(x, 'CanvasOut', where)
+  const px = f['pixels'] === undefined ? [] : numbers(f['pixels'], `${where}.pixels`)
+  return {
+    id: str(f['id'], `${where}.id`),
+    name: str(f['name'], `${where}.name`),
+    blob: str(f['blob'], `${where}.blob`),
+    origin: vec3(f['origin'], `${where}.origin`),
+    xdir: vec3(f['xdir'], `${where}.xdir`),
+    ydir: vec3(f['ydir'], `${where}.ydir`),
+    normal: vec3(f['normal'], `${where}.normal`),
+    width: num(f['width'], `${where}.width`),
+    height: num(f['height'], `${where}.height`),
+    opacity: f['opacity'] === undefined ? 50 : num(f['opacity'], `${where}.opacity`),
+    flipH: f['flip_h'] === undefined ? false : bool(f['flip_h'], `${where}.flip_h`),
+    flipV: f['flip_v'] === undefined ? false : bool(f['flip_v'], `${where}.flip_v`),
+    selectable: f['selectable'] === undefined ? true : bool(f['selectable'], `${where}.selectable`),
+    hidden: f['hidden'] === undefined ? false : bool(f['hidden'], `${where}.hidden`),
+    filename: f['filename'] === undefined ? '' : str(f['filename'], `${where}.filename`),
+    pixels: px.length === 2 ? [px[0] as number, px[1] as number] : [],
+  }
+}
+
 function feature(x: unknown, where: string): FeatureEntry {
   const f = dc(x, 'FeatureOut', where)
   const error = f['error']
@@ -231,6 +255,8 @@ function studio(f: Fields, common: Common): StudioOutputs {
     context: list(f['context'], `${w}.context`).map((p, i) => part(p, `${w}.context[${i}]`)),
     sketches: list(f['sketches'], `${w}.sketches`).map((s, i) => sketch(s, `${w}.sketches[${i}]`)),
     connectors: list(f['connectors'], `${w}.connectors`).map((c, i) => connector(c, `${w}.connectors[${i}]`)),
+    // an older payload (a recorded fixture from before card I12.1) has no canvases
+    canvases: f['canvases'] === undefined ? [] : list(f['canvases'], `${w}.canvases`).map((c, i) => canvas(c, `${w}.canvases[${i}]`)),
     variables: record(f['variables'], `${w}.variables`) as Record<string, number>,
     planes: mapOf<PlaneOut>(f['planes'], `${w}.planes`, (v, p) => ({ o: vec3(v['o'], p), x: vec3(v['x'], p), n: vec3(v['n'], p) })),
     axes: mapOf<AxisOut>(f['axes'], `${w}.axes`, (v, p) => ({ o: vec3(v['o'], p), d: vec3(v['d'], p), span: span(v['span'], p) })),

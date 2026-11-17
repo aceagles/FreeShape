@@ -27,5 +27,9 @@ export const DEFAULT_FILTER: SelectFilter = { vertex: false, edge: true, face: t
 
 export const isDefaultFilter = (f: SelectFilter): boolean => FILTER_KEYS.every((k) => f[k] === DEFAULT_FILTER[k])
 
-/** The kinds a filter lets through. */
-export const filterKinds = (f: SelectFilter): PickKind[] => FILTER_KEYS.filter((k) => f[k]).flatMap((k) => FILTER_KINDS[k])
+/**
+ * The kinds a filter lets through. A canvas is always one of them (card I12.5): the desktop's Select menu has no item for it,
+ * because the desktop picks a Selectable canvas as its feature whatever the menu says (a feature, not a piece of geometry),
+ * and `Selectable` on the canvas is what turns that off.
+ */
+export const filterKinds = (f: SelectFilter): PickKind[] => [...FILTER_KEYS.filter((k) => f[k]).flatMap((k) => FILTER_KINDS[k]), 'canvas']

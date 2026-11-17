@@ -25,7 +25,7 @@ import type { Look } from './shading'
 
 /** What the overlay needs to know about an item (the selection store's items have these fields). */
 export interface LookItem {
-  readonly kind: 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region' | 'connector'
+  readonly kind: 'face' | 'edge' | 'vertex' | 'part' | 'plane' | 'axis' | 'region' | 'connector' | 'canvas'
   readonly part: string | null
   /** 0-based index of a face, edge or vertex; -1 otherwise. */
   readonly index: number
@@ -42,6 +42,8 @@ export interface LookSources {
   axes: ReadonlyMap<string, readonly [Vector3, Vector3]>
   /** The regions of the sketches on show, by `regionKey` (a Part Studio's scene only). */
   regions?: ReadonlyMap<string, DrawnRegion>
+  /** The corners of the canvases drawn, by feature id (card I12.5). */
+  canvases?: ReadonlyMap<string, readonly Vector3[]>
 }
 
 /** Line widths and dot sizes, in CSS pixels. Chosen to read on a tablet from arm's length with a pen tip in the way. */
@@ -149,6 +151,8 @@ export class LookOverlay {
         return this.axis(item, look)
       case 'region':
         return this.region(item, look)
+      case 'canvas':
+        return this.quad(item.key == null ? undefined : this.sources.canvases?.get(item.key), look, 0.4)
     }
   }
 
@@ -241,13 +245,17 @@ export class LookOverlay {
   }
 
   private plane(item: LookItem, look: Exclude<Look, null>): void {
-    const c = item.key == null ? undefined : this.sources.planes.get(item.key)
+    this.quad(item.key == null ? undefined : this.sources.planes.get(item.key), look)
+  }
+
+  /** A plane's or a canvas's four corners as a tinted rectangle with an outline; `tint` scales the fill's opacity (a canvas keeps its picture readable). */
+  private quad(c: readonly Vector3[] | undefined, look: Exclude<Look, null>, tint = 1): void {
     if (!c) return
     const pos = new Float32Array(c.flatMap((p) => [p.x, p.y, p.z]))
     const fill = new BufferGeometry()
     fill.setAttribute('position', new BufferAttribute(pos, 3))
     fill.setIndex([0, 1, 2, 0, 2, 3])
-    const m = new MeshBasicMaterial({ color: this.builtIn(this.colour(look)), transparent: true, opacity: look === 'select' ? 0.42 : 0.3, depthWrite: false, side: DoubleSide })
+    const m = new MeshBasicMaterial({ color: this.builtIn(this.colour(look)), transparent: true, opacity: (look === 'select' ? 0.42 : 0.3) * tint, depthWrite: false, side: DoubleSide })
     const o = new Mesh(fill, m)
     o.renderOrder = 3.5
     this.materials.push(m)

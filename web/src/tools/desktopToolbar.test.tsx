@@ -50,7 +50,7 @@ const MAINWINDOW_AT_CAFBD2C = [
   'sm_base', 'sm_flange', 'sm_hem', 'sm_jog', 'sm_tab', 'sm_convert', 'flat', 'flat_dxf', 'nest', '|',
   'plane', 'axis', '|',
   'mirror', 'linear_pattern', 'circular_pattern', 'boolean', 'split', 'move', 'mate_connector', '|',
-  'import', 'export',
+  'import', 'canvas', 'export', // Canvas after Import: card I12.5 (the desktop's own button comes with I12.3)
   '>',
   'section', 'interference', 'fit', 'iso',
 ]

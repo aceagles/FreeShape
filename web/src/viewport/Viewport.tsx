@@ -6,6 +6,7 @@ import type { SketchStore } from '../sketch/store'
 import type { StudioOutputs } from '../wire'
 import { ViewportController } from './controller'
 import type { PreviewLook } from './controller'
+import type { ImageFetcher } from './canvases'
 import { ViewCube } from './ViewCube'
 import { registerView } from './viewCommands'
 import { notDrawnText } from './notDrawn'
@@ -23,6 +24,7 @@ export function Viewport({
   preview = null,
   sketch = null,
   visibility,
+  images = null,
   onContext,
 }: {
   outputs: StudioOutputs | null
@@ -33,6 +35,8 @@ export function Viewport({
   sketch?: SketchStore | null
   /** The tab's visibility settings (P, Shift+P, Shift+I, Shift+T), card I9.8. */
   visibility?: ViewState
+  /** Where the canvases' pictures come from (card I12.5): this tab's `GET .../images/<blob>`; null draws none. Keep it the same function while the tab is. */
+  images?: ImageFetcher | null
   /** Desktop mode: a right click on the view, or in the open sketch (card I9.10). */
   onContext?: (e: ViewContextEvent) => void
 }) {
@@ -74,6 +78,11 @@ export function Viewport({
       controller.current = null
     }
   }, [store])
+
+  // before the outputs: the first model's canvases fetch their pictures from here
+  useEffect(() => {
+    controller.current?.setImages(images)
+  }, [images, store, failed])
 
   // before the outputs: the first model is drawn by these settings
   useEffect(() => {

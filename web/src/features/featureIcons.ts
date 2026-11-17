@@ -1,4 +1,5 @@
 import { paths } from '../shell/icons'
+import { inlinePaths } from '../tools/inlinePaths'
 
 /**
  * THE one table from a feature type to its icon (a 24 px stroke path, 1.8 stroke: the layout's style). Card I6.2
@@ -21,6 +22,7 @@ const ICONS: Readonly<Record<string, string>> = {
   mirror: paths.mirror,
   linear_pattern: paths.pattern,
   circular_pattern: paths.pattern,
+  canvas: inlinePaths['canvas'] as string,
 }
 
 export const GENERIC_ICON = paths.generic

@@ -3,6 +3,7 @@ import type { SelectionStore } from '../selection/store'
 import type { SketchStore } from '../sketch/store'
 import type { StudioOutputs } from '../wire'
 import type { PreviewLook } from './controller'
+import type { ImageFetcher } from './canvases'
 import { Viewport } from './Viewport'
 import type { ViewState } from './visibility'
 
@@ -19,6 +20,7 @@ export function StudioViewport({
   preview = null,
   sketch = null,
   visibility,
+  images,
   onContext,
 }: {
   outputs: StudioOutputs | null
@@ -27,8 +29,10 @@ export function StudioViewport({
   preview?: PreviewLook | null
   sketch?: SketchStore | null
   visibility?: ViewState
+  /** Where the canvases' pictures come from (card I12.5). */
+  images?: ImageFetcher | null
   /** Desktop mode: a right click on the view (card I9.10). */
   onContext?: (e: ViewContextEvent) => void
 }) {
-  return <Viewport outputs={outputs} selection={selection} tabKind={tabKind} preview={preview} sketch={sketch} visibility={visibility} onContext={onContext} />
+  return <Viewport outputs={outputs} selection={selection} tabKind={tabKind} preview={preview} sketch={sketch} visibility={visibility} images={images} onContext={onContext} />
 }

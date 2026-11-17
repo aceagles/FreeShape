@@ -87,8 +87,9 @@ const as = (client: string) => ({ 'X-Client-Id': client })
 export const openFeatureDialog = (doc: string, tab: string, feature: string, client: string) =>
   json<OpenReply>('POST', `${tabPath(doc, tab)}/features/${seg(feature)}/dialog`, { body: {}, headers: as(client) })
 /** Open a dialog that creates a feature of `type`. `picks` are the selection (the refs route's format, indices from 1). */
-export const openCreateDialog = (doc: string, tab: string, type: string, picks: readonly unknown[], client: string) =>
-  json<OpenReply>('POST', `${tabPath(doc, tab)}/features/dialog`, { body: picks.length > 0 ? { type, picks } : { type }, headers: as(client) })
+/** `params` is what the type starts from besides the picks: a Canvas's uploaded image `{blob, filename}` (card I12.5). */
+export const openCreateDialog = (doc: string, tab: string, type: string, picks: readonly unknown[], client: string, params?: Record<string, unknown>) =>
+  json<OpenReply>('POST', `${tabPath(doc, tab)}/features/dialog`, { body: { type, ...(picks.length > 0 ? { picks } : {}), ...(params !== undefined ? { params } : {}) }, headers: as(client) })
 export const updateFeatureDialog = (doc: string, tab: string, dialog: string, client: string, values: Record<string, unknown>) =>
   json<UpdateReply>('POST', at(doc, tab, dialog, 'update'), { body: { values }, headers: as(client) })
 export const acceptFeatureDialog = (doc: string, tab: string, dialog: string, client: string) =>

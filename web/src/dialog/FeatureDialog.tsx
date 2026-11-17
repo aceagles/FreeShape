@@ -26,7 +26,7 @@ export interface FeatureDialogProps {
   tab: string
   feature: { id: string; name: string }
   /** Create a feature of this type (with these picks) instead of editing `feature`; its name is the type's label. */
-  create?: { type: string; picks: readonly unknown[] }
+  create?: { type: string; picks: readonly unknown[]; params?: Record<string, unknown> }
   /** The variable names in scope for the pad's # key, without the "#". */
   variables: readonly string[]
   /** The view's selection: while the dialog is open its picks go to the active selection field (see useSelectionFields). */

@@ -31,6 +31,8 @@ import type { DrawnRegion } from './sketchRegions'
 import { setLook, shadedMaterial } from './shading'
 import { buildTriads, studioTriads } from './connectors'
 import type { TriadSpec } from './connectors'
+import { buildCanvases, canvasesToDraw } from './canvases'
+import type { CanvasSpec, TextureCache } from './canvases'
 
 export interface SceneStats {
   /** Meshes drawn for the studio's own parts (hidden parts are not drawn). */
@@ -65,6 +67,8 @@ export interface SceneStats {
   transparentParts: number
   /** Mate connector triads drawn (card I10.3). */
   connectors: number
+  /** Canvases drawn (card I12.5): the studio's own that the eye shows, and a dialog's preview ones. */
+  canvases: number
 }
 
 /** What the hook says before any scene: nothing drawn. */
@@ -86,6 +90,7 @@ export const EMPTY_STATS: SceneStats = {
   hiddenDefaultPlanes: [],
   transparentParts: 0,
   connectors: 0,
+  canvases: 0,
 }
 
 export interface SceneOptions {
@@ -105,6 +110,8 @@ export interface SceneOptions {
   transparent?: ReadonlySet<string>
   /** Draw the mate connectors (K); true when left out. */
   connectors?: boolean
+  /** The pictures of the canvases (card I12.5); null or absent: the canvases' rectangles wait for ever (nothing is drawn). */
+  images?: TextureCache | null
 }
 
 /** How opaque the preview ghost is: the model under it still reads, and so does the shape of the result. */
@@ -158,6 +165,12 @@ export interface BuiltScene {
   fitBounds: Bounds
   /** The mate connector triads drawn, which a pick can take (card I10.3); empty when K hides them. */
   triads: readonly TriadSpec[]
+  /** The canvases a pick can take (card I12.5), and what puts their pictures on once the cache has them. */
+  canvases: readonly CanvasSpec[]
+  /** Put the textures that have arrived since the build on the canvases. */
+  refreshCanvases(): void
+  /** Ids of the canvases drawn with their picture (test hook). */
+  canvasPictures(): string[]
   /** Keep line widths and the origin triad right for the viewport size and zoom (mm per pixel). */
   update(width: number, height: number, scale: number): void
   dispose(): void
@@ -428,11 +441,13 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     planes: Map<string, readonly Vector3[]>
     axes: Map<string, readonly [Vector3, Vector3]>
     regions: Map<string, DrawnRegion>
+    canvases: Map<string, readonly Vector3[]>
   } = {
     parts: new Map(),
     planes: new Map(),
     axes: new Map(),
     regions: new Map(),
+    canvases: new Map(),
   }
 
   const drawn = outputs.parts.filter((p) => !p.hidden && p.mesh)
@@ -501,6 +516,13 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
   sources.regions = sketchRegions.regions
   stats.sketchRegions = sketchRegions.regions.size
   root.add(sketchRegions.group)
+  // canvases (I12.5): the studio's own, and what a dialog's preview changes (drawn over the model, never picked)
+  const previewCanvases = opts.ghost ? opts.ghost.canvases.filter((c) => JSON.stringify(c) !== JSON.stringify(outputs.canvases.find((o) => o.id === c.id))) : []
+  const canvasList = canvasesToDraw(outputs.canvases, previewCanvases)
+  const canvasLayer = buildCanvases(canvasList, new Set(previewCanvases.map((c) => c.id)), opts.images ?? null)
+  root.add(canvasLayer.group)
+  stats.canvases = canvasList.length
+  for (const c of canvasLayer.specs) sources.canvases.set(c.id, c.corners)
   const triad = triadObject(materials)
   root.add(triad)
   const triads = opts.connectors === false ? [] : studioTriads(outputs)
@@ -550,6 +572,9 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     bounds,
     fitBounds: hasModel ? fitBoundsFor(bounds, half) : bounds,
     triads,
+    canvases: canvasLayer.specs,
+    refreshCanvases: () => canvasLayer.refresh(),
+    canvasPictures: () => canvasLayer.pictured(),
     update(width, height, scale) {
       layer.update(width, height, scale)
       for (const m of lineMats) m.resolution.set(width, height)
@@ -562,6 +587,7 @@ export function buildScene(outputs: StudioOutputs, opts: SceneOptions = {}): Bui
     dispose() {
       overlay.dispose()
       layer.dispose()
+      canvasLayer.dispose()
       for (const g of geometries) g.dispose()
       root.traverse((o) => {
         if (o instanceof Mesh || o instanceof Line || o instanceof Points) o.geometry.dispose()

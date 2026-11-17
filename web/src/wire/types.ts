@@ -84,6 +84,39 @@ export interface Sketch {
   readonly hash: string
 }
 
+/**
+ * An image a Canvas feature places on a plane or a flat face (card I12.1; `CanvasOut`). Not a part: no shape, no Element names.
+ * The picture is drawn on the rectangle `origin` +/- `width`/2 along `xdir` and `height`/2 along `ydir`, left to right along
+ * `xdir` and bottom to top along `ydir` AS THEY ARE: Rotation and both flips are already in the two directions (a flip reverses
+ * one of them), so a viewer maps the picture along them without knowing about either.
+ */
+export interface Canvas {
+  /** The canvas feature's id. */
+  readonly id: string
+  readonly name: string
+  /** sha256 key of the image (PNG or JPEG): `GET .../images/<blob>`; "" while the bytes are held inline. */
+  readonly blob: string
+  /** The image centre. */
+  readonly origin: Vec3
+  readonly xdir: Vec3
+  readonly ydir: Vec3
+  readonly normal: Vec3
+  /** mm, along `xdir` and `ydir`. */
+  readonly width: number
+  readonly height: number
+  /** 0 (clear) to 100 (opaque). */
+  readonly opacity: number
+  readonly flipH: boolean
+  readonly flipV: boolean
+  /** A click picks it (the feature's own flag). */
+  readonly selectable: boolean
+  /** The eye in the feature list. */
+  readonly hidden: boolean
+  readonly filename: string
+  /** [width, height] of the image in pixels. */
+  readonly pixels: readonly [number, number] | readonly []
+}
+
 export interface MateConnector {
   readonly id: string
   readonly name: string
@@ -189,6 +222,8 @@ export interface StudioOutputs {
   readonly context: readonly Part[]
   readonly sketches: readonly Sketch[]
   readonly connectors: readonly MateConnector[]
+  /** The canvases (card I12.1), in feature order; [] for an older payload. */
+  readonly canvases: readonly Canvas[]
   readonly variables: Readonly<Record<string, number>>
   readonly planes: Readonly<Record<string, PlaneOut>>
   readonly axes: Readonly<Record<string, AxisOut>>

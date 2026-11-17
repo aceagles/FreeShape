@@ -5,6 +5,8 @@
  */
 export const inlinePaths: Readonly<Record<string, string>> = {
   select: 'M6 3l12 9-6 1-3 6z',
+  // a picture in a frame: the Canvas tool and its feature row (card I12.5; the desktop's own icon comes with I12.3)
+  canvas: 'M4 5h16v14H4z M4 16l5-5 4 4 3-3 4 4 M15.5 9.5m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0',
   line: 'M5 19L19 5',
   rectangle: 'M4 6h16v12H4z',
   circle: 'M12 12m-8 0a8 8 0 1 0 16 0a8 8 0 1 0-16 0',

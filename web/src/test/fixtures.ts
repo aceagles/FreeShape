@@ -7,7 +7,7 @@ import type { StudioOutputs } from '../wire'
 const dir = resolve(process.cwd(), 'fixtures')
 
 /** The recorded outputs of an example Part Studio: its bytes (what the server sends) and the decoded form. */
-export function fixture(name: 'bracket' | 'tree'): { bytes: ArrayBuffer; outputs: StudioOutputs } {
+export function fixture(name: 'bracket' | 'tree' | 'bracket.canvas'): { bytes: ArrayBuffer; outputs: StudioOutputs } {
   const b = readFileSync(resolve(dir, `${name}.outputs.fsw`))
   const bytes = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer
   const outputs = decodeOutputs(bytes)

@@ -12,6 +12,8 @@ import { ExportDialog } from '../files/ExportDialog'
 import { Explorer } from '../files/Explorer'
 import type { ExplorerMode } from '../files/Explorer'
 import { SavedNote } from '../files/SavedNote'
+import { useCanvasImage } from '../files/CanvasFlow'
+import { fetchCanvasImage } from '../files/canvasApi'
 import { UploadProgress } from '../files/UploadProgress'
 import type { UploadState } from '../files/UploadProgress'
 import { fetchUploadLimit, importDevice, importFailure } from '../files/filesApi'
@@ -183,7 +185,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const [savedNote, setSavedNote] = useState<string | null>(null)
   const dismissSaved = useCallback(() => setSavedNote(null), [])
   // the feature dialog open over the panel (the dialog area is its own: it carries Cancel and Accept), and the preview it drew
-  const [editing, setEditing] = useState<{ tab: string; id: string; name: string; create?: { type: string; picks: Pick[] } } | null>(null)
+  const [editing, setEditing] = useState<{ tab: string; id: string; name: string; create?: { type: string; picks: Pick[]; params?: Record<string, unknown> } } | null>(null)
   const [preview, setPreview] = useState<(PreviewState & { feature: string }) | null>(null)
   // the model the open dialog picks against (card F3): drawn while the dialog is open, with its preview as a ghost over it
   const [dialogBase, setDialogBase] = useState<StudioOutputs | null>(null)
@@ -266,10 +268,13 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   // the outputs of the tab on screen (the loader keeps the last Part Studio's while an Assembly is open)
   const studio = outputs !== null && outputs.tab === currentTab && tabKind === 'studio' ? outputs : null
   // a feature stays selected until the selection of the view changes (the stamp), and the other way round: picking clears it
+  // (a Selectable canvas picked in the view selects its own row, card I12.5)
+  const canvasItem = picked.items.length === 1 && picked.items[0]!.kind === 'canvas' ? picked.items[0]! : null
+  const pickedCanvas = studio !== null && canvasItem?.key != null && studio.features.some((f) => f.id === canvasItem.key) ? canvasItem.key : null
   const selectedFeature =
-    studio !== null && pickedFeature?.tab === currentTab && pickedFeature.revision === picked.revision && studio.features.some((f) => f.id === pickedFeature.id)
+    pickedCanvas ?? (studio !== null && pickedFeature?.tab === currentTab && pickedFeature.revision === picked.revision && studio.features.some((f) => f.id === pickedFeature.id)
       ? pickedFeature.id
-      : null
+      : null)
 
   // the Parts list shows a part as selected when it is the one thing selected
   const only = picked.items.length === 1 ? picked.items[0]! : null
@@ -366,8 +371,8 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   useEffect(() => {
     selection.setDoubleClickHandler((item) => {
       if (tabKind !== 'studio' || studio === null || editingHere !== null || dialog !== null || sketch.open || sketch.opening) return
-      const id = item.kind === 'region' ? item.part : item.kind === 'plane' ? item.key : null
-      const feature = id === null ? undefined : studio.features.find((f) => f.id === id && (item.kind === 'region' ? f.type === 'sketch' : f.type === 'plane'))
+      const id = item.kind === 'region' ? item.part : item.kind === 'plane' || item.kind === 'canvas' ? item.key : null
+      const feature = id === null ? undefined : studio.features.find((f) => f.id === id && (item.kind === 'region' ? f.type === 'sketch' : f.type === item.kind))
       if (feature !== undefined) startEdit(feature)
     })
     return () => selection.setDoubleClickHandler(null)
@@ -382,19 +387,29 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
   const picks = useMemo(() => picksOf(picked.items), [picked.items])
   const toolTypes = useToolTypes(doc?.id ?? null, tabKind === 'studio' ? currentTab : null, studio?.revision ?? 0, picks, editing !== null || dialog !== null)
   const startTool = useCallback(
-    (type: string, withPicks?: Pick[]) => {
-      if (currentTab === null || tabKind !== 'studio' || editing !== null || dialog !== null) return
+    (type: string, withPicks?: Pick[], params?: Record<string, unknown>) => {
+      if (currentTab === null || tabKind !== 'studio' || editing !== null || dialog !== null) return false
       setCollapsed(false)
       setExporting(null)
       setExploring(null)
       setPreview(null)
       setHoldUntil(null)
-      setEditing({ tab: currentTab, id: '', name: toolTypes?.get(type)?.label ?? type, create: { type, picks: withPicks ?? picks } })
+      setEditing({ tab: currentTab, id: '', name: toolTypes?.get(type)?.label ?? type, create: { type, picks: withPicks ?? picks, ...(params !== undefined ? { params } : {}) } })
       // the tool took the selection; the dialog's active field takes the next picks
       selection.clear()
+      return true
     },
     [currentTab, tabKind, editing, dialog, toolTypes, picks, selection],
   )
+  // the Canvas tool (card I12.5): the device's picker for a PNG or JPEG, then the generic dialog for a new canvas on the uploaded
+  // image, with the selected face picked. Starting the dialog closes the explorer and the Export dialog, as every tool does.
+  const startToolRef = useRef(startTool)
+  useEffect(() => {
+    startToolRef.current = startTool
+  })
+  const canvasImage = useCanvasImage(doc !== null && currentTab !== null && tabKind === 'studio' && !readOnly ? { document: doc.id, tab: currentTab, client } : null, (up) => {
+    if (!startToolRef.current('canvas', undefined, { blob: up.blob, filename: up.filename })) failText('Canvas', 'Another dialog is open. Finish or cancel it, then add the image again.')
+  })
   // the Sketch tool: a new sketch on the selected plane or face, else ask for a plane
   const beginSketch = useCallback(
     (plane?: string, onItems?: typeof picked.items) => {
@@ -430,6 +445,9 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     const made = studio.sketches.find((k) => (p.feature !== null ? k.id === p.feature : !p.known.has(k.id)))
     startTool(p.type, made ? made.regions.map((_, i): Pick => ({ part: made.id, kind: 'region', index: i + 1 })) : undefined)
   }, [sketch.open, sketch.committed, studio, startTool])
+  // where this tab's canvases fetch their pictures (card I12.5); the same function while the tab is, so the textures are kept
+  const canvasDoc = doc?.id ?? null
+  const canvasImages = useMemo(() => (canvasDoc !== null && currentTab !== null ? (blob: string) => fetchCanvasImage(canvasDoc, currentTab, blob, client) : null), [canvasDoc, currentTab, client])
   const showPreview = preview !== null && (editingHere !== null || (holdUntil !== null && (studio?.revision ?? 0) < holdUntil))
   // while a dialog is open the view draws its base (what picks resolve against) and the preview as a ghost over it;
   // until the base has arrived, and after Accept, the preview itself is drawn as before
@@ -803,6 +821,13 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
     'view.fit': () => void runViewCommand('fit'),
   }
 
+  // what a tool button of a Part Studio does and whether it can: Sketch asks the server for nothing, Canvas needs a writable studio and a picked image first (card I12.5)
+  const studioToolState = (id: string) => (id === 'sketch' ? 'ok' : id === 'canvas' ? (tabKind === 'studio' && !readOnly ? 'ok' : 'off') : stateOf(toolTypes, id))
+  const runTool = (id: string) => {
+    if (id === 'sketch') return beginSketch()
+    if (id !== 'canvas') return startTool(id)
+    if (editing === null && dialog === null && !sketch.open && !sketch.opening) canvasImage.pick()
+  }
   // Desktop mode's keys, routed as the desktop routes them (desktopKeys.ts), from what is on screen now
   const runMenu = (command: string): boolean => {
     const item = MENU_BAR.flatMap((m) => m.entries).find((e): e is MenuItem => e.kind !== 'separator' && e.command === command)
@@ -819,10 +844,10 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         ? {
             workspace: 'studio',
             layout: DESKTOP_TOOLBAR,
-            stateOf: (id) => (id === 'sketch' ? 'ok' : stateOf(toolTypes, id)),
+            stateOf: studioToolState,
             commands: toolbarCommands,
             busy: editing !== null || dialog !== null || sketch.open || sketch.opening,
-            onStart: (id) => (id === 'sketch' ? beginSketch() : startTool(id)),
+            onStart: runTool,
             assemblyTypes,
             menuCommands: commands,
             menuState,
@@ -951,19 +976,19 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         ) : desktop && tabKind === 'studio' ? (
           <DesktopToolbar
             layout={DESKTOP_TOOLBAR}
-            stateOf={(id) => (id === 'sketch' ? 'ok' : stateOf(toolTypes, id))}
+            stateOf={studioToolState}
             commands={toolbarCommands}
             busy={editing !== null || dialog !== null || sketch.open || sketch.opening}
-            onStart={(id) => (id === 'sketch' ? beginSketch() : startTool(id))}
+            onStart={runTool}
           />
         ) : (
           <ToolStrip
             strip="feature"
             defs={FEATURE_STRIP}
-            stateOf={(id) => ((id === 'sketch' || id === 'import') && tabKind === 'studio' ? 'ok' : stateOf(toolTypes, id))}
+            stateOf={(id) => (id === 'import' && tabKind === 'studio' ? 'ok' : studioToolState(id))}
             disabled={tabKind !== 'studio' || editing !== null || dialog !== null || sketch.open || sketch.opening}
             width={width}
-            onStart={(id) => (id === 'sketch' ? beginSketch() : id === 'import' ? openExplorer('add') : startTool(id))}
+            onStart={(id) => (id === 'import' ? openExplorer('add') : runTool(id))}
           />
         )}
         <div className="shell-main">
@@ -1065,6 +1090,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
                 tabKind={tabKind}
                 sketch={sketchHere ? sketchStore : null}
                 visibility={viewState}
+                images={canvasImages}
                 onContext={onStudioContext}
               />
             )}
@@ -1129,6 +1155,7 @@ function ShellBody({ store, documentId, version, onLeave }: ShellProps) {
         )}
         {archiveDownload.element}
         {archiveOpen.element}
+        {canvasImage.element}
         {modal?.kind === 'leave' && (
           <ConfirmDialog
             title={`Save changes to "${name}"?`}

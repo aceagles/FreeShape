@@ -9,6 +9,8 @@ import type { DialogView, OpenReply } from './dialogApi'
 
 /** The feature types whose preview carries drag arrows (dialog_schema.manipulators). */
 const HAS_ARROWS: ReadonlySet<string> = new Set(['extrude', 'plane'])
+/** The types that ask for a preview as soon as they open: those with arrows, and a Canvas, whose preview is the picture itself (card I12.5). */
+const PREVIEW_ON_OPEN: ReadonlySet<string> = new Set([...HAS_ARROWS, 'canvas'])
 
 /** The model a dialog's update produced, drawn in place of the committed one. */
 export interface PreviewState {
@@ -45,7 +47,7 @@ interface Options {
   tab: string
   feature: string
   /** Open a dialog that creates a feature of this type with these picks, instead of editing `feature` (the Shell keys the dialog, so it never changes while open). */
-  create?: { type: string; picks: readonly unknown[] }
+  create?: { type: string; picks: readonly unknown[]; params?: Record<string, unknown> }
   /** The preview to draw, or null for the committed model again. */
   onPreview: (p: PreviewState | null) => void
   /**
@@ -114,7 +116,7 @@ export function useFeatureDialog({ store, documentId, documentName, tab, feature
     let dead = false
     const stop = store.onPreview((m) => void onPreviewMessage(m))
     const want = createWith.current
-    const opening = want ? openCreateDialog(documentId, tab, want.type, want.picks, client) : openFeatureDialog(documentId, tab, feature, client)
+    const opening = want ? openCreateDialog(documentId, tab, want.type, want.picks, client, want.params) : openFeatureDialog(documentId, tab, feature, client)
     opening.then(
       (r) => {
         if (dead) {
@@ -204,10 +206,10 @@ export function useFeatureDialog({ store, documentId, documentName, tab, feature
     [flush],
   )
 
-  // The server previews on an update, not on open. A dialog of a feature that has drag arrows sends its first number back
+  // The server previews on an update, not on open. A dialog of a feature that has drag arrows (or a Canvas) sends its first number back
   // unchanged once it is open, so the preview (and the arrows it carries) is there from the start, as on the desktop.
   useEffect(() => {
-    if (!opened || !HAS_ARROWS.has(opened.description.type)) return
+    if (!opened || !PREVIEW_ON_OPEN.has(opened.description.type)) return
     const text = (key: string | null): string => {
       const v = key ? opened.values[key] : undefined
       return v?.text ? v.text : typeof v?.value === 'number' ? String(v.value) : ''

@@ -24,6 +24,8 @@ import { DEFAULT_VIEW, shapeStudio } from './visibility'
 import type { ViewState } from './visibility'
 import type { BuiltScene, SceneStats } from './scene'
 import { setSeeThrough } from './seeThrough'
+import { TextureCache } from './canvases'
+import type { ImageFetcher } from './canvases'
 
 /** What `window.__freeshapeViewport` reports, for tests that look at the page from outside. */
 export interface ViewportReport extends SceneStats {
@@ -49,6 +51,8 @@ export interface ViewportReport extends SceneStats {
   pickAt(x: number, y: number, pointer: PickPointer, filter?: readonly PickKind[]): PickHit | null
   /** Test hook (I10.3): where each drawn mate connector's triad is on screen (CSS pixels from the top left), by its id. */
   connectorScreens(): ConnectorScreen[]
+  /** Test hook (I12.5): each drawn canvas's centre on screen (CSS pixels from the top left), whether its picture is on it, and why its image failed, if it did. */
+  canvasScreens(): CanvasScreen[]
   /** Test hook (I9.9): what a selection box dragged from (x0, y0) to (x1, y1) would take, with the selection's filter. */
   boxHits(x0: number, y0: number, x1: number, y1: number): SelectionItemReport[]
 }
@@ -59,6 +63,17 @@ export interface ConnectorScreen {
   instance?: string
   x: number
   y: number
+}
+
+/** Where a canvas's centre is on screen. */
+export interface CanvasScreen {
+  id: string
+  x: number
+  y: number
+  /** A point inside the rectangle, a quarter of its width and height from the centre along the picture's x and y: clear of the origin triad that sits on a canvas centred on the origin. */
+  inside: { x: number; y: number }
+  pictured: boolean
+  error: string | null
 }
 
 /** An item of the selection as the test hook reports it. */
@@ -196,6 +211,9 @@ export class ViewportController implements NavHost {
   private vis: ViewState = DEFAULT_VIEW
   /** Whether the mate connectors were drawn the last time the scene was built (K, or a dialog's field that wants one). */
   private connectorsDrawn = true
+  /** The pictures of the canvases (I12.5), cached per blob; null until the shell says where to fetch them. */
+  private images: TextureCache | null = null
+  private imageSource: ImageFetcher | null = null
   /** Desktop mode's right click (card I9.10): the shell opens a menu for what is under the pointer; coordinates are the window's. */
   private contextHandler: ((e: ViewContextEvent) => void) | null = null
   /** What setOutputs was last given, so a change of `vis` draws it again. */
@@ -346,7 +364,7 @@ export class ViewportController implements NavHost {
       this.scene.remove(this.built.root)
       this.built.dispose()
     }
-    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, ghost, hiddenPlanes: this.vis.hiddenPlanes, transparent: new Set(this.vis.transparent), connectors: this.connectorsDrawn })
+    this.built = buildScene(outputs, { keepPlaneHalf: this.planeHalf, ghost, hiddenPlanes: this.vis.hiddenPlanes, transparent: new Set(this.vis.transparent), connectors: this.connectorsDrawn, images: this.images })
     if (preview && ghost) this.tinted = { feature: preview.feature, parts: this.built.stats.ghostParts }
     this.scene.add(this.built.root)
     if (this.sketchMode) this.seeThrough(this.built.root, true)
@@ -357,6 +375,26 @@ export class ViewportController implements NavHost {
     this.outputs = outputs
     this.emptyKind = null
     if (!this.fitted) this.fit()
+    this.requestRender()
+  }
+
+  /**
+   * Where the canvases' pictures come from (card I12.5): `GET .../images/<blob>` for this tab, as the shell's function. A new
+   * source (another tab) drops the textures of the old one and draws again; the same one changes nothing.
+   */
+  setImages(source: ImageFetcher | null): void {
+    if (this.disposed || source === this.imageSource) return
+    this.imageSource = source
+    this.images?.dispose()
+    this.images = source === null ? null : new TextureCache(source, () => this.picturesArrived())
+    if (this.lastShown) this.setOutputs(this.lastShown.shown, this.lastShown.preview)
+  }
+
+  /** A picture was fetched (or failed): put it on its canvas and draw. */
+  private picturesArrived(): void {
+    if (this.disposed) return
+    this.built?.refreshCanvases()
+    this.report()
     this.requestRender()
   }
 
@@ -516,6 +554,12 @@ export class ViewportController implements NavHost {
     return this.picker ? this.picker.pick(this.view, x, y, pointer, filter) : null
   }
 
+  private canvasScreens(): CanvasScreen[] {
+    const pictured = new Set(this.built?.canvasPictures() ?? [])
+    const blobOf = (id: string): string => this.outputs?.canvases.find((o) => o.id === id)?.blob ?? ''
+    return (this.built?.canvases ?? []).map((c) => ({ id: c.id, ...this.view.project([c.origin.x, c.origin.y, c.origin.z]), inside: this.view.project(c.origin.clone().addScaledVector(c.x, c.width / 4).addScaledVector(c.y, c.height / 4).toArray()), pictured: pictured.has(c.id), error: this.images?.failure(blobOf(c.id)) ?? null }))
+  }
+
   private connectorScreens(): ConnectorScreen[] {
     return (this.built?.triads ?? []).filter((t) => t.kind === 'connector').map((t) => ({ id: t.id, ...this.view.project(t.o) }))
   }
@@ -560,6 +604,7 @@ export class ViewportController implements NavHost {
       sketch: this.sketchMode?.report() ?? null,
       pickAt: (x, y, pointer, filter) => this.pickAt(x, y, pointer, filter),
       connectorScreens: () => this.connectorScreens(),
+      canvasScreens: () => this.canvasScreens(),
       boxHits: (x0, y0, x1, y1) => this.boxHits({ x0, y0, x1, y1 }, this.selection.pickFilter).map(reportItem),
     }
   }
@@ -578,6 +623,7 @@ export class ViewportController implements NavHost {
       this.built.dispose()
       this.built = null
     }
+    this.images?.dispose()
     this.renderer.dispose()
     delete window.__freeshapeViewport
   }

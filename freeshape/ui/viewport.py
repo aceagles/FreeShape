@@ -204,6 +204,7 @@ class Viewport(QOpenGLWidget):
         self.triads = []          # mate connectors: dicts {o, x, y, z, color, size_px}
         self.canvases = []        # Canvas images (I12.3): dicts of a CanvasOut's fields plus "image" (a QImage)
         self._canvas_tex = {}     # blob key -> GL texture id (made on first draw; the GL context's own)
+        self.calibrating = None   # the Calibrate Canvas mode while it runs (calibrate_mode.CalibrateMode, I12.4)
         self.pick_points = []     # [(Pick, world point)]: drawn, pickable, not a mesh (connector triads)
         self.ghosts = []          # translucent highlight meshes: [(Mesh, (r, g, b, a))]
         self.drag_handler = None  # assemblies: object with press(x, y, e) -> bool, move(x, y, e), release(x, y, e)
@@ -1463,6 +1464,8 @@ class Viewport(QOpenGLWidget):
             self.sketcher.draw_overlay(self, p)
         if self._box is not None:
             boxsel.draw_box(p, self._box)
+        if self.calibrating is not None:
+            self.calibrating.draw(p)
         self._draw_manipulators(p)
         if self.drag_handler is not None and hasattr(self.drag_handler, "draw_overlay") and not self._thumb_on():
             self.drag_handler.draw_overlay(p)
@@ -2067,9 +2070,29 @@ class Viewport(QOpenGLWidget):
         self.update()
 
     # ================================================================== events
+    def start_calibrating(self, mode):
+        """Hold `mode` (calibrate_mode.CalibrateMode): its two clicks are the only picking, with a crosshair cursor."""
+        if self.calibrating is not None:
+            self.calibrating.cancel()
+        self.calibrating = mode
+        self.set_hover_none()
+        self.setCursor(Qt.CrossCursor)
+        self.update()
+
+    def end_calibrating(self):
+        """End the mode without its cancel callback (the dialog is closing)."""
+        mode, self.calibrating = self.calibrating, None
+        if mode is not None:
+            mode._close_editor()
+            self.setCursor(Qt.ArrowCursor)
+            self.update()
+
     def mousePressEvent(self, e):
         self._anim = None
         pos = e.position()
+        if self.calibrating is not None and self.calibrating.press(pos.x(), pos.y(), e.button(), e.modifiers()):
+            self.update()
+            return
         # in a sketch the left button draws and selects (Alt+left still orbits in a style that orbits with left)
         action = navstyles.drag_action(self.nav_style, e.buttons(), e.modifiers(), editing=bool(self.sketcher))
         if self._press is not None and e.buttons() != e.button():
@@ -2150,6 +2173,11 @@ class Viewport(QOpenGLWidget):
     def mouseMoveEvent(self, e):
         pos = e.position()
         x, y = pos.x(), pos.y()
+        if self.calibrating is not None and self._press is None:
+            self._cursor_xy = (x, y)
+            self.calibrating.move(x, y, e.modifiers())
+            self.setCursor(Qt.CrossCursor)
+            return
         self._cursor_xy = (x, y)
         if self.selection or self.count_badge.isVisible():
             self._update_count_badge()
@@ -2606,6 +2634,9 @@ class Viewport(QOpenGLWidget):
         self.rotate_view_about(M @ Rb, M @ Ru, pivot, duration=0.15)
 
     def keyPressEvent(self, e):
+        if self.calibrating is not None and e.key() == Qt.Key_Escape:
+            self.calibrating.cancel()
+            return
         if self.sketcher and self.sketcher.key_press(self, e):
             self.update()
             return

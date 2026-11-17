@@ -1395,8 +1395,36 @@ class MainWindow(QMainWindow):
         for fid, c in getattr(state, "canvases", {}).items():
             if fid in self.doc.hidden_features:
                 continue
-            out.append(dict(c, id=fid, image=self._canvas_image(c.get("blob"))))
+            key, img = c.get("blob"), None
+            if not key:                         # a new Canvas dialog still holds its picture inline (I12.4: to calibrate on)
+                key, img = self._dialog_canvas_image(fid)
+            else:
+                img = self._canvas_image(key)
+            out.append(dict(c, id=fid, blob=key, image=img))
         return out
+
+    def _dialog_canvas_image(self, fid):
+        """(blob key, QImage) of the picture a new Canvas dialog for feature `fid` holds as base64 `data`, else
+        ("", None). The key is the picture's SHA-256, as the blob it becomes on accept."""
+        import base64
+        import binascii
+        import hashlib
+        d = self.dialog
+        data = d.feature["params"].get("data") if d is not None and d.ftype == "canvas" and d.feature["id"] == fid \
+            else None
+        if not isinstance(data, str):
+            return "", None
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            return "", None
+        key = hashlib.sha256(raw).hexdigest()
+        cache = self.__dict__.setdefault("_canvas_images", {})
+        if key not in cache:
+            from PySide6.QtGui import QImage
+            img = QImage.fromData(raw)
+            cache[key] = None if img.isNull() else img
+        return key, cache[key]
 
     def _canvas_image(self, key):
         """The QImage of the blob `key` of this tab (None when it is missing or no image); kept per window."""
@@ -1574,6 +1602,7 @@ class MainWindow(QMainWindow):
         self.dialog = None
         self.mode = "idle"
         vp = self.viewport
+        vp.end_calibrating()
         vp.pick_handler = None
         vp.select_filter = None
         vp.snap_provider = None
@@ -3595,6 +3624,9 @@ class MainWindow(QMainWindow):
             self.doc.redo()
 
     def _escape(self):
+        if self.viewport.calibrating is not None:        # Calibrate Canvas (I12.4): Esc ends it, not the dialog
+            self.viewport.calibrating.cancel()
+            return
         if self.is_dwg:
             self.dwg.key(_FakeKey(Qt.Key_Escape))
             return

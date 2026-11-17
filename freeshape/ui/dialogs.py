@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QBoxLayout, QLabel, QToolButton, QLineEdit, QComboBox, QCheckBox,
     QListWidget, QListWidgetItem, QWidget, QButtonGroup, QSizePolicy, QGraphicsDropShadowEffect, QTabWidget,
+    QPushButton,
 )
 
 from .. import kernel as K
@@ -697,11 +698,71 @@ class FeatureDialog(_ResizableFrame):
             if w is not None:
                 lay.addWidget(w)
                 self.rows.append((spec, w))
+        if self.ftype == "canvas":                       # I12.4
+            self._add_calibrate(lay)
         self.err = QLabel("")
         self.err.setObjectName("dialogError")
         self.err.setWordWrap(True)
         self.err.hide()
         lay.addWidget(self.err)
+
+    def _add_calibrate(self, lay):
+        """Canvas: the Calibrate button and its two checkboxes (I12.4), as FreeCAD's task panel has them."""
+        btn = QPushButton("Calibrate")
+        btn.setObjectName("calibrateButton")
+        btn.setToolTip("Click the two ends of a distance you know on the image, then type its real length")
+        btn.clicked.connect(self.start_calibrate)
+        self.calibrate_button = btn
+        lay.addWidget(btn)
+        self.calibrate_centre = QCheckBox("Centre on midpoint")
+        self.calibrate_centre.setToolTip("Move the image so the middle of the line stays where it is")
+        self.calibrate_snap = QCheckBox("Snap rotation to line")
+        self.calibrate_snap.setToolTip("Turn the image so the line lies along an axis")
+        for cb in (self.calibrate_centre, self.calibrate_snap):
+            cb.setChecked(False)
+            lay.addWidget(cb)
+
+    def start_calibrate(self):
+        """Put the 3D view in its two-click mode on this canvas (calibrate_mode.CalibrateMode)."""
+        from .calibrate_mode import CalibrateMode
+        vp = self.main.viewport
+        self._timer.stop()
+        self._do_preview()                               # the view holds this canvas as the dialog has it now
+        if not any(c["id"] == self.feature["id"] for c in vp.canvases):
+            self.main.status.showMessage("The canvas is not shown yet: fix what the dialog reports first", 5000)
+            return
+        vp.start_calibrating(CalibrateMode(
+            vp, self.feature["id"], self.apply_calibration, lambda: self.main.status.showMessage("Calibrate cancelled", 3000),
+            variables=self.base_state.vars, say=lambda t: self.main.status.showMessage(t, 0)))
+        self.main.status.showMessage("Click one end of a distance you know on the image", 0)
+
+    def apply_calibration(self, p0, p1, distance):
+        """Scale (and with the checkboxes move and turn) the canvas in this dialog so the line p0 -> p1 measures
+        `distance` mm: freeshape.canvas_calibrate.calibrate on the dialog's params, the same call the served dialog
+        makes. Nothing is committed: accepting the dialog is the one undo step. Returns True when it was applied."""
+        from .. import canvas_calibrate as CC
+        p = self.feature["params"]
+        have = {}
+        for key in ("width", "height", "x", "y", "rotation"):
+            raw = p.get(key)
+            have[key] = parse_number(raw, angle=key == "rotation", variables=self.base_state.vars) \
+                if raw is not None else None
+        try:
+            got = CC.calibrate(dict(p, **have), p0, p1, distance, self.calibrate_centre.isChecked(),
+                               self.calibrate_snap.isChecked())
+        except CC.CalibrateError as e:
+            self.main.status.showMessage(str(e), 6000)
+            return False
+        for key in ("width", "height", "x", "y", "rotation"):
+            if got[key] != have[key]:
+                p[key] = got[key]
+                if key in self.widgets:
+                    self.widgets[key].setText(_show(got[key]))
+                    self.widgets[key].setProperty("invalid", "false")
+        self._sync_visibility()
+        self.schedule_preview()
+        self.main.status.showMessage("Calibrated", 3000)
+        return True
 
     def _make_row(self, spec, p):
         t = spec["t"]

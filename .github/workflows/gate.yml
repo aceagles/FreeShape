@@ -220,7 +220,14 @@ jobs:
             if [ "$crc" -ne 0 ]; then tail -40 /tmp/all; echo "collection failed (exit $crc)"; exit "$crc"; fi
             [ -s /tmp/ids ] || { tail -20 /tmp/all; echo 'collected nothing'; exit 4; }
             echo "shard total $(grep -c :: /tmp/all) selected $(wc -l < /tmp/ids)"
-            tr '\n' '\0' < /tmp/ids | xargs -0 fs_pytest
+            # A hung test must fail the shard, not run into the job's 30-minute cap. A shard takes ~8 min.
+            # faulthandler dumps every thread's stack (naming the test) once one test runs 5 min; the
+            # timeout then ends pytest (SIGINT, then SIGKILL: a deadlocked process can ignore SIGINT).
+            tr '\n' '\0' < /tmp/ids | timeout -s INT -k 30 20m xargs -0 fs_pytest -o faulthandler_timeout=300; rc=$?
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+              echo "::error::pytest shard timed out after 20 min; the 'Timeout' stack dump above names the stuck test"
+            fi
+            exit "$rc"
         run: |
           lscpu | grep 'Model name'
           docker run --rm --network none -u "$(id -u):$(id -g)" -e HOME=/tmp -e OCP -e SHARD -e SHARDS \

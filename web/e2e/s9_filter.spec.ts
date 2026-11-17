@@ -48,7 +48,7 @@ test('with Faces unticked a box over the bracket selects edges only', async ({ p
   await expect.poll(() => kinds(page)).not.toContain('face')
   await boxOverModel(page)
   await expect.poll(async () => (await readViewport(page)).selection.count).toBeGreaterThan(0)
-  expect(await kinds(page)).toEqual(['edge'])
+  await expect.poll(() => kinds(page)).toEqual(['edge'])
 
   // Reset to default brings the faces back
   await page.getByRole('button', { name: 'Select' }).click()
@@ -79,5 +79,6 @@ test('a double click on a committed sketch\'s region opens the sketch', async ({
   await page.mouse.move(canvas.x + at!.x, canvas.y + at!.y)
   await page.mouse.dblclick(canvas.x + at!.x, canvas.y + at!.y)
   await expect(page.locator('[data-strip="sketch"]')).toBeVisible()
-  expect((await readViewport(page)).sketch).not.toBeNull()
+  // the strip shows before the view has the sketch: wait for it
+  await expect.poll(async () => (await readViewport(page)).sketch).not.toBeNull()
 })

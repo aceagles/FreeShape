@@ -2064,8 +2064,10 @@ class Sketcher:
 
     def _mirror_pick(self, vp, x, y):
         """The entity a Mirror click is on: a point entity under the cursor, else the nearest curve. A bare end of a
-        line is not geometry of its own, so the click goes to the line."""
-        for kind, i in self.hits(vp, x, y, kinds=("point", "entity")):
+        line is not geometry of its own, so the click goes to the line. A Select other row stands in for the hits."""
+        f = self._forced
+        hits = [f] if isinstance(f, tuple) else [] if f is not None else self.hits(vp, x, y, kinds=("point", "entity"))
+        for kind, i in hits:
             if kind == "entity":
                 return i
             pe = next((k for k, e in self.sk.entities.items() if e["type"] == "point" and e.get("p") == i), None)

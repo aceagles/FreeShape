@@ -105,6 +105,33 @@ test('a conflict shows a message and changes nothing; Delete on a selected glyph
   await expect(glyphs(page, 'horizontal')).toHaveCount(n - 1)
 })
 
+test('the same relation twice says Already and the sketch keeps one', async ({ page }) => {
+  const w = wire(page)
+  await openApp(page)
+  await openSketchFeature(page, 'Bracket profile')
+  await settledSketch(page)
+  // a line that is held horizontal already: Horizontal again is a no-op the server names
+  const opened = w.got.find((m) => m['type'] === 'sketch.opened')!
+  const cons = (opened['sketch'] as { constraints: { id: string; type: string; refs: string[] }[] }).constraints
+  const line = cons.find((c) => c.type === 'horizontal')!.refs[0]!
+  const count = (v: { constraints: { type: string; refs: string[] }[] }) => v.constraints.filter((c) => c.type === 'horizontal' && c.refs.join() === line).length
+  expect(count(opened['sketch'] as { constraints: { type: string; refs: string[] }[] })).toBe(1)
+  await tapLine(page, w, line)
+  await expect.poll(() => (w.got.filter((m) => m['type'] === 'sketch.fitted').at(-1)?.['selection'] as string[] | undefined)?.[0]).toBe(line)
+  const fits = w.got.filter((m) => m['type'] === 'sketch.fitted').at(-1)!['tools'] as string[]
+  expect(fits).toContain('horizontal')
+  const glyphCount = () => page.locator('.sketch-layer g[data-kind="constraint"]').count()
+  const before = await glyphCount()
+  await group(page).click()
+  await page.locator('.group-row[data-tool="horizontal"] .group-tool').click()
+  await expect(page.getByTestId('constraint-note')).toHaveText('Already horizontal')
+  const answer = w.got.filter((m) => m['type'] === 'sketch.constrained').at(-1)!
+  expect(answer['already']).toBe(true)
+  expect(count(answer['sketch'] as { constraints: { type: string; refs: string[] }[] })).toBe(1)
+  expect(await glyphCount()).toBe(before)
+  expect(w.got.filter((m) => m['type'] === 'sketch.changed')).toHaveLength(0)
+})
+
 /** The screen position of a sketch point (u, v in mm): the plane's axes are read off the view. */
 async function screenFor(page: Page, u: number, v: number): Promise<Point> {
   const o = await screenOf(page, 'point', 'origin')

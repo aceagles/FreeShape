@@ -332,8 +332,11 @@ is one undo step. Other steps, undo, redo and commit are refused while one is op
                 (symmetric: the axis is the third). A tool that cannot use the picks is an error naming "picks". The
                 client never maps picks to constraint types itself. Answer {"type": "sketch.constrained",
                 "accepted": bool, "made": [new constraint ids], "conflicts": [new constraint ids the solve could not
-                meet], ...the fields of sketch.changed}. accepted false: the sketch, its status and the undo stack
-                are exactly as before (no step); accepted true: one undo step.
+                meet or skipped (no equation for those items)], ...the fields of sketch.changed}. accepted false: the sketch,
+                its status and the undo stack are exactly as before (no step); accepted true: one undo step. When
+                every relation the picks would make is already in the sketch (same kind, same items), nothing changes
+                (no step, same revision) and the answer carries "already": true and "kind": the tool, with accepted
+                true and made []; when only some exist, the new ones are added and the answer is an ordinary add.
   sketch.unconstrain {"type": "sketch.unconstrain", "constraint": constraint id}  remove that one constraint, one step
                 (the field is not "id": that stays the request id); answers sketch.changed.
   sketch.fits   {"type": "sketch.fits", "selection": [point or entity id, ...]}  no change, allowed during a drag;

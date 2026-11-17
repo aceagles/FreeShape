@@ -418,8 +418,12 @@ class SketchSession:
         makes of those picks (sketch_ops.constraints_for), as one step. A pick that is not a point or entity of the
         sketch, or picks the tool cannot use, are a SketchError. If the solve cannot meet a new constraint (or the
         sketch was solvable and no longer is) the sketch, its status and the undo and redo stacks are left as they
-        were. Returns {"accepted": bool, "made": [constraint ids] (those added), "conflicts": [constraint ids] (the
-        new ones the solve could not meet, when not accepted)}."""
+        were. A relation the sketch already holds (same kind, same items, any order) is not added again; when every one
+        is already there nothing changes (no step) and the answer is {"accepted": true, "already": true, "kind":
+        the tool, "made": [], "conflicts": []}; when only some are, only the new ones are added. A new constraint
+        the solver reports bad or skipped (no equation for those items) is refused like a conflicting one. Returns
+        {"accepted": bool, "made": [constraint ids] (those added), "conflicts": [constraint ids] (the new ones the
+        solve could not meet or skipped, when not accepted)}, plus "already" and "kind" as above."""
         _only(body, {"tool", "picks"}, "constrain")
         tool = body.get("tool")
         if tool not in OPS.FIT_TOOLS:
@@ -432,10 +436,14 @@ class SketchSession:
         made = OPS.constraints_for(self.sk, tool, picks)
         if not made:
             raise SketchError(f"constrain.picks: a {tool} constraint does not take these items")
+        # a pair holds at most one relation of each kind: asking again for what is there changes nothing
+        made = OPS.new_relations(self.sk, made)
+        if not made:
+            return {"accepted": True, "already": True, "kind": tool, "made": [], "conflicts": []}
         before_ids = {c["id"] for c in self.sk.constraints}
         before, status, redo = self.sk.to_dict(), self._status, list(self.redo_stack)
         new = self._step(lambda: [c["id"] for c in OPS.apply_constraints(self.sk, tool, made)])
-        bad = [i for i in new if self._status["constraints"].get(i) == "conflicting"]
+        bad = sorted(OPS.unmet(self.sk, [i for i in new if i not in before_ids]))
         if bad or (status["ok"] and not self._status["ok"]):
             self.sk = Sketch.from_dict(before)
             self._status = status

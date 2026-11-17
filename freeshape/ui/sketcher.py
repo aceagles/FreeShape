@@ -1138,7 +1138,7 @@ class Sketcher:
                 self._prompt_label = "⚠ " + CONSTRAINT_TOOLS.get(tool, "Selection does not fit this constraint")
             return False
         # a pair holds at most one relation of each kind: asking again for what is already there adds nothing
-        made = [m for m in made if sk.find_constraint(m[0], m[1]) is None]
+        made = OPS.new_relations(sk, made)
         if not made:
             self._flashing = True
             self._prompt_label = "⚠ Already " + CONSTRAINT_LABELS.get(tool, tool).lower()
@@ -1149,7 +1149,7 @@ class Sketcher:
         OPS.apply_constraints(sk, tool, made)
         new_ids = {c["id"] for c in sk.constraints[n_before:]}
         sk.solve()
-        failed = new_ids & (set(sk.status.get("bad", ())) | set(sk.status.get("skipped", ())))
+        failed = OPS.unmet(sk, new_ids)
         if failed:
             # the solver can't meet it (it fights what is there, or the pair isn't supported): put the sketch back
             # and say so, rather than leave a badge that does nothing

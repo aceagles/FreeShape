@@ -182,6 +182,12 @@ export class ConstraintStore {
       case 'sketch.constrained': {
         const tool = this.pending
         this.pending = null
+        // every relation was already there: nothing changed (the desktop's "Already horizontal")
+        if (m['already'] === true) {
+          const kind = tool ?? (typeof m['kind'] === 'string' ? m['kind'] : null)
+          this.set({ message: `Already ${kind === null ? 'there' : label(kind).toLowerCase()}` })
+          return
+        }
         if (m['accepted'] === false) this.set({ message: `${tool === null ? 'That constraint' : label(tool)} conflicts with the constraints already there. Nothing changed.` })
         return
       }

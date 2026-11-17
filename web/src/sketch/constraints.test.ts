@@ -88,6 +88,19 @@ it('a conflict shows a message and leaves the drawn sketch as it was', () => {
   expect(r.constraints.getState().message).toBeNull()
 })
 
+it('an "already" answer shows the note, adds nothing, and the next selection clears it', () => {
+  const r = rig()
+  r.sketch.select({ kind: 'entity', id: 'e1' })
+  fitted(r, ['horizontal'])
+  r.constraints.choose('horizontal')
+  const before = r.sketch.getState().view
+  r.say({ ...changed({ can_undo: false }), type: 'sketch.constrained', accepted: true, already: true, kind: 'horizontal', made: [], conflicts: [] })
+  expect(r.constraints.getState().message).toBe('Already horizontal')
+  expect(r.sketch.getState().view!.sketch.constraints).toEqual(before!.sketch.constraints)
+  r.sketch.select({ kind: 'entity', id: 'e2' })
+  expect(r.constraints.getState().message).toBeNull()
+})
+
 it('an accepted constraint replaces the sketch like any step', () => {
   const r = rig()
   r.sketch.select({ kind: 'entity', id: 'e1' })

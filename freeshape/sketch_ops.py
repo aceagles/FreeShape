@@ -1124,6 +1124,20 @@ def apply_constraints(sk: Sketch, tool: str, made) -> list:
     return out
 
 
+def new_relations(sk: Sketch, made) -> list:
+    """`made` (from `constraints_for`) without the relations `sk` already holds: a pair has at most one relation of
+    each kind (Sketch.find_constraint). Empty when every one is already there. The desktop and the served sketch
+    session both filter with this."""
+    return [m for m in made if sk.find_constraint(m[0], m[1]) is None]
+
+
+def unmet(sk: Sketch, ids) -> set:
+    """Which of the constraints `ids` the last solve of `sk` did not meet: the ones it reports bad (they fight what
+    is there) and the ones it skipped (no equation for that pair). A new constraint in this set is rolled back."""
+    st = sk.status or {}
+    return set(ids) & (set(st.get("bad", ())) | set(st.get("skipped", ())))
+
+
 # --------------------------------------------------------------------------- dimensions and trim (I7.6)
 # Moved out of the desktop's Sketcher (_dim_spec, _trim); the desktop and the sketch session of `freeshape serve` both
 # call these.

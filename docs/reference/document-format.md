@@ -524,3 +524,38 @@ A tab file holds blob keys only. A Document tab's blobs go through the store (`D
 Blob rules (`freeshape/blobstore.py`): a blob file is named by the sha256 of its bytes, in 64 lowercase hex characters. The `blobs/` folder sits beside the tab file. The store refuses a symlinked folder or file, a blob over 64 MiB, and content whose hash is not its name. Bytes reach a parser only after that check. Writes use a `.tmp` file and `os.replace`. Equal content is stored once.
 
 [ADR 0009](../adr/0009-tab-data-goes-through-a-document-store.md) records that all binary data lives in the store's blobs, addressed by hash. Before I4.9 it was stored three ways: base64 inline in Assembly and Drawing files, an inline `blobs` object for imported STEP files, and these blob folders.
+
+## Archive
+
+A Document is stored as a folder, and travels as one file: a zip with the extension `.fsdoc` ([ADR 0017](../adr/0017-document-archive.md)). `freeshape/doc_archive.py` writes it (`pack`) and reads it (`unpack`); the desktop's Document menu has Save Document archive… and Open Document archive…. Versions and Workspaces are not carried: the archive holds the Document as last saved.
+
+### Archive entries
+
+| Entry | Content |
+| --- | --- |
+| `freeshape-archive.json` | The marker. Always the first entry. See Archive marker. |
+| `.gitattributes` | The folder's `.gitattributes`, when it has one. |
+| `document.json` | The manifest, as saved. |
+| `<tab file>` | Each file the manifest names, at the same relative path. |
+| `<tab dir>/blobs/<sha256>` | Every blob in the `blobs/` folder beside a tab file. |
+
+Nothing else goes in: no `.git`, no `.freeshape-lock`, no other dot-file, and no file the manifest does not name. The entries after the marker are sorted by name, and every entry has the time 1980-01-01 00:00 and mode 0644, so packing the same folder twice gives the same bytes. Pack reads through the Document store, so a tab file that is a symlink or resolves outside the folder, and a blob that fails the blob rules, are refused.
+
+### Archive marker
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `format` | string | Always `freeshape-archive`. |
+| `version` | integer | Archive version. Current is 1. A value above it is refused. |
+
+### Opening an archive
+
+`unpack` treats the archive as hostile. Before it writes anything it refuses an archive that:
+
+- is not a zip, or has no marker, or a marker of another format or a newer version;
+- has more than 5,000 entries;
+- has an entry name that is absolute, holds a `..` segment, a backslash or a drive colon, has a segment starting with a dot (other than `.gitattributes`), or is not one of the entries above (a tab file must end in a tab kind's extension; a blob is 64 lowercase hex characters in a `blobs/` folder);
+- holds a name twice (ignoring case), a symlink entry, an encrypted entry, or an entry compressed other than stored or deflated;
+- unpacks to more than 1 GiB, or has an entry over 64 KiB that unpacks to more than 200 times its packed size.
+
+It then unpacks into a temporary folder and refuses a manifest that is not a Document or that names a tab file the archive lacks. The Document gets a fresh `id`, so it never clashes with the Document it was packed from. The folder is copied to a new folder named from the archive's name (`<name>`, then `<name> 2`, `<name> 3`, …), given a new git repository with one commit, and registered as a Document the app created. On a refusal nothing is left behind.

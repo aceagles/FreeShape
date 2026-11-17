@@ -266,7 +266,7 @@ def test_every_registered_step_is_listed(fmt):
 def test_glossary_and_decision_records_are_in_the_repo():
     assert os.path.isfile(os.path.join(REPO, "CONTEXT.md"))
     names = sorted(os.path.basename(p) for p in glob.glob(os.path.join(ADR_DIR, "*.md")))
-    assert [n[:4] for n in names] == [f"{i:04d}" for i in range(1, 17)]
+    assert [n[:4] for n in names] == [f"{i:04d}" for i in range(1, 18)]
 
 
 def _markdown_files():

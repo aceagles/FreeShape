@@ -25,6 +25,7 @@ from ..document import PartStudioDoc
 from ..assembly import AssemblyDoc
 from ..drawing import DrawingDoc
 from .. import blobstore
+from .. import doc_archive
 from .. import doc_folder
 from .. import doc_lock
 from .. import docstore
@@ -445,6 +446,7 @@ class MainWindow(QMainWindow):
         self._add_action(m, "Open…", self.open_dialog, "Ctrl+O")
         self._add_action(m, "New Document folder…", self._home_new_document)
         self._add_action(m, "Open Document folder…", self.open_document_dialog)
+        self._add_action(m, "Open Document archive…", self.open_document_archive)
         self._add_action(m, "Add files to Document…", self.add_to_document)
         self.recent_menu = m.addMenu("Open recent")
         self.recent_menu.aboutToShow.connect(self._fill_recent)
@@ -452,6 +454,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._add_action(m, "Save", self.save, "Ctrl+S")
         self._add_action(m, "Save as…", self.save_as, "Ctrl+Shift+S")
+        self._add_action(m, "Save Document archive…", self.save_document_archive)
         m.addSeparator()
         self._add_action(m, "Import STEP / BREP (new tab)…", self.import_step)
         self._add_action(m, "Import STEP / BREP into this tab…", lambda: self.import_step(into_current=True))
@@ -478,7 +481,7 @@ class MainWindow(QMainWindow):
         menu_btn.setMenu(m)
         self._lock_actions = [a for a in m.actions() if a.text() in (
             "New Part Studio", "New Assembly", "New Drawing…", "Add files to Document…", "Save", "Save as…",
-            "Import STEP / BREP (new tab)…", "Import STEP / BREP into this tab…")]
+            "Save Document archive…", "Import STEP / BREP (new tab)…", "Import STEP / BREP into this tab…")]
         h.addWidget(menu_btn)
         view_btn = QToolButton()
         view_btn.setObjectName("menuButton")
@@ -2335,6 +2338,71 @@ class MainWindow(QMainWindow):
         path = self._pick_document_path()
         if path:
             self.open_any(path)
+
+    # ------------------------------------------------------------------ the .fsdoc archive (ADR 0017)
+    def _pick_archive_to_open(self):
+        path, _ = filedlg.getOpenFileName(self, "Open Document archive", "",
+                                          f"FreeShape Document archives (*{doc_archive.EXTENSION})",
+                                          doc_path=self._doc_path())
+        return path
+
+    def _pick_archive_save_path(self, name):
+        path, _ = filedlg.getSaveFileName(self, "Save Document archive", f"{name}{doc_archive.EXTENSION}",
+                                          f"FreeShape Document archives (*{doc_archive.EXTENSION})",
+                                          doc_path=self._doc_path())
+        return path
+
+    def open_document_archive(self, path=None):
+        """Unpack a `.fsdoc` archive into a new Document folder in the managed folder and open it. Returns the
+        opened FolderDocument, or None."""
+        self._leave_modes()
+        path = path or self._pick_archive_to_open()
+        if not path:
+            return None
+        if not self._close_document():
+            return None
+        try:
+            if os.path.getsize(path) > doc_archive.MAX_BYTES:
+                raise doc_archive.ArchiveError(f"the file is over {doc_archive.MAX_BYTES} bytes")
+            with open(path, "rb") as fh:
+                data = fh.read()
+            name = os.path.splitext(os.path.basename(path))[0]
+            folder = doc_archive.unpack(data, doc_registry.managed_root(), name,
+                                        registry=doc_registry.default_registry())
+        except (K.KernelError, OSError) as e:
+            QMessageBox.critical(self, APP_NAME, f"Could not open the Document archive {path}:\n{e}")
+            return None
+        return self.open_document(folder)
+
+    def save_document_archive(self, path=None):
+        """Save the open Document, then write it as a `.fsdoc` archive. True when the archive was written."""
+        fd = self.folder
+        if fd is None:
+            QMessageBox.information(self, APP_NAME, "Open or create a Document first, then save it as an archive.")
+            return False
+        self._leave_modes()
+        if self.versions_ui.refuse_save() or not self._save_document():
+            return False
+        path = path or self._pick_archive_save_path(fd.name)
+        if not path:
+            return False
+        if not path.lower().endswith(doc_archive.EXTENSION):
+            path += doc_archive.EXTENSION
+        tmp = path + ".tmp"
+        try:
+            data = doc_archive.pack(fd.path)
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, path)
+        except (K.KernelError, OSError) as e:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            QMessageBox.critical(self, APP_NAME, f"Could not save the Document archive:\n{e}")
+            return False
+        self.status.showMessage(f"Saved the Document archive {path}", 4000)
+        return True
 
     def create_document(self, path, name=None):
         """Make a new Document folder with one empty Part Studio tab and open it."""

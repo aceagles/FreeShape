@@ -126,8 +126,8 @@ class _WorkerEngine(InProcessEngine):
 
     LINKS = False            # the parent owns the Link graph
 
-    def __init__(self, meshes=True):
-        super().__init__(meshes=meshes)
+    def __init__(self, meshes=True, placed=False):
+        super().__init__(meshes=meshes, placed=placed)
         self.upstream = {}       # parent tab id -> _StudioView / _AssemblyView
         self.upstream_key = None
         self._shapes = {}        # hash -> shape rebuilt from its BREP, so an unchanged part stays the same object
@@ -231,7 +231,7 @@ class _SentBlobs:
 class _Worker:
     def __init__(self, spec):
         self.tab = spec["tab"]
-        self.engine = _WorkerEngine(meshes=spec["meshes"])
+        self.engine = _WorkerEngine(meshes=spec["meshes"], placed=bool(spec.get("placed")))
         self.engine.use_document(spec.get("document_id"))     # whose tab ids the sources name: see CrossTabInputs
         self.engine.install(spec.get("upstream"), spec.get("upstream_key"))
         self.engine.by_tab_id = bool(spec.get("by_tab_id"))   # the parent's matching rule (process._match)

@@ -3115,22 +3115,32 @@ def run_import(state, f):
                 items = K.import_step_with_colors(path)
             except Exception:
                 items = [(s, None, None, {}) for s in K.import_step(path)]   # plain geometry as a fallback
+        seeded = {}      # the same geometry placed again (an assembly's repeated screw) is named once
         for shape, name, color, fcols in items:
             part = state.new_part(shape, f["id"], tuple(color) if color else None)
             state.parts[part.id] = Part(part.id, name or part.name, part.shape, part.color, fcols or None)
-            state.set_named(part.id, _import_names(part.shape, f["id"]))
+            state.set_named(part.id, _import_names(part.shape, f["id"], seeded))
     finally:
         os.unlink(path)
 
 
-def _import_names(shape, fid):
+def _import_names(shape, fid, seeded=None):
     """The element map of an imported solid. A STEP file carries no history, and FreeCAD's reader
     attaches no element map either (spec I1.7), so every element is seeded from the feature id and
-    its position in the shape's own sub-shape order, which the same bytes always reproduce."""
+    its position in the shape's own sub-shape order, which the same bytes always reproduce.
+    A placed copy of a solid (same geometry, another location) has the same sub-shape order and so the
+    same names: `seeded` ({hash: (unplaced shape, names)}) keeps them so each geometry is named once."""
+    base = shape.Located(K.TopLoc_Location()) if seeded is not None else None
+    hit = seeded.get(hash(base)) if base is not None else None
+    if hit is not None and hit[0].IsSame(base):
+        return N.NamedShape(shape, dict(hit[1]))
     try:
-        return N.seed(shape, fid, N.OP_FOR["import"])
+        named = N.seed(shape, fid, N.OP_FOR["import"])
     except N.NamingError:
         return None
+    if base is not None:
+        seeded[hash(base)] = (base, named.names)
+    return named
 
 
 def _tool_names(state, fid, shape, label):

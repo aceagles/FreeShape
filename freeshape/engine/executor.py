@@ -357,9 +357,9 @@ class StudioTab(_Tab):
         for p in st.parts.values():     # I3.7: hand each part its element-name map (encode.element_names reads it)
             if getattr(p, "named", None) is None:
                 p.named = st.named(p.id)
-        parts = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
+        parts = [enc.part(p, hidden=p.id in doc.hidden_parts, placed=enc.placed) for p in st.parts.values()
                  if not p.reference]     # I5.3: a Context body never leaves the studio ...
-        context = [enc.part(p, hidden=p.id in doc.hidden_parts) for p in st.parts.values()
+        context = [enc.part(p, hidden=p.id in doc.hidden_parts, placed=enc.placed) for p in st.parts.values()
                    if p.reference]       # ... except to its own window, in `context`, so it can show and mark them
         sketches = []
         for fid, res in st.sketches.items():
@@ -558,9 +558,9 @@ _TAB_CLASS = {"studio": StudioTab, "assembly": AssemblyTab, "drawing": DrawingTa
 class InProcessEngine(Engine):
     LINKS = True         # record the Link graph and rebuild dependents (off in a worker: the parent owns the graph)
 
-    def __init__(self, meshes=True):
+    def __init__(self, meshes=True, placed=False):
         self.generation = 0
-        self.encoder = Encoder(meshes=meshes)
+        self.encoder = Encoder(meshes=meshes, placed=placed)
         self.inputs = CrossTabInputs(self)
         self.links = self.inputs.resolver
         self.document_id = None        # the Document these tabs belong to (`use_document`)

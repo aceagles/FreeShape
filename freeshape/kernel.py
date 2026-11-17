@@ -2215,18 +2215,58 @@ class Mesh:
     face_edges: list = field(default_factory=list)    # per face: indices (into edge_polys) of its boundary edges
 
 
-def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.2, edges_too: bool = True) -> Mesh:
-    """Triangulate every face. edges_too=False skips the edge polylines (mesh export does not need them)."""
+def moved_mesh(m: Mesh, M) -> Mesh:
+    """`m` placed by the 4x4 (or 3x4) transform M: points, normals, edge polylines and vertices move; the
+    triangles and face/edge indices are shared with `m`, not copied."""
+    M = np.asarray(M, float)
+    R, t = M[:3, :3], M[:3, 3]
+    nrm = np.asarray(m.normals, float) @ R.T
+    if not np.allclose(R.T @ R, np.eye(3), atol=1e-9):          # a scaled placement: normals stay unit length
+        ln = np.linalg.norm(nrm, axis=1, keepdims=True)
+        ln[ln == 0] = 1
+        nrm /= ln
+    return Mesh((np.asarray(m.verts, float) @ R.T + t).astype(np.float32), nrm.astype(np.float32), m.tris,
+                m.tri_face, m.face_ranges, [(np.asarray(e, float) @ R.T + t).astype(np.float32) for e in m.edge_polys],
+                (np.asarray(m.vertices, float) @ R.T + t).astype(np.float32), m.face_edges)
+
+
+def location_matrix(loc) -> np.ndarray:
+    """The 4x4 matrix of a TopLoc_Location."""
+    tr = loc.Transformation()
+    M = np.eye(4)
+    for r in range(3):
+        for c in range(4):
+            M[r, c] = tr.Value(r + 1, c + 1)
+    return M
+
+
+def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.2, edges_too: bool = True,
+               bases: dict | None = None) -> Mesh:
+    """Triangulate every face. edges_too=False skips the edge polylines (mesh export does not need them).
+    A placed shape (a non-identity location, as every occurrence of an imported assembly's part is) is meshed
+    in its own coordinates and the mesh moved into place, with the deflection of the unplaced shape so every
+    copy is triangulated alike. `bases` ({key: (unplaced shape, mesh)}, the caller's) keeps those meshes, so
+    the same geometry placed many times is meshed once."""
+    loc = shape.Location()
+    if not loc.IsIdentity() and loc.Transformation().IsNegative() is False:   # (a mirror is meshed in place)
+        base = shape.Located(TopLoc_Location())
+        key = (hash(base), lin_defl, ang_defl, edges_too)
+        hit = bases.get(key) if bases is not None else None
+        if hit is None or not hit[0].IsSame(base):
+            hit = (base, tessellate(base, lin_defl, ang_defl, edges_too))
+            if bases is not None:
+                bases[key] = hit
+        return moved_mesh(hit[1], location_matrix(loc))
     if lin_defl is None:
         lo, hi = bbox(shape)
         lin_defl = max(np.linalg.norm(hi - lo) * 0.001, 1e-3)
     BRepMesh_IncrementalMesh(shape, lin_defl, False, ang_defl, True)
     V, N, T, TF, ranges = [], [], [], [], []
     base = 0
+    start = 0
     for fi, f in enumerate(faces(shape)):
         loc = TopLoc_Location()
         tri = BRep_Tool.Triangulation_s(f, loc)
-        start = sum(len(t) for t in T)
         if tri is None:
             ranges.append((start, start))
             continue
@@ -2265,6 +2305,7 @@ def tessellate(shape, lin_defl: float | None = None, ang_defl: float = 0.2, edge
         T.append(idx + base)
         TF.append(np.full(nt, fi, dtype=np.int32))
         ranges.append((start, start + nt))
+        start += nt
         base += nb
     seams = seam_edge_indices(shape) if edges_too else set()
     polys = []
@@ -2393,7 +2434,8 @@ def _import_step_with_colors(path, progress=None):
     progress = progress or (lambda _t: None)
     from OCP.STEPCAFControl import STEPCAFControl_Reader
     from OCP.TDocStd import TDocStd_Document
-    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TCollection import TCollection_ExtendedString, TCollection_AsciiString
+    from OCP.TDF import TDF_Tool
     from OCP.XCAFDoc import (XCAFDoc_DocumentTool, XCAFDoc_ColorTool, XCAFDoc_ShapeTool,
                              XCAFDoc_ColorGen, XCAFDoc_ColorSurf)
     from OCP.TDF import TDF_Label
@@ -2495,9 +2537,25 @@ def _import_step_with_colors(path, progress=None):
             for i in range(1, comps.Length() + 1):
                 walk(comps.Value(i), loc, own_color, own_name, depth + 1)
             return
+        # A part used many times (every screw of an assembly) is worked out once: later occurrences reuse the
+        # solids, name and colours and only move them, so they share the part's geometry (TShape).
+        key = (label_entry(label), own_color, own_name)
+        parts = seen.get(key)
+        if parts is None:
+            parts = seen[key] = part_items(label, own_color, own_name)
+        for sol, nm, c, fcols in parts:
+            out.append((sol.Moved(loc) if not loc.IsIdentity() else sol, nm, c, dict(fcols)))
+
+    def label_entry(label):
+        s = TCollection_AsciiString()
+        TDF_Tool.Entry_s(label, s)
+        return s.ToCString()
+
+    def part_items(label, own_color, own_name):
+        items = []
         shape = get_shape(label)
         if shape.IsNull():
-            return
+            return items
         sols = solids(shape) or [shape]
         sub_color = None if own_color else dominant_sub_color(label, shape)
         for k, sol in enumerate(sols):
@@ -2534,8 +2592,10 @@ def _import_step_with_colors(path, progress=None):
             for fi, col in raw.items():
                 if c is None or max(abs(a - b) for a, b in zip(col, c)) > 0.02:
                     fcols[fi] = col
-            out.append((sol.Moved(loc) if not loc.IsIdentity() else sol, nm, c, fcols))
+            items.append((sol, nm, c, fcols))
+        return items
 
+    seen = {}
     progress("Collecting parts, names and colours")
     free = TDF_LabelSequence()
     st.GetFreeShapes(free)

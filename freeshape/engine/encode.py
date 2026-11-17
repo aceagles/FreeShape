@@ -73,8 +73,8 @@ def named_elements(named) -> dict:
     return out
 
 
-def mesh_out(shape) -> MeshOut:
-    m = K.tessellate(shape)
+def mesh_out(shape, bases=None) -> MeshOut:
+    m = K.tessellate(shape, bases=bases)
     return MeshOut(verts=np.asarray(m.verts, np.float32), normals=np.asarray(m.normals, np.float32),
                    tris=np.asarray(m.tris, np.uint32), tri_face=np.asarray(m.tri_face, np.int32) + 1,
                    edge_polys=[np.asarray(p, np.float32) for p in m.edge_polys],
@@ -86,10 +86,13 @@ class Encoder:
     """Shape -> (BREP bytes, hash) and hash -> mesh, cached so an unchanged part is neither written nor
     meshed again on the next `outputs`. Entries hold the shape itself, so its id() cannot be reused."""
 
-    def __init__(self, meshes=True):
+    def __init__(self, meshes=True, placed=False):
         self.meshes = meshes
+        self.placed = placed     # `part(placed=True)` may send a placed part (PartOut.loc) -- the window reads it
         self._brep = {}      # id(shape) -> (shape, compressed brep, hash)
         self._mesh = {}      # hash -> MeshOut
+        self._bases = {}     # hash(unplaced shape) -> (unplaced shape, compressed brep, hash)
+        self._mesh_bases = {}  # unplaced geometry -> its mesh, so a placed copy is not meshed again (K.tessellate)
 
     def brep(self, shape):
         hit = self._brep.get(id(shape))
@@ -113,21 +116,55 @@ class Encoder:
             return None
         hit = self._mesh.get(digest)
         if hit is None:
-            hit = mesh_out(shape)
+            hit = mesh_out(shape, self._mesh_bases)
             if len(self._mesh) >= _CACHE_LIMIT:
                 self._mesh.clear()
+                self._mesh_bases.clear()
             self._mesh[digest] = hit
         return hit
 
-    def part(self, part, hidden=False, mesh=True) -> PartOut:
-        """A features.Part as output, in its own coordinates (`mesh=False`: without its display mesh)."""
-        data, digest = self.brep(part.shape)
+    def base(self, shape):
+        """(BREP bytes, hash) of a shape with its location taken off: the same object for every placed copy of
+        one geometry, so it is written, hashed and sent once."""
+        key = hash(shape)
+        hit = self._bases.get(key)
+        if hit is None or not hit[0].IsSame(shape):
+            data, digest = self.brep(shape)
+            hit = (shape, data, digest)
+            if len(self._bases) >= 4 * _CACHE_LIMIT:
+                self._bases.clear()
+            self._bases[key] = hit
+        return hit[1], hit[2]
+
+    def _placement(self, shape):
+        """(unplaced shape, 4x4 matrix) of a placed shape (a rotation and/or a move, not a mirror), else None."""
+        loc = shape.Location()
+        if loc.IsIdentity() or loc.Transformation().IsNegative():
+            return None
+        return shape.Located(K.TopLoc_Location()), K.location_matrix(loc)
+
+    def part(self, part, hidden=False, mesh=True, placed=False) -> PartOut:
+        """A features.Part as output, in its own coordinates (`mesh=False`: without its display mesh).
+        `placed=True`: a part whose shape is a placed copy goes as its unplaced geometry plus `loc` (see
+        contract.PartOut), so an assembly's hundred identical screws are written, meshed and sent once."""
+        place = self._placement(part.shape) if placed else None
+        loc = base = None
+        if place is None:
+            data, digest = self.brep(part.shape)
+            geo, geo_digest = part.shape, digest
+        else:
+            geo, M = place
+            data, base = self.base(geo)
+            geo_digest = base
+            loc = [[float(x) for x in row] for row in M]
+            digest = hashlib.sha256((base + json.dumps(loc)).encode()).hexdigest()
         fc = None
         if part.face_colors:      # kept 0-based by features.py; 1-based here, like every output index
             fc = {int(i) + 1: tuple(float(c) for c in rgb) for i, rgb in part.face_colors.items()}
         return PartOut(id=str(part.id), name=str(part.name), color=tuple(float(c) for c in part.color),
                        hidden=bool(hidden), brep=data, hash=digest, names=element_names(part),
-                       mesh=self.mesh(part.shape, digest) if mesh else None, face_colors=fc)
+                       mesh=self.mesh(geo, geo_digest) if mesh else None, face_colors=fc, loc=loc,
+                       base=base or "")
 
 
 def sketch_out(fid, name, result) -> SketchOut:

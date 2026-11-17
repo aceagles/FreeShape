@@ -168,8 +168,9 @@ def _wait_exit(proc, timeout):
 class ProcessEngine(Engine):
     """`spares`: how many warm workers to keep ready for the next tab (0: start each worker on demand)."""
 
-    def __init__(self, meshes=True, spares=1):
+    def __init__(self, meshes=True, spares=1, placed=False):
         self.meshes = meshes
+        self.placed = placed                   # Part Studio parts may come as placed copies (contract.PartOut.loc)
         self.spares = spares
         self._ctx = multiprocessing.get_context("spawn")
         self.links = links.LinkResolver()      # the Link graph: edges only, nothing is resolved through it
@@ -184,7 +185,7 @@ class ProcessEngine(Engine):
     # ------------------------------------------------------------------ workers
     def _start(self, t, upstream, key):
         spec = {"tab": t.tab, "kind": t.kind, "path": t.path, "data": t.data, "name": t.name,
-                "edits": copy.deepcopy(t.edits), "revision": t.revision, "meshes": self.meshes,
+                "edits": copy.deepcopy(t.edits), "revision": t.revision, "meshes": self.meshes, "placed": self.placed,
                 "upstream": upstream, "upstream_key": key, "document_id": self.document_id,
                 "open_name": t.open_name, "blobs": None if t.lookup is None else dict(t.blobs),
                 "by_tab_id": self.by_tab_id}
@@ -463,6 +464,17 @@ class ProcessEngine(Engine):
         t.lookup = blobs
         t.sources = [copy.deepcopy(s) for s in sources if isinstance(s, dict)]
         return self._register(t, tab)
+
+    def abort(self, tab, why="cancelled"):
+        """End the tab's worker now, from any thread: a call waiting on it raises TabErrored (`why`) instead of
+        waiting for a build nobody wants any more. The tab stays errored until `restart` or `close_tab`."""
+        t = self._tabs.get(tab)
+        if t is None:
+            return
+        with t.lock:
+            if t.error is None:
+                t.error = why
+        self._stop(t)
 
     def close_tab(self, tab):
         """Drop the tab and end its worker (killed if it has not finished within STOP_GRACE_S)."""

@@ -189,6 +189,8 @@ class Viewport(QOpenGLWidget):
         self.count_badge.hide()
         self.selectionChanged.connect(self._update_count_badge)
         self._mesh_cache = {}
+        self._mesh_cache_limit = 600     # raised to fit the scene: a big import must not mesh itself again on every draw
+        self._base_meshes = {}           # unplaced geometry -> its mesh, for parts placed many times (K.tessellate)
         self._placed_cache = {}
         self.progress_cb = None   # callable(i, n, text) while a long import fills the scene
         self.feature_hl = None    # {"faces": {pid: {i}}, "edges": {pid: {i}}, "polys": [pts]} from the feature list
@@ -244,8 +246,8 @@ class Viewport(QOpenGLWidget):
         hit = self._mesh_cache.get(key)
         if hit is not None and hit[0].IsSame(shape) and hit[0].IsEqual(shape):
             return hit[1]
-        m = K.tessellate(shape)
-        if len(self._mesh_cache) > 600:
+        m = K.tessellate(shape, bases=self._base_meshes)
+        if len(self._mesh_cache) > self._mesh_cache_limit:
             self._mesh_cache.clear()
         self._mesh_cache[key] = (shape, m)
         return m
@@ -253,7 +255,7 @@ class Viewport(QOpenGLWidget):
     def seed_mesh(self, shape, mesh, kind="part"):
         """Show `mesh` (made elsewhere: the engine's worker) for `shape` instead of meshing it here: the next
         set_scene finds it in the cache."""
-        if len(self._mesh_cache) > 600:
+        if len(self._mesh_cache) > self._mesh_cache_limit:
             self._mesh_cache.clear()
         self._mesh_cache[(kind, hash(shape))] = (shape, mesh)
 
@@ -281,6 +283,9 @@ class Viewport(QOpenGLWidget):
         """parts: [(pid, shape, color, face_colors, transform, local_shape)] (the last three optional);
         planes: [(key, Plane, label)]; axes: [(key, origin, direction, span, label)]; sketches: [(fid, SketchResult)]."""
         parts = [tuple(x) + (None,) * (6 - len(x)) + (False,) * (7 - max(len(x), 6)) for x in parts]
+        self._mesh_cache_limit = max(600, 2 * len(parts))
+        if len(self._base_meshes) > self._mesh_cache_limit:
+            self._base_meshes.clear()
         cb = self.progress_cb if len(parts) > 15 else None
         built = []
         for i, (pid, shape, color, _fc, M, local, _ref) in enumerate(parts):

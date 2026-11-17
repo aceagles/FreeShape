@@ -140,6 +140,12 @@ class PartOut:
     names: dict              # {"face": {i: name}, "edge": {...}, "vertex": {...}}, 1-based i; empty if unnamed
     mesh: MeshOut | None
     face_colors: dict | None = None   # 1-based face index -> (r, g, b)
+    # A placed part (only from an engine made with placed=True; see encode.Encoder): `brep` and `mesh` are its
+    # geometry in its own coordinates, shared by every part placed from the same geometry, `base` that BREP's
+    # hash, and `loc` the 4x4 transform (rows) that places it. `hash` covers both. None: brep and mesh are
+    # the part as it sits.
+    loc: list | None = None
+    base: str = ""
 
 
 @dataclass

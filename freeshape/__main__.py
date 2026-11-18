@@ -175,6 +175,8 @@ def main():
     QSurfaceFormat.setDefaultFormat(fmt)
     app = QApplication(sys.argv)
     app.setApplicationName("FreeShape")
+    from . import gui_gc
+    gui_gc.install()            # Qt objects must be freed on this thread: no garbage collection on worker threads
     if sys.platform.startswith("linux"):
         # PyOpenGL must talk to the same OpenGL as Qt: GLX under X11, EGL under Wayland. Left to itself it picks EGL
         # whenever the desktop session is Wayland — even when Qt runs on X11 — and then every drawing call fails

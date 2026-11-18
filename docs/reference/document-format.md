@@ -63,7 +63,7 @@ Written by `Document.to_json` (`freeshape/document.py`). Format tag `freeshape`.
 | `hidden` | list of string | Ids of hidden parts, sorted. |
 | `hidden_features` | list of string | Ids of hidden features, sorted. |
 | `part_aliases` | object | Old part id (`<fid>:<counter>`) to new part id (`<fid>/<n>`). Written by the version 1 to 2 step; kept so older Assemblies and Drawings still resolve. |
-| `python_builds` | object | Only written when a Python feature, a Derived feature or a plugin feature has a stored build. Feature id to Python build entry, or, for a plugin feature, plugin copy entry. |
+| `python_builds` | object | Only written when a Python feature, a Derived feature, a plugin feature or an `import` feature has a stored build. Feature id to Python build entry, or, for a plugin feature, plugin copy entry, or, for an `import` feature, import build entry. |
 | `folders` | object | Feature-list folders: folder id to `{name, open}`. A feature in a folder carries the folder id in its `folder` key. Written only when there is a folder. Since version 4. |
 | `configs` | object | Configurations: `{rows: [{name, vars, suppress}], active}`. `vars` maps a variable name to an expression, `suppress` lists feature ids, `active` is the index of the row in use. Written only when there is a row. Since version 4. |
 | `plugin_copies` | object | Read only: upstream FreeShape 2.0's saved results of plugin features (type `plugin:<id>`), feature id to `{stamp, plugin, numeric, breps}`, with `breps` a list of base64 zlib-compressed BREP texts. On load each becomes a plugin copy entry in `python_builds`, its BREPs held as blobs for the next save. Not written. Since version 4. |
@@ -171,6 +171,26 @@ Value of `python_builds[<feature id>]` for a plugin feature (type `plugin:<id>`)
 | `plugin` | string | Name of the plugin file that made it. |
 | `numeric` | list of string | Parameter keys that take expressions, so they still evaluate without the plugin. |
 | `breps` | list of string | Blob keys of the BREP bytes of each body the plugin returned, before the boolean into existing parts. |
+
+### Import build entry
+
+Value of `python_builds[<feature id>]` for an `import` feature (#64, card I2.1), written by `features.import_build_record` in the process that read the file: the engine worker in the app. It is stored by the first save after a good import. While `stamp` matches the feature, the feature builds its parts from these BREP blobs, in the window and in the worker, and the imported file is not read. A stamp that does not match, or a blob that will not read, reads the file instead; the next save then stores a new entry. The imported file stays in the blobs for that and for a re-import. Element names are not stored: they are seeded again from the restored shapes, whose sub-shape order a BREP round trip keeps. A build before I2.1 ignores the entry and reads the file, so the key needs no migration step.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `stamp` | string | JSON list `["import", build version, naming version, OCP version, reader, blob key]`: what the build was made from. Reader is `step` or `brep`; blob key is the feature's `params.blob`. |
+| `bases` | list of string | Blob keys of the zlib-compressed BREP of each distinct geometry, without its placement. |
+| `parts` | list | One entry per part, in creation order: part `<feature id>/<n>` is entry n. |
+
+Each entry of `parts`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `name` | string | Part name as the import gave it. |
+| `color` | list of number | RGB colour, each 0 to 1. |
+| `face_colors` | object or null | Face index (0-based, as a string) to RGB, for faces coloured unlike the part. |
+| `base` | integer | Index into `bases` of the part's geometry. |
+| `loc` | list or null | The part's placement, 3 rows of 4 numbers. Null when the base holds the part as it is (no placement, or a mirrored one kept in the BREP). |
 
 ## Assembly file
 
@@ -511,6 +531,7 @@ Keys: the in-Document keys plus `document` (the other Document's id) and `versio
 | Exact Drawing views | `blobs/<sha256>` beside the `.fdwg` file, named by `_views_blob` | JSON curves plus the sha1 of the BREP. |
 | Last build of a Python feature | `blobs/<sha256>` beside the `.fshape` file, named by `python_builds` | BREP bytes and a names JSON, one blob each. |
 | Saved copy of a plugin feature | `blobs/<sha256>` beside the `.fshape` file, named by `python_builds[<fid>].breps` | BREP bytes, one blob per body. |
+| Stored build of an import | `blobs/<sha256>` beside the `.fshape` file, named by `python_builds[<fid>].bases` | zlib-compressed BREP, one blob per distinct geometry. The same geometry gives the same bytes, so saving again adds no blob. |
 | Context capture ([ADR 0004](../adr/0004-context-stores-captured-shapes.md)) | `blobs/<sha256>` beside the `.fshape` file, named by `params.capture` | A JSON listing `{assembly, instance, solved, neighbours}` plus a BREP blob and a names blob per neighbour. Each neighbour has `id`, `name`, `hash`, `T`, `brep`, `names`. |
 
 A tab file holds blob keys only. A Document tab's blobs go through the store (`DocumentStore.blobs(tab_id)`: the `blobs/` folder beside the tab file in a folder, a dict per tab in a `MemoryStore`). A loose file keeps them in the `blobs/` folder beside itself. An old file that carried data inline loads without any store: its migration step keeps the bytes in memory (`blobstore.HELD`) and the next save writes them. A blob that the tab cannot find leaves that instance, feature or Drawing red with an error naming the key. A blob no tab names is left where it is: nothing deletes blobs.

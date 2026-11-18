@@ -204,6 +204,11 @@ class StudioTab(_Tab):
     kind = "studio"
     OPS = STUDIO_OPS
 
+    def __init__(self, engine, tab, doc, consumes=()):
+        super().__init__(engine, tab, doc, consumes)
+        # an import's stored build (#64) names the very BREP bytes the outputs wrote for each geometry: no second write
+        doc.import_brep = lambda shape, enc=engine.encoder: enc.base(shape)[0]
+
     def _refs(self):
         return [f for f in self.doc.features if links.feature_source(f) is not None and not f.get("suppressed")]
 
@@ -356,6 +361,7 @@ class StudioTab(_Tab):
         doc, enc = self.doc, self.engine.encoder
         st = doc.state
         enc.fit(self.engine.studio_part_count())     # I1.2: caches big enough that this model stays in them
+        enc.set_model([p.shape for p in st.parts.values()])     # I2.3: small parts are meshed relative to it
         for p in st.parts.values():     # I3.7: hand each part its element-name map (encode.element_names reads it)
             if getattr(p, "named", None) is None:
                 p.named = st.named(p.id)

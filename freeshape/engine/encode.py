@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import zlib
 from collections import OrderedDict
 
@@ -31,6 +32,7 @@ from .contract import MateConnectorOut, MeshOut, PartOut, SketchOut, plain
 
 _BREP_VERSION = TopTools_FormatVersion.TopTools_FormatVersion_VERSION_1
 _KIND_OF_LETTER = {"F": "face", "E": "edge", "V": "vertex"}
+_DIAG_STEPS = 4       # a model's diagonal is rounded to a step of 2**(1/4), so a small edit keeps every mesh cached
 _CACHE_MIN = 512      # the least each Encoder cache keeps; `Encoder.fit` raises it to twice the model's parts
 
 
@@ -74,8 +76,10 @@ def named_elements(named) -> dict:
     return out
 
 
-def mesh_out(shape, bases=None) -> MeshOut:
-    m = K.tessellate(shape, bases=bases)
+def mesh_out(shape, bases=None, model_diag=None) -> MeshOut:
+    """A shape's display mesh. `model_diag`: the diagonal of the model it sits in, which coarsens a small part's
+    faces (K.tessellate). STL/3MF export meshes on its own (meshexport.py) and does not use this."""
+    m = K.tessellate(shape, bases=bases, model_diag=model_diag)
     return MeshOut(verts=np.asarray(m.verts, np.float32), normals=np.asarray(m.normals, np.float32),
                    tris=np.asarray(m.tris, np.uint32), tri_face=np.asarray(m.tri_face, np.int32) + 1,
                    edge_polys=[np.asarray(p, np.float32) for p in m.edge_polys],
@@ -104,17 +108,33 @@ class Encoder:
         self.meshes = meshes
         self.placed = placed     # `part(placed=True)` may send a placed part (PartOut.loc) -- the window reads it
         self.limit = _CACHE_MIN
+        self.model_diag = None   # the model's diagonal, rounded (`set_model`): meshes are made relative to it
+        self.release = False     # clean a shape's triangulation once its MeshOut exists (the engine worker sets it)
         self._brep = OrderedDict()       # id(shape) -> (shape, compressed brep, hash)
         self._mesh = OrderedDict()       # hash -> MeshOut
         self._bases = OrderedDict()      # hash(unplaced shape) -> (unplaced shape, compressed brep, hash)
+        self._names = OrderedDict()      # name content -> the one shared dict (see `names`)
         self._mesh_bases = OrderedDict()  # unplaced geometry -> its mesh, so a placed copy is not meshed again
         #                                   (K.tessellate)
 
     def fit(self, parts):
         """Size the caches for a model of `parts` parts (StudioTab.outputs calls it before encoding)."""
         self.limit = max(_CACHE_MIN, 2 * int(parts))
-        for cache in (self._brep, self._mesh, self._bases, self._mesh_bases):
+        for cache in (self._brep, self._mesh, self._bases, self._mesh_bases, self._names):
             self._trim(cache)
+
+    def set_model(self, shapes):
+        """Say which shapes make up the model the next parts are meshed in (StudioTab.outputs calls it before
+        encoding). Its diagonal, rounded to a step of 2**(1/4) so a small edit does not change every mesh's key,
+        sets how coarsely small parts are meshed (K.MODEL_DEFL)."""
+        lo = hi = None
+        for sh in shapes:
+            a, b = K.bbox(sh)
+            if np.any(b > a):
+                lo = a if lo is None else np.minimum(lo, a)
+                hi = b if hi is None else np.maximum(hi, b)
+        diag = 0.0 if lo is None else float(np.linalg.norm(hi - lo))
+        self.model_diag = 2.0 ** (round(math.log2(diag) * _DIAG_STEPS) / _DIAG_STEPS) if diag > 0 else None
 
     def _trim(self, cache):
         while len(cache) > self.limit:
@@ -146,11 +166,17 @@ class Encoder:
     def mesh(self, shape, digest):
         if not self.meshes:
             return None
-        hit = _touch(self._mesh, digest)
+        key = (digest, self.model_diag)       # the same geometry in a bigger model is meshed coarser
+        hit = _touch(self._mesh, key)
         if hit is None:
-            hit = mesh_out(shape, self._mesh_bases)
-            self._put(self._mesh, digest, hit)
+            hit = mesh_out(shape, self._mesh_bases, self.model_diag)
+            self._put(self._mesh, key, hit)
             self._trim(self._mesh_bases)
+            if self.release:
+                # The MeshOut holds what the triangulation held, and nothing in the worker reads it again (a
+                # later mesh makes it afresh). It is a cache on the TShape, so it can be dropped even where
+                # shapes are shared; the worker is the only place this is on.
+                BRepTools.Clean_s(shape)
         return hit
 
     def base(self, shape):
@@ -171,6 +197,18 @@ class Encoder:
             return None
         return shape.Located(K.TopLoc_Location()), K.location_matrix(loc)
 
+    def names(self, part) -> dict:
+        """`element_names(part)`, as one shared dict per distinct content: the placed copies of a geometry name
+        their elements alike, so they hold the same object, which pickle and the wire send once. Callers must
+        treat it as read-only."""
+        out = element_names(part)
+        key = tuple((k, tuple(sorted(d.items()))) for k, d in out.items())
+        hit = _touch(self._names, key)
+        if hit is None:
+            hit = out
+            self._put(self._names, key, hit)
+        return hit
+
     def part(self, part, hidden=False, mesh=True, placed=False) -> PartOut:
         """A features.Part as output, in its own coordinates (`mesh=False`: without its display mesh).
         `placed=True`: a part whose shape is a placed copy goes as its unplaced geometry plus `loc` (see
@@ -190,7 +228,7 @@ class Encoder:
         if part.face_colors:      # kept 0-based by features.py; 1-based here, like every output index
             fc = {int(i) + 1: tuple(float(c) for c in rgb) for i, rgb in part.face_colors.items()}
         return PartOut(id=str(part.id), name=str(part.name), color=tuple(float(c) for c in part.color),
-                       hidden=bool(hidden), brep=data, hash=digest, names=element_names(part),
+                       hidden=bool(hidden), brep=data, hash=digest, names=self.names(part),
                        mesh=self.mesh(geo, geo_digest) if mesh else None, face_colors=fc, loc=loc,
                        base=base or "")
 

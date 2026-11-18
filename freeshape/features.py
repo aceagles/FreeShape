@@ -3107,7 +3107,27 @@ def is_brep_name(name) -> bool:
 
 
 def run_import(state, f):
+    """The parts of an imported STEP or BREP file. With a stored build of this import (params["stored"], handed
+    in by PartStudioDoc.compute when its stamp matches, #64) the parts come from that build's BREP blobs and the
+    file is not read at all; a stored build that cannot be read falls back to reading the file."""
     p = f["params"]
+    items = None
+    if p.get("stored") is not None and p["stored"].get("stamp") == import_stamp(p):
+        try:
+            items = import_build_items(p["stored"], p["stored_get"])
+        except Exception:       # noqa: BLE001 -- a missing or damaged blob, a malformed entry: read the file instead
+            items = None
+    if items is None:
+        items = _read_import(p)
+    seeded = {}      # the same geometry placed again (an assembly's repeated screw) is named once
+    for shape, name, color, fcols in items:
+        part = state.new_part(shape, f["id"], tuple(color) if color else None)
+        state.parts[part.id] = Part(part.id, name or part.name, part.shape, part.color, fcols or None)
+        state.set_named(part.id, _import_names(part.shape, f["id"], seeded))
+
+
+def _read_import(p):
+    """[(shape, name or None, colour or None, {face index: colour})] read from the imported file itself."""
     if p.get("blob"):           # the imported file in the blobs (I4.9): PartStudioDoc.compute hands in `get`
         try:
             data = p["resolved"](p["blob"])
@@ -3122,19 +3142,110 @@ def run_import(state, f):
         path = tmp.name
     try:
         if brep:
-            items = [(s, None, None, {}) for s in K.import_brep(path)]     # BREP holds no names or colours
-        else:
-            try:
-                items = K.import_step_with_colors(path)
-            except Exception:
-                items = [(s, None, None, {}) for s in K.import_step(path)]   # plain geometry as a fallback
-        seeded = {}      # the same geometry placed again (an assembly's repeated screw) is named once
-        for shape, name, color, fcols in items:
-            part = state.new_part(shape, f["id"], tuple(color) if color else None)
-            state.parts[part.id] = Part(part.id, name or part.name, part.shape, part.color, fcols or None)
-            state.set_named(part.id, _import_names(part.shape, f["id"], seeded))
+            return [(s, None, None, {}) for s in K.import_brep(path)]     # BREP holds no names or colours
+        try:
+            return K.import_step_with_colors(path)
+        except Exception:
+            return [(s, None, None, {}) for s in K.import_step(path)]     # plain geometry as a fallback
     finally:
         os.unlink(path)
+
+
+# ---- stored build of an import (#64): the file is read once; the document keeps the parts it gave as BREP blobs
+# Bump when what run_import makes from a file changes: the reader, its name and colour walk, the part order, or
+# the layout of the entry below. Element names are not stored (they are seeded again from the restored shapes,
+# whose sub-shape order a BREP round trip keeps), but their scheme is in the stamp too, so a change to it
+# re-reads the file rather than trusting an old build.
+IMPORT_BUILD_VERSION = 1
+IMPORT_NAMING_VERSION = 1
+
+
+def import_stamp(p):
+    """What a stored import build was made from, as text: the imported file's blob key, the reader it went
+    through (STEP or BREP), and the versions of this code, of OCCT and of the import's element naming. A stored
+    build is used only while its stamp equals the feature's (params `p`); any other value reads the file."""
+    import OCP
+    reader = "brep" if is_brep_name(p.get("filename", "")) else "step"
+    return json.dumps(["import", IMPORT_BUILD_VERSION, IMPORT_NAMING_VERSION, getattr(OCP, "__version__", ""),
+                       reader, p.get("blob")])
+
+
+def is_import_build(entry) -> bool:
+    """True if `entry` (a `python_builds` value) is an import feature's stored build."""
+    return isinstance(entry, dict) and isinstance(entry.get("stamp"), str) \
+        and isinstance(entry.get("bases"), list) and isinstance(entry.get("parts"), list)
+
+
+def stored_import_build(f, entry, has):
+    """`entry` when it is a stored build that "import" feature `f` can use now (its stamp matches and `has(key)`
+    finds every blob it names), else None."""
+    p = f.get("params") or {}
+    if f.get("type") != "import" or not p.get("blob") or not is_import_build(entry):
+        return None
+    if entry["stamp"] != import_stamp(p) or not all(isinstance(k, str) and has(k) for k in entry["bases"]):
+        return None
+    return entry
+
+
+def _unplaced_brep(shape):
+    """Compressed canonical BREP of a shape (encode.Encoder.brep's bytes), for a document with no encoder."""
+    import zlib
+    from .engine.encode import brep_text
+    return zlib.compress(brep_text(shape), 6)
+
+
+def import_build_record(state, fid, stamp, brep=None):
+    """(entry, {blob key: bytes}) of the parts the import feature `fid` made in `state`, for a document's
+    `python_builds`: {"stamp", "bases", "parts"}. `bases` names one BREP blob per distinct geometry, unplaced;
+    each of `parts`, in creation order, is {"name", "color", "face_colors", "base" (index into bases), "loc" (3x4
+    rows of its placement, or None)}. `brep(shape)` gives a shape's compressed BREP (an engine worker passes the
+    bytes its outputs already wrote); None when the feature made no part."""
+    import hashlib
+    brep = brep or _unplaced_brep
+    mine = sorted((pid for pid in state.parts if pid.startswith(f"{fid}/") and pid[len(fid) + 1:].isdigit()),
+                  key=lambda pid: int(pid[len(fid) + 1:]))
+    if not mine:
+        return None
+    bases, blobs, index, parts = [], {}, {}, []
+    for pid in mine:
+        part = state.parts[pid]
+        loc = part.shape.Location()
+        tr = loc.Transformation()
+        whole = not loc.IsIdentity() and (tr.IsNegative() or abs(tr.ScaleFactor() - 1.0) > 1e-12)
+        if whole or loc.IsIdentity():   # a mirrored or scaled placement is kept in the BREP itself, never in `loc`
+            geo, M = part.shape, None
+        else:
+            geo, M = part.shape.Located(K.TopLoc_Location()), K.location_matrix(loc)
+        slot = None if whole else index.get(hash(geo))
+        if slot is None or not bases[slot][0].IsSame(geo):
+            data = K.shape_to_brep(part.shape) if whole else brep(geo)
+            key = hashlib.sha256(data).hexdigest()
+            blobs[key] = data
+            bases.append((geo, key))
+            slot = len(bases) - 1
+            if not whole:
+                index[hash(geo)] = slot
+        fc = {str(int(i)): [float(c) for c in rgb] for i, rgb in (part.face_colors or {}).items()}
+        parts.append({"name": str(part.name), "color": [float(c) for c in part.color], "face_colors": fc or None,
+                      "base": slot, "loc": None if M is None else [[float(x) for x in row] for row in M[:3]]})
+    return {"stamp": stamp, "bases": [k for _g, k in bases], "parts": parts}, blobs
+
+
+def import_build_items(entry, get):
+    """The parts of a stored import build as the reader gives them, [(shape, name, colour, {face index: colour})],
+    every placed copy of one geometry sharing it as the file's copies do. `get(key)` returns a blob's bytes
+    (hash-checked). Raises on a missing or unreadable blob or a malformed entry; nothing is half made."""
+    shapes = [K.shape_from_brep(get(k)) for k in entry["bases"]]
+    items = []
+    for rec in entry["parts"]:
+        shape = shapes[int(rec["base"])]
+        if rec.get("loc") is not None:
+            M = np.eye(4)
+            M[:3] = np.asarray(rec["loc"], float)
+            shape = K.located(shape, M)
+        fc = {int(i): tuple(float(c) for c in rgb) for i, rgb in (rec.get("face_colors") or {}).items()}
+        items.append((shape, str(rec["name"]), tuple(float(c) for c in rec["color"]), fc))
+    return items
 
 
 def _import_names(shape, fid, seeded=None):

@@ -181,9 +181,13 @@ class FolderDocument:
         doc, asm = self._context_assembly(tab_id, fid)
         return update_context(doc, fid, asm)
 
-    def refresh_links(self):
-        """Re-read every studio's, assembly's and drawing's links against the current tabs."""
+    def refresh_links(self, pending=()):
+        """Re-read every studio's, assembly's and drawing's links against the current tabs. `pending` (#64) are the
+        ids of studio tabs left unbuilt for the engine to build: they are not rebuilt here, and the assemblies and
+        drawings that read them (directly or through an assembly) are not refreshed against their empty state;
+        the window refreshes those when the engine's first result comes back (LiveTabs.refresh_consumers)."""
         done = set()
+        waiting = set(pending)
 
         def rebuild_studio(tab):      # a source studio first, so it is read as it now stands
             if tab.id in done:
@@ -193,12 +197,26 @@ class FolderDocument:
                 up = self.tab(src.get("tab"))
                 if up is not None and up.kind == "studio" and up.doc is not None:
                     rebuild_studio(up)
-            tab.doc.rebuild()
+            if tab.id not in waiting:
+                tab.doc.rebuild()
 
         for tab in self.tabs:
             if tab.kind == "studio" and tab.doc is not None and tab_sources("studio", tab.doc):
                 rebuild_studio(tab)
+        for kind in ("assembly", "drawing"):      # a drawing of an assembly that waits waits too
+            for tab in self.tabs:
+                if waiting and tab.kind == kind and tab.doc is not None and any(
+                        src.get("tab") in waiting for src in tab_sources(kind, tab.doc)):
+                    waiting.add(tab.id)
         for tab in self.tabs:
+            if tab.id in waiting:
+                if tab.kind == "assembly" and tab.doc is not None:
+                    # its load showed the saved copy of each part with "not found": the studio is only still
+                    # building, so the error is dropped until it answers and the assembly is refreshed
+                    for inst in tab.doc.instances:
+                        if (inst.get("source") or {}).get("tab") in pending:
+                            tab.doc.errors.pop(inst["id"], None)
+                continue
             if tab.kind == "assembly" and tab.doc is not None:
                 tab.doc.refresh(solve=False, notify=False)
             elif tab.kind == "drawing" and tab.doc is not None:
@@ -340,15 +358,18 @@ class FolderDocument:
         return added
 
     # ------------------------------------------------------------------ tab data through the store
-    def _load_tab(self, tab):
+    def _load_tab(self, tab, build=True):
         """Load one tab's document from the store. The store checks the manifest's file name before anything is
-        read (see docstore.FolderStore). A kind with no `from_data` loads from its file."""
+        read (see docstore.FolderStore). A kind with no `from_data` loads from its file. `build=False` leaves a
+        Part Studio unbuilt for the engine (see PartStudioDoc.from_data); other kinds load as always."""
         rec, store = TK.get(tab.kind), self.store
         store.place_tab(tab.id, tab.file)
+        extra = {} if build or tab.kind != "studio" else {"build": False}
         if rec.from_data is None:
-            doc = rec.load(store.checked_tab_path(tab.id))
+            doc = rec.load(store.checked_tab_path(tab.id), **extra)
         else:
-            doc = rec.from_data(store.read_tab(tab.id), path=store.tab_path(tab.id), blobs=store.blobs(tab.id))
+            doc = rec.from_data(store.read_tab(tab.id), path=store.tab_path(tab.id), blobs=store.blobs(tab.id),
+                                **extra)
         timing.mark(f"open: tab loaded ({tab.kind} {tab.name!r})")
         return doc
 
@@ -398,18 +419,20 @@ class FolderDocument:
         """Drop the autosave kept under `key` (one a crashed run left, so not necessarily this run's)."""
         self.store.delete_side(key, where)
 
-    def recover_tab(self, kind, key, tab_id=None, where=None):
+    def recover_tab(self, kind, key, tab_id=None, where=None, build=True):
         """Load the autosave kept under `key` as a document of `kind`. A store that keeps files loads the file, as
-        a loose file loads; any other store gives its bytes to the kind's `from_data`."""
+        a loose file loads; any other store gives its bytes to the kind's `from_data`. `build=False` leaves a Part
+        Studio unbuilt for the engine (see PartStudioDoc.from_data)."""
         rec, store = TK.get(kind), self.store
+        extra = {} if build or kind != "studio" else {"build": False}
         path = store.side_path(key, where)
         if path is not None:
-            doc = rec.load(path)            # its blobs are beside the side file (`autosave_blobs`)
+            doc = rec.load(path, **extra)            # its blobs are beside the side file (`autosave_blobs`)
         elif rec.from_data is None:
             raise K.KernelError(f"{rec.label}: loads only from a file, and {store.describe()} keeps none")
         else:
             doc = rec.from_data(store.read_side(key, where),
-                                blobs=DS.ChainedBlobs(store.side_blobs(where), store.blobs(tab_id)))
+                                blobs=DS.ChainedBlobs(store.side_blobs(where), store.blobs(tab_id)), **extra)
         return hold_blobs(doc)
 
     @staticmethod
@@ -468,11 +491,12 @@ class FolderDocument:
         return cls.open(store.folder, registry=registry, store=store)
 
     @classmethod
-    def open_document(cls, path, registry=None, managed_root=None):
+    def open_document(cls, path, registry=None, managed_root=None, build=True):
         """Open a Document the way the app should: a folder the app created (or already imported) opens in place;
         anything else is first imported with `git clone --no-local` into `managed_root`, and the app works only in
         the clone, never running git in the received folder. A received folder with no commits, or no repository,
-        is copied without its `.git` and given a fresh one. Uncommitted edits in a received folder are not imported."""
+        is copied without its `.git` and given a fresh one. Uncommitted edits in a received folder are not imported.
+        `build`: as for `open`."""
         registry = registry or R.default_registry()
         real = os.path.realpath(path)
         doc_id = _peek_id(real)
@@ -480,7 +504,7 @@ class FolderDocument:
             target = real
         else:
             target = cls._import(real, registry, managed_root or R.managed_root())
-        doc = cls.open(target, registry=registry)
+        doc = cls.open(target, registry=registry, build=build)
         doc.trusted = True
         return doc
 
@@ -533,9 +557,11 @@ class FolderDocument:
         return dest
 
     @classmethod
-    def open(cls, path, registry=None, store=None):
+    def open(cls, path, registry=None, store=None, build=True):
         """Load the folder at `path` as it stands. `registry` lets cross-Document links resolve while it loads.
-        `store` is the DocumentStore to read through (by default a docstore.FolderStore on `path`)."""
+        `store` is the DocumentStore to read through (by default a docstore.FolderStore on `path`). `build=False`
+        (#64, a window with the engine on) leaves every Part Studio unbuilt for the engine, and every assembly and
+        drawing that reads one unrefreshed (`refresh_links` `pending`): the window builds nothing on open."""
         data = cls._read_manifest((store if store is not None else DS.FolderStore(path)).read_manifest())
         version = data.get("version", 1)
         if version > FORMAT_VERSION:
@@ -560,7 +586,7 @@ class FolderDocument:
             try:
                 if kind not in TK.KINDS:
                     raise K.KernelError(f"{label}: unknown tab kind {kind!r}")
-                tab.doc = doc._load_tab(tab)
+                tab.doc = doc._load_tab(tab, build)
             except K.KernelError as e:
                 doc.errors[tab_id] = str(e)
             except Exception as e:      # a damaged tab file (bad JSON, a missing key...) must not stop the rest
@@ -571,9 +597,13 @@ class FolderDocument:
             doc._attach(tab)
         # the uid + path -> tab id step of the link-format migration (see links.py), once every tab is loaded
         migrate_links_to_tab_ids(doc)
-        doc.refresh_links()
+        doc.refresh_links(pending=() if build else doc.unbuilt_studios())
         doc.warnings = doc.document_warnings()
         return doc
+
+    def unbuilt_studios(self):
+        """The ids of the studio tabs `open(build=False)` left unbuilt: every loaded studio tab."""
+        return [t.id for t in self.tabs if t.kind == "studio" and t.doc is not None]
 
     @staticmethod
     def _read_manifest(raw):

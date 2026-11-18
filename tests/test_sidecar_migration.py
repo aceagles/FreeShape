@@ -287,8 +287,13 @@ def test_a_part_studio_import_moves_its_step_file_to_the_blobs(tmp_path):
     assert _read(tmp_path / "new" / "s.fshape")["features"][0]["params"]["blob"] == key
     assert key in _blob_files(str(tmp_path / "new"))
     os.remove(tmp_path / "blobs" / key)
-    gone = PartStudioDoc.load(path)
     fid = saved["features"][0]["id"]
+    assert not PartStudioDoc.load(path).errors       # the import's stored build (#64) stands in for the STEP file
+    stale = _read(path)
+    stale["python_builds"][fid]["stamp"] = "stale"   # with no build to use, the missing STEP file is an error
+    with open(path, "w") as fh:
+        json.dump(stale, fh)
+    gone = PartStudioDoc.load(path)
     assert key in gone.errors[fid] and not gone.state.parts
 
 
